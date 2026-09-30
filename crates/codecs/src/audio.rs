@@ -14,9 +14,16 @@ use symphonia::core::probe::Hint;
 
 use crate::{CodecError, Result};
 
+enum Inner {
+    /// Our own AAC-LC decoder.
+    Aac { dec: filmcraft_aac::Decoder, asc: Vec<u8> },
+    /// Bootstrap decoders (MP3, ALAC, FLAC, HE-AAC…) via symphonia.
+    Symphonia(Box<dyn Decoder>),
+}
+
 /// A packet decoder producing planar f32.
 pub struct PacketDecoder {
-    dec: Box<dyn Decoder>,
+    inner: Inner,
     pub channels: usize,
 }
 
@@ -28,9 +35,14 @@ impl PacketDecoder {
             p.with_extra_data(x.into_boxed_slice());
         }
         let dec = symphonia::default::get_codecs().make(&p, &DecoderOptions::default()).map_err(|e| CodecError::Unsupported(e.to_string()))?;
-        Ok(Self { dec, channels: 0 })
+        Ok(Self { inner: Inner::Symphonia(dec), channels: 0 })
     }
+    /// AAC: our decoder for AAC-LC; symphonia for other object types (HE-AAC…).
     pub fn aac(asc: &[u8], sample_rate: u32) -> Result<Self> {
+        let lc = asc.first().map(|b| b >> 3) == Some(2);
+        if lc && let Ok(dec) = filmcraft_aac::Decoder::new(asc) {
+            return Ok(Self { inner: Inner::Aac { dec, asc: asc.to_vec() }, channels: 0 });
+        }
         Self::new(CODEC_TYPE_AAC, sample_rate, Some(asc.to_vec()))
     }
     pub fn for_isobmff(c: &filmcraft_isobmff::CodecConfig, rate: u32) -> Result<Self> {
@@ -45,8 +57,16 @@ impl PacketDecoder {
     }
     /// Decode one packet into planar channels.
     pub fn decode(&mut self, data: &[u8], ts: u64) -> Result<Vec<Vec<f32>>> {
+        let dec = match &mut self.inner {
+            Inner::Aac { dec, .. } => {
+                let out = dec.decode(data).map_err(|e| CodecError::Decode(e.to_string()))?;
+                self.channels = out.len();
+                return Ok(out);
+            }
+            Inner::Symphonia(d) => d,
+        };
         let pkt = Packet::new_from_slice(0, ts, 0, data);
-        let buf = self.dec.decode(&pkt).map_err(|e| CodecError::Decode(e.to_string()))?;
+        let buf = dec.decode(&pkt).map_err(|e| CodecError::Decode(e.to_string()))?;
         let spec = *buf.spec();
         let ch = spec.channels.count().max(1);
         self.channels = ch;
@@ -63,7 +83,14 @@ impl PacketDecoder {
         Ok(out)
     }
     pub fn reset(&mut self) {
-        self.dec.reset();
+        match &mut self.inner {
+            Inner::Aac { dec, asc } => {
+                if let Ok(d) = filmcraft_aac::Decoder::new(asc) {
+                    *dec = d;
+                }
+            }
+            Inner::Symphonia(d) => d.reset(),
+        }
     }
 }
 

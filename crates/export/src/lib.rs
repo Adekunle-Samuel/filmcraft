@@ -182,7 +182,7 @@ fn video_factories() -> &'static RwLock<Vec<EncoderFactory>> {
 }
 fn audio_factories() -> &'static RwLock<Vec<AudioEncoderFactory>> {
     static F: OnceLock<RwLock<Vec<AudioEncoderFactory>>> = OnceLock::new();
-    F.get_or_init(|| RwLock::new(Vec::new()))
+    F.get_or_init(|| RwLock::new(vec![aac_factory]))
 }
 
 pub fn register_encoder(f: EncoderFactory) {
@@ -231,6 +231,40 @@ impl VideoEncoder for MjpegEncoder {
 
 fn mjpeg_factory(format: Format, w: u32, h: u32, rate: FrameRate, s: &ExportSettings) -> Option<Result<Box<dyn VideoEncoder>>> {
     (format == Format::Mjpeg).then(|| Ok(Box::new(MjpegEncoder { w: w as u16, h: h as u16, quality: s.quality.clamp(1, 100), rate }) as Box<dyn VideoEncoder>))
+}
+
+/// AAC-LC (our encoder), 320 kbps stereo by default.
+struct AacEncoder {
+    enc: filmcraft_aac::Encoder,
+    rate: u32,
+    channels: u32,
+}
+
+impl AudioEncoder for AacEncoder {
+    fn sample_entry(&self) -> SampleEntry {
+        SampleEntry::aac(self.enc.audio_specific_config(), self.channels, self.rate)
+    }
+    fn encode(&mut self, planar: &[Vec<f32>]) -> Result<Vec<Vec<u8>>> {
+        let refs: Vec<&[f32]> = planar.iter().map(Vec::as_slice).collect();
+        Ok(self.enc.encode(&refs))
+    }
+    fn flush(&mut self) -> Result<Vec<Vec<u8>>> {
+        Ok(self.enc.flush())
+    }
+    fn priming(&self) -> u32 {
+        self.enc.priming_samples()
+    }
+    fn frame_size(&self) -> u32 {
+        1024
+    }
+}
+
+fn aac_factory(_format: Format, sample_rate: u32, channels: u32, _s: &ExportSettings) -> Option<Result<Box<dyn AudioEncoder>>> {
+    Some(
+        filmcraft_aac::Encoder::new(filmcraft_aac::EncoderConfig::cbr(sample_rate, channels as usize, 320_000))
+            .map(|enc| Box::new(AacEncoder { enc, rate: sample_rate, channels }) as Box<dyn AudioEncoder>)
+            .map_err(|e| ExportError::Encode(e.to_string())),
+    )
 }
 
 /// ProRes 422 HQ encoder: sRGB/709 RGBA8 → 10-bit limited-range BT.709 4:2:2.

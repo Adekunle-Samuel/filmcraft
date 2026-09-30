@@ -1348,6 +1348,7 @@ dependencies = [
 name = "filmcraft-codecs"
 version = "0.1.0"
 dependencies = [
+ "filmcraft-aac",
  "filmcraft-bitstream",
  "filmcraft-color",
  "filmcraft-frame",
@@ -1405,6 +1406,7 @@ dependencies = [
 name = "filmcraft-export"
 version = "0.1.0"
 dependencies = [
+ "filmcraft-aac",
  "filmcraft-codecs",
  "filmcraft-frame",
  "filmcraft-isobmff",

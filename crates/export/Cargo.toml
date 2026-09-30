@@ -17,6 +17,7 @@ filmcraft-project = { workspace = true }
 filmcraft-render = { workspace = true }
 filmcraft-isobmff = { workspace = true }
 filmcraft-prores = { workspace = true }
+filmcraft-aac = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
