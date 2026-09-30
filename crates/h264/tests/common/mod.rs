@@ -22,6 +22,16 @@ pub struct Fixture {
 const NOISE: &str = "noise=alls=12:allf=t+u";
 
 pub const FIXTURES: &[Fixture] = &[
+    // performance reference stream (see tests/perf.rs)
+    Fixture {
+        name: "bench_1080p",
+        source: "testsrc2",
+        width: 1920,
+        height: 1080,
+        frames: 120,
+        filter: "noise=alls=3:allf=t",
+        args: &["-preset", "medium", "-crf", "20"],
+    },
     Fixture {
         name: "intra_cavlc",
         source: "testsrc2",
@@ -371,8 +381,13 @@ pub fn split_access_units(data: &[u8]) -> Vec<&[u8]> {
 pub type DecodeFailure = (usize, filmcraft_h264::Error, Vec<Picture>);
 
 pub fn decode_file(path: &Path) -> Result<Vec<Picture>, DecodeFailure> {
+    decode_file_threads(path, 0)
+}
+
+/// Decode with `threads` worker threads (0 = decoder default).
+pub fn decode_file_threads(path: &Path, threads: usize) -> Result<Vec<Picture>, DecodeFailure> {
     let data = std::fs::read(path).unwrap();
-    let mut dec = Decoder::new();
+    let mut dec = if threads == 0 { Decoder::new() } else { Decoder::with_threads(threads) };
     let mut out = Vec::new();
     for (i, au) in split_access_units(&data).into_iter().enumerate() {
         match dec.decode(au, i as i64) {
@@ -381,6 +396,9 @@ pub fn decode_file(path: &Path) -> Result<Vec<Picture>, DecodeFailure> {
         }
     }
     out.extend(dec.flush());
+    if let Some(e) = dec.take_error() {
+        return Err((usize::MAX, e, out));
+    }
     Ok(out)
 }
 
@@ -440,14 +458,37 @@ pub fn check_fixture(name: &str) -> Result<bool, String> {
     let f = fixture(name);
     let Some((h264, yuv)) = ensure(f) else { return Ok(false) };
     let reference = std::fs::read(&yuv).unwrap();
-    let pics = match decode_file(&h264) {
-        Ok(p) => p,
-        Err((au, e, partial)) => {
-            // still report comparison of what was decoded
-            let cmp = compare(&partial, &reference, f.width as usize, f.height as usize).err().unwrap_or_default();
-            return Err(format!("{name}: decode error at access unit {au}: {e} (after {} pictures) {cmp}", partial.len()));
-        }
-    };
-    compare(&pics, &reference, f.width as usize, f.height as usize).map_err(|e| format!("{name}: {e}"))?;
+    // single-threaded and frame-threaded decoding must both be bit-exact
+    for threads in [1, 0] {
+        let pics = match decode_file_threads(&h264, threads) {
+            Ok(p) => p,
+            Err((au, e, partial)) => {
+                // still report comparison of what was decoded
+                let cmp = compare(&partial, &reference, f.width as usize, f.height as usize).err().unwrap_or_default();
+                return Err(format!("{name} (threads {threads}): decode error at access unit {au}: {e} (after {} pictures) {cmp}", partial.len()));
+            }
+        };
+        compare(&pics, &reference, f.width as usize, f.height as usize).map_err(|e| format!("{name} (threads {threads}): {e}"))?;
+        check_pts(&pics).map_err(|e| format!("{name} (threads {threads}): {e}"))?;
+    }
     Ok(true)
+}
+
+/// Output pts values (= access unit index) must be a permutation of 0..n, and follow POC order
+/// between IDR pictures.
+pub fn check_pts(pics: &[Picture]) -> Result<(), String> {
+    let mut seen = vec![false; pics.len()];
+    for p in pics {
+        let i = p.pts as usize;
+        if i >= seen.len() || seen[i] {
+            return Err(format!("unexpected pts {} in output", p.pts));
+        }
+        seen[i] = true;
+    }
+    for w in pics.windows(2) {
+        if !w[1].key && w[1].poc <= w[0].poc {
+            return Err(format!("output POC order violated: {} then {}", w[0].poc, w[1].poc));
+        }
+    }
+    Ok(())
 }

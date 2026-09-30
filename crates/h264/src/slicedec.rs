@@ -1,8 +1,9 @@
 //! Slice data decoding: macroblock parsing (CAVLC), motion vector derivation, and reconstruction.
 
 use crate::cavlc;
+use crate::deblock;
 use crate::error::{Result, ensure, invalid};
-use crate::inter::{self, PlaneRef, Weight};
+use crate::inter::{self, Weight};
 use crate::intra::{self, Avail};
 use crate::mbtypes::*;
 use crate::params::{Pps, Sps};
@@ -22,7 +23,8 @@ pub struct SliceInfo {
     pub ref_ids: [Vec<u32>; 2],
 }
 
-/// The picture under construction.
+/// The picture under construction: private reconstruction buffers plus the shared [`Frame`] that
+/// finished (deblocked) macroblock rows are published into.
 pub struct PicState {
     pub planes: Planes,
     pub mbs: Vec<MbState>,
@@ -31,11 +33,85 @@ pub struct PicState {
     pub mb_h: usize,
     pub poc: i32,
     pub decoded_mbs: usize,
+    pub frame: FrameRef,
+    /// Decoded macroblocks per MB row.
+    row_count: Vec<u16>,
+    /// Leading MB rows that are fully reconstructed / deblocked / published.
+    rows_recon: usize,
+    rows_deblocked: usize,
+    rows_published: usize,
 }
 
 impl PicState {
-    pub fn new(mb_w: usize, mb_h: usize, poc: i32) -> Self {
-        PicState { planes: Planes::new(mb_w * 16, mb_h * 16), mbs: vec![MbState::default(); mb_w * mb_h], slices: Vec::new(), mb_w, mb_h, poc, decoded_mbs: 0 }
+    pub fn new(frame: FrameRef) -> Self {
+        let (mb_w, mb_h) = (frame.mb_w, frame.mb_h());
+        PicState {
+            planes: Planes::new(mb_w * 16, mb_h * 16),
+            mbs: vec![MbState::default(); mb_w * mb_h],
+            slices: Vec::new(),
+            mb_w,
+            mb_h,
+            poc: frame.poc,
+            decoded_mbs: 0,
+            frame,
+            row_count: vec![0; mb_h],
+            rows_recon: 0,
+            rows_deblocked: 0,
+            rows_published: 0,
+        }
+    }
+
+    /// Reuse the buffers of a finished picture of the same size for a new frame.
+    pub fn reset(&mut self, frame: FrameRef) {
+        debug_assert_eq!((self.mb_w, self.mb_h), (frame.mb_w, frame.mb_h()));
+        self.mbs.fill(MbState::default());
+        self.slices.clear();
+        self.poc = frame.poc;
+        self.decoded_mbs = 0;
+        self.frame = frame;
+        self.row_count.fill(0);
+        self.rows_recon = 0;
+        self.rows_deblocked = 0;
+        self.rows_published = 0;
+    }
+
+    /// Record a decoded macroblock and deblock / publish rows that became final.
+    #[inline]
+    pub fn mb_done(&mut self, addr: usize) {
+        self.decoded_mbs += 1;
+        let r = addr / self.mb_w;
+        self.row_count[r] += 1;
+        if self.row_count[r] as usize >= self.mb_w && r == self.rows_recon {
+            while self.rows_recon < self.mb_h && self.row_count[self.rows_recon] as usize >= self.mb_w {
+                self.rows_recon += 1;
+            }
+            self.flush_rows(false);
+        }
+    }
+
+    /// Deblock and publish rows. With `finished`, everything remaining is processed (also rows with
+    /// missing macroblocks, so that waiting readers never block forever).
+    pub fn flush_rows(&mut self, finished: bool) {
+        // Deblocking row r must wait until row r + 1 is reconstructed (its intra prediction reads the
+        // unfiltered bottom line of row r); row r is final once row r + 1 is deblocked.
+        let deblock_limit = if finished { self.mb_h } else { self.rows_recon.saturating_sub(1) };
+        while self.rows_deblocked < deblock_limit {
+            let r = self.rows_deblocked;
+            for addr in r * self.mb_w..(r + 1) * self.mb_w {
+                deblock::deblock_mb(self, addr, self.mb_w);
+            }
+            self.rows_deblocked += 1;
+        }
+        let publish_limit = if finished { self.mb_h } else { self.rows_deblocked.saturating_sub(1) };
+        while self.rows_published < publish_limit {
+            let r = self.rows_published;
+            let slices = &self.slices;
+            let ids =
+                |st: &MbState, l: usize, ri: i8| slices.get(st.slice_num as usize).and_then(|s| s.ref_ids[l].get(ri as usize).copied()).unwrap_or(u32::MAX);
+            let row = Frame::make_row(&self.planes, r, &self.mbs, &ids);
+            self.frame.publish(r, row);
+            self.rows_published += 1;
+        }
     }
 }
 
@@ -127,6 +203,28 @@ pub struct SliceDecoder<'a> {
     tdirect: Vec<(i32, bool)>,
     /// CABAC: previous MB in decoding order had a non-zero mb_qp_delta.
     pub prev_qp_delta_nz: bool,
+}
+
+/// Interpolate a bw x bh luma block at (px, py) with motion vector `mv` from reference `f` into `y`,
+/// and the corresponding chroma blocks into `c` (stride `cs`).
+#[allow(clippy::too_many_arguments)]
+#[inline]
+fn predict_block(f: &Frame, mv: [i16; 2], px: usize, py: usize, bw: usize, bh: usize, y: (&mut [u8], usize), c: [&mut [u8]; 2], cs: usize) {
+    const LW: usize = 21;
+    let mut win = [0u8; LW * LW];
+    let ix = px as i32 + (mv[0] as i32 >> 2);
+    let iy = py as i32 + (mv[1] as i32 >> 2);
+    f.luma_window(ix - 2, iy - 2, bw + 5, bh + 5, &mut win, LW);
+    inter::mc_luma_win(&win, LW, (mv[0] & 3) as u32, (mv[1] & 3) as u32, bw, bh, y.0, y.1);
+    let cx = (px / 2) as i32 + (mv[0] as i32 >> 3);
+    let cy = (py / 2) as i32 + (mv[1] as i32 >> 3);
+    let (cw, ch) = (bw / 2, bh / 2);
+    let (fx, fy) = ((mv[0] & 7) as u32, (mv[1] & 7) as u32);
+    for (comp, out) in c.into_iter().enumerate() {
+        let mut w = [0u8; 9 * 9];
+        f.chroma_window(comp, cx, cy, cw + 1, ch + 1, &mut w, 9);
+        inter::mc_chroma_win(&w, 9, fx, fy, cw, ch, out, cs);
+    }
 }
 
 #[inline(always)]
@@ -409,15 +507,18 @@ impl<'a> SliceDecoder<'a> {
     /// Co-located (mvCol, refIdxCol, referenced picture id) for 4x4 block `raster` of the current MB.
     fn colocated(&self, raster: usize) -> ([i16; 2], i8, u32) {
         let Some(col) = self.refs[1].first() else { return ([0, 0], -1, u32::MAX) };
-        let m = &col.frame.motion;
         let raster = if self.sps.direct_8x8_inference {
             let (bx, by) = (raster & 3, raster >> 2);
             (if by >= 2 { 12 } else { 0 }) + if bx >= 2 { 3 } else { 0 }
         } else {
             raster
         };
-        let mb = self.mb_addr;
-        if m.intra.get(mb).copied().unwrap_or(true) {
+        if col.frame.mb_w != self.mb_w || self.mb_y >= col.frame.mb_h() {
+            return ([0, 0], -1, u32::MAX);
+        }
+        let m = col.frame.row(self.mb_y);
+        let mb = self.mb_x;
+        if m.intra[mb] {
             return ([0, 0], -1, u32::MAX);
         }
         let b8 = mb * 4 + (raster >> 3) * 2 + ((raster & 3) >> 1);
@@ -457,7 +558,8 @@ impl<'a> SliceDecoder<'a> {
                 continue;
             }
             let (x8, y8) = ((b8 & 1) * 2, (b8 >> 1) * 2);
-            for sub in 0..4 {
+            let unit = if self.sps.direct_8x8_inference { 2 } else { 1 };
+            for sub in (0..4).filter(|s| unit == 1 || *s == 0) {
                 let (x, y) = (x8 + (sub & 1), y8 + (sub >> 1));
                 let raster = y * 4 + x;
                 let (mv_col, ref_col, id_col) = self.colocated(raster);
@@ -489,7 +591,7 @@ impl<'a> SliceDecoder<'a> {
                     };
                     ([ref0, 0], [mv0, mv1])
                 };
-                self.set_motion(x, y, 1, 1, refs, mvs);
+                self.set_motion(x, y, unit, unit, refs, mvs);
             }
         }
         let st = &mut self.pic.mbs[self.mb_addr];
@@ -623,48 +725,31 @@ impl<'a> SliceDecoder<'a> {
         let wts = [self.weight_for(refs, 0), self.weight_for(refs, 1), self.weight_for(refs, 2)];
         let px = self.mb_x * 16 + x4 * 4;
         let py = self.mb_y * 16 + y4 * 4;
+        let use0 = refs[0] >= 0 && self.refs[0].get(refs[0] as usize).is_some();
+        let use1 = refs[1] >= 0 && self.refs[1].get(refs[1] as usize).is_some();
+        let ys = self.pic.planes.width;
+        let cs = self.pic.planes.cwidth;
+        let (cx, cy) = (px / 2, py / 2);
+        if use0 != use1 && wts.iter().all(|w| *w == Weight::Default) {
+            // single-list unweighted prediction: interpolate straight into the picture
+            let l = if use0 { 0 } else { 1 };
+            let f = &self.refs[l][refs[l] as usize].frame;
+            let planes = &mut self.pic.planes;
+            predict_block(f, mvs[l], px, py, bw, bh, (&mut planes.y[py * ys + px..], ys), [&mut planes.cb[cy * cs + cx..], &mut planes.cr[cy * cs + cx..]], cs);
+            return;
+        }
         let s = &mut *self.s;
         for l in 0..2 {
             if refs[l] < 0 {
                 continue;
             }
             let Some(rp) = self.refs[l].get(refs[l] as usize) else { continue };
-            let f = &rp.frame.planes;
-            let mv = mvs[l];
-            let yref = PlaneRef { data: &f.y, width: f.width, height: f.height, stride: f.width };
-            inter::mc_luma(
-                yref,
-                px as i32 + (mv[0] as i32 >> 2),
-                py as i32 + (mv[1] as i32 >> 2),
-                (mv[0] & 3) as u32,
-                (mv[1] & 3) as u32,
-                bw,
-                bh,
-                &mut s.pred[l],
-                16,
-            );
-            let (cx, cy) = (px as i32 / 2, py as i32 / 2);
-            for (c, plane) in [&f.cb, &f.cr].into_iter().enumerate() {
-                let cref = PlaneRef { data: plane, width: f.cwidth, height: f.cheight, stride: f.cwidth };
-                inter::mc_chroma(
-                    cref,
-                    cx + (mv[0] as i32 >> 3),
-                    cy + (mv[1] as i32 >> 3),
-                    (mv[0] & 7) as u32,
-                    (mv[1] & 7) as u32,
-                    bw / 2,
-                    bh / 2,
-                    &mut s.pred_c[l][c],
-                    8,
-                );
-            }
+            let [pc0, pc1] = &mut s.pred_c[l];
+            predict_block(&rp.frame, mvs[l], px, py, bw, bh, (&mut s.pred[l][..], 16), [&mut pc0[..], &mut pc1[..]], 8);
         }
-        let use0 = refs[0] >= 0 && self.refs[0].get(refs[0] as usize).is_some();
-        let use1 = refs[1] >= 0 && self.refs[1].get(refs[1] as usize).is_some();
-        let stride = self.pic.planes.width;
         inter::weighted_store(
-            &mut self.pic.planes.y[py * stride + px..],
-            stride,
+            &mut self.pic.planes.y[py * ys + px..],
+            ys,
             if use0 { Some(&s.pred[0][..]) } else { None },
             if use1 { Some(&s.pred[1][..]) } else { None },
             16,
@@ -672,15 +757,22 @@ impl<'a> SliceDecoder<'a> {
             bh,
             wts[0],
         );
-        let cstride = self.pic.planes.cwidth;
-        let (cx, cy) = (px / 2, py / 2);
         for c in 0..2 {
             let wc = wts[c + 1];
             let a = if use0 { Some(&s.pred_c[0][c][..]) } else { None };
             let b = if use1 { Some(&s.pred_c[1][c][..]) } else { None };
             let plane = if c == 0 { &mut self.pic.planes.cb } else { &mut self.pic.planes.cr };
-            inter::weighted_store(&mut plane[cy * cstride + cx..], cstride, a, b, 8, bw / 2, bh / 2, wc);
+            inter::weighted_store(&mut plane[cy * cs + cx..], cs, a, b, 8, bw / 2, bh / 2, wc);
         }
+    }
+
+    /// All 16 blocks of the current MB share references and motion vectors.
+    fn uniform_motion(&self) -> bool {
+        let st = self.mb();
+        (0..2).all(|l| {
+            let r = st.ref_idx[l];
+            r[1] == r[0] && r[2] == r[0] && r[3] == r[0] && st.mv[l].iter().all(|m| *m == st.mv[l][0])
+        })
     }
 
     /// Inter prediction for the whole current MB, using the stored motion.
@@ -689,6 +781,7 @@ impl<'a> SliceDecoder<'a> {
         let direct_unit = if self.sps.direct_8x8_inference { 2 } else { 1 };
         match info.kind {
             MbKind::PSkip => self.mc_rect(0, 0, 4, 4),
+            MbKind::BSkip | MbKind::BDirect16x16 if self.uniform_motion() => self.mc_rect(0, 0, 4, 4),
             MbKind::BSkip | MbKind::BDirect16x16 => {
                 for y in (0..4).step_by(direct_unit) {
                     for x in (0..4).step_by(direct_unit) {
@@ -1319,7 +1412,7 @@ impl<'a> SliceDecoder<'a> {
                 for _ in 0..run {
                     self.start_mb(addr);
                     self.decode_skip()?;
-                    self.pic.decoded_mbs += 1;
+                    self.pic.mb_done(addr);
                     addr += 1;
                 }
                 if run > 0 && !r.more_rbsp_data() {
@@ -1329,7 +1422,7 @@ impl<'a> SliceDecoder<'a> {
             }
             self.start_mb(addr);
             self.decode_mb_cavlc(r)?;
-            self.pic.decoded_mbs += 1;
+            self.pic.mb_done(addr);
             addr += 1;
             if !r.more_rbsp_data() {
                 break;

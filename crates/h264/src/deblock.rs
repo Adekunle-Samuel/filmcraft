@@ -12,18 +12,22 @@ struct Motion {
     count: u8,
 }
 
-fn block_motion(st: &MbState, sl: &SliceInfo, raster: usize) -> Motion {
+/// Referenced picture ids per 8x8 block and list (u32::MAX = list unused).
+fn ref_ids8(st: &MbState, sl: &SliceInfo) -> [[u32; 2]; 4] {
+    std::array::from_fn(|b8| {
+        std::array::from_fn(|l| {
+            let r = st.ref_idx[l][b8];
+            if r >= 0 { sl.ref_ids[l].get(r as usize).copied().unwrap_or(u32::MAX - 1) } else { u32::MAX }
+        })
+    })
+}
+
+#[inline(always)]
+fn block_motion(st: &MbState, ids8: &[[u32; 2]; 4], raster: usize) -> Motion {
     let b8 = (raster >> 3) * 2 + ((raster & 3) >> 1);
-    let mut m = Motion { ids: [u32::MAX; 2], mv: [[0; 2]; 2], count: 0 };
-    for l in 0..2 {
-        let r = st.ref_idx[l][b8];
-        if r >= 0 {
-            m.ids[l] = sl.ref_ids[l].get(r as usize).copied().unwrap_or(u32::MAX - 1);
-            m.mv[l] = st.mv[l][raster];
-            m.count += 1;
-        }
-    }
-    m
+    let ids = ids8[b8];
+    let count = (ids[0] != u32::MAX) as u8 + (ids[1] != u32::MAX) as u8;
+    Motion { ids, mv: [st.mv[0][raster], st.mv[1][raster]], count }
 }
 
 #[inline(always)]
@@ -31,7 +35,11 @@ fn mv_far(a: [i16; 2], b: [i16; 2]) -> bool {
     (a[0] as i32 - b[0] as i32).abs() >= 4 || (a[1] as i32 - b[1] as i32).abs() >= 4
 }
 
+#[inline]
 fn motion_bs(p: &Motion, q: &Motion) -> u8 {
+    if p.ids == q.ids && p.mv == q.mv {
+        return 0;
+    }
     if p.count != q.count {
         return 1;
     }
@@ -64,96 +72,129 @@ fn motion_bs(p: &Motion, q: &Motion) -> u8 {
     }
 }
 
-/// bS for the edge between 4x4 block `rp` of MB `p` and 4x4 block `rq` of MB `q`.
-#[allow(clippy::too_many_arguments)]
-fn compute_bs(p: &MbState, sp: &SliceInfo, rp: usize, q: &MbState, sq: &SliceInfo, rq: usize, mb_edge: bool) -> u8 {
-    if p.kind.is_intra() || q.kind.is_intra() {
-        return if mb_edge { 4 } else { 3 };
-    }
-    if (p.nz_mask >> rp) & 1 != 0 || (q.nz_mask >> rq) & 1 != 0 {
-        return 2;
-    }
-    motion_bs(&block_motion(p, sp, rp), &block_motion(q, sq, rq))
-}
-
 #[inline(always)]
 fn clip3(lo: i32, hi: i32, v: i32) -> i32 {
     v.clamp(lo, hi)
 }
 
-/// Filter one line of samples across an edge. `pix` is the plane, `q0` the index of q0 and `step` the
-/// distance between successive samples across the edge.
+/// Filter one set of eight samples p3 p2 p1 p0 | q0 q1 q2 q3 across an edge (8.7.2.3 / 8.7.2.4).
 #[inline(always)]
-#[allow(clippy::too_many_arguments)]
-fn filter_line(pix: &mut [u8], q0: usize, step: usize, bs: u8, alpha: i32, beta: i32, tc0: i32, chroma: bool) {
-    let p0i = q0 - step;
-    let p0 = pix[p0i] as i32;
-    let q0v = pix[q0] as i32;
-    let p1 = pix[p0i - step] as i32;
-    let q1 = pix[q0 + step] as i32;
-    if (p0 - q0v).abs() >= alpha || (p1 - p0).abs() >= beta || (q1 - q0v).abs() >= beta {
+fn filter8(v: &mut [u8; 8], bs: u8, alpha: i32, beta: i32, tc0: i32, chroma: bool) {
+    let p0 = v[3] as i32;
+    let q0 = v[4] as i32;
+    let p1 = v[2] as i32;
+    let q1 = v[5] as i32;
+    if (p0 - q0).abs() >= alpha || (p1 - p0).abs() >= beta || (q1 - q0).abs() >= beta {
         return;
     }
     if chroma {
         if bs < 4 {
             let tc = tc0 + 1;
-            let delta = clip3(-tc, tc, (((q0v - p0) << 2) + (p1 - q1) + 4) >> 3);
-            pix[p0i] = (p0 + delta).clamp(0, 255) as u8;
-            pix[q0] = (q0v - delta).clamp(0, 255) as u8;
+            let delta = clip3(-tc, tc, (((q0 - p0) << 2) + (p1 - q1) + 4) >> 3);
+            v[3] = (p0 + delta).clamp(0, 255) as u8;
+            v[4] = (q0 - delta).clamp(0, 255) as u8;
         } else {
-            pix[p0i] = ((2 * p1 + p0 + q1 + 2) >> 2) as u8;
-            pix[q0] = ((2 * q1 + q0v + p1 + 2) >> 2) as u8;
+            v[3] = ((2 * p1 + p0 + q1 + 2) >> 2) as u8;
+            v[4] = ((2 * q1 + q0 + p1 + 2) >> 2) as u8;
         }
         return;
     }
-    let p2 = pix[p0i - 2 * step] as i32;
-    let q2 = pix[q0 + 2 * step] as i32;
+    let p2 = v[1] as i32;
+    let q2 = v[6] as i32;
     let ap = (p2 - p0).abs();
-    let aq = (q2 - q0v).abs();
+    let aq = (q2 - q0).abs();
     if bs < 4 {
         let tc = tc0 + (ap < beta) as i32 + (aq < beta) as i32;
-        let delta = clip3(-tc, tc, (((q0v - p0) << 2) + (p1 - q1) + 4) >> 3);
-        pix[p0i] = (p0 + delta).clamp(0, 255) as u8;
-        pix[q0] = (q0v - delta).clamp(0, 255) as u8;
+        let delta = clip3(-tc, tc, (((q0 - p0) << 2) + (p1 - q1) + 4) >> 3);
+        v[3] = (p0 + delta).clamp(0, 255) as u8;
+        v[4] = (q0 - delta).clamp(0, 255) as u8;
         if ap < beta {
-            pix[p0i - step] = (p1 + clip3(-tc0, tc0, (p2 + ((p0 + q0v + 1) >> 1) - (p1 << 1)) >> 1)) as u8;
+            v[2] = (p1 + clip3(-tc0, tc0, (p2 + ((p0 + q0 + 1) >> 1) - (p1 << 1)) >> 1)) as u8;
         }
         if aq < beta {
-            pix[q0 + step] = (q1 + clip3(-tc0, tc0, (q2 + ((p0 + q0v + 1) >> 1) - (q1 << 1)) >> 1)) as u8;
+            v[5] = (q1 + clip3(-tc0, tc0, (q2 + ((p0 + q0 + 1) >> 1) - (q1 << 1)) >> 1)) as u8;
         }
     } else {
-        let strong = (p0 - q0v).abs() < ((alpha >> 2) + 2);
+        let strong = (p0 - q0).abs() < ((alpha >> 2) + 2);
         if ap < beta && strong {
-            let p3 = pix[p0i - 3 * step] as i32;
-            pix[p0i] = ((p2 + 2 * p1 + 2 * p0 + 2 * q0v + q1 + 4) >> 3) as u8;
-            pix[p0i - step] = ((p2 + p1 + p0 + q0v + 2) >> 2) as u8;
-            pix[p0i - 2 * step] = ((2 * p3 + 3 * p2 + p1 + p0 + q0v + 4) >> 3) as u8;
+            let p3 = v[0] as i32;
+            v[3] = ((p2 + 2 * p1 + 2 * p0 + 2 * q0 + q1 + 4) >> 3) as u8;
+            v[2] = ((p2 + p1 + p0 + q0 + 2) >> 2) as u8;
+            v[1] = ((2 * p3 + 3 * p2 + p1 + p0 + q0 + 4) >> 3) as u8;
         } else {
-            pix[p0i] = ((2 * p1 + p0 + q1 + 2) >> 2) as u8;
+            v[3] = ((2 * p1 + p0 + q1 + 2) >> 2) as u8;
         }
         if aq < beta && strong {
-            let q3 = pix[q0 + 3 * step] as i32;
-            pix[q0] = ((p1 + 2 * p0 + 2 * q0v + 2 * q1 + q2 + 4) >> 3) as u8;
-            pix[q0 + step] = ((p0 + q0v + q1 + q2 + 2) >> 2) as u8;
-            pix[q0 + 2 * step] = ((2 * q3 + 3 * q2 + q1 + q0v + p0 + 4) >> 3) as u8;
+            let q3 = v[7] as i32;
+            v[4] = ((p1 + 2 * p0 + 2 * q0 + 2 * q1 + q2 + 4) >> 3) as u8;
+            v[5] = ((p0 + q0 + q1 + q2 + 2) >> 2) as u8;
+            v[6] = ((2 * q3 + 3 * q2 + q1 + q0 + p0 + 4) >> 3) as u8;
         } else {
-            pix[q0] = ((2 * q1 + q0v + p1 + 2) >> 2) as u8;
+            v[4] = ((2 * q1 + q0 + p1 + 2) >> 2) as u8;
         }
     }
 }
 
-/// Deblock the whole picture in place.
-pub fn deblock_picture(pic: &mut PicState) {
-    let mb_w = pic.mb_w;
-    for addr in 0..pic.mbs.len() {
-        deblock_mb(pic, addr, mb_w);
+/// Edge filter parameters for `n` lines; `bs[i]` / `tc0[i]` apply to lines `i * n / 4 .. (i + 1) * n / 4`.
+struct EdgeParams {
+    bs: [u8; 4],
+    tc0: [i32; 4],
+    alpha: i32,
+    beta: i32,
+}
+
+/// Filter a vertical edge whose q0 column is at `x`, for `n` lines starting at row `y`.
+#[inline(always)]
+fn filter_vertical(pix: &mut [u8], stride: usize, x: usize, y: usize, n: usize, ep: &EdgeParams, chroma: bool) {
+    let per = n / 4;
+    for i in 0..n {
+        let k = i / per;
+        let b = ep.bs[k];
+        if b == 0 {
+            continue;
+        }
+        let o = (y + i) * stride + x - 4;
+        let v: &mut [u8; 8] = (&mut pix[o..o + 8]).try_into().unwrap();
+        filter8(v, b, ep.alpha, ep.beta, ep.tc0[k], chroma);
+    }
+}
+
+/// Filter a horizontal edge whose q0 row is `y`, for `n` columns starting at `x`.
+#[inline(always)]
+fn filter_horizontal(pix: &mut [u8], stride: usize, x: usize, y: usize, n: usize, ep: &EdgeParams, chroma: bool) {
+    let base = (y - 4) * stride + x;
+    let rest = &mut pix[base..];
+    let (r0, rest) = rest.split_at_mut(stride);
+    let (r1, rest) = rest.split_at_mut(stride);
+    let (r2, rest) = rest.split_at_mut(stride);
+    let (r3, rest) = rest.split_at_mut(stride);
+    let (r4, rest) = rest.split_at_mut(stride);
+    let (r5, rest) = rest.split_at_mut(stride);
+    let (r6, rest) = rest.split_at_mut(stride);
+    let r7 = &mut rest[..n];
+    let (r0, r1, r2, r3, r4, r5, r6) = (&mut r0[..n], &mut r1[..n], &mut r2[..n], &mut r3[..n], &mut r4[..n], &mut r5[..n], &mut r6[..n]);
+    let per = n / 4;
+    for c in 0..n {
+        let k = c / per;
+        let b = ep.bs[k];
+        if b == 0 {
+            continue;
+        }
+        let mut v = [r0[c], r1[c], r2[c], r3[c], r4[c], r5[c], r6[c], r7[c]];
+        filter8(&mut v, b, ep.alpha, ep.beta, ep.tc0[k], chroma);
+        r1[c] = v[1];
+        r2[c] = v[2];
+        r3[c] = v[3];
+        r4[c] = v[4];
+        r5[c] = v[5];
+        r6[c] = v[6];
     }
 }
 
 /// Deblock one macroblock (macroblocks must be processed in raster order).
 #[allow(clippy::needless_range_loop)]
 pub fn deblock_mb(pic: &mut PicState, addr: usize, mb_w: usize) {
-    let q = pic.mbs[addr];
+    let q = &pic.mbs[addr];
     if q.slice_num == u32::MAX {
         return;
     }
@@ -162,79 +203,90 @@ pub fn deblock_mb(pic: &mut PicState, addr: usize, mb_w: usize) {
         return;
     }
     let (mx, my) = (addr % mb_w, addr / mb_w);
-    let left = if mx > 0 { Some(addr - 1) } else { None };
-    let top = if my > 0 { Some(addr - mb_w) } else { None };
     let usable = |n: Option<usize>| -> Option<usize> {
         let n = n?;
         let st = &pic.mbs[n];
-        if st.slice_num == u32::MAX {
-            return None;
-        }
-        if sq.disable_deblocking_filter_idc == 2 && st.slice_num != q.slice_num {
+        if st.slice_num == u32::MAX || (sq.disable_deblocking_filter_idc == 2 && st.slice_num != q.slice_num) {
             return None;
         }
         Some(n)
     };
-    let left = usable(left);
-    let top = usable(top);
+    let left = usable(if mx > 0 { Some(addr - 1) } else { None });
+    let top = usable(if my > 0 { Some(addr - mb_w) } else { None });
     let alpha_off = sq.alpha_offset;
     let beta_off = sq.beta_offset;
     let t8 = q.transform_8x8;
     // bS[dir][edge][segment]; dir 0 = vertical edges (x), 1 = horizontal edges (y)
     let mut bs = [[[0u8; 4]; 4]; 2];
-    for dir in 0..2 {
-        for e in 0..4 {
-            if e > 0 && t8 && e % 2 == 1 {
-                continue;
+    if q.kind.is_intra() {
+        for dir in 0..2 {
+            if (if dir == 0 { left } else { top }).is_some() {
+                bs[dir][0] = [4; 4];
             }
+            for e in 1..4 {
+                if !(t8 && e % 2 == 1) {
+                    bs[dir][e] = [3; 4];
+                }
+            }
+        }
+    } else {
+        let qids = ref_ids8(q, sq);
+        let qm: [Motion; 16] = std::array::from_fn(|r| block_motion(q, &qids, r));
+        for dir in 0..2 {
             let neighbor = if dir == 0 { left } else { top };
-            if e == 0 && neighbor.is_none() {
-                continue;
-            }
-            for k in 0..4 {
-                let (rq, rp, pmb) = if dir == 0 {
-                    let rq = k * 4 + e;
-                    if e == 0 { (rq, k * 4 + 3, neighbor.unwrap()) } else { (rq, rq - 1, addr) }
+            if let Some(n) = neighbor {
+                let p = &pic.mbs[n];
+                if p.kind.is_intra() {
+                    bs[dir][0] = [4; 4];
                 } else {
-                    let rq = e * 4 + k;
-                    if e == 0 { (rq, 12 + k, neighbor.unwrap()) } else { (rq, rq - 4, addr) }
-                };
-                let p = &pic.mbs[pmb];
-                let sp = &pic.slices[p.slice_num as usize];
-                bs[dir][e][k] = compute_bs(p, sp, rp, &q, sq, rq, e == 0);
+                    let pids = ref_ids8(p, &pic.slices[p.slice_num as usize]);
+                    for k in 0..4 {
+                        let (rq, rp) = if dir == 0 { (k * 4, k * 4 + 3) } else { (k, 12 + k) };
+                        bs[dir][0][k] =
+                            if (p.nz_mask >> rp) & 1 != 0 || (q.nz_mask >> rq) & 1 != 0 { 2 } else { motion_bs(&block_motion(p, &pids, rp), &qm[rq]) };
+                    }
+                }
+            }
+            for e in 1..4 {
+                if t8 && e % 2 == 1 {
+                    continue;
+                }
+                for k in 0..4 {
+                    let (rq, rp) = if dir == 0 { (k * 4 + e, k * 4 + e - 1) } else { (e * 4 + k, e * 4 + k - 4) };
+                    bs[dir][e][k] = if (q.nz_mask >> rp) & 1 != 0 || (q.nz_mask >> rq) & 1 != 0 { 2 } else { motion_bs(&qm[rp], &qm[rq]) };
+                }
             }
         }
     }
+    let qp_of = |st: &MbState| if st.kind == MbKind::IPcm { 0 } else { st.qp as i32 };
+    let q_qp = qp_of(q);
+    let q_qpc = q.qpc;
+    let p_qp = [left.map(|n| (qp_of(&pic.mbs[n]), pic.mbs[n].qpc)), top.map(|n| (qp_of(&pic.mbs[n]), pic.mbs[n].qpc))];
+    let params = |qpp: i32, qpq: i32, b: [u8; 4]| {
+        let qpav = (qpp + qpq + 1) >> 1;
+        let index_a = (qpav + alpha_off).clamp(0, 51) as usize;
+        let index_b = (qpav + beta_off).clamp(0, 51) as usize;
+        let tc = |b: u8| if (1..4).contains(&b) { TC0[index_a][b as usize - 1] as i32 } else { 0 };
+        EdgeParams { bs: b, tc0: [tc(b[0]), tc(b[1]), tc(b[2]), tc(b[3])], alpha: ALPHA[index_a] as i32, beta: BETA[index_b] as i32 }
+    };
     let width = pic.planes.width;
     let cwidth = pic.planes.cwidth;
-    let qp_of = |st: &MbState| if st.kind == MbKind::IPcm { 0 } else { st.qp as i32 };
     // luma
     for dir in 0..2 {
         for e in 0..4 {
             if bs[dir][e] == [0; 4] {
                 continue;
             }
-            let pmb = if e == 0 { if dir == 0 { left.unwrap() } else { top.unwrap() } } else { addr };
-            let qpav = (qp_of(&pic.mbs[pmb]) + qp_of(&q) + 1) >> 1;
-            let index_a = (qpav + alpha_off).clamp(0, 51) as usize;
-            let index_b = (qpav + beta_off).clamp(0, 51) as usize;
-            let alpha = ALPHA[index_a] as i32;
-            let beta = BETA[index_b] as i32;
-            for k in 0..4 {
-                let b = bs[dir][e][k];
-                if b == 0 {
-                    continue;
-                }
-                let tc0 = if b < 4 { TC0[index_a][b as usize - 1] as i32 } else { 0 };
-                for i in 0..4 {
-                    let (x, y) = if dir == 0 { (mx * 16 + e * 4, my * 16 + k * 4 + i) } else { (mx * 16 + k * 4 + i, my * 16 + e * 4) };
-                    let step = if dir == 0 { 1 } else { width };
-                    filter_line(&mut pic.planes.y, y * width + x, step, b, alpha, beta, tc0, false);
-                }
+            let qpp = if e == 0 { p_qp[dir].map(|p| p.0).unwrap_or(q_qp) } else { q_qp };
+            let ep = params(qpp, q_qp, bs[dir][e]);
+            if dir == 0 {
+                filter_vertical(&mut pic.planes.y, width, mx * 16 + e * 4, my * 16, 16, &ep, false);
+            } else {
+                filter_horizontal(&mut pic.planes.y, width, mx * 16, my * 16 + e * 4, 16, &ep, false);
             }
         }
     }
-    // chroma: edges 0 and 2 (in 4x4 luma edge units), 8 lines each (4:2:0: chroma edge at 0 and 4 samples)
+    // chroma (4:2:0): edges at chroma samples 0 and 4 use the bS of luma edges 0 and 2
     for c in 0..2 {
         for dir in 0..2 {
             for ce in 0..2 {
@@ -242,23 +294,13 @@ pub fn deblock_mb(pic: &mut PicState, addr: usize, mb_w: usize) {
                 if bs[dir][e] == [0; 4] {
                     continue;
                 }
-                let pmb = if e == 0 { if dir == 0 { left.unwrap() } else { top.unwrap() } } else { addr };
-                let qpp = pic.mbs[pmb].qpc[c] as i32;
-                let qpav = (qpp + q.qpc[c] as i32 + 1) >> 1;
-                let index_a = (qpav + alpha_off).clamp(0, 51) as usize;
-                let index_b = (qpav + beta_off).clamp(0, 51) as usize;
-                let alpha = ALPHA[index_a] as i32;
-                let beta = BETA[index_b] as i32;
-                for i in 0..8 {
-                    let b = bs[dir][e][i / 2];
-                    if b == 0 {
-                        continue;
-                    }
-                    let tc0 = if b < 4 { TC0[index_a][b as usize - 1] as i32 } else { 0 };
-                    let (x, y) = if dir == 0 { (mx * 8 + ce * 4, my * 8 + i) } else { (mx * 8 + i, my * 8 + ce * 4) };
-                    let step = if dir == 0 { 1 } else { cwidth };
-                    let plane = if c == 0 { &mut pic.planes.cb } else { &mut pic.planes.cr };
-                    filter_line(plane, y * cwidth + x, step, b, alpha, beta, tc0, true);
+                let qpp = if e == 0 { p_qp[dir].map(|p| p.1[c]).unwrap_or(q_qpc[c]) } else { q_qpc[c] } as i32;
+                let ep = params(qpp, q_qpc[c] as i32, bs[dir][e]);
+                let plane = if c == 0 { &mut pic.planes.cb } else { &mut pic.planes.cr };
+                if dir == 0 {
+                    filter_vertical(plane, cwidth, mx * 8 + ce * 4, my * 8, 8, &ep, true);
+                } else {
+                    filter_horizontal(plane, cwidth, mx * 8, my * 8 + ce * 4, 8, &ep, true);
                 }
             }
         }
