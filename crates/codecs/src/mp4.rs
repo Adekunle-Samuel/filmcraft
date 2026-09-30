@@ -42,7 +42,6 @@ pub struct Mp4Source {
     atrack: Option<usize>,
     video: Mutex<VideoState>,
     audio: Mutex<AudioState>,
-    color: ColorInfo,
     /// Colour from an explicit `colr` box, if the file has one.
     explicit_color: Option<ColorInfo>,
     /// Cumulative sample start frames for the audio track (for packet lookup).
@@ -187,7 +186,6 @@ impl Mp4Source {
             atrack,
             video: Mutex::new(VideoState { decoder: None, next: usize::MAX, frames: BTreeMap::new(), bytes: 0 }),
             audio: Mutex::new(AudioState { decoder: None, packets: HashMap::new(), order: Vec::new(), last_decoded: None }),
-            color,
             explicit_color,
             audio_starts,
             cache_budget: 384 << 20,
