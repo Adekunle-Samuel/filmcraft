@@ -99,3 +99,26 @@ fn seek_backwards_and_forwards_mjpeg() {
     assert_eq!(a.to_rgba8(), c.to_rgba8());
     assert_ne!(a.to_rgba8(), b.to_rgba8());
 }
+
+#[test]
+fn h264_mp4_decodes_and_seeks() {
+    let Some(b) = fixture(
+        "mandel_h264.mp4",
+        &["-f", "lavfi", "-i", "mandelbrot=s=640x360:r=25", "-t", "4", "-c:v", "libx264", "-preset", "fast", "-bf", "3", "-g", "25", "-pix_fmt", "yuv420p"],
+    ) else {
+        return;
+    };
+    let src = crate::open_bytes("mandel_h264.mp4", b).unwrap();
+    assert!(src.info().video.as_ref().unwrap().codec.contains("H.264"));
+    let rate = src.info().frame_rate();
+    let late = src.video_frame(FrameRequest::full(rate.tick_of(70))).unwrap();
+    assert_eq!((late.width, late.height), (640, 360));
+    let early = src.video_frame(FrameRequest::full(rate.tick_of(3))).unwrap();
+    let again = src.video_frame(FrameRequest::full(rate.tick_of(70))).unwrap();
+    assert_eq!(late.to_rgba8(), again.to_rgba8(), "random access is deterministic");
+    assert_ne!(late.to_rgba8(), early.to_rgba8());
+    // sequential access after a seek
+    for f in 71..90 {
+        src.video_frame(FrameRequest::full(rate.tick_of(f))).unwrap();
+    }
+}
