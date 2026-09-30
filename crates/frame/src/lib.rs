@@ -100,71 +100,139 @@ impl VideoFrame {
 
     /// Convert to premultiplied linear RGBA f32 (the compositor's working format).
     pub fn to_linear_f32(&self) -> Vec<f32> {
+        self.to_linear_f32_decimated(1).2
+    }
+
+    /// Convert to premultiplied linear RGBA f32, box-filtering `n`×`n` blocks (n = 1, 2, 4, 8…)
+    /// in linear light. Reduced-resolution playback uses this so it never builds full-size float
+    /// buffers. Returns (width, height, pixels).
+    pub fn to_linear_f32_decimated(&self, n: usize) -> (usize, usize, Vec<f32>) {
+        let n = n.max(1);
         let (w, h) = (self.width as usize, self.height as usize);
-        let mut out = vec![0f32; w * h * 4];
+        let (ow, oh) = ((w / n).max(1), (h / n).max(1));
+        let mut out = vec![0f32; ow * oh * 4];
+        if let PixelData::RgbaF32(d) = &self.data
+            && n == 1
+        {
+            out.copy_from_slice(d);
+            return (ow, oh, out);
+        }
+        // Encoded (0..1, quantised to 12 bits) → linear lookup for this frame's transfer.
+        let info = self.color;
+        let lin: Vec<f32> = (0..4096).map(|i| to_linear(i as f32 / 4095.0, info.transfer)).collect();
+        let q = |v: f32| lin[(v.clamp(0.0, 1.0) * 4095.0 + 0.5) as usize];
+        let inv = 1.0 / (n * n) as f32;
         match &self.data {
-            PixelData::RgbaF32(d) => out.copy_from_slice(d),
+            PixelData::RgbaF32(d) => {
+                out.par_chunks_mut(ow * 4).enumerate().for_each(|(oy, row)| {
+                    for ox in 0..ow {
+                        let mut acc = [0f32; 4];
+                        for dy in 0..n {
+                            let y = (oy * n + dy).min(h - 1);
+                            for dx in 0..n {
+                                let x = (ox * n + dx).min(w - 1);
+                                let i = (y * w + x) * 4;
+                                for k in 0..4 {
+                                    acc[k] += d[i + k];
+                                }
+                            }
+                        }
+                        for k in 0..4 {
+                            row[ox * 4 + k] = acc[k] * inv;
+                        }
+                    }
+                });
+            }
             PixelData::Rgba8(d) => {
                 let lut = srgb_u8_to_linear_table();
-                out.par_chunks_mut(w * 4).zip(d.par_chunks(w * 4)).for_each(|(o, s)| {
-                    for (o, s) in o.chunks_exact_mut(4).zip(s.chunks_exact(4)) {
-                        let a = s[3] as f32 / 255.0;
-                        o[0] = lut[s[0] as usize] * a;
-                        o[1] = lut[s[1] as usize] * a;
-                        o[2] = lut[s[2] as usize] * a;
-                        o[3] = a;
+                out.par_chunks_mut(ow * 4).enumerate().for_each(|(oy, row)| {
+                    for ox in 0..ow {
+                        let mut acc = [0f32; 4];
+                        for dy in 0..n {
+                            let y = (oy * n + dy).min(h - 1);
+                            for dx in 0..n {
+                                let x = (ox * n + dx).min(w - 1);
+                                let s = &d[(y * w + x) * 4..(y * w + x) * 4 + 4];
+                                let a = s[3] as f32 / 255.0;
+                                acc[0] += lut[s[0] as usize] * a;
+                                acc[1] += lut[s[1] as usize] * a;
+                                acc[2] += lut[s[2] as usize] * a;
+                                acc[3] += a;
+                            }
+                        }
+                        for k in 0..4 {
+                            row[ox * 4 + k] = acc[k] * inv;
+                        }
                     }
                 });
             }
             PixelData::Yuv8 { planes, chroma, alpha } => {
                 let (sx, sy) = chroma.shifts();
                 let cw = w.div_ceil(1 << sx);
-                let info = self.color;
-                // Precompute per-code tables for Y and C.
                 let ytab: Vec<f32> = (0..256).map(|v| normalize_y(v, 8, info.range)).collect();
                 let ctab: Vec<f32> = (0..256).map(|v| normalize_c(v, 8, info.range)).collect();
-                out.par_chunks_mut(w * 4).enumerate().for_each(|(y, row)| {
-                    let yrow = &planes[0][y * w..y * w + w];
-                    let cy = y >> sy;
-                    let urow = &planes[1][cy * cw..cy * cw + cw];
-                    let vrow = &planes[2][cy * cw..cy * cw + cw];
-                    for x in 0..w {
-                        let cx = x >> sx;
-                        let rgb = ycbcr_to_rgb(ytab[yrow[x] as usize], ctab[urow[cx] as usize], ctab[vrow[cx] as usize], info.matrix);
-                        let a = alpha.as_ref().map_or(1.0, |al| al[y * w + x] as f32 / 255.0);
-                        let o = &mut row[x * 4..x * 4 + 4];
-                        o[0] = to_linear(rgb[0].clamp(0.0, 1.0), info.transfer) * a;
-                        o[1] = to_linear(rgb[1].clamp(0.0, 1.0), info.transfer) * a;
-                        o[2] = to_linear(rgb[2].clamp(0.0, 1.0), info.transfer) * a;
-                        o[3] = a;
+                let (kr, kb) = info.matrix.kr_kb();
+                let kg = 1.0 - kr - kb;
+                let (cr_r, cb_b) = (2.0 * (1.0 - kr), 2.0 * (1.0 - kb));
+                let (cr_g, cb_g) = (cr_r * kr / kg, cb_b * kb / kg);
+                out.par_chunks_mut(ow * 4).enumerate().for_each(|(oy, row)| {
+                    for ox in 0..ow {
+                        let mut acc = [0f32; 4];
+                        for dy in 0..n {
+                            let y = (oy * n + dy).min(h - 1);
+                            let cy = y >> sy;
+                            for dx in 0..n {
+                                let x = (ox * n + dx).min(w - 1);
+                                let cx = x >> sx;
+                                let yy = ytab[planes[0][y * w + x] as usize];
+                                let u = ctab[planes[1][cy * cw + cx] as usize];
+                                let v = ctab[planes[2][cy * cw + cx] as usize];
+                                let a = alpha.as_ref().map_or(1.0, |al| al[y * w + x] as f32 / 255.0);
+                                acc[0] += q(yy + cr_r * v) * a;
+                                acc[1] += q(yy - cr_g * v - cb_g * u) * a;
+                                acc[2] += q(yy + cb_b * u) * a;
+                                acc[3] += a;
+                            }
+                        }
+                        for k in 0..4 {
+                            row[ox * 4 + k] = acc[k] * inv;
+                        }
                     }
                 });
             }
             PixelData::Yuv16 { planes, chroma, bits, alpha } => {
                 let (sx, sy) = chroma.shifts();
                 let cw = w.div_ceil(1 << sx);
-                let info = self.color;
                 let bits = *bits;
                 let amax = ((1u32 << bits) - 1) as f32;
-                out.par_chunks_mut(w * 4).enumerate().for_each(|(y, row)| {
-                    let cy = y >> sy;
-                    for x in 0..w {
-                        let cx = x >> sx;
-                        let yy = normalize_y(planes[0][y * w + x] as u32, bits, info.range);
-                        let u = normalize_c(planes[1][cy * cw + cx] as u32, bits, info.range);
-                        let v = normalize_c(planes[2][cy * cw + cx] as u32, bits, info.range);
-                        let rgb = ycbcr_to_rgb(yy, u, v, info.matrix);
-                        let a = alpha.as_ref().map_or(1.0, |al| al[y * w + x] as f32 / amax);
-                        let o = &mut row[x * 4..x * 4 + 4];
-                        o[0] = to_linear(rgb[0].clamp(0.0, 1.0), info.transfer) * a;
-                        o[1] = to_linear(rgb[1].clamp(0.0, 1.0), info.transfer) * a;
-                        o[2] = to_linear(rgb[2].clamp(0.0, 1.0), info.transfer) * a;
-                        o[3] = a;
+                out.par_chunks_mut(ow * 4).enumerate().for_each(|(oy, row)| {
+                    for ox in 0..ow {
+                        let mut acc = [0f32; 4];
+                        for dy in 0..n {
+                            let y = (oy * n + dy).min(h - 1);
+                            let cy = y >> sy;
+                            for dx in 0..n {
+                                let x = (ox * n + dx).min(w - 1);
+                                let cx = x >> sx;
+                                let yy = normalize_y(planes[0][y * w + x] as u32, bits, info.range);
+                                let u = normalize_c(planes[1][cy * cw + cx] as u32, bits, info.range);
+                                let v = normalize_c(planes[2][cy * cw + cx] as u32, bits, info.range);
+                                let rgb = ycbcr_to_rgb(yy, u, v, info.matrix);
+                                let a = alpha.as_ref().map_or(1.0, |al| al[y * w + x] as f32 / amax);
+                                acc[0] += q(rgb[0]) * a;
+                                acc[1] += q(rgb[1]) * a;
+                                acc[2] += q(rgb[2]) * a;
+                                acc[3] += a;
+                            }
+                        }
+                        for k in 0..4 {
+                            row[ox * 4 + k] = acc[k] * inv;
+                        }
                     }
                 });
             }
         }
-        out
+        (ow, oh, out)
     }
 
     /// Convert to straight-alpha sRGB RGBA8 for display (fast paths for 8-bit sources).

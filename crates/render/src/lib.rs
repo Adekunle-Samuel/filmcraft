@@ -207,8 +207,9 @@ fn item_layer(
         ItemKind::Media(_) | ItemKind::Subclip { .. } => {
             let src = sources.source(item.item)?;
             let frame = src.video_frame(FrameRequest { time: mt, scale: want }).ok()?;
-            let data = frame.to_linear_f32();
-            Image { w: frame.width as usize, h: frame.height as usize, px: data }
+            let n = decimation(frame.width as f32, src_size.0 as f32 * want);
+            let (w, h, px) = frame.to_linear_f32_decimated(n);
+            Image { w, h, px }
         }
         ItemKind::Sequence(nested) => {
             let sub = RenderOptions { scale: want, effects: opts.effects, depth: opts.depth + 1 };
@@ -242,6 +243,15 @@ fn item_layer(
     Some((placed, op, bl))
 }
 
+/// Largest power-of-two box decimation that keeps at least `target_w` pixels of width.
+fn decimation(have_w: f32, target_w: f32) -> usize {
+    let mut n = 1usize;
+    while n < 16 && have_w / (n as f32 * 2.0) >= target_w.max(1.0) {
+        n *= 2;
+    }
+    n
+}
+
 /// Render a single project item (e.g. for the Source monitor) at media time `t`.
 pub fn render_item(project: &Project, item: ItemId, t: Tick, scale: f32, sources: &dyn SourceProvider) -> Option<Image> {
     let pi = project.item(item)?;
@@ -250,7 +260,10 @@ pub fn render_item(project: &Project, item: ItemId, t: Tick, scale: f32, sources
         _ => {
             let src = sources.source(item)?;
             let f = src.video_frame(FrameRequest { time: t, scale }).ok()?;
-            Some(Image { w: f.width as usize, h: f.height as usize, px: f.to_linear_f32() })
+            let full_w = src.info().video.as_ref().map_or(f.width, |v| v.width) as f32;
+            let n = decimation(f.width as f32, full_w * scale);
+            let (w, h, px) = f.to_linear_f32_decimated(n);
+            Some(Image { w, h, px })
         }
     }
 }
