@@ -1300,6 +1300,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "filmcraft-aac"
+version = "0.1.0"
+dependencies = [
+ "filmcraft-bitstream",
+ "rayon",
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "filmcraft-automation"
 version = "0.1.0"
 dependencies = [
