@@ -124,3 +124,49 @@ pub fn h264_factory(e: &SampleEntry) -> Option<Result<Box<dyn VideoDecoder>>> {
         _ => None,
     }
 }
+
+/// Our ProRes decoder (every frame is intra; slices decode in parallel).
+pub struct ProResDecoder;
+
+impl VideoDecoder for ProResDecoder {
+    fn decode(&mut self, sample: &[u8], pts: i64) -> Result<Vec<DecodedFrame>> {
+        use std::sync::Arc;
+        let f = filmcraft_prores::decode_frame(sample).map_err(|e| CodecError::Decode(e.to_string()))?;
+        let chroma = match f.chroma {
+            filmcraft_prores::ChromaFormat::Yuv422 => filmcraft_frame::Chroma::C422,
+            filmcraft_prores::ChromaFormat::Yuv444 => filmcraft_frame::Chroma::C444,
+        };
+        let mut color = filmcraft_color::ColorInfo::REC709;
+        if let Some(m) = filmcraft_color::Matrix::from_code(f.color.matrix) {
+            color.matrix = m;
+        }
+        if let Some(t) = filmcraft_color::Transfer::from_code(f.color.transfer) {
+            color.transfer = t;
+        }
+        let frame = VideoFrame {
+            width: f.width,
+            height: f.height,
+            data: filmcraft_frame::PixelData::Yuv16 {
+                planes: [Arc::new(f.y), Arc::new(f.cb), Arc::new(f.cr)],
+                chroma,
+                bits: f.bit_depth as u32,
+                alpha: f.alpha.map(Arc::new),
+            },
+            color,
+            par: (1, 1),
+            pts: filmcraft_time::Tick::ZERO,
+        };
+        Ok(vec![DecodedFrame { pts, frame }])
+    }
+    fn flush(&mut self) -> Vec<DecodedFrame> {
+        Vec::new()
+    }
+    fn reset(&mut self) {}
+    fn name(&self) -> &str {
+        "FilmCraft ProRes"
+    }
+}
+
+pub fn prores_factory(e: &SampleEntry) -> Option<Result<Box<dyn VideoDecoder>>> {
+    matches!(e.codec, CodecConfig::ProRes { .. }).then(|| Ok(Box::new(ProResDecoder) as Box<dyn VideoDecoder>))
+}

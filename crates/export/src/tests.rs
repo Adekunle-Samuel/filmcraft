@@ -89,8 +89,13 @@ fn wav_png_gif() {
 }
 
 #[test]
-fn unavailable_encoder_errors_cleanly() {
+fn prores_export_roundtrip() {
     let (p, seq, m) = project();
-    let r = export(&p, seq, &ExportSettings { format: Format::ProRes, path: tmp("x.mov"), ..Default::default() }, &m, &Progress::default());
-    assert!(matches!(r, Err(ExportError::Unsupported(_))));
+    let path = tmp("pr.mov");
+    export(&p, seq, &ExportSettings { format: Format::ProRes, path: path.clone(), ..Default::default() }, &m, &Progress::default()).unwrap();
+    let bytes: Arc<[u8]> = std::fs::read(&path).unwrap().into();
+    let src = filmcraft_codecs::open_bytes("pr.mov", bytes).unwrap();
+    assert!(src.info().video.as_ref().unwrap().codec.contains("ProRes 422 HQ"));
+    let f = src.video_frame(FrameRequest::full(Tick(TICKS_PER_SECOND / 3))).unwrap().to_rgba8();
+    assert!(f[0] > 240 && f[1] < 15 && f[2] < 15, "{:?}", &f[..4]);
 }

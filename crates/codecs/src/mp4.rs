@@ -43,6 +43,8 @@ pub struct Mp4Source {
     video: Mutex<VideoState>,
     audio: Mutex<AudioState>,
     color: ColorInfo,
+    /// Colour from an explicit `colr` box, if the file has one.
+    explicit_color: Option<ColorInfo>,
     /// Cumulative sample start frames for the audio track (for packet lookup).
     audio_starts: Vec<i64>,
     cache_budget: usize,
@@ -91,6 +93,7 @@ impl Mp4Source {
             return Err(CodecError::Unsupported("no playable tracks".into()));
         }
         let mut color = ColorInfo::REC709;
+        let mut explicit_color = None;
         let video = vtrack.map(|i| {
             let t = &file.tracks[i];
             let entry = &t.entries[0];
@@ -102,6 +105,13 @@ impl Mp4Source {
             let d = durs.get(durs.len() / 2).copied().unwrap_or(1).max(1);
             let rate = FrameRate::from_f64(t.timescale as f64 / d as f64);
             color = color_from(entry, w, h);
+            if entry
+                .video
+                .as_ref()
+                .is_some_and(|v| matches!(v.color, Some(filmcraft_isobmff::ColorInfo::Nclx { .. } | filmcraft_isobmff::ColorInfo::Nclc { .. })))
+            {
+                explicit_color = Some(color);
+            }
             let bitrate = (t.samples.iter().map(|s| s.size as u64).sum::<u64>() * 8 * t.timescale as u64).checked_div(t.duration);
             VideoStreamInfo {
                 width: w,
@@ -178,6 +188,7 @@ impl Mp4Source {
             video: Mutex::new(VideoState { decoder: None, next: usize::MAX, frames: BTreeMap::new(), bytes: 0 }),
             audio: Mutex::new(AudioState { decoder: None, packets: HashMap::new(), order: Vec::new(), last_decoded: None }),
             color,
+            explicit_color,
             audio_starts,
             cache_budget: 384 << 20,
         })
@@ -188,13 +199,11 @@ impl Mp4Source {
     }
 
     fn store(&self, st: &mut VideoState, pts: i64, mut f: VideoFrame) {
-        if f.color == ColorInfo::SRGB_FULL && !matches!(f.data, filmcraft_frame::PixelData::Rgba8(_)) {
-            f.color = self.color;
-        } else if !matches!(f.data, filmcraft_frame::PixelData::Rgba8(_) | filmcraft_frame::PixelData::RgbaF32(_)) {
-            // decoders fill in what they know; fall back to the container's colour description
-            if f.color == ColorInfo::default() {
-                f.color = self.color;
-            }
+        // An explicit container `colr` box wins; otherwise keep what the decoder signalled.
+        if let Some(c) = self.explicit_color
+            && !matches!(f.data, filmcraft_frame::PixelData::Rgba8(_) | filmcraft_frame::PixelData::RgbaF32(_))
+        {
+            f.color = c;
         }
         st.bytes += f.byte_size();
         st.frames.insert(pts, Arc::new(f));

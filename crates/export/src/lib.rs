@@ -178,7 +178,7 @@ pub type AudioEncoderFactory = fn(format: Format, sample_rate: u32, channels: u3
 
 fn video_factories() -> &'static RwLock<Vec<EncoderFactory>> {
     static F: OnceLock<RwLock<Vec<EncoderFactory>>> = OnceLock::new();
-    F.get_or_init(|| RwLock::new(vec![mjpeg_factory]))
+    F.get_or_init(|| RwLock::new(vec![prores_factory, mjpeg_factory]))
 }
 fn audio_factories() -> &'static RwLock<Vec<AudioEncoderFactory>> {
     static F: OnceLock<RwLock<Vec<AudioEncoderFactory>>> = OnceLock::new();
@@ -231,6 +231,62 @@ impl VideoEncoder for MjpegEncoder {
 
 fn mjpeg_factory(format: Format, w: u32, h: u32, rate: FrameRate, s: &ExportSettings) -> Option<Result<Box<dyn VideoEncoder>>> {
     (format == Format::Mjpeg).then(|| Ok(Box::new(MjpegEncoder { w: w as u16, h: h as u16, quality: s.quality.clamp(1, 100), rate }) as Box<dyn VideoEncoder>))
+}
+
+/// ProRes 422 HQ encoder: sRGB/709 RGBA8 → 10-bit limited-range BT.709 4:2:2.
+struct ProResEncoder {
+    enc: filmcraft_prores::Encoder,
+    w: u32,
+    h: u32,
+    rate: FrameRate,
+}
+
+impl VideoEncoder for ProResEncoder {
+    fn sample_entry(&self) -> SampleEntry {
+        SampleEntry::prores(filmcraft_isobmff::FourCc(*b"apch"), self.w as u16, self.h as u16)
+    }
+    fn timescale(&self) -> u32 {
+        self.rate.num as u32
+    }
+    fn encode(&mut self, f: &EncoderFrame) -> Result<Vec<EncodedPacket>> {
+        let mut fr = filmcraft_prores::Frame::new(f.width, f.height, filmcraft_prores::ChromaFormat::Yuv422, 10, false);
+        rgba_to_yuv422_10(f.rgba, f.width as usize, f.height as usize, &mut fr.y, &mut fr.cb, &mut fr.cr);
+        let data = self.enc.encode(&fr).map_err(|e| ExportError::Encode(e.to_string()))?;
+        Ok(vec![EncodedPacket { data, key: true, duration: self.rate.den as u32, composition_offset: 0 }])
+    }
+    fn flush(&mut self) -> Result<Vec<EncodedPacket>> {
+        Ok(Vec::new())
+    }
+}
+
+/// BT.709 limited-range 10-bit 4:2:2 from straight RGBA8 (chroma averaged horizontally).
+pub fn rgba_to_yuv422_10(rgba: &[u8], w: usize, h: usize, y: &mut [u16], cb: &mut [u16], cr: &mut [u16]) {
+    let cw = w.div_ceil(2);
+    y.par_chunks_mut(w).zip(cb.par_chunks_mut(cw).zip(cr.par_chunks_mut(cw))).enumerate().for_each(|(row, (yr, (cbr, crr)))| {
+        let src = &rgba[row * w * 4..(row + 1) * w * 4];
+        let mut us = vec![0f32; w];
+        let mut vs = vec![0f32; w];
+        for x in 0..w {
+            let (r, g, b) = (src[x * 4] as f32 / 255.0, src[x * 4 + 1] as f32 / 255.0, src[x * 4 + 2] as f32 / 255.0);
+            let yy = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+            yr[x] = (64.0 + 876.0 * yy).round().clamp(4.0, 1019.0) as u16;
+            us[x] = (b - yy) / 1.8556;
+            vs[x] = (r - yy) / 1.5748;
+        }
+        for cx in 0..cw {
+            let a = cx * 2;
+            let b2 = (a + 1).min(w - 1);
+            let u = (us[a] + us[b2]) * 0.5;
+            let v = (vs[a] + vs[b2]) * 0.5;
+            cbr[cx] = (512.0 + 896.0 * u).round().clamp(4.0, 1019.0) as u16;
+            crr[cx] = (512.0 + 896.0 * v).round().clamp(4.0, 1019.0) as u16;
+        }
+    });
+}
+
+fn prores_factory(format: Format, w: u32, h: u32, rate: FrameRate, _s: &ExportSettings) -> Option<Result<Box<dyn VideoEncoder>>> {
+    (format == Format::ProRes)
+        .then(|| Ok(Box::new(ProResEncoder { enc: filmcraft_prores::Encoder::new(filmcraft_prores::Profile::Hq, w, h), w, h, rate }) as Box<dyn VideoEncoder>))
 }
 
 /// The range to export (settings → In/Out → whole sequence).

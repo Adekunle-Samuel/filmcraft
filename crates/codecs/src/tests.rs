@@ -122,3 +122,16 @@ fn h264_mp4_decodes_and_seeks() {
         src.video_frame(FrameRequest::full(rate.tick_of(f))).unwrap();
     }
 }
+
+#[test]
+fn prores_mov_decodes() {
+    let Some(b) = fixture("bars_prores.mov", &["-f", "lavfi", "-i", "smptehdbars=s=640x360:r=24:d=1", "-c:v", "prores_ks", "-profile:v", "3"]) else { return };
+    let src = crate::open_bytes("bars_prores.mov", b).unwrap();
+    assert!(src.info().video.as_ref().unwrap().codec.contains("ProRes"));
+    let f = src.video_frame(FrameRequest::full(Tick(TICKS_PER_SECOND / 2))).unwrap();
+    assert!(f.format_label().contains("4:2:2"));
+    let px = f.to_rgba8();
+    // leftmost bars area is 40% grey
+    let c = &px[(100 * 640 + 20) * 4..][..3];
+    assert!((c[0] as i32 - 104).abs() < 6, "{c:?}");
+}
