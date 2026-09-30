@@ -50,6 +50,23 @@ fn clip1(v: i32) -> u8 {
     v.clamp(0, 255) as u8
 }
 
+/// Copy `n` bytes with a fixed-size move for the common block widths.
+#[inline(always)]
+fn copy_n(dst: &mut [u8], src: &[u8], n: usize) {
+    fn fixed<const N: usize>(dst: &mut [u8], src: &[u8]) {
+        let s: &[u8; N] = src[..N].try_into().unwrap();
+        let d: &mut [u8; N] = (&mut dst[..N]).try_into().unwrap();
+        *d = *s;
+    }
+    match n {
+        16 => fixed::<16>(dst, src),
+        8 => fixed::<8>(dst, src),
+        4 => fixed::<4>(dst, src),
+        2 => fixed::<2>(dst, src),
+        _ => dst[..n].copy_from_slice(&src[..n]),
+    }
+}
+
 #[inline(always)]
 fn avg(a: u8, b: u8) -> u8 {
     ((a as u16 + b as u16 + 1) >> 1) as u8
@@ -100,7 +117,7 @@ pub fn mc_luma_win(src: &[u8], ss: usize, fx: u32, fy: u32, bw: usize, bh: usize
     match (fx, fy) {
         (0, 0) => {
             for r in 0..bh {
-                out[r * os..r * os + bw].copy_from_slice(&wrow(r + 2)[2..2 + bw]);
+                copy_n(&mut out[r * os..], &wrow(r + 2)[2..], bw);
             }
         }
         (_, 0) => {
@@ -230,7 +247,7 @@ pub fn mc_chroma_win(src: &[u8], ss: usize, fx: u32, fy: u32, bw: usize, bh: usi
     let (w00, w10, w01, w11) = ((8 - fx) * (8 - fy), fx * (8 - fy), (8 - fx) * fy, fx * fy);
     if fx == 0 && fy == 0 {
         for r in 0..bh {
-            out[r * os..r * os + bw].copy_from_slice(&src[r * ss..r * ss + bw]);
+            copy_n(&mut out[r * os..], &src[r * ss..], bw);
         }
         return;
     }
@@ -285,7 +302,7 @@ pub fn weighted_store(dst: &mut [u8], ds: usize, p0: Option<&[u8]>, p1: Option<&
             let (wt, o, log_wd) = match (w, p0.is_some()) {
                 (Weight::Default, _) => {
                     for r in 0..bh {
-                        dst[r * ds..r * ds + bw].copy_from_slice(&a[r * ps..r * ps + bw]);
+                        copy_n(&mut dst[r * ds..], &a[r * ps..], bw);
                     }
                     return;
                 }

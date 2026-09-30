@@ -65,10 +65,13 @@ pub const NUM_CTX: usize = 1024;
 
 pub struct Cabac<'a> {
     data: &'a [u8],
-    /// Bit position of the next unread bit.
-    pos: usize,
+    /// Byte position of the next byte to load into `value`.
+    next_byte: usize,
     range: u32,
-    offset: u32,
+    /// codIOffset scaled by 2^bits: value = (codIOffset << bits) | (bits already loaded but not yet
+    /// consumed by the arithmetic decoder).
+    value: u64,
+    bits: u32,
     pub ctx: [u8; NUM_CTX],
 }
 
@@ -76,7 +79,7 @@ impl<'a> Cabac<'a> {
     /// Create an engine over `data` (slice RBSP) starting at bit `pos` (must be byte aligned),
     /// with contexts initialised for `slice_qp` and `init` (0..=2 cabac_init_idc, 3 = I slice).
     pub fn new(data: &'a [u8], pos: usize, slice_qp: i32, init: usize) -> Result<Self> {
-        let mut c = Cabac { data, pos, range: 0, offset: 0, ctx: [0; NUM_CTX] };
+        let mut c = Cabac { data, next_byte: pos / 8, range: 0, value: 0, bits: 0, ctx: [0; NUM_CTX] };
         c.init_contexts(slice_qp, init);
         c.init_engine()?;
         Ok(c)
@@ -93,76 +96,95 @@ impl<'a> Cabac<'a> {
         // ctxIdx 276 (end_of_slice / I_PCM) is handled by decode_terminate.
     }
 
-    /// 9.3.1.2: codIRange = 510, codIOffset = read_bits(9).
+    /// 9.3.1.2: codIRange = 510, codIOffset = read_bits(9) (from the current byte-aligned position).
     pub fn init_engine(&mut self) -> Result<()> {
         self.range = 510;
-        self.offset = self.read_bits(9);
-        ensure!(self.offset < 510, "invalid CABAC offset at init");
+        self.value = 0;
+        self.bits = 0;
+        self.refill();
+        // the top 9 loaded bits form codIOffset; the remaining ones stay buffered below it
+        self.bits -= 9;
+        ensure!((self.value >> self.bits) < 510, "invalid CABAC offset at init");
         Ok(())
     }
 
+    /// Load 32 more bits (zeros past the end of the data).
     #[inline(always)]
-    fn read_bits(&mut self, n: u32) -> u32 {
-        // big-endian 64-bit window starting at the byte containing `pos`
-        let byte = self.pos >> 3;
-        let mut w = [0u8; 8];
-        if let Some(src) = self.data.get(byte..byte + 8) {
+    fn refill(&mut self) {
+        let b = self.next_byte;
+        let mut w = [0u8; 4];
+        if let Some(src) = self.data.get(b..b + 4) {
             w.copy_from_slice(src);
-        } else if byte < self.data.len() {
-            let n = self.data.len() - byte;
-            w[..n].copy_from_slice(&self.data[byte..]);
+        } else if b < self.data.len() {
+            let n = self.data.len() - b;
+            w[..n].copy_from_slice(&self.data[b..]);
         }
-        let v = u64::from_be_bytes(w) << (self.pos & 7);
-        self.pos += n as usize;
-        (v >> (64 - n)) as u32
+        self.next_byte += 4;
+        self.value = (self.value << 32) | u32::from_be_bytes(w) as u64;
+        self.bits += 32;
     }
 
-    /// Bit position (for I_PCM alignment after decode_terminate returned 1).
+    /// Bit position of the next bit not consumed by the arithmetic decoder (for I_PCM alignment
+    /// after decode_terminate returned 1).
     pub fn bit_pos(&self) -> usize {
-        self.pos
+        self.next_byte * 8 - self.bits as usize
     }
+    /// Continue reading at byte-aligned bit position `pos` (call `init_engine` afterwards).
     pub fn set_bit_pos(&mut self, pos: usize) {
-        self.pos = pos;
+        self.next_byte = pos / 8;
+        self.value = 0;
+        self.bits = 0;
     }
     pub fn data(&self) -> &'a [u8] {
         self.data
     }
     /// True when the reader has run past the end of the data (corrupt stream).
     pub fn overrun(&self) -> bool {
-        self.pos > self.data.len() * 8 + 64
+        self.next_byte > self.data.len() + 16
+    }
+
+    #[inline(always)]
+    fn renorm(&mut self) {
+        if self.range < 256 {
+            let shift = self.range.leading_zeros() - 23;
+            self.range <<= shift;
+            if self.bits < shift {
+                self.refill();
+            }
+            self.bits -= shift;
+        }
     }
 
     #[inline(always)]
     pub fn decode_decision(&mut self, ctx_idx: usize) -> u32 {
         let s = self.ctx[ctx_idx] as usize;
-        let p = s >> 1;
-        let mps = (s & 1) as u32;
         let q = ((self.range >> 6) & 3) as usize;
-        let lps = RANGE_TAB_LPS[p][q] as u32;
+        let lps = RANGE_TAB_LPS[s >> 1][q] as u32;
         self.range -= lps;
+        let scaled = (self.range as u64) << self.bits;
         let bin;
-        if self.offset >= self.range {
-            bin = 1 - mps;
-            self.offset -= self.range;
+        if self.value >= scaled {
+            bin = 1 - (s & 1) as u32;
+            self.value -= scaled;
             self.range = lps;
             self.ctx[ctx_idx] = NEXT_STATE[s][1];
         } else {
-            bin = mps;
+            bin = (s & 1) as u32;
             self.ctx[ctx_idx] = NEXT_STATE[s][0];
         }
-        if self.range < 256 {
-            let shift = self.range.leading_zeros() - 23;
-            self.range <<= shift;
-            self.offset = (self.offset << shift) | self.read_bits(shift);
-        }
+        self.renorm();
         bin
     }
 
     #[inline(always)]
     pub fn decode_bypass(&mut self) -> u32 {
-        self.offset = (self.offset << 1) | self.read_bits(1);
-        if self.offset >= self.range {
-            self.offset -= self.range;
+        if self.bits == 0 {
+            self.refill();
+        }
+        self.bits -= 1;
+        let scaled = (self.range as u64) << self.bits;
+        if self.value >= scaled {
+            self.value -= scaled;
             1
         } else {
             0
@@ -171,14 +193,11 @@ impl<'a> Cabac<'a> {
 
     pub fn decode_terminate(&mut self) -> u32 {
         self.range -= 2;
-        if self.offset >= self.range {
+        let scaled = (self.range as u64) << self.bits;
+        if self.value >= scaled {
             1
         } else {
-            if self.range < 256 {
-                let shift = self.range.leading_zeros() - 23;
-                self.range <<= shift;
-                self.offset = (self.offset << shift) | self.read_bits(shift);
-            }
+            self.renorm();
             0
         }
     }

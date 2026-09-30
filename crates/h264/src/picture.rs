@@ -235,7 +235,7 @@ impl Frame {
             let yy = (y0 + r as i32).clamp(0, height as i32 - 1) as usize;
             let row = self.row(yy >> 4);
             let line = &row.y[(yy & 15) * width..(yy & 15) * width + width];
-            copy_clamped(line, x0, &mut out[r * os..r * os + w]);
+            copy_line::<24>(line, x0, &mut out[r * os..], w);
         }
     }
 
@@ -248,7 +248,7 @@ impl Frame {
             let row = self.row(yy >> 3);
             let plane = if c == 0 { &row.cb } else { &row.cr };
             let line = &plane[(yy & 7) * cw..(yy & 7) * cw + cw];
-            copy_clamped(line, x0, &mut out[r * os..r * os + w]);
+            copy_line::<16>(line, x0, &mut out[r * os..], w);
         }
     }
 
@@ -270,6 +270,19 @@ impl Frame {
             v.extend_from_slice(&row.cr[o..o + ccw]);
         }
         (y, u, v)
+    }
+}
+
+/// Copy `w` samples of `line` starting at x0 into `out`; when possible a fixed-size block of `N`
+/// bytes is copied instead (cheaper than a variable-length copy; `out` must then have room for `N`).
+#[inline(always)]
+fn copy_line<const N: usize>(line: &[u8], x0: i32, out: &mut [u8], w: usize) {
+    if w <= N && x0 >= 0 && x0 as usize + N <= line.len() && out.len() >= N {
+        let src: &[u8; N] = line[x0 as usize..x0 as usize + N].try_into().unwrap();
+        let dst: &mut [u8; N] = (&mut out[..N]).try_into().unwrap();
+        *dst = *src;
+    } else {
+        copy_clamped(line, x0, &mut out[..w]);
     }
 }
 

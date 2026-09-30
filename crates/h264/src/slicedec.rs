@@ -210,8 +210,8 @@ pub struct SliceDecoder<'a> {
 #[allow(clippy::too_many_arguments)]
 #[inline]
 fn predict_block(f: &Frame, mv: [i16; 2], px: usize, py: usize, bw: usize, bh: usize, y: (&mut [u8], usize), c: [&mut [u8]; 2], cs: usize) {
-    const LW: usize = 21;
-    let mut win = [0u8; LW * LW];
+    const LW: usize = 24;
+    let mut win = [0u8; LW * 21];
     let ix = px as i32 + (mv[0] as i32 >> 2);
     let iy = py as i32 + (mv[1] as i32 >> 2);
     f.luma_window(ix - 2, iy - 2, bw + 5, bh + 5, &mut win, LW);
@@ -221,9 +221,9 @@ fn predict_block(f: &Frame, mv: [i16; 2], px: usize, py: usize, bw: usize, bh: u
     let (cw, ch) = (bw / 2, bh / 2);
     let (fx, fy) = ((mv[0] & 7) as u32, (mv[1] & 7) as u32);
     for (comp, out) in c.into_iter().enumerate() {
-        let mut w = [0u8; 9 * 9];
-        f.chroma_window(comp, cx, cy, cw + 1, ch + 1, &mut w, 9);
-        inter::mc_chroma_win(&w, 9, fx, fy, cw, ch, out, cs);
+        let mut w = [0u8; 16 * 9];
+        f.chroma_window(comp, cx, cy, cw + 1, ch + 1, &mut w, 16);
+        inter::mc_chroma_win(&w, 16, fx, fy, cw, ch, out, cs);
     }
 }
 

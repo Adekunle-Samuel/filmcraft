@@ -21,6 +21,19 @@ const LAST8: [u8; 63] = [
     3, 3, 3, 3, 3, 3, 3, 3, 4, 4, 4, 4, 4, 4, 4, 4, 5, 5, 5, 5, 6, 6, 6, 6, 7, 7, 7, 7, 8, 8, 8,
 ];
 
+/// ctxIdxInc = levelListIdx (ctxBlockCat 0, 1, 2, 4).
+const IDENT_CTX: [u8; 64] = {
+    let mut t = [0u8; 64];
+    let mut i = 0;
+    while i < 64 {
+        t[i] = i as u8;
+        i += 1;
+    }
+    t
+};
+/// ctxIdxInc = Min(levelListIdx / NumC8x8, 2) for 4:2:0 chroma DC (ctxBlockCat 3).
+const CHROMA_DC_CTX: [u8; 4] = [0, 1, 2, 2];
+
 /// Table 9-40 ctxIdxBlockCatOffset for ctxBlockCat 0..=5: (coded_block_flag, significant/last, abs level).
 const CAT_OFFSET: [(usize, usize, usize); 6] = [(0, 0, 0), (4, 15, 10), (8, 29, 20), (12, 44, 30), (16, 47, 39), (0, 0, 0)];
 
@@ -371,33 +384,34 @@ impl SliceDecoder<'_> {
         }
         let (sig_base, last_base, abs_base) =
             if cat == 5 { (402, 417, 426) } else { (105 + CAT_OFFSET[cat].1, 166 + CAT_OFFSET[cat].1, 227 + CAT_OFFSET[cat].2) };
-        let mut sig = [false; 64];
-        let mut num = max_num;
-        let mut i = 0;
-        while i + 1 < num {
-            let (si, li) = match cat {
-                3 => (i.min(2), i.min(2)),
-                5 => (SIG8_FRAME[i] as usize, LAST8[i] as usize),
-                _ => (i, i),
-            };
-            if c.decode_decision(sig_base + si) == 1 {
-                sig[i] = true;
-                if c.decode_decision(last_base + li) == 1 {
-                    num = i + 1;
+        let (sig_tab, last_tab): (&[u8], &[u8]) = match cat {
+            3 => (&CHROMA_DC_CTX, &CHROMA_DC_CTX),
+            5 => (&SIG8_FRAME, &LAST8),
+            _ => (&IDENT_CTX, &IDENT_CTX),
+        };
+        // significance map: positions of the significant coefficients in scan order
+        let mut pos = [0u8; 64];
+        let mut n = 0usize;
+        let last_i = max_num - 1;
+        let mut found_last = false;
+        for i in 0..last_i {
+            if c.decode_decision(sig_base + sig_tab[i] as usize) == 1 {
+                pos[n] = i as u8;
+                n += 1;
+                if c.decode_decision(last_base + last_tab[i] as usize) == 1 {
+                    found_last = true;
                     break;
                 }
             }
-            i += 1;
         }
-        sig[num - 1] = true;
+        if !found_last {
+            pos[n] = last_i as u8;
+            n += 1;
+        }
         let mut eq1 = 0usize;
         let mut gt1 = 0usize;
-        let mut count = 0u8;
         let gt1_cap = if cat == 3 { 3 } else { 4 };
-        for i in (0..num).rev() {
-            if !sig[i] {
-                continue;
-            }
+        for &p in pos[..n].iter().rev() {
             let inc0 = if gt1 != 0 { 0 } else { (1 + eq1).min(4) };
             let mut abs = 1i32;
             if c.decode_decision(abs_base + inc0) == 1 {
@@ -423,16 +437,13 @@ impl SliceDecoder<'_> {
                     }
                     abs += suf;
                 }
-            }
-            if abs == 1 {
-                eq1 += 1;
-            } else {
                 gt1 += 1;
+            } else {
+                eq1 += 1;
             }
-            coeff[i] = if c.decode_bypass() == 1 { -abs } else { abs };
-            count += 1;
+            coeff[p as usize] = if c.decode_bypass() == 1 { -abs } else { abs };
         }
-        count
+        n as u8
     }
 
     fn residual_cabac(&mut self, c: &mut Cabac, cbp: u8) -> Result<()> {

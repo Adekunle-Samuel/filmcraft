@@ -18,14 +18,19 @@ fn nal(ref_idc: u8, t: u8, rbsp: &[u8]) -> Vec<u8> {
     v
 }
 
-fn sps(profile: u8, max_refs: u32, gaps: bool) -> Vec<u8> {
+fn sps(profile: u8, max_refs: u32, gaps: bool, poc_type0: bool) -> Vec<u8> {
     let mut w = BitWriter::new();
     w.write_bits(profile as u32, 8);
     w.write_bits(0, 8);
     w.write_bits(30, 8);
     w.write_ue(0); // sps id
     w.write_ue(0); // log2_max_frame_num - 4 -> 16
-    w.write_ue(2); // POC type 2 (output order = decoding order)
+    if poc_type0 {
+        w.write_ue(0);
+        w.write_ue(0); // log2_max_pic_order_cnt_lsb - 4 -> 4-bit lsb
+    } else {
+        w.write_ue(2); // POC type 2 (output order = decoding order)
+    }
     w.write_ue(max_refs);
     w.write_bit(gaps);
     w.write_ue(MB_W as u32 - 1);
@@ -38,7 +43,7 @@ fn sps(profile: u8, max_refs: u32, gaps: bool) -> Vec<u8> {
     nal(3, 7, &w.finish())
 }
 
-fn pps(cabac: bool) -> Vec<u8> {
+fn pps(cabac: bool, weighted: bool) -> Vec<u8> {
     let mut w = BitWriter::new();
     w.write_ue(0);
     w.write_ue(0);
@@ -47,8 +52,8 @@ fn pps(cabac: bool) -> Vec<u8> {
     w.write_ue(0); // slice groups
     w.write_ue(0); // num_ref_idx_l0_default - 1
     w.write_ue(0);
-    w.write_bit(false); // weighted_pred
-    w.write_bits(0, 2);
+    w.write_bit(weighted); // weighted_pred
+    w.write_bits(if weighted { 1 } else { 0 }, 2); // explicit weighted bi-prediction
     w.write_se(0); // pic_init_qp - 26
     w.write_se(0);
     w.write_se(0); // chroma_qp_index_offset
@@ -70,25 +75,46 @@ struct Pic {
     /// MMCOs: (op, a, b) with a = difference_of_pic_nums_minus1 / long_term_pic_num /
     /// max_long_term_frame_idx_plus1 and b = long_term_frame_idx
     mmcos: Vec<(u32, u32, u32)>,
-    /// Per MB: Some(samples) for I_PCM, None for P_Skip.
+    /// Per MB: Some(samples) for I_PCM, None for P_Skip / B_Skip.
     mbs: Vec<Option<Vec<u8>>>,
+    /// B slice (all B_Skip).
+    b: bool,
+    poc_lsb: Option<u32>,
+    /// Explicit weights (luma, cb, cr) as (weight, offset) for refIdx 0 of list 0 and list 1;
+    /// log2 denominators are 5 (luma) and 3 (chroma).
+    wt: Option<[[(i32, i32); 3]; 2]>,
 }
 
 impl Pic {
     fn is_p(&self) -> bool {
-        !self.idr && self.mbs.iter().any(|m| m.is_none())
+        !self.idr && !self.b && self.mbs.iter().any(|m| m.is_none())
+    }
+    fn inter(&self) -> bool {
+        self.b || self.is_p()
     }
 }
 
 fn slice_header(w: &mut BitWriter, p: &Pic, cabac: bool) {
     w.write_ue(0); // first_mb
-    w.write_ue(if p.is_p() { 5 } else { 7 });
+    w.write_ue(if p.b {
+        6
+    } else if p.is_p() {
+        5
+    } else {
+        7
+    });
     w.write_ue(0); // pps id
     w.write_bits(p.frame_num, 4);
     if p.idr {
         w.write_ue(0);
     }
-    if p.is_p() {
+    if let Some(lsb) = p.poc_lsb {
+        w.write_bits(lsb, 4);
+    }
+    if p.b {
+        w.write_bit(true); // direct_spatial_mv_pred_flag
+    }
+    if p.inter() {
         w.write_bit(false); // num_ref_idx_override
         w.write_bit(!p.mods.is_empty());
         if !p.mods.is_empty() {
@@ -97,6 +123,23 @@ fn slice_header(w: &mut BitWriter, p: &Pic, cabac: bool) {
                 w.write_ue(v);
             }
             w.write_ue(3);
+        }
+        if p.b {
+            w.write_bit(false); // no list 1 modification
+        }
+    }
+    if let (Some(wt), true) = (p.wt, p.inter()) {
+        w.write_ue(5);
+        w.write_ue(3);
+        for l in 0..if p.b { 2 } else { 1 } {
+            w.write_bit(true);
+            w.write_se(wt[l][0].0);
+            w.write_se(wt[l][0].1);
+            w.write_bit(true);
+            for c in 1..3 {
+                w.write_se(wt[l][c].0);
+                w.write_se(wt[l][c].1);
+            }
         }
     }
     if p.ref_idc != 0 {
@@ -124,7 +167,7 @@ fn slice_header(w: &mut BitWriter, p: &Pic, cabac: bool) {
             }
         }
     }
-    if cabac && p.is_p() {
+    if cabac && p.inter() {
         w.write_ue(0); // cabac_init_idc
     }
     w.write_se(0); // slice_qp_delta
@@ -215,7 +258,10 @@ fn write_pcm(w: &mut BitWriter, samples: &[u8]) {
 fn slice_nal(p: &Pic, cabac: bool) -> Vec<u8> {
     let mut w = BitWriter::new();
     slice_header(&mut w, p, cabac);
-    if !cabac {
+    if !cabac && p.b {
+        w.write_ue(NMB as u32);
+        w.rbsp_trailing();
+    } else if !cabac {
         let mut run = 0;
         for mb in &p.mbs {
             match mb {
@@ -240,15 +286,15 @@ fn slice_nal(p: &Pic, cabac: bool) -> Vec<u8> {
         while !w.is_byte_aligned() {
             w.write_bit(true); // cabac_alignment_one_bit
         }
-        let mut e = Enc::new(26, if p.is_p() { 0 } else { 3 });
+        let mut e = Enc::new(26, if p.inter() { 0 } else { 3 });
         let skip = |i: usize| p.mbs[i].is_none();
         for (i, mb) in p.mbs.iter().enumerate() {
             let (x, y) = (i % MB_W, i / MB_W);
             let a = if x > 0 { Some(i - 1) } else { None };
             let b = if y > 0 { Some(i - MB_W) } else { None };
-            if p.is_p() {
+            if p.inter() {
                 let inc = a.map(|n| !skip(n) as usize).unwrap_or(0) + b.map(|n| !skip(n) as usize).unwrap_or(0);
-                e.encode(&mut w, 11 + inc, skip(i) as u32);
+                e.encode(&mut w, if p.b { 24 } else { 11 } + inc, skip(i) as u32);
             }
             if let Some(s) = mb {
                 if p.is_p() {
@@ -328,8 +374,8 @@ fn build_and_check(cabac: bool, threads: usize) {
         // 7: MMCO 5 picture made of PCM, then 8: P_Skip referencing it (only reference left)
         Pic { frame_num: 8, ref_idc: 2, mmcos: vec![(5, 0, 0)], mbs: pcm_pic(&mut seed), ..Default::default() },
     ];
-    let mut stream = sps(if cabac { 77 } else { 66 }, 8, true);
-    stream.extend(pps(cabac));
+    let mut stream = sps(if cabac { 77 } else { 66 }, 8, true, false);
+    stream.extend(pps(cabac, false));
     for p in &pics {
         stream.extend(slice_nal(p, cabac));
     }
@@ -404,4 +450,61 @@ fn pcm_long_term_mmco_gaps_cavlc() {
 fn pcm_long_term_mmco_gaps_cabac() {
     build_and_check(true, 1);
     build_and_check(true, 4);
+}
+
+fn weighted_check(cabac: bool, threads: usize) {
+    let mut seed = 7u32;
+    let a: Vec<Option<Vec<u8>>> = (0..NMB).map(|_| Some(random_mb(&mut seed))).collect();
+    let b: Vec<Option<Vec<u8>>> = (0..NMB).map(|_| Some(random_mb(&mut seed))).collect();
+    let skip = vec![None; NMB];
+    let wp = [[(20, 3), (5, -1), (12, 2)], [(0, 0); 3]];
+    let wb = [[(40, -2), (4, 1), (9, -3)], [(30, 7), (6, 0), (2, 4)]];
+    // decoding order: I (POC 0), P (POC 8), B (POC 4, both refs), non-reference weighted P_Skip (POC 12)
+    let pics = [
+        Pic { idr: true, frame_num: 0, ref_idc: 3, poc_lsb: Some(0), mbs: a.clone(), ..Default::default() },
+        Pic { frame_num: 1, ref_idc: 2, poc_lsb: Some(8), mbs: b.clone(), wt: Some(wp), ..Default::default() },
+        Pic { frame_num: 2, ref_idc: 0, poc_lsb: Some(4), b: true, mbs: skip.clone(), wt: Some(wb), ..Default::default() },
+        Pic { frame_num: 2, ref_idc: 0, poc_lsb: Some(12), mbs: skip.clone(), wt: Some(wp), ..Default::default() },
+    ];
+    let mut stream = sps(77, 2, false, true);
+    stream.extend(pps(cabac, true));
+    for p in &pics {
+        stream.extend(slice_nal(p, cabac));
+    }
+    let pa = render(&a, None);
+    let pb = render(&b, None);
+    let clip = |v: i32| v.clamp(0, 255) as u8;
+    let mix = |x: &[u8], y: &[u8], c: usize| -> Vec<u8> {
+        let (w0, o0) = wb[0][c];
+        let (w1, o1) = wb[1][c];
+        let d = if c == 0 { 5 } else { 3 };
+        x.iter().zip(y).map(|(&p, &q)| clip(((p as i32 * w0 + q as i32 * w1 + (1 << d)) >> (d + 1)) + ((o0 + o1 + 1) >> 1))).collect()
+    };
+    let single = |x: &[u8], c: usize| -> Vec<u8> {
+        let (w, o) = wp[0][c];
+        let d = if c == 0 { 5 } else { 3 };
+        x.iter().map(|&p| clip(((p as i32 * w + (1 << (d - 1))) >> d) + o)).collect()
+    };
+    let pbi = (mix(&pa.0, &pb.0, 0), mix(&pa.1, &pb.1, 1), mix(&pa.2, &pb.2, 2));
+    let pp = (single(&pb.0, 0), single(&pb.1, 1), single(&pb.2, 2));
+    let expected = [pa, pbi, pb, pp];
+    if threads == 1 {
+        cross_check_ffmpeg(&stream, &expected, if cabac { "synth_wp_cabac" } else { "synth_wp_cavlc" });
+    }
+    let mut dec = Decoder::with_threads(threads);
+    let mut out = dec.decode(&stream, 0).unwrap();
+    out.extend(dec.flush());
+    assert!(dec.take_error().is_none());
+    assert_eq!(out.len(), 4);
+    for (i, (p, e)) in out.iter().zip(expected.iter()).enumerate() {
+        assert!(p.y == e.0 && p.u == e.1 && p.v == e.2, "picture {i} differs (cabac={cabac}, threads={threads})");
+    }
+}
+
+#[test]
+fn explicit_weighted_prediction_p_and_b_skip() {
+    for cabac in [false, true] {
+        weighted_check(cabac, 1);
+        weighted_check(cabac, 3);
+    }
 }
