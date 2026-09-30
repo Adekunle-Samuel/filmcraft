@@ -3,7 +3,9 @@
 //! - `layers`: enforces the dependency layering of `plan/architecture.md` §3 (downward-only edges,
 //!   listed same-layer edges, L0 codec crates depend on `bitstream` only, no UI/OS crates below L5).
 //! - `wasm`: `cargo check --target wasm32-unknown-unknown` for every crate in L0–L4.
-//! - `ci`: fmt check, clippy -D warnings, tests, layers, wasm.
+//! - `assets`: every asset file (image, icon, font, LUT, audio, video…) has a complete
+//!   `<file>.attribution` sidecar and an entry in `ATTRIBUTION.md` (AGENTS.md §1).
+//! - `ci`: fmt check, clippy -D warnings, tests, layers, assets, wasm.
 
 use std::process::{Command, ExitCode};
 
@@ -141,6 +143,73 @@ fn layers() -> Result<(), String> {
     }
 }
 
+/// File extensions that count as assets (AGENTS.md §1).
+const ASSET_EXT: &[&str] = &[
+    "png", "jpg", "jpeg", "gif", "webp", "svg", "ico", "icns", "bmp", "tif", "tiff", "heic", "avif", "exr", "ttf", "otf", "ttc", "woff", "woff2", "cube",
+    "3dl", "lut", "look", "wav", "mp3", "aac", "flac", "ogg", "opus", "m4a", "aif", "aiff", "mp4", "mov", "m4v", "mkv", "webm", "avi", "mxf", "psd", "ai",
+    "eps", "pdf", "prproj", "ffx", "prfpset", "mogrt", "aep",
+];
+
+/// Sidecar fields that must be present and non-empty.
+const REQUIRED_FIELDS: &[&str] = &["asset", "title", "author", "source", "license", "added"];
+
+fn repo_files() -> Result<Vec<String>, String> {
+    let out = Command::new("git").args(["ls-files", "--cached", "--others", "--exclude-standard"]).output().map_err(|e| e.to_string())?;
+    if !out.status.success() {
+        return Err(String::from_utf8_lossy(&out.stderr).into());
+    }
+    Ok(String::from_utf8_lossy(&out.stdout).lines().map(str::to_string).filter(|f| std::path::Path::new(f).exists()).collect())
+}
+
+fn is_asset(path: &str) -> bool {
+    std::path::Path::new(path).extension().and_then(|e| e.to_str()).is_some_and(|e| ASSET_EXT.contains(&e.to_ascii_lowercase().as_str()))
+}
+
+fn assets() -> Result<(), String> {
+    let files = repo_files()?;
+    let index = std::fs::read_to_string("ATTRIBUTION.md").map_err(|e| format!("ATTRIBUTION.md: {e}"))?;
+    let mut errors = Vec::new();
+    let mut n = 0;
+    for f in files.iter().filter(|f| is_asset(f)) {
+        n += 1;
+        let lower = f.to_ascii_lowercase();
+        if lower.contains("adobe") || lower.contains("premiere") {
+            errors.push(format!("{f}: asset paths must not reference Adobe/Premiere (AGENTS.md §1)"));
+        }
+        let side = format!("{f}.attribution");
+        match std::fs::read_to_string(&side) {
+            Err(_) => errors.push(format!("{f}: missing attribution sidecar {side}")),
+            Ok(text) => {
+                for field in REQUIRED_FIELDS {
+                    let ok = text.lines().any(|l| l.split_once(':').is_some_and(|(k, v)| k.trim() == *field && !v.trim().is_empty()));
+                    if !ok {
+                        errors.push(format!("{side}: field `{field}` missing or empty"));
+                    }
+                }
+                let lic = text.lines().find_map(|l| l.split_once(':').filter(|(k, _)| k.trim() == "license").map(|(_, v)| v.trim().to_ascii_lowercase()));
+                if lic.is_some_and(|l| l.contains("-nc") || l.contains("-nd") || l.contains("adobe") || l.contains("proprietary")) {
+                    errors.push(format!("{side}: licence not allowed (no NC/ND, Adobe or proprietary licences)"));
+                }
+            }
+        }
+        if !index.contains(&format!("`{f}`")) {
+            errors.push(format!("{f}: not listed in ATTRIBUTION.md"));
+        }
+    }
+    for f in files.iter().filter(|f| f.ends_with(".attribution")) {
+        let asset = f.trim_end_matches(".attribution");
+        if !std::path::Path::new(asset).exists() {
+            errors.push(format!("{f}: sidecar for a file that does not exist"));
+        }
+    }
+    if errors.is_empty() {
+        println!("assets: ok ({n} assets attributed)");
+        Ok(())
+    } else {
+        Err(errors.join("\n"))
+    }
+}
+
 fn run(cmd: &mut Command) -> Result<(), String> {
     eprintln!("$ {cmd:?}");
     let st = cmd.status().map_err(|e| e.to_string())?;
@@ -172,6 +241,7 @@ fn ci() -> Result<(), String> {
     run(Command::new(cargo).args(["clippy", "--workspace", "--all-targets", "--release", "--", "-D", "warnings"]))?;
     run(Command::new(cargo).args(["test", "--workspace", "--release"]))?;
     layers()?;
+    assets()?;
     wasm()
 }
 
@@ -180,8 +250,9 @@ fn main() -> ExitCode {
     let r = match task.as_str() {
         "layers" => layers(),
         "wasm" => wasm(),
+        "assets" => assets(),
         "ci" => ci(),
-        _ => Err("usage: cargo xtask <layers|wasm|ci>".into()),
+        _ => Err("usage: cargo xtask <layers|assets|wasm|ci>".into()),
     };
     match r {
         Ok(()) => ExitCode::SUCCESS,
