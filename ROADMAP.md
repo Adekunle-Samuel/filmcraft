@@ -1,0 +1,54 @@
+# FilmCraft Roadmap
+
+Progress toward feature parity with Adobe Premiere Pro, with estimates. Updated as milestones land.
+
+**Last updated:** 2026-09-30 · **Overall parity:** ~27% · **Code:** ~57k lines of Rust, 300+ tests
+
+## Estimate to parity
+
+Throughput observed so far: ~25% parity in the first ~5 wall-clock hours (Sep 30, 05:22 → 10:00), with
+3–4 coding agents running in parallel and one integrator. The early percentage points were the cheap
+ones; the remaining work is broader, with a long tail of commands, dialogs and edge cases.
+
+| | Agent-hours | Wall-clock (4–6 parallel agents, 24/7) |
+|---|---|---|
+| Feature parity by checklist | ~350–500 | **~100–150 h (4–6 days)** |
+| Robust on real-world material (codec edge cases, 4K/8K performance, pro workflows) | +150–300 | **+1–2 weeks** |
+
+Limits on speed: machine load (builds and benchmarks slow down under many agents), disk space, and a
+single integrator merging and checking each agent's work. With one agent and no parallelism, multiply
+wall-clock by ~3–4.
+
+Not reachable clean-room and locally: **Generative Extend** (needs a large video-generation model).
+**Enhance Speech** and **Auto Reframe** are feasible only with openly licensed models we can ship.
+
+## Milestones
+
+Status: ✅ done · 🟡 in progress · ⬜ not started. Estimates are remaining agent-hours.
+
+| # | Milestone | Status | Done | Remaining | Est. |
+|---|---|---|---|---|---|
+| M0 | Skeleton + visual shell | ✅ | Workspace, 20 crates, dock/workspaces, Premiere 26 look, native menus, control channel, MCP, xtask gates (layers, wasm) | — | — |
+| M1 | Media I/O | ✅ | MP4/MOV demux+mux, WAV, stills, MJPEG, symphonia audio (MP3/FLAC/ALAC/Vorbis), GOP seek + frame cache, import | Media Browser polish | 2 |
+| M2 | H.264 decoder | ✅ | Own decoder, bit-exact on 37+ streams, 500–600 fps 1080p | — | — |
+| M3 | Editing core | 🟡 | Edit algebra (insert/overwrite/razor/lift/extract/ripple/roll/slip/slide/rate-stretch/nest/paste), tools, markers | Trim mode + dynamic trimming, multicam, subclips, keyboard shortcut editor | 10–15 |
+| M4 | Playback | 🟡 | Audio-clock master, prefetch, J/K/L, dropped-frame stats, playback resolution | Render previews, render bar, 4K/8K tuning | 8–12 |
+| M5 | Effects, keyframes, GPU | 🟡 | ~60 CPU effects, 30 transitions, keyframes + value/velocity graphs, wgpu compositor | Full ~150-effect catalogue, WGSL parity for all, masks + tracking, adjustment layers, presets, Warp Stabilizer, Morph Cut | 30–45 |
+| M6 | Export | ✅ | Own H.264 encoder (High/Main/Baseline, B-frames, VBR/CBR/2-pass) → MP4 + own AAC; ProRes, MJPEG, PNG, GIF, WAV; background jobs | Preset library, queue UI, smart render | 6–8 |
+| M7 | Audio | 🟡 | Mixer basics, peak meters; DSP crate (LUFS, EQ, dynamics, reverb…) in progress | Mixers with automation, Essential Sound, audio transitions, 5.1 | 10–15 |
+| M8 | Colour | 🟡 | Lumetri: basic, creative + looks, RGB & hue curves, wheels, HSL secondary, vignette; basic scopes | LUT import UI, colour match, colour management + HDR (PQ/HLG, log, tone mapping) | 8–12 |
+| M9 | More codecs | 🟡 | ProRes decode+encode, AAC decode+encode; HEVC decoder (bit-exact on 41 fixtures) and Matroska/WebM in progress | VP9, AV1 (rav1d), DNxHR, MXF, hardware decode | 20–30 |
+| M10 | Graphics & captions | ⬜ | — | Text engine, Type tool, Essential Graphics, captions (SRT/VTT/SCC), speech-to-text | 20–30 |
+| M11 | Interchange & project management | 🟡 | `.fcproj` save/open | Autosave/recovery, FCP7 XML, FCPXML, EDL, OTIO, relink, project manager, proxies | 15 |
+| M12–M16 | Web (WASM), platform, long tail | 🟡 | L0–L4 crates compile to wasm32 | Web app shell (file access, WebCodecs, audio), ~850 remaining commands and dialogs, performance hardening | 40–65 |
+
+## Running now
+
+- HEVC decoder (`crates/hevc`): synthetic-stream tests for tiles, PCM, dependent slices, long-term references
+- Audio DSP (`crates/audio-dsp`): BS.1770 loudness, EQ, dynamics, limiter, reverb, delay, denoise, pitch
+- Matroska/WebM demuxer (`crates/matroska`)
+
+## Log
+
+- **2026-09-30 (late morning):** keyframe value/velocity graphs; xtask gates; H.264 MP4 export; Lumetri curves, wheels, looks, HSL secondary.
+- **2026-09-30 (early morning):** H.264 decoder, ProRes, AAC; GPU compositor; MCP; Premiere 26 visual fidelity pass.
