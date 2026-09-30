@@ -2,7 +2,7 @@
 //! Premiere, then standard effects), generated from parameter schemas, with stopwatches and a
 //! keyframe lane on the right. Also hosts the Lumetri Color panel body (same editor, grouped).
 
-use egui::{Align2, Color32, Rect, Sense, Stroke, pos2, vec2};
+use egui::{Align2, Color32, Pos2, Rect, Sense, Stroke, pos2, vec2};
 use filmcraft_project::{ClipId, EffectInstance, ParamKind, ParamValue, TrackItem};
 use filmcraft_time::Tick;
 use serde_json::{Value, json};
@@ -132,6 +132,13 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
             }
             for pd in &def.params {
                 param_row(app, bui, body, clip, idx, e, pd, mt_now, &mut actions, &lane, &lx, &it);
+                if app.ui.expanded_fx.contains(&graph_key(clip, idx, pd.id))
+                    && let Some(param) = e.params.get(pd.id)
+                    && param.is_animated()
+                    && matches!(param.value, ParamValue::Float(_))
+                {
+                    graph_rows(app, bui, body, clip, idx, pd, param, &lane, &it, &mut actions);
+                }
             }
         }
     });
@@ -173,6 +180,22 @@ fn param_row(
     let Some(param) = e.params.get(pd.id) else { return };
     let (r, _) = ui.allocate_exact_size(vec2(body.width(), ROW_H), Sense::hover());
     let mut x = r.min.x + 26.0;
+    // twirl-down for the value/velocity graphs (animated scalar params)
+    if param.is_animated() && matches!(param.value, ParamValue::Float(_)) {
+        let key = graph_key(clip, idx, pd.id);
+        let open = app.ui.expanded_fx.contains(&key);
+        let tw = Rect::from_center_size(pos2(r.min.x + 12.0, r.center().y), vec2(12.0, 12.0));
+        let tresp = ui.interact(tw.expand(2.0), egui::Id::new(("twirl", clip.0, idx, pd.id)), Sense::click()).on_hover_text("Show graphs");
+        icons::paint(ui.painter(), tw, if open { Icon::ChevronDown } else { Icon::ChevronRight }, t.text_dim);
+        app.auto.add(&format!("effectControls.{}.{}.graphs", e.effect, pd.id), tw, "Show graphs");
+        if tresp.clicked() {
+            if open {
+                app.ui.expanded_fx.retain(|k| *k != key);
+            } else {
+                app.ui.expanded_fx.push(key);
+            }
+        }
+    }
     if pd.animatable {
         let sw = Rect::from_center_size(pos2(x, r.center().y), vec2(14.0, 14.0));
         let resp = ui.interact(sw, egui::Id::new(("sw", clip.0, idx, pd.id)), Sense::click()).on_hover_text("Toggle animation");
@@ -617,6 +640,138 @@ pub fn properties_panel(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     for (cmd, p) in actions {
         if let Err(e) = app.session.execute(&cmd, p) {
             app.ui.status = e.to_string();
+        }
+    }
+}
+
+fn graph_key(clip: ClipId, idx: usize, pid: &str) -> String {
+    format!("graph:{}:{}:{}", clip.0, idx, pid)
+}
+
+/// Value and velocity graphs of an animated scalar parameter, drawn across the keyframe lane.
+/// Keyframes drag vertically (value); Bezier influence handles drag horizontally.
+#[allow(clippy::too_many_arguments)]
+fn graph_rows(
+    app: &mut FilmcraftApp,
+    ui: &mut egui::Ui,
+    body: Rect,
+    clip: ClipId,
+    idx: usize,
+    pd: &filmcraft_project::ParamDef,
+    param: &filmcraft_project::Param,
+    lane: &Rect,
+    it: &TrackItem,
+    actions: &mut Vec<(String, Value)>,
+) {
+    let t = app.tokens;
+    let (vr, _) = ui.allocate_exact_size(vec2(body.width(), 110.0), Sense::hover());
+    let (velr, _) = ui.allocate_exact_size(vec2(body.width(), 64.0), Sense::hover());
+    let speed = it.speed.abs().max(1e-6);
+    let dur = it.duration.0.max(1) as f64;
+    let to_media = |f: f64| it.source_in + Tick((f * dur * speed) as i64);
+    let to_f = |m: Tick| ((m - it.source_in).0 as f64 / speed / dur) as f32;
+    let x_of = |f: f32| lane.min.x + f * lane.width();
+    // samples
+    let n = (lane.width() / 2.0).max(8.0) as usize;
+    let vals: Vec<f64> = (0..=n).map(|i| param.f64_at(to_media(i as f64 / n as f64))).collect();
+    let (mut lo, mut hi) = vals.iter().fold((f64::MAX, f64::MIN), |(a, b), v| (a.min(*v), b.max(*v)));
+    for k in &param.keyframes {
+        if let ParamValue::Float(v) = k.value {
+            lo = lo.min(v);
+            hi = hi.max(v);
+        }
+    }
+    if hi - lo < 1e-6 {
+        lo -= 1.0;
+        hi += 1.0;
+    }
+    let pad = (hi - lo) * 0.12;
+    let (mut lo, mut hi) = (lo - pad, hi + pad);
+    if let ParamKind::Float { min, max, .. } = pd.kind {
+        lo = lo.max(min);
+        hi = hi.min(max);
+    }
+    let area = Rect::from_min_max(pos2(lane.min.x, vr.min.y + 4.0), pos2(lane.max.x, vr.max.y - 4.0));
+    let y_of = |v: f64| area.max.y - ((v - lo) / (hi - lo)) as f32 * area.height();
+    let v_of = |y: f32| lo + ((area.max.y - y) / area.height()) as f64 * (hi - lo);
+    let p = ui.painter();
+    p.rect_filled(area, 0.0, Color32::from_rgb(0x19, 0x19, 0x19));
+    for g in 1..4 {
+        let y = area.min.y + area.height() * g as f32 / 4.0;
+        p.line_segment([pos2(area.min.x, y), pos2(area.max.x, y)], Stroke::new(1.0, Color32::from_rgb(0x2a, 0x2a, 0x2a)));
+    }
+    // range labels in the property column
+    let dec = if let ParamKind::Float { decimals, .. } = pd.kind { decimals as usize } else { 1 };
+    p.text(pos2(vr.max.x - 30.0, area.min.y + 6.0), Align2::RIGHT_CENTER, format!("{hi:.dec$}"), Tokens::ui(10.0), t.text_dim);
+    p.text(pos2(vr.max.x - 30.0, area.max.y - 6.0), Align2::RIGHT_CENTER, format!("{lo:.dec$}"), Tokens::ui(10.0), t.text_dim);
+    p.text(pos2(vr.min.x + 44.0, area.center().y), Align2::LEFT_CENTER, "Value", Tokens::ui(11.0), t.text_dim);
+    let line: Vec<Pos2> = vals.iter().enumerate().map(|(i, v)| pos2(x_of(i as f32 / n as f32), y_of(*v))).collect();
+    p.add(egui::Shape::line(line, Stroke::new(1.5, t.accent)));
+    // velocity (units per second, derivative of the sampled value)
+    let secs = dur * speed / filmcraft_time::TICKS_PER_SECOND as f64 / n as f64;
+    let vel: Vec<f64> = (0..n).map(|i| (vals[i + 1] - vals[i]) / secs.max(1e-9)).collect();
+    let vmax = vel.iter().fold(1e-6f64, |a, v| a.max(v.abs())) * 1.15;
+    let varea = Rect::from_min_max(pos2(lane.min.x, velr.min.y + 2.0), pos2(lane.max.x, velr.max.y - 4.0));
+    p.rect_filled(varea, 0.0, Color32::from_rgb(0x19, 0x19, 0x19));
+    let vy = |v: f64| varea.center().y - (v / vmax) as f32 * varea.height() / 2.0;
+    p.line_segment([pos2(varea.min.x, varea.center().y), pos2(varea.max.x, varea.center().y)], Stroke::new(1.0, Color32::from_rgb(0x33, 0x33, 0x33)));
+    let vline: Vec<Pos2> = vel.iter().enumerate().map(|(i, v)| pos2(x_of((i as f32 + 0.5) / n as f32), vy(*v))).collect();
+    p.add(egui::Shape::line(vline, Stroke::new(1.2, Color32::from_rgb(0xd0, 0xa0, 0x40))));
+    p.text(pos2(velr.min.x + 44.0, varea.center().y), Align2::LEFT_CENTER, "Velocity", Tokens::ui(11.0), t.text_dim);
+    p.text(pos2(velr.max.x - 30.0, varea.min.y + 6.0), Align2::RIGHT_CENTER, format!("{vmax:.1}/s"), Tokens::ui(10.0), t.text_dim);
+    let p = p.clone();
+    // keyframes + handles
+    let ks = &param.keyframes;
+    for (i, k) in ks.iter().enumerate() {
+        let ParamValue::Float(v) = k.value else { continue };
+        let f = to_f(k.time);
+        if !(-0.01..=1.01).contains(&f) {
+            continue;
+        }
+        let id = egui::Id::new(("kfg", clip.0, idx, pd.id, k.time.0));
+        let dy: f32 = ui.data(|d| d.get_temp(id)).unwrap_or(0.0);
+        let c = pos2(x_of(f), y_of(v) + dy);
+        let r = Rect::from_center_size(c, vec2(10.0, 10.0));
+        let resp = ui.interact(r.expand(2.0), id, Sense::drag());
+        app.auto.add(&format!("effectControls.{}.graph.keyframe.{}", pd.id, k.time.0), r, "keyframe value");
+        // influence handles: flat (ease) tangents with length ∝ influence × neighbouring segment
+        let eases_out =
+            !matches!(k.interp, filmcraft_project::Interpolation::Linear | filmcraft_project::Interpolation::Hold | filmcraft_project::Interpolation::EaseIn);
+        let eases_in =
+            !matches!(k.interp, filmcraft_project::Interpolation::Linear | filmcraft_project::Interpolation::Hold | filmcraft_project::Interpolation::EaseOut);
+        for (side, on, nb) in [(1.0f32, eases_out, ks.get(i + 1)), (-1.0f32, eases_in && i > 0, if i > 0 { ks.get(i - 1) } else { None })] {
+            let (true, Some(nb)) = (on, nb) else { continue };
+            let seg = (x_of(to_f(nb.time)) - c.x).abs();
+            let infl = if side > 0.0 { k.out_influence } else { k.in_influence } as f32;
+            let hid = id.with(if side > 0.0 { "out" } else { "in" });
+            let hdx: f32 = ui.data(|d| d.get_temp(hid)).unwrap_or(0.0);
+            let hx = c.x + side * (infl * seg + hdx * side).clamp(seg * 0.01, seg);
+            let hp = pos2(hx, c.y);
+            p.line_segment([c, hp], Stroke::new(1.0, Color32::from_rgb(0x90, 0x90, 0x90)));
+            p.circle_filled(hp, 3.5, Color32::from_rgb(0xd0, 0xd0, 0xd0));
+            let hr = ui.interact(Rect::from_center_size(hp, vec2(10.0, 10.0)), hid.with("h"), Sense::drag());
+            if hr.dragged() {
+                let nx = hdx + hr.drag_delta().x;
+                ui.data_mut(|d| d.insert_temp(hid, nx));
+            }
+            if hr.drag_stopped() {
+                ui.data_mut(|d| d.remove::<f32>(hid));
+                let ni = ((infl * seg + hdx * side) / seg.max(1.0)).clamp(0.01, 1.0);
+                let key = if side > 0.0 { "outInfluence" } else { "inInfluence" };
+                actions.push(("effects.setKeyframe".into(), json!({"clip": clip.0, "effect": idx, "param": pd.id, "mediaTime": k.time.0, key: ni})));
+            }
+        }
+        p.circle_filled(c, 4.5, if resp.dragged() { t.hot_text } else { Color32::from_rgb(0xe0, 0xe0, 0xe0) });
+        if resp.dragged() {
+            let ny = dy + resp.drag_delta().y;
+            ui.data_mut(|d| d.insert_temp(id, ny));
+            p.text(c + vec2(8.0, -10.0), Align2::LEFT_BOTTOM, format!("{:.dec$}", v_of(c.y)), Tokens::ui(10.5), t.hot_text);
+        }
+        if resp.drag_stopped() {
+            ui.data_mut(|d| d.remove::<f32>(id));
+            let nv = v_of(c.y);
+            let nv = if let ParamKind::Float { min, max, .. } = pd.kind { nv.clamp(min, max) } else { nv };
+            actions.push(("effects.setKeyframe".into(), json!({"clip": clip.0, "effect": idx, "param": pd.id, "mediaTime": k.time.0, "value": nv})));
         }
     }
 }

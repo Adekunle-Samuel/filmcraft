@@ -720,11 +720,17 @@ impl FilmcraftApp {
 impl eframe::App for FilmcraftApp {
     fn raw_input_hook(&mut self, _ctx: &egui::Context, raw_input: &mut egui::RawInput) {
         if !self.synthetic.is_empty() {
-            let n = self
-                .synthetic
-                .iter()
-                .position(|e| matches!(e, egui::Event::PointerButton { pressed: false, .. } | egui::Event::Key { pressed: false, .. }))
-                .map_or(self.synthetic.len(), |i| i + 1);
+            // Pointer events go one per frame so egui sees press → moves → release as a real drag
+            // (all in one frame reads as a click); key/text runs go together up to a key release.
+            let pointer = |e: &egui::Event| matches!(e, egui::Event::PointerMoved(_) | egui::Event::PointerButton { .. } | egui::Event::MouseWheel { .. });
+            let n = if pointer(&self.synthetic[0]) {
+                1
+            } else {
+                self.synthetic
+                    .iter()
+                    .position(|e| pointer(e) || matches!(e, egui::Event::Key { pressed: false, .. }))
+                    .map_or(self.synthetic.len(), |i| if pointer(&self.synthetic[i]) { i.max(1) } else { i + 1 })
+            };
             raw_input.events.extend(self.synthetic.drain(..n));
         }
     }

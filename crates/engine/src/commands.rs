@@ -1525,6 +1525,15 @@ fn build() -> Vec<CommandSpec> {
             has_seq,
             |s, p| keyframe_op(s, p, "interp")
         ),
+        cmd!(
+            "effects.setKeyframe",
+            "Edit Keyframe",
+            [],
+            None,
+            r#"{"clip":id,"effect":str|index,"param":str,"mediaTime":ticks,"value":any?,"inInfluence":0..1?,"outInfluence":0..1?}"#,
+            has_seq,
+            |s, p| keyframe_op(s, p, "set")
+        ),
         // ================= Project panel =================
         cmd!("project.select", "Select Project Items", [], None, r#"{"items":[id]}"#, always, |s, p| {
             s.state.project_selection =
@@ -1663,6 +1672,7 @@ fn keyframe_op(s: &mut Session, p: &Value, op: &str) -> Result<Value> {
         "add" => "Add Keyframe",
         "delete" => "Delete Keyframe",
         "move" => "Move Keyframe",
+        "set" => "Edit Keyframe",
         _ => "Keyframe Interpolation",
     };
     s.edit_sequence(label, |q, _, _| {
@@ -1694,6 +1704,19 @@ fn keyframe_op(s: &mut Session, p: &Value, op: &str) -> Result<Value> {
                     prm.keyframes.retain(|x| x.time != to);
                     let at = prm.keyframes.partition_point(|x| x.time < to);
                     prm.keyframes.insert(at, k);
+                }
+            }
+            "set" => {
+                let at = mtime.ok_or_else(|| bad("keyframe", "need `mediaTime`"))?;
+                let k = prm.keyframes.iter_mut().find(|k| k.time == at).ok_or_else(|| bad("keyframe", "no keyframe at that time"))?;
+                if let Some(v) = p.get("value") {
+                    k.value = json_to_param(&k.value, v).ok_or_else(|| bad("keyframe", "value has the wrong type"))?;
+                }
+                if let Some(x) = f64_p(p, "inInfluence") {
+                    k.in_influence = x.clamp(0.01, 1.0);
+                }
+                if let Some(x) = f64_p(p, "outInfluence") {
+                    k.out_influence = x.clamp(0.01, 1.0);
                 }
             }
             _ => {
