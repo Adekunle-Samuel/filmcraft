@@ -141,6 +141,7 @@ pub struct T {
     pub start: Tick,
     pub dur: Tick,
     pub effect: String,
+    pub align: TransitionAlign,
     pub from: Option<usize>,
     pub to: Option<usize>,
 }
@@ -189,6 +190,7 @@ pub fn structure(p: &Project, seq: ItemId, kind: TrackKind) -> Vec<Tr> {
                     start: x.start,
                     dur: x.duration,
                     effect: x.effect.effect.clone(),
+                    align: x.align,
                     from: x.from.and_then(|f| t.items.iter().position(|i| i.id == f)),
                     to: x.to.and_then(|f| t.items.iter().position(|i| i.id == f)),
                 })

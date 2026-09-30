@@ -136,9 +136,11 @@ pub(crate) fn num(v: f64) -> String {
     if v == v.round() && v.abs() < 1e15 {
         return format!("{}", v as i64);
     }
-    let s = format!("{v:.6}");
-    let s = s.trim_end_matches('0').trim_end_matches('.');
-    if s == "-0" { "0".into() } else { s.to_string() }
+    if !v.is_finite() {
+        return "0".into();
+    }
+    // Shortest representation that parses back to the same f64.
+    format!("{v}")
 }
 
 pub(crate) fn parse(text: &str) -> Result<roxmltree::Document<'_>, String> {
@@ -164,6 +166,7 @@ mod tests {
         assert!(child(a, "c").is_some());
         assert_eq!(num(1.5), "1.5");
         assert_eq!(num(100.0), "100");
-        assert_eq!(num(-0.0000001), "0");
+        assert_eq!(num(-0.0), "0");
+        assert_eq!(num(0.1 + 0.2).parse::<f64>().unwrap(), 0.1 + 0.2);
     }
 }
