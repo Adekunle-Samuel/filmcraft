@@ -1295,7 +1295,18 @@ fn lumetri_advanced(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
     let (ls, lm, lh) = (f(e, "wheel_shadows_l", cx) / 100.0, f(e, "wheel_midtones_l", cx) / 100.0, f(e, "wheel_highlights_l", cx) / 100.0);
     let wheels = ws.iter().chain(&wm).chain(&wh).any(|v| v.abs() > 1e-5) || ls.abs() + lm.abs() + lh.abs() > 1e-5;
     let hsl_on = b(e, "hsl_on");
-    let any = luma_c.is_some() || red_c.is_some() || green_c.is_some() || blue_c.is_some() || hvs.is_some() || hvh.is_some() || hvl.is_some() || lvs.is_some() || svs.is_some() || look > 0 || wheels || hsl_on;
+    let any = luma_c.is_some()
+        || red_c.is_some()
+        || green_c.is_some()
+        || blue_c.is_some()
+        || hvs.is_some()
+        || hvh.is_some()
+        || hvl.is_some()
+        || lvs.is_some()
+        || svs.is_some()
+        || look > 0
+        || wheels
+        || hsl_on;
     if !any {
         return;
     }
@@ -1303,7 +1314,8 @@ fn lumetri_advanced(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
     let (smin, lmin, lmax) = (f(e, "hsl_sat_min", cx) / 100.0, f(e, "hsl_luma_min", cx) / 100.0, f(e, "hsl_luma_max", cx) / 100.0);
     let soft = (f(e, "hsl_soft", cx) / 100.0 * 0.3).max(0.01);
     let show_mask = choice(e, "hsl_show_mask");
-    let (htemp, htint, hsat, hshift) = (f(e, "hsl_temp", cx) / 100.0, f(e, "hsl_tint", cx) / 100.0, f(e, "hsl_sat", cx) / 100.0, f(e, "hsl_hue_shift", cx) / 360.0);
+    let (htemp, htint, hsat, hshift) =
+        (f(e, "hsl_temp", cx) / 100.0, f(e, "hsl_tint", cx) / 100.0, f(e, "hsl_sat", cx) / 100.0, f(e, "hsl_hue_shift", cx) / 360.0);
     let sample = |l: &Vec<f32>, x: f32| {
         let p = x.clamp(0.0, 1.0) * (N - 1) as f32;
         let i = p as usize;

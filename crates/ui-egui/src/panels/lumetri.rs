@@ -58,7 +58,14 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
             slider(ui, &e, mt, "tint", "Tint", Some(Gradient::Tint), &t, &mut actions, clip, idx);
             slider(ui, &e, mt, "saturation", "Saturation", None, &t, &mut actions, clip, idx);
             sub(ui, &t, "Light");
-            for (id, label) in [("exposure", "Exposure"), ("contrast", "Contrast"), ("highlights", "Highlights"), ("shadows", "Shadows"), ("whites", "Whites"), ("blacks", "Blacks")] {
+            for (id, label) in [
+                ("exposure", "Exposure"),
+                ("contrast", "Contrast"),
+                ("highlights", "Highlights"),
+                ("shadows", "Shadows"),
+                ("whites", "Whites"),
+                ("blacks", "Blacks"),
+            ] {
                 slider(ui, &e, mt, id, label, None, &t, &mut actions, clip, idx);
             }
         }
@@ -67,17 +74,23 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                 Some(ParamValue::Choice(c)) => *c as usize,
                 _ => 0,
             };
-            let opts = filmcraft_project::find_effect("lumetri").and_then(|d| d.param("look")).and_then(|p| if let filmcraft_project::ParamKind::Choice(o) = p.kind { Some(o) } else { None }).unwrap_or(&[]);
+            let opts = filmcraft_project::find_effect("lumetri")
+                .and_then(|d| d.param("look"))
+                .and_then(|p| if let filmcraft_project::ParamKind::Choice(o) = p.kind { Some(o) } else { None })
+                .unwrap_or(&[]);
             ui.horizontal(|ui| {
                 ui.add_sized(vec2(110.0, 20.0), egui::Label::new(egui::RichText::new("Look").color(t.text_dim)));
                 let mut sel = look;
-                egui::ComboBox::from_id_salt("lumetri-look").selected_text(opts.get(look).copied().unwrap_or("None")).width(ui.available_width() - 8.0).show_ui(ui, |ui| {
-                    for (i, o) in opts.iter().enumerate() {
-                        if ui.selectable_value(&mut sel, i, *o).changed() {
-                            set(&mut actions, "look", json!(i));
+                egui::ComboBox::from_id_salt("lumetri-look")
+                    .selected_text(opts.get(look).copied().unwrap_or("None"))
+                    .width(ui.available_width() - 8.0)
+                    .show_ui(ui, |ui| {
+                        for (i, o) in opts.iter().enumerate() {
+                            if ui.selectable_value(&mut sel, i, *o).changed() {
+                                set(&mut actions, "look", json!(i));
+                            }
                         }
-                    }
-                });
+                    });
             });
             slider(ui, &e, mt, "look_intensity", "Intensity", None, &t, &mut actions, clip, idx);
             sub(ui, &t, "Adjustments");
@@ -90,7 +103,9 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
             let key = egui::Id::new("lumetri-curve-channel");
             let mut ch: usize = ui.data(|d| d.get_temp(key)).unwrap_or(0);
             ui.horizontal(|ui| {
-                for (i, c) in [Color32::WHITE, Color32::from_rgb(230, 70, 70), Color32::from_rgb(80, 200, 90), Color32::from_rgb(80, 130, 250)].iter().enumerate() {
+                for (i, c) in
+                    [Color32::WHITE, Color32::from_rgb(230, 70, 70), Color32::from_rgb(80, 200, 90), Color32::from_rgb(80, 130, 250)].iter().enumerate()
+                {
                     let (r, resp) = ui.allocate_exact_size(vec2(18.0, 18.0), Sense::click());
                     ui.painter().circle_filled(r.center(), 6.0, *c);
                     if ch == i {
@@ -102,10 +117,21 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                 }
             });
             ui.data_mut(|d| d.insert_temp(key, ch));
-            let (id, col) = [("curve_luma", Color32::WHITE), ("curve_red", Color32::from_rgb(230, 70, 70)), ("curve_green", Color32::from_rgb(80, 200, 90)), ("curve_blue", Color32::from_rgb(80, 130, 250))][ch];
+            let (id, col) = [
+                ("curve_luma", Color32::WHITE),
+                ("curve_red", Color32::from_rgb(230, 70, 70)),
+                ("curve_green", Color32::from_rgb(80, 200, 90)),
+                ("curve_blue", Color32::from_rgb(80, 130, 250)),
+            ][ch];
             curve_editor(ui, &e, id, false, col, &t, &mut actions, clip, idx);
             sub(ui, &t, "Hue Saturation Curves");
-            for (id, label) in [("hue_vs_sat", "Hue vs Sat"), ("hue_vs_hue", "Hue vs Hue"), ("hue_vs_luma", "Hue vs Luma"), ("luma_vs_sat", "Luma vs Sat"), ("sat_vs_sat", "Sat vs Sat")] {
+            for (id, label) in [
+                ("hue_vs_sat", "Hue vs Sat"),
+                ("hue_vs_hue", "Hue vs Hue"),
+                ("hue_vs_luma", "Hue vs Luma"),
+                ("luma_vs_sat", "Luma vs Sat"),
+                ("sat_vs_sat", "Sat vs Sat"),
+            ] {
                 ui.label(egui::RichText::new(label).color(t.text_dim));
                 curve_editor(ui, &e, id, true, Color32::WHITE, &t, &mut actions, clip, idx);
             }
@@ -113,7 +139,11 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         if section(ui, app, "Color Wheels & Match") {
             let w = ((ui.available_width() - 24.0) / 3.0).min(120.0);
             ui.horizontal(|ui| {
-                for (id, lid, label) in [("wheel_shadows", "wheel_shadows_l", "Shadows"), ("wheel_midtones", "wheel_midtones_l", "Midtones"), ("wheel_highlights", "wheel_highlights_l", "Highlights")] {
+                for (id, lid, label) in [
+                    ("wheel_shadows", "wheel_shadows_l", "Shadows"),
+                    ("wheel_midtones", "wheel_midtones_l", "Midtones"),
+                    ("wheel_highlights", "wheel_highlights_l", "Highlights"),
+                ] {
                     ui.vertical(|ui| {
                         ui.label(egui::RichText::new(label).color(t.text_dim));
                         color_wheel(ui, &e, mt, id, lid, w, &t, &mut actions, clip, idx);
@@ -129,7 +159,13 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
             }
             sub(ui, &t, "Key");
             slider(ui, &e, mt, "hsl_hue", "Hue", Some(Gradient::Hue), &t, &mut actions, clip, idx);
-            for (id, label) in [("hsl_hue_range", "Hue Range"), ("hsl_sat_min", "Saturation Min"), ("hsl_luma_min", "Luma Min"), ("hsl_luma_max", "Luma Max"), ("hsl_soft", "Soften")] {
+            for (id, label) in [
+                ("hsl_hue_range", "Hue Range"),
+                ("hsl_sat_min", "Saturation Min"),
+                ("hsl_luma_min", "Luma Min"),
+                ("hsl_luma_max", "Luma Max"),
+                ("hsl_soft", "Soften"),
+            ] {
                 slider(ui, &e, mt, id, label, None, &t, &mut actions, clip, idx);
             }
             let mask = match e.param("hsl_show_mask").map(|p| &p.value) {
@@ -154,7 +190,9 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
             slider(ui, &e, mt, "hsl_hue_shift", "Hue Shift", Some(Gradient::Hue), &t, &mut actions, clip, idx);
         }
         if section(ui, app, "Vignette") {
-            for (id, label) in [("vignette_amount", "Amount"), ("vignette_midpoint", "Midpoint"), ("vignette_roundness", "Roundness"), ("vignette_feather", "Feather")] {
+            for (id, label) in
+                [("vignette_amount", "Amount"), ("vignette_midpoint", "Midpoint"), ("vignette_roundness", "Roundness"), ("vignette_feather", "Feather")]
+            {
                 slider(ui, &e, mt, id, label, None, &t, &mut actions, clip, idx);
             }
         }
@@ -174,7 +212,12 @@ fn section(ui: &mut egui::Ui, app: &mut FilmcraftApp, name: &str) -> bool {
     ui.add_space(2.0);
     let (r, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 40.0), Sense::click());
     ui.painter().line_segment([r.left_top(), r.right_top()], Stroke::new(1.0, t.separator));
-    icons::paint(ui.painter(), Rect::from_center_size(pos2(r.min.x + 6.0, r.center().y), vec2(10.0, 10.0)), if open { Icon::ChevronDown } else { Icon::ChevronRight }, t.text_dim);
+    icons::paint(
+        ui.painter(),
+        Rect::from_center_size(pos2(r.min.x + 6.0, r.center().y), vec2(10.0, 10.0)),
+        if open { Icon::ChevronDown } else { Icon::ChevronRight },
+        t.text_dim,
+    );
     ui.painter().text(pos2(r.min.x + 20.0, r.center().y), Align2::LEFT_CENTER, name, Tokens::semibold(13.0), t.text);
     // toggle switch (visual; section bypass lands with per-section enables)
     let sw = Rect::from_center_size(pos2(r.max.x - 18.0, r.center().y), vec2(26.0, 14.0));
@@ -207,7 +250,18 @@ enum Gradient {
 
 /// Spectrum slider: 1 pt track (or gradient), hollow ring knob, scrubby value at the right.
 #[allow(clippy::too_many_arguments)]
-fn slider(ui: &mut egui::Ui, e: &EffectInstance, mt: Tick, id: &str, label: &str, grad: Option<Gradient>, t: &Tokens, actions: &mut Actions, clip: ClipId, idx: usize) {
+fn slider(
+    ui: &mut egui::Ui,
+    e: &EffectInstance,
+    mt: Tick,
+    id: &str,
+    label: &str,
+    grad: Option<Gradient>,
+    t: &Tokens,
+    actions: &mut Actions,
+    clip: ClipId,
+    idx: usize,
+) {
     let Some(pd) = e.def().and_then(|d| d.param(id)) else { return };
     let filmcraft_project::ParamKind::Float { min, max, soft_min, soft_max, decimals, .. } = pd.kind else { return };
     let v = e.param(id).map(|p| p.f64_at(mt)).unwrap_or(pd.default.as_f64().unwrap_or(0.0));
@@ -240,7 +294,11 @@ fn slider(ui: &mut egui::Ui, e: &EffectInstance, mt: Tick, id: &str, label: &str
     let hit = Rect::from_min_max(pos2(track.min.x - 6.0, row.min.y), pos2(track.max.x + 6.0, row.max.y));
     let resp = ui.interact(hit, egui::Id::new(("lslider", clip.0, id)), Sense::click_and_drag());
     ui.painter().circle_filled(pos2(kx, track.center().y), 5.0, t.panel_bg);
-    ui.painter().circle_stroke(pos2(kx, track.center().y), 5.0, Stroke::new(1.5, if resp.dragged() { t.hot_text } else { Color32::from_rgb(0xb0, 0xb0, 0xb0) }));
+    ui.painter().circle_stroke(
+        pos2(kx, track.center().y),
+        5.0,
+        Stroke::new(1.5, if resp.dragged() { t.hot_text } else { Color32::from_rgb(0xb0, 0xb0, 0xb0) }),
+    );
     let mut out = None;
     if (resp.dragged() || resp.clicked())
         && let Some(p) = resp.interact_pointer_pos()
@@ -251,8 +309,13 @@ fn slider(ui: &mut egui::Ui, e: &EffectInstance, mt: Tick, id: &str, label: &str
     if resp.double_clicked() {
         out = pd.default.as_f64();
     }
-    let mut vui = ui.new_child(egui::UiBuilder::new().max_rect(Rect::from_min_max(pos2(row.max.x - 52.0, row.min.y + 3.0), pos2(row.max.x, row.max.y - 3.0))).layout(egui::Layout::right_to_left(egui::Align::Center)));
-    let (_, nv) = crate::widgets::hot_number(&mut vui, egui::Id::new(("lval", clip.0, id)), v, (soft_max - soft_min) / 300.0, (min, max), decimals as usize, "", t);
+    let mut vui = ui.new_child(
+        egui::UiBuilder::new()
+            .max_rect(Rect::from_min_max(pos2(row.max.x - 52.0, row.min.y + 3.0), pos2(row.max.x, row.max.y - 3.0)))
+            .layout(egui::Layout::right_to_left(egui::Align::Center)),
+    );
+    let (_, nv) =
+        crate::widgets::hot_number(&mut vui, egui::Id::new(("lval", clip.0, id)), v, (soft_max - soft_min) / 300.0, (min, max), decimals as usize, "", t);
     if let Some(nv) = out.or(nv) {
         actions.push(json!({"clip": clip.0, "effect": idx, "param": id, "value": (nv * 10f64.powi(decimals as i32)).round() / 10f64.powi(decimals as i32)}));
     }
@@ -274,8 +337,14 @@ fn curve_editor(ui: &mut egui::Ui, e: &EffectInstance, id: &str, hue: bool, col:
     p.rect_filled(area, 2.0, Color32::from_rgb(0x16, 0x16, 0x16));
     for i in 1..4 {
         let f = i as f32 / 4.0;
-        p.line_segment([pos2(area.min.x + area.width() * f, area.min.y), pos2(area.min.x + area.width() * f, area.max.y)], Stroke::new(1.0, Color32::from_rgb(0x2a, 0x2a, 0x2a)));
-        p.line_segment([pos2(area.min.x, area.min.y + area.height() * f), pos2(area.max.x, area.min.y + area.height() * f)], Stroke::new(1.0, Color32::from_rgb(0x2a, 0x2a, 0x2a)));
+        p.line_segment(
+            [pos2(area.min.x + area.width() * f, area.min.y), pos2(area.min.x + area.width() * f, area.max.y)],
+            Stroke::new(1.0, Color32::from_rgb(0x2a, 0x2a, 0x2a)),
+        );
+        p.line_segment(
+            [pos2(area.min.x, area.min.y + area.height() * f), pos2(area.max.x, area.min.y + area.height() * f)],
+            Stroke::new(1.0, Color32::from_rgb(0x2a, 0x2a, 0x2a)),
+        );
     }
     if hue {
         let n = 36;
@@ -283,7 +352,14 @@ fn curve_editor(ui: &mut egui::Ui, e: &EffectInstance, id: &str, hue: bool, col:
             let f0 = i as f32 / n as f32;
             let rgb = filmcraft_color::hsl_to_rgb(f0, 0.8, 0.5);
             let c = Color32::from_rgb((rgb[0] * 255.0) as u8, (rgb[1] * 255.0) as u8, (rgb[2] * 255.0) as u8);
-            p.rect_filled(Rect::from_min_max(pos2(area.min.x + area.width() * f0, area.max.y - 6.0), pos2(area.min.x + area.width() * (f0 + 1.0 / n as f32) + 0.5, area.max.y)), 0.0, c);
+            p.rect_filled(
+                Rect::from_min_max(
+                    pos2(area.min.x + area.width() * f0, area.max.y - 6.0),
+                    pos2(area.min.x + area.width() * (f0 + 1.0 / n as f32) + 0.5, area.max.y),
+                ),
+                0.0,
+                c,
+            );
         }
     }
     let to_screen = |q: [f32; 2]| pos2(area.min.x + q[0] * area.width(), area.max.y - q[1] * area.height());
@@ -315,7 +391,8 @@ fn curve_editor(ui: &mut egui::Ui, e: &EffectInstance, id: &str, hue: bool, col:
     if resp.drag_started()
         && let Some(pos) = resp.interact_pointer_pos()
     {
-        let near = pts.iter().enumerate().map(|(i, q)| (i, to_screen(*q).distance(pos))).filter(|(_, d)| *d < 9.0).min_by(|a, b| a.1.total_cmp(&b.1)).map(|x| x.0);
+        let near =
+            pts.iter().enumerate().map(|(i, q)| (i, to_screen(*q).distance(pos))).filter(|(_, d)| *d < 9.0).min_by(|a, b| a.1.total_cmp(&b.1)).map(|x| x.0);
         dragging = near.or_else(|| {
             new_pts.push(from_screen(pos));
             changed = true;

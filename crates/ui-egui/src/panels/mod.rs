@@ -4,9 +4,9 @@
 pub mod dialogs;
 pub mod effect_controls;
 pub mod effects;
-pub mod lumetri;
 pub mod export_mode;
 pub mod import_mode;
+pub mod lumetri;
 pub mod meters;
 pub mod misc;
 pub mod monitor;
