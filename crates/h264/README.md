@@ -89,6 +89,9 @@ with ffmpeg + libx264; tests print a message and skip when `/opt/homebrew/bin/ff
 
 ### Fixture matrix (all bit-exact, single- and multi-threaded)
 
+libx264 fixtures unless noted; the VideoToolbox (hardware encoder) fixtures are skipped where that
+encoder is unavailable.
+
 | fixture | source / size | configuration |
 |---|---|---|
 | intra_cavlc | testsrc2 176x144 | Baseline, keyint=1, no deblock |
@@ -124,6 +127,10 @@ with ffmpeg + libx264; tests print a message and skip when `/opt/homebrew/bin/ff
 | qp50 | testsrc2+noise 352x288 | QP 50 |
 | qp1 | mandelbrot+noise 352x288 | QP 1 |
 | bench_1080p | testsrc2+noise 1920x1080, 120 frames | preset medium, CRF 20 (8.8 Mbit/s) |
+| vt_baseline | testsrc2+noise 320x240 | Apple VideoToolbox, Baseline (macOS only) |
+| vt_main | mandelbrot+noise 640x360 | VideoToolbox, Main |
+| vt_high | testsrc2+noise 640x360 | VideoToolbox, High |
+| vt_high_1080p | testsrc2 1920x1080 | VideoToolbox, High 8 Mbit/s |
 
 `cargo test --release -p filmcraft-h264 --test conformance coverage_report -- --ignored --nocapture`
 prints which coding tools each fixture exercises.

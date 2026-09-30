@@ -50,6 +50,10 @@ fixture_tests!(
     no8x8dct,
     qp50,
     qp1,
+    vt_high,
+    vt_main,
+    vt_baseline,
+    vt_high_1080p,
 );
 
 /// Print which coding tools each fixture exercises (run with `-- --ignored --nocapture`).
