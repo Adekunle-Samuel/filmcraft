@@ -25,6 +25,7 @@ filmcraft-edit = { path = "crates/edit" }
 filmcraft-render = { path = "crates/render" }
 filmcraft-engine = { path = "crates/engine" }
 filmcraft-ui-egui = { path = "crates/ui-egui" }
+filmcraft-automation = { path = "crates/automation" }
 
 # foundation
 thiserror = "2"
