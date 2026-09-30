@@ -1359,6 +1359,7 @@ dependencies = [
  "filmcraft-h264",
  "filmcraft-hevc",
  "filmcraft-isobmff",
+ "filmcraft-matroska",
  "filmcraft-media",
  "filmcraft-prores",
  "filmcraft-time",
@@ -1569,6 +1570,7 @@ version = "0.1.0"
 dependencies = [
  "eframe",
  "egui",
+ "filmcraft-audio-dsp",
  "filmcraft-color",
  "filmcraft-edit",
  "filmcraft-engine",
