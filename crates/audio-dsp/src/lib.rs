@@ -14,9 +14,6 @@
 //! denormals never appear (no FTZ/DAZ CPU flags needed, which keeps the crate `unsafe`-free and
 //! portable to wasm).
 
-// Effect plumbing is filled in by the effects module (M7.3).
-#![allow(dead_code, unused_imports, unused_macros)]
-
 pub mod biquad;
 pub mod effects;
 pub mod fft;
