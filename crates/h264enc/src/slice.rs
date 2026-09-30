@@ -1661,6 +1661,94 @@ impl<'a, 'b> SliceEnc<'a, 'b> {
         (out_ref, out_mv)
     }
 
+    /// B 16x8 / 8x16 candidate: search each partition in both lists, choose L0/L1/Bi per partition, then derive
+    /// the motion vector predictors in decoding order from the chosen directions.
+    fn b_partition(&self, mx: usize, my: usize, part: Part, src: &Src, qp: u8, lam: u32, seeds: [Mv; 2]) -> Option<Box<Cand>> {
+        let f = self.f;
+        let rp = [f.l0?, f.l1?];
+        let (px, py) = (mx * 16, my * 16);
+        let mut mvs = [[Mv::ZERO; 4]; 2];
+        for l in 0..2 {
+            mvs[l] = self.search_part(mx, my, rp[l], part, l, src, lam, seeds[l]).0;
+        }
+        let mut preds = [([0u8; 256], [0u8; 64], [0u8; 64]), ([0u8; 256], [0u8; 64], [0u8; 64])];
+        for l in 0..2 {
+            let (a, b, c) = &mut preds[l];
+            for pi in 0..2 {
+                self.pred_block(rp[l], px, py, part.rect(pi), mvs[l][pi], a, b, c);
+            }
+        }
+        let mut bi = preds[0];
+        avg_into(&mut bi.0, &preds[1].0);
+        avg_into(&mut bi.1, &preds[1].1);
+        avg_into(&mut bi.2, &preds[1].2);
+        let srcs = [&preds[0], &preds[1], &bi];
+        let (mut py_, mut pu, mut pv) = ([0u8; 256], [0u8; 64], [0u8; 64]);
+        let mut dirs = [0u8; 4];
+        let mut cost = ((lam * 8) >> 8) as u64;
+        for pi in 0..2 {
+            let (x, y, w, h) = part.rect(pi);
+            let mut bestd = (u64::MAX, 0usize);
+            for (d, s) in srcs.iter().enumerate() {
+                let bits = if d == 2 { 14 } else { 7 };
+                let c = satd(&src.y[y * 16 + x..], 16, &s.0[y * 16 + x..], 16, w, h) as u64 + ((lam * bits) >> 8) as u64;
+                if c < bestd.0 {
+                    bestd = (c, d);
+                }
+            }
+            cost += bestd.0;
+            dirs[pi] = bestd.1 as u8;
+            let s = srcs[bestd.1];
+            for r in y..y + h {
+                py_[r * 16 + x..r * 16 + x + w].copy_from_slice(&s.0[r * 16 + x..r * 16 + x + w]);
+            }
+            for r in y / 2..(y + h) / 2 {
+                let o = r * 8 + x / 2;
+                pu[o..o + w / 2].copy_from_slice(&s.1[o..o + w / 2]);
+                pv[o..o + w / 2].copy_from_slice(&s.2[o..o + w / 2]);
+            }
+        }
+        // predictors in decoding order with the actual per-list references
+        let mut info = MbInfo::default();
+        let mut refs = [[-1i8; 4]; 2];
+        let mut fmvs = [[Mv::ZERO; 4]; 2];
+        let mut mvds = [[Mv::ZERO; 4]; 2];
+        for pi in 0..2 {
+            let (x, y, w, h) = part.rect(pi);
+            let mask = Self::mask_of(part, pi);
+            for l in 0..2 {
+                if dirs[pi] == 2 || dirs[pi] as usize == l {
+                    let mvp = self.mvp(&info, mask, mx, my, (x / 4) as i32, (y / 4) as i32, (w / 4) as i32, l, 0, Self::shape_of(part, pi));
+                    let mv = mvs[l][pi];
+                    mvds[l][pi] = Mv::new(mv.x as i32 - mvp.x as i32, mv.y as i32 - mvp.y as i32);
+                    refs[l][pi] = 0;
+                    fmvs[l][pi] = mv;
+                }
+            }
+            for l in 0..2 {
+                for by in y / 4..(y + h) / 4 {
+                    for bx in x / 4..(x + w) / 4 {
+                        info.mv[l][by * 4 + bx] = fmvs[l][pi];
+                    }
+                }
+                for by8 in y / 8..(y + h).div_ceil(8) {
+                    for bx8 in x / 8..(x + w).div_ceil(8) {
+                        info.ref_idx[l][by8 * 2 + bx8] = refs[l][pi];
+                    }
+                }
+            }
+        }
+        let mut c = Cand::new();
+        c.code.kind = MbKind::BInter;
+        c.code.part = part;
+        c.code.bdir = dirs;
+        c.code.mvd = mvds;
+        Self::cand_inter_info(&mut c, part, refs, fmvs, mvds);
+        self.code_inter(src, &py_, &pu, &pv, qp, &mut c);
+        c.cost = cost;
+        Some(c)
+    }
+
     fn analyse_b(&self, mx: usize, my: usize, qp: u8, av: Avail, e: &MbEdges, src: &Src) -> Box<Cand> {
         let f = self.f;
         let (r0, r1) = (f.l0.unwrap(), f.l1.unwrap());
@@ -1782,7 +1870,18 @@ impl<'a, 'b> SliceEnc<'a, 'b> {
                 }
             });
         }
-        let best = best.unwrap();
+        let mut best = best.unwrap();
+        // --- 16x8 / 8x16 partitions with a per-partition prediction direction
+        if f.p.partitions && best.cost > 256 * 4 {
+            for part in [Part::P16x8, Part::P8x16] {
+                if let Some(c) = self.b_partition(mx, my, part, src, qp, lam, [res[0].0, res[1].0]) {
+                    let better = if f.p.rd { self.rd_cost(mx, my, &c, src, qp) < self.rd_cost(mx, my, &best, src, qp) } else { c.cost < best.cost };
+                    if better {
+                        best = c;
+                    }
+                }
+            }
+        }
         let need_intra = f.p.always_intra || best.cost > (256 * 3 + 16 * lam as u64 / 256) * 3;
         if need_intra {
             let ic = self.analyse_intra(mx, my, qp, av, e, src, best.cost);

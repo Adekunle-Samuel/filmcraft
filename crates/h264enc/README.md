@@ -44,7 +44,7 @@ for p in enc.flush() { /* ... */ }
 | Parameter sets | SPS (level auto-selected from size/rate/DPB/bitrate, cropping, VUI: SAR, colour description + range, timing, bitstream restriction/reorder), PPS, AUD, user-data SEI, avcC |
 | Intra | 16x16 (4 modes, SATD), 4x4 (9 modes, SATD + mode-cost, sequential reconstruction), 8x8 (9 modes with reference filtering, High), chroma (4 modes) |
 | Inter P | hexagon integer search from predictors, half- then quarter-sample refinement (SATD) on precomputed 6-tap half-sample planes; 16x16/16x8/8x16/8x8 partitions (Balanced/Quality); P_Skip detection with the normative skip MV |
-| Inter B | 1–3 non-reference B-frames, spatial direct / B_Skip, L0/L1/Bi 16x16 with separate searches; all B-frames of a mini-GOP are encoded concurrently |
+| Inter B | 1–3 non-reference B-frames, spatial direct / B_Skip, L0/L1/Bi 16x16 and (Balanced/Quality) 16x8/8x16 with a per-partition direction; all B-frames of a mini-GOP are encoded concurrently |
 | Residual | 4x4 / 8x8 integer transforms, Intra16x16 and chroma DC Hadamards, deadzone quantisation (intra 1/3, inter 1/6), adaptive 4x4/8x8 inter transform choice, coefficient decimation for inter blocks |
 | Entropy | CABAC (all I and cabac_init_idc 0 context tables, verified against the spec text) and CAVLC (all coeff_token/total_zeros/run_before tables, level escapes) |
 | Loop filter | normative deblocking (bS 0–4 incl. bi-predicted rules, 8x8-transform edges, chroma QP mapping) in the reconstruction loop |
@@ -77,7 +77,7 @@ ffmpeg and reports speed, bitrate, PSNR and any encoder/decoder mismatch (`MAP=1
 ## Limitations / not yet implemented
 
 - Single reference frame per list; no B-pyramid, no weighted prediction, no interlaced/MBAFF, no 4:2:2/4:4:4 or
-  high bit depth, no custom scaling matrices, no sub-8x8 partitions, no B 16x8/8x16 partitions.
+  high bit depth, no custom scaling matrices, no sub-8x8 partitions, no B_8x8.
 - CAVLC is used only for Baseline (High/Main always use CABAC); 8x8 transform is therefore CABAC-only.
 - No trellis quantisation, no psy-RD; no HRD/buffering-period SEI (VBV is enforced internally only).
 - Threading is slice-based only (no frame-level pipelining); with many slices, slice edges are not deblocked.
