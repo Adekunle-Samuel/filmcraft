@@ -59,6 +59,11 @@ fn main() -> eframe::Result {
             }
             let mut app = FilmcraftApp::new(session);
             app.integrated_titlebar = cfg!(target_os = "macos");
+            if let Some(rs) = cc.wgpu_render_state.clone()
+                && std::env::var_os("FILMCRAFT_CPU_COMPOSITE").is_none()
+            {
+                app.set_wgpu(rs);
+            }
             if let Some(out) = audio::CpalOut::new() {
                 app.audio = Some(Box::new(out));
             }

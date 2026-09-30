@@ -83,7 +83,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, which: Which)
                 .project
                 .item(match target {
                     Target::Item(i) => i,
-                    Target::Sequence(s) => s,
+                    Target::Sequence(s) | Target::SequencePlan(s) => s,
                 })
                 .is_some_and(|i| !matches!(i.kind, ItemKind::Sequence(_)))
         {
@@ -92,6 +92,11 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, which: Which)
             app.session.revision
         };
         let size_key = (scale * 1000.0) as u32;
+        let use_gpu = which == Which::Program && app.gpu.is_some();
+        let target = match (use_gpu, target) {
+            (true, Target::Sequence(s)) => Target::SequencePlan(s),
+            (_, t) => t,
+        };
         let key = FrameKey { target, frame, size: size_key, revision: rev };
         let project = app.session.project.clone();
         let playing = which == Which::Program && app.playback.playing;
@@ -110,7 +115,20 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, which: Which)
             app.frames.retain_queue(|k| k.target != target || (k.revision == rev && (k.frame - cur) * dir >= 0 && (k.frame - cur).abs() < 40));
         }
         let tex_name = format!("monitor-{prefix}");
-        let shown = if let Some(img) = app.frames.get(&key) {
+        let shown = if use_gpu {
+            let exact = app.frames.get_plan(&key).map(|p| (key, p));
+            if exact.is_some() {
+                if playing {
+                    app.playback.shown += 1;
+                }
+            } else if playing && app.playback.last_frame_shown() != frame {
+                app.playback.dropped += 1;
+            }
+            match exact.or_else(|| app.frames.nearest_plan(key, 6)) {
+                Some((k, plan)) => app.gpu_present(k, &plan).map(|(id, _)| id),
+                None => app.gpu.as_ref().and_then(|g| g.texture),
+            }
+        } else if let Some(img) = app.frames.get(&key) {
             if playing {
                 app.playback.shown += 1;
             }

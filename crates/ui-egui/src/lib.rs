@@ -102,6 +102,52 @@ pub struct FilmcraftApp {
     bindings: Vec<(egui::Modifiers, egui::Key, String)>,
     pub toast: Option<(String, f64)>,
     pub tl: panels::timeline::TlState,
+    /// GPU compositor (when running on wgpu): device state + compositor + the egui texture it feeds.
+    pub gpu: Option<GpuState>,
+}
+
+pub struct GpuState {
+    pub render_state: eframe::egui_wgpu::RenderState,
+    pub compositor: filmcraft_gpu::GpuCompositor,
+    pub texture: Option<egui::TextureId>,
+    pub last_key: Option<FrameKey>,
+    pub size: (u32, u32),
+    /// Composite time of the last frame (ms).
+    pub last_ms: f32,
+}
+
+impl FilmcraftApp {
+    /// Enable the GPU compositor on the eframe wgpu device.
+    pub fn set_wgpu(&mut self, rs: eframe::egui_wgpu::RenderState) {
+        let compositor = filmcraft_gpu::GpuCompositor::new(&rs.device, &rs.queue);
+        self.gpu = Some(GpuState { render_state: rs, compositor, texture: None, last_key: None, size: (0, 0), last_ms: 0.0 });
+    }
+
+    /// Composite a plan on the GPU and return the egui texture showing it.
+    pub fn gpu_present(&mut self, key: FrameKey, plan: &filmcraft_render::plan::FramePlan) -> Option<(egui::TextureId, (u32, u32))> {
+        let g = self.gpu.as_mut()?;
+        if g.last_key == Some(key)
+            && let Some(t) = g.texture
+        {
+            return Some((t, g.size));
+        }
+        let t0 = std::time::Instant::now();
+        let (view, size) = g.compositor.composite(plan);
+        let view = view.clone();
+        g.last_ms = t0.elapsed().as_secs_f32() * 1000.0;
+        let mut renderer = g.render_state.renderer.write();
+        let id = match g.texture {
+            Some(id) => {
+                renderer.update_egui_texture_from_wgpu_texture(&g.render_state.device, &view, eframe::wgpu::FilterMode::Linear, id);
+                id
+            }
+            None => renderer.register_native_texture(&g.render_state.device, &view, eframe::wgpu::FilterMode::Linear),
+        };
+        g.texture = Some(id);
+        g.last_key = Some(key);
+        g.size = size;
+        Some((id, size))
+    }
 }
 
 impl FilmcraftApp {
@@ -139,6 +185,7 @@ impl FilmcraftApp {
             bindings: menus::bindings(),
             toast: None,
             tl: Default::default(),
+            gpu: None,
         }
     }
 

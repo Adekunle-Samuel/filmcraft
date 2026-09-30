@@ -19,6 +19,7 @@ filmcraft-project = { workspace = true }
 filmcraft-edit = { workspace = true }
 filmcraft-render = { workspace = true }
 filmcraft-engine = { workspace = true }
+filmcraft-gpu = { workspace = true }
 egui = { workspace = true }
 eframe = { workspace = true, features = ["default_fonts", "wgpu", "accesskit"] }
 serde = { workspace = true }

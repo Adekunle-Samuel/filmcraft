@@ -11,6 +11,7 @@ pub mod audio;
 pub mod blend;
 pub mod effects;
 pub mod image;
+pub mod plan;
 pub mod transitions;
 
 use std::sync::Arc;
@@ -130,7 +131,7 @@ fn with_opacity(mut img: Image, op: f32) -> Image {
     img
 }
 
-fn opacity_blend(item: &TrackItem, mt: Tick) -> (f32, Blend) {
+pub(crate) fn opacity_blend(item: &TrackItem, mt: Tick) -> (f32, Blend) {
     match item.effect("opacity") {
         Some(e) if e.enabled => {
             let op = (e.f64_at("opacity", mt) / 100.0).clamp(0.0, 1.0) as f32;
@@ -145,7 +146,7 @@ fn opacity_blend(item: &TrackItem, mt: Tick) -> (f32, Blend) {
 }
 
 /// Size of an item's source at full resolution.
-fn source_size(project: &Project, item: ItemId) -> Option<(u32, u32)> {
+pub(crate) fn source_size(project: &Project, item: ItemId) -> Option<(u32, u32)> {
     match &project.item(item)?.kind {
         ItemKind::Media(m) => m.info.video.as_ref().map(|v| (v.width, v.height)),
         ItemKind::Sequence(s) => Some((s.settings.width, s.settings.height)),
@@ -186,7 +187,7 @@ pub fn motion_matrix(seq: &Sequence, item: &TrackItem, src: (u32, u32), mt: Tick
 
 /// Render one track item's layer at timeline time `t` into a canvas-sized image.
 /// Returns (layer, opacity, blend).
-fn item_layer(
+pub(crate) fn item_layer(
     project: &Project,
     seq: &Sequence,
     item: &TrackItem,

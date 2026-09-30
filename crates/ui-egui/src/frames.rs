@@ -18,6 +18,8 @@ pub enum Target {
     Sequence(ItemId),
     /// A single project item at a media time (Source monitor, thumbnails).
     Item(ItemId),
+    /// A GPU frame plan of a sequence (decoded layers + transforms), composited on the GPU.
+    SequencePlan(ItemId),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -48,6 +50,7 @@ struct Shared {
     queue: Mutex<VecDeque<Job>>,
     cv: Condvar,
     done: Mutex<Cache>,
+    plans: Mutex<HashMap<FrameKey, (Arc<filmcraft_render::plan::FramePlan>, u64)>>,
     in_flight: Mutex<Vec<FrameKey>>,
 }
 
@@ -92,6 +95,7 @@ impl FrameServer {
             queue: Mutex::new(VecDeque::new()),
             cv: Condvar::new(),
             done: Mutex::new(Cache { map: HashMap::new(), bytes: 0, budget: 768 << 20, clock: 0 }),
+            plans: Mutex::new(HashMap::new()),
             in_flight: Mutex::new(Vec::new()),
         });
         let repaint: Arc<Mutex<Option<egui::Context>>> = Arc::new(Mutex::new(None));
@@ -125,9 +129,24 @@ impl FrameServer {
         })
     }
 
+    pub fn get_plan(&self, k: &FrameKey) -> Option<Arc<filmcraft_render::plan::FramePlan>> {
+        self.shared.plans.lock().unwrap_or_else(|e| e.into_inner()).get(k).map(|(p, _)| p.clone())
+    }
+
+    /// Nearest cached plan at or before `frame`.
+    pub fn nearest_plan(&self, key: FrameKey, max_back: i64) -> Option<(FrameKey, Arc<filmcraft_render::plan::FramePlan>)> {
+        let g = self.shared.plans.lock().unwrap_or_else(|e| e.into_inner());
+        (0..=max_back).find_map(|d| {
+            let k = FrameKey { frame: key.frame - d, ..key };
+            g.get(&k).map(|(p, _)| (k, p.clone()))
+        })
+    }
+
     /// Queue a job unless it is cached, queued or in flight.
     pub fn request(&self, key: FrameKey, time: Tick, scale: f32, project: &Arc<Project>, prio: u32) {
-        if self.shared.done.lock().unwrap_or_else(|e| e.into_inner()).map.contains_key(&key) {
+        if self.shared.done.lock().unwrap_or_else(|e| e.into_inner()).map.contains_key(&key)
+            || self.shared.plans.lock().unwrap_or_else(|e| e.into_inner()).contains_key(&key)
+        {
             return;
         }
         if self.shared.in_flight.lock().unwrap_or_else(|e| e.into_inner()).contains(&key) {
@@ -168,8 +187,20 @@ impl FrameServer {
     fn run_one_sync(&self) {
         let job = { self.shared.queue.lock().unwrap_or_else(|e| e.into_inner()).pop_front() };
         if let Some(job) = job {
-            let img = render_job(&job, &self.pool, &self.services);
-            self.shared.done.lock().unwrap_or_else(|e| e.into_inner()).insert(job.key, Arc::new(img));
+            if let Target::SequencePlan(seq) = job.key.target {
+                let provider = self.pool.provider(job.project.clone(), self.services.clone());
+                let plan = filmcraft_render::plan::plan_frame(
+                    &job.project,
+                    seq,
+                    job.time,
+                    filmcraft_render::RenderOptions { scale: job.scale, ..Default::default() },
+                    &provider,
+                );
+                self.shared.plans.lock().unwrap_or_else(|e| e.into_inner()).insert(job.key, (Arc::new(plan), 0));
+            } else {
+                let img = render_job(&job, &self.pool, &self.services);
+                self.shared.done.lock().unwrap_or_else(|e| e.into_inner()).insert(job.key, Arc::new(img));
+            }
         }
     }
 }
@@ -189,8 +220,29 @@ fn worker(sh: Arc<Shared>, pool: Arc<MediaPool>, services: Arc<dyn Services>, re
             }
         };
         sh.in_flight.lock().unwrap_or_else(|e| e.into_inner()).push(job.key);
-        let img = render_job(&job, &pool, &services);
-        sh.done.lock().unwrap_or_else(|e| e.into_inner()).insert(job.key, Arc::new(img));
+        if let Target::SequencePlan(seq) = job.key.target {
+            let provider = pool.provider(job.project.clone(), services.clone());
+            let plan = filmcraft_render::plan::plan_frame(
+                &job.project,
+                seq,
+                job.time,
+                filmcraft_render::RenderOptions { scale: job.scale, ..Default::default() },
+                &provider,
+            );
+            let mut g = sh.plans.lock().unwrap_or_else(|e| e.into_inner());
+            let clock = g.values().map(|v| v.1).max().unwrap_or(0) + 1;
+            g.insert(job.key, (Arc::new(plan), clock));
+            if g.len() > 96 {
+                let mut v: Vec<(u64, FrameKey)> = g.iter().map(|(k, v)| (v.1, *k)).collect();
+                v.sort_unstable_by_key(|x| x.0);
+                for (_, k) in v.into_iter().take(g.len() - 96) {
+                    g.remove(&k);
+                }
+            }
+        } else {
+            let img = render_job(&job, &pool, &services);
+            sh.done.lock().unwrap_or_else(|e| e.into_inner()).insert(job.key, Arc::new(img));
+        }
         sh.in_flight.lock().unwrap_or_else(|e| e.into_inner()).retain(|k| *k != job.key);
         if let Some(ctx) = repaint.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
             ctx.request_repaint();
@@ -209,6 +261,13 @@ fn render_job(job: &Job, pool: &Arc<MediaPool>, services: &Arc<dyn Services>) ->
             &provider,
         )),
         Target::Item(item) => filmcraft_render::render_item(&job.project, item, job.time, job.scale, &provider),
+        Target::SequencePlan(seq) => Some(filmcraft_render::render_sequence(
+            &job.project,
+            seq,
+            job.time,
+            filmcraft_render::RenderOptions { scale: job.scale, ..Default::default() },
+            &provider,
+        )),
     };
     match img {
         Some(img) => Rgba { w: img.w, h: img.h, px: img.over_black_rgba8() },

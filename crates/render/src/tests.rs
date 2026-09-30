@@ -167,3 +167,29 @@ fn audio_mix_bars_tone() {
     let expect = 10f32.powf(-26.0 / 20.0);
     assert!((peak - expect).abs() < 0.01, "{peak} vs {expect}");
 }
+
+#[test]
+fn plan_matches_reference_renderer() {
+    let (mut p, red, ocean, seq, map) = setup();
+    place(&mut p, seq, 0, ocean, 0, 48);
+    let top = place(&mut p, seq, 1, red, 10, 20);
+    {
+        let s = p.sequence_mut(seq).unwrap();
+        let (_, it) = s.find_item_mut(top).unwrap();
+        let m = it.effect_mut("motion").unwrap();
+        m.params.get_mut("scale").unwrap().value = ParamValue::Float(40.0);
+        m.params.get_mut("rotation").unwrap().value = ParamValue::Float(15.0);
+        it.effect_mut("opacity").unwrap().params.get_mut("opacity").unwrap().value = ParamValue::Float(70.0);
+    }
+    let r = FrameRate::FPS_24;
+    for f in [0, 12, 20, 40] {
+        let opts = RenderOptions { scale: 0.5, ..Default::default() };
+        let reference = render_sequence(&p, seq, r.tick_of(f), opts, &map);
+        let plan = plan::plan_frame(&p, seq, r.tick_of(f), opts, &map);
+        assert!(matches!(plan, plan::FramePlan::Layers { .. }), "simple frame should be GPU-drawable");
+        let got = plan::execute_cpu(&plan);
+        assert_eq!((got.w, got.h), (reference.w, reference.h));
+        let max = got.px.iter().zip(&reference.px).map(|(a, b)| (a - b).abs()).fold(0f32, f32::max);
+        assert!(max < 0.02, "frame {f}: max diff {max}");
+    }
+}

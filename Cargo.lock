@@ -1352,6 +1352,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "filmcraft-gpu"
+version = "0.1.0"
+dependencies = [
+ "filmcraft-color",
+ "filmcraft-frame",
+ "filmcraft-geom",
+ "filmcraft-media",
+ "filmcraft-render",
+ "filmcraft-time",
+ "log",
+ "pollster 0.4.0",
+ "wgpu",
+]
+
+[[package]]
 name = "filmcraft-h264"
 version = "0.1.0"
 dependencies = [
@@ -1439,6 +1454,7 @@ dependencies = [
  "filmcraft-engine",
  "filmcraft-frame",
  "filmcraft-geom",
+ "filmcraft-gpu",
  "filmcraft-media",
  "filmcraft-project",
  "filmcraft-render",
