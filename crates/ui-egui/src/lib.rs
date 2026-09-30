@@ -89,6 +89,8 @@ pub struct FilmcraftApp {
     deferred: Vec<(ControlRequest, f64)>,
     last_ui_time: f64,
     pub(crate) synthetic: Vec<egui::Event>,
+    /// Status message last shown and when it first appeared (messages expire after a few seconds).
+    status_seen: (String, f64),
     pending_screenshots: Vec<(u64, Option<String>, Option<[f32; 4]>, Sender<Value>)>,
     queued_screenshots: Vec<(u64, f64, u32)>,
     input_waiters: Vec<Sender<Value>>,
@@ -174,6 +176,7 @@ impl FilmcraftApp {
             deferred: Vec::new(),
             last_ui_time: 0.0,
             synthetic: Vec::new(),
+            status_seen: (String::new(), 0.0),
             pending_screenshots: Vec::new(),
             queued_screenshots: Vec::new(),
             input_waiters: Vec::new(),
@@ -636,6 +639,16 @@ impl FilmcraftApp {
         // Status / hint bar
         let sb = egui::Rect::from_min_max(egui::pos2(full.min.x, full.max.y - status_h), full.max);
         ui.painter().rect_filled(sb, 0.0, egui::Color32::from_rgb(0x1c, 0x1c, 0x1c));
+        let now = ui.input(|i| i.time);
+        if self.ui.status != self.status_seen.0 {
+            self.status_seen = (self.ui.status.clone(), now);
+        } else if !self.ui.status.is_empty() {
+            if now - self.status_seen.1 > 8.0 {
+                self.ui.status.clear();
+            } else {
+                ui.ctx().request_repaint_after(std::time::Duration::from_secs(1));
+            }
+        }
         let hint = if !self.ui.status.is_empty() { self.ui.status.clone() } else { self.hint_text() };
         ui.painter().text(egui::pos2(sb.min.x + 10.0, sb.center().y), egui::Align2::LEFT_CENTER, hint, Tokens::ui(11.0), t.text_dim);
         let resp = ui.interact(sb, egui::Id::new("status-bar"), egui::Sense::click());
