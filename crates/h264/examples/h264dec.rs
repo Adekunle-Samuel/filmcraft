@@ -45,5 +45,11 @@ fn main() {
     }
     write(dec.flush());
     let dt = t0.elapsed().as_secs_f64();
+    if let Some(e) = dec.take_error() {
+        eprintln!("decode error: {e}");
+    }
+    if std::env::var("H264_STATS").is_ok() {
+        eprintln!("{:#?}", dec.stats());
+    }
     eprintln!("{n} frames in {dt:.3}s ({:.1} fps)", n as f64 / dt);
 }

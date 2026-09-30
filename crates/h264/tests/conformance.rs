@@ -51,3 +51,43 @@ fixture_tests!(
     qp50,
     qp1,
 );
+
+/// Print which coding tools each fixture exercises (run with `-- --ignored --nocapture`).
+#[test]
+#[ignore]
+fn coverage_report() {
+    for f in common::FIXTURES {
+        let Some((h264, _)) = common::ensure(f) else { return };
+        let data = std::fs::read(h264).unwrap();
+        let mut dec = filmcraft_h264::Decoder::new();
+        for au in common::split_access_units(&data) {
+            dec.decode(au, 0).unwrap();
+        }
+        dec.flush();
+        let s = dec.stats();
+        println!(
+            "{:<20} pics {:>3} cavlc/cabac {:>3}/{:<3} I/P/B {:>3}/{:>3}/{:>3} i4 {:>6} i8 {:>6} i16 {:>6} pcm {:>4} pskip {:>6} bskip {:>6} bdirect {:>5} inter {:>6} t8 {:>6} mmco {:>3} lt {} gaps {} wp {} tdirect {}",
+            f.name,
+            s.pictures,
+            s.slices_cavlc,
+            s.slices_cabac,
+            s.slices_i,
+            s.slices_p,
+            s.slices_b,
+            s.mb_i4x4,
+            s.mb_i8x8,
+            s.mb_i16x16,
+            s.mb_pcm,
+            s.mb_p_skip,
+            s.mb_b_skip,
+            s.mb_b_direct16x16,
+            s.mb_inter,
+            s.mb_inter_8x8_transform,
+            s.mmco_ops,
+            s.long_term_marks,
+            s.frame_num_gaps,
+            s.weighted_slices,
+            s.temporal_direct_slices
+        );
+    }
+}

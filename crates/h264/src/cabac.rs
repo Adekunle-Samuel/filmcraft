@@ -5,7 +5,7 @@ use crate::error::{Result, ensure};
 
 /// Table 9-44 rangeTabLPS[pStateIdx][qCodIRangeIdx].
 #[rustfmt::skip]
-static RANGE_TAB_LPS: [[u8; 4]; 64] = [
+pub(crate) static RANGE_TAB_LPS: [[u8; 4]; 64] = [
     [128, 176, 208, 240], [128, 167, 197, 227], [128, 158, 187, 216], [123, 150, 178, 205],
     [116, 142, 169, 195], [111, 135, 160, 185], [105, 128, 152, 175], [100, 122, 144, 166],
     [95, 116, 137, 158], [90, 110, 130, 150], [85, 104, 123, 142], [81, 99, 117, 135],
@@ -44,7 +44,7 @@ static TRANS_IDX_MPS: [u8; 64] = [
 
 /// Combined state transition: index = (pStateIdx << 1 | valMPS) * 2 + bin_is_lps.
 /// Each context is stored as `pStateIdx << 1 | valMPS`.
-static NEXT_STATE: [[u8; 2]; 128] = {
+pub(crate) static NEXT_STATE: [[u8; 2]; 128] = {
     let mut t = [[0u8; 2]; 128];
     let mut s = 0;
     while s < 128 {

@@ -9,7 +9,7 @@
 use crate::dpb::{Dpb, Output, OutputMeta};
 use crate::error::{Error, Result, ensure, invalid, unsupported};
 use crate::params::{Pps, Sps};
-use crate::picture::{Frame, FrameRef, MbState, Planes, RefPic};
+use crate::picture::{Frame, FrameRef, MbKind, MbState, Planes, RefPic};
 use crate::slice::{NalHeader, Poc, PocState, SliceHeader, SliceType, nal_type};
 use crate::slicedec::{PicState, SliceDecoder};
 use crate::transform::LevelScale;
@@ -39,10 +39,37 @@ struct PendingPic {
     slices: Vec<SliceJob>,
 }
 
+/// Counters describing what the decoder has seen (useful to check test coverage).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct DecodeStats {
+    pub pictures: u64,
+    pub slices_cavlc: u64,
+    pub slices_cabac: u64,
+    pub slices_i: u64,
+    pub slices_p: u64,
+    pub slices_b: u64,
+    pub mb_i4x4: u64,
+    pub mb_i8x8: u64,
+    pub mb_i16x16: u64,
+    pub mb_pcm: u64,
+    pub mb_p_skip: u64,
+    pub mb_b_skip: u64,
+    pub mb_b_direct16x16: u64,
+    pub mb_inter: u64,
+    /// Inter macroblocks using the 8x8 transform.
+    pub mb_inter_8x8_transform: u64,
+    pub mmco_ops: u64,
+    pub long_term_marks: u64,
+    pub frame_num_gaps: u64,
+    pub weighted_slices: u64,
+    pub temporal_direct_slices: u64,
+}
+
 /// State shared with decoding jobs.
 #[derive(Default)]
 struct Shared {
     error: Mutex<Option<Error>>,
+    stats: Mutex<DecodeStats>,
     /// Recycled picture buffers.
     pool: Mutex<Vec<PicState>>,
 }
@@ -227,6 +254,17 @@ impl Decoder {
         pics
     }
 
+    /// Statistics accumulated so far (macroblock counts include finished pictures only).
+    pub fn stats(&self) -> DecodeStats {
+        self.shared.stats.lock().map(|s| s.clone()).unwrap_or_default()
+    }
+
+    fn stat(&self, f: impl FnOnce(&mut DecodeStats)) {
+        if let Ok(mut s) = self.shared.stats.lock() {
+            f(&mut s);
+        }
+    }
+
     /// First error reported by a decoding job since the last call (also returned by
     /// [`Decoder::decode`]); useful after [`Decoder::flush`].
     pub fn take_error(&mut self) -> Option<Error> {
@@ -317,7 +355,31 @@ impl Decoder {
                 ensure!(!refs[1].is_empty(), "empty RefPicList1 in B slice");
             }
         }
+        let weighted = (pps.weighted_pred && sh.slice_type.is_p()) || (pps.weighted_bipred_idc != 0 && sh.slice_type.is_b());
+        let temporal = sh.slice_type.is_b() && !sh.direct_spatial_mv_pred;
+        let (cabac, st, mmcos, lt) = (
+            pps.entropy_coding_mode,
+            sh.slice_type,
+            sh.mmcos.len() as u64,
+            sh.long_term_reference as u64 + sh.mmcos.iter().filter(|m| m.op == 3 || m.op == 6).count() as u64,
+        );
         pending.slices.push(SliceJob { sh, pps, sps, rbsp, refs, ls });
+        self.stat(|s| {
+            if cabac {
+                s.slices_cabac += 1;
+            } else {
+                s.slices_cavlc += 1;
+            }
+            match st {
+                SliceType::I | SliceType::Si => s.slices_i += 1,
+                SliceType::P | SliceType::Sp => s.slices_p += 1,
+                SliceType::B => s.slices_b += 1,
+            }
+            s.weighted_slices += weighted as u64;
+            s.temporal_direct_slices += temporal as u64;
+            s.mmco_ops += mmcos;
+            s.long_term_marks += lt;
+        });
         Ok(())
     }
 
@@ -369,6 +431,7 @@ impl Decoder {
                     (Arc::new(Frame::from_planes(id, 0, &planes)), meta.clone())
                 };
                 let mut upd = |fnum: u32| poc_state.update_gap_frame(fnum, sps);
+                self.shared.stats.lock().map(|mut s| s.frame_num_gaps += 1).ok();
                 self.dpb.fill_frame_num_gap(self.prev_ref_frame_num, sh.frame_num, max, sps.max_num_ref_frames as usize, &mut make, &mut upd);
                 self.prev_ref_frame_num = (sh.frame_num + max - 1) % max;
             }
@@ -456,6 +519,25 @@ fn run_job(frame: FrameRef, slices: Vec<SliceJob>, shared: &Shared) {
             Some(Error::Invalid("internal error while decoding a picture".into()))
         }
     };
+    if let Ok(mut s) = shared.stats.lock() {
+        s.pictures += 1;
+        for st in &pic.mbs {
+            match st.kind {
+                MbKind::I4x4 => s.mb_i4x4 += 1,
+                MbKind::I8x8 => s.mb_i8x8 += 1,
+                MbKind::I16x16 => s.mb_i16x16 += 1,
+                MbKind::IPcm => s.mb_pcm += 1,
+                MbKind::PSkip => s.mb_p_skip += 1,
+                MbKind::BSkip => s.mb_b_skip += 1,
+                MbKind::BDirect16x16 => s.mb_b_direct16x16 += 1,
+                MbKind::Inter => s.mb_inter += 1,
+                MbKind::None => {}
+            }
+            if st.transform_8x8 && !st.kind.is_intra() {
+                s.mb_inter_8x8_transform += 1;
+            }
+        }
+    }
     if let (Some(e), Ok(mut slot)) = (err, shared.error.lock()) {
         slot.get_or_insert(e);
     }
