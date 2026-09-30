@@ -125,6 +125,93 @@ pub fn h264_factory(e: &SampleEntry) -> Option<Result<Box<dyn VideoDecoder>>> {
     }
 }
 
+/// Our pure-Rust HEVC decoder (Main / Main 10, frame-threaded).
+pub struct HevcDecoder {
+    hvcc: Vec<u8>,
+    dec: filmcraft_hevc::Decoder,
+}
+
+impl HevcDecoder {
+    pub fn new(hvcc: Vec<u8>) -> Result<Self> {
+        let dec = filmcraft_hevc::Decoder::from_hvcc(&hvcc).map_err(|e| CodecError::Decode(e.to_string()))?;
+        Ok(Self { hvcc, dec })
+    }
+    fn convert(p: filmcraft_hevc::Picture) -> DecodedFrame {
+        use filmcraft_hevc::Plane;
+        use std::sync::Arc;
+        fn tight<T: Copy>(src: &[T], stride: usize, w: usize, h: usize) -> Vec<T> {
+            if stride == w && src.len() >= w * h {
+                return src[..w * h].to_vec();
+            }
+            let mut out = Vec::with_capacity(w * h);
+            for y in 0..h {
+                out.extend_from_slice(&src[y * stride..y * stride + w]);
+            }
+            out
+        }
+        let (w, h) = (p.width as usize, p.height as usize);
+        let (cw, ch) = (p.chroma_width as usize, p.chroma_height as usize);
+        let data = match (&p.y, &p.u, &p.v) {
+            (Plane::U8(y), Plane::U8(u), Plane::U8(v)) => filmcraft_frame::PixelData::Yuv8 {
+                planes: [Arc::new(tight(y, p.y_stride, w, h)), Arc::new(tight(u, p.uv_stride, cw, ch)), Arc::new(tight(v, p.uv_stride, cw, ch))],
+                chroma: filmcraft_frame::Chroma::C420,
+                alpha: None,
+            },
+            _ => {
+                let wide = |pl: &Plane| -> Vec<u16> { (0..pl.len()).map(|i| pl.get(i)).collect() };
+                filmcraft_frame::PixelData::Yuv16 {
+                    planes: [
+                        Arc::new(tight(&wide(&p.y), p.y_stride, w, h)),
+                        Arc::new(tight(&wide(&p.u), p.uv_stride, cw, ch)),
+                        Arc::new(tight(&wide(&p.v), p.uv_stride, cw, ch)),
+                    ],
+                    chroma: filmcraft_frame::Chroma::C420,
+                    bits: p.bit_depth,
+                    alpha: None,
+                }
+            }
+        };
+        let mut color = filmcraft_color::ColorInfo { matrix: filmcraft_frame::default_matrix(p.width, p.height), ..filmcraft_color::ColorInfo::REC709 };
+        if let Some(m) = filmcraft_color::Matrix::from_code(p.color.matrix) {
+            color.matrix = m;
+        }
+        if let Some(t) = filmcraft_color::Transfer::from_code(p.color.transfer) {
+            color.transfer = t;
+        }
+        if p.color.full_range {
+            color.range = filmcraft_color::Range::Full;
+        }
+        let par = if p.sar.0 > 0 && p.sar.1 > 0 { (p.sar.0 as u32, p.sar.1 as u32) } else { (1, 1) };
+        let frame = VideoFrame { width: p.width, height: p.height, data, color, par, pts: filmcraft_time::Tick::ZERO };
+        DecodedFrame { pts: p.pts, frame }
+    }
+}
+
+impl VideoDecoder for HevcDecoder {
+    fn decode(&mut self, sample: &[u8], pts: i64) -> Result<Vec<DecodedFrame>> {
+        let pics = self.dec.decode(sample, pts).map_err(|e| CodecError::Decode(e.to_string()))?;
+        Ok(pics.into_iter().map(Self::convert).collect())
+    }
+    fn flush(&mut self) -> Vec<DecodedFrame> {
+        self.dec.flush().into_iter().map(Self::convert).collect()
+    }
+    fn reset(&mut self) {
+        if let Ok(d) = filmcraft_hevc::Decoder::from_hvcc(&self.hvcc) {
+            self.dec = d;
+        }
+    }
+    fn name(&self) -> &str {
+        "FilmCraft HEVC"
+    }
+}
+
+pub fn hevc_factory(e: &SampleEntry) -> Option<Result<Box<dyn VideoDecoder>>> {
+    match &e.codec {
+        CodecConfig::Hevc(c) => Some(HevcDecoder::new(c.to_bytes()).map(|d| Box::new(d) as Box<dyn VideoDecoder>)),
+        _ => None,
+    }
+}
+
 /// Our ProRes decoder (every frame is intra; slices decode in parallel).
 pub struct ProResDecoder;
 

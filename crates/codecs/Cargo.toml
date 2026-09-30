@@ -17,6 +17,7 @@ filmcraft-media = { workspace = true }
 filmcraft-isobmff = { workspace = true }
 filmcraft-bitstream = { workspace = true }
 filmcraft-h264 = { workspace = true }
+filmcraft-hevc = { workspace = true }
 filmcraft-prores = { workspace = true }
 filmcraft-aac = { workspace = true }
 thiserror = { workspace = true }
