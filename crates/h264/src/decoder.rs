@@ -238,7 +238,7 @@ impl Decoder {
         }
         let mut sd = SliceDecoder::new(&sh, &pps, &sps, &mut cur.pic, &refs, &ls)?;
         if pps.entropy_coding_mode {
-            return unsupported("CABAC entropy coding");
+            sd.decode_cabac(&rbsp)?;
         } else {
             let mut r = BitReader::new(&rbsp);
             r.seek_bits(sh.header_bits);

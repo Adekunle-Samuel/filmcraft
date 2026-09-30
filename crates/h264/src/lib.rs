@@ -18,6 +18,10 @@
 // Index loops over fixed-size blocks read more clearly than iterator chains in codec code.
 #![allow(clippy::needless_range_loop, clippy::too_many_arguments)]
 
+mod cabac;
+mod cabac_mb;
+#[rustfmt::skip]
+mod cabac_tables;
 mod cavlc;
 #[rustfmt::skip]
 mod cavlc_tables;

@@ -76,10 +76,16 @@ pub struct MbState {
     /// Motion vectors per 4x4 block (raster order).
     pub mv: [[[i16; 2]; 16]; 2],
     /// |mvd| per 4x4 block (raster), saturated, for CABAC context selection.
-    #[allow(dead_code)] // used by CABAC context selection
     pub mvd: [[[u8; 2]; 16]; 2],
     /// Bit per 8x8 block predicted in direct mode.
     pub direct8x8: u8,
+}
+
+impl MbState {
+    #[inline]
+    pub fn kind_is_skip(&self) -> bool {
+        matches!(self.kind, MbKind::PSkip | MbKind::BSkip)
+    }
 }
 
 impl Default for MbState {
