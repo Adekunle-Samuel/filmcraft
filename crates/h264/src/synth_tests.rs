@@ -18,18 +18,36 @@ fn nal(ref_idc: u8, t: u8, rbsp: &[u8]) -> Vec<u8> {
     v
 }
 
-fn sps(profile: u8, max_refs: u32, gaps: bool, poc_type0: bool) -> Vec<u8> {
+/// POC type used by the synthetic SPS: 0 (4-bit lsb), 1 (see below) or 2.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum PocType {
+    T0,
+    /// offset_for_non_ref_pic = -3, one reference frame per cycle with offset 4
+    T1,
+    T2,
+}
+
+fn sps(profile: u8, max_refs: u32, gaps: bool, poc: PocType) -> Vec<u8> {
     let mut w = BitWriter::new();
     w.write_bits(profile as u32, 8);
     w.write_bits(0, 8);
     w.write_bits(30, 8);
     w.write_ue(0); // sps id
     w.write_ue(0); // log2_max_frame_num - 4 -> 16
-    if poc_type0 {
-        w.write_ue(0);
-        w.write_ue(0); // log2_max_pic_order_cnt_lsb - 4 -> 4-bit lsb
-    } else {
-        w.write_ue(2); // POC type 2 (output order = decoding order)
+    match poc {
+        PocType::T0 => {
+            w.write_ue(0);
+            w.write_ue(0); // log2_max_pic_order_cnt_lsb - 4 -> 4-bit lsb
+        }
+        PocType::T1 => {
+            w.write_ue(1);
+            w.write_bit(false); // delta_pic_order_always_zero_flag
+            w.write_se(-3); // offset_for_non_ref_pic
+            w.write_se(0); // offset_for_top_to_bottom_field
+            w.write_ue(1); // num_ref_frames_in_pic_order_cnt_cycle
+            w.write_se(4);
+        }
+        PocType::T2 => w.write_ue(2), // output order = decoding order
     }
     w.write_ue(max_refs);
     w.write_bit(gaps);
@@ -80,6 +98,8 @@ struct Pic {
     /// B slice (all B_Skip).
     b: bool,
     poc_lsb: Option<u32>,
+    /// delta_pic_order_cnt[0] (POC type 1).
+    poc_delta: Option<i32>,
     /// Explicit weights (luma, cb, cr) as (weight, offset) for refIdx 0 of list 0 and list 1;
     /// log2 denominators are 5 (luma) and 3 (chroma).
     wt: Option<[[(i32, i32); 3]; 2]>,
@@ -110,6 +130,9 @@ fn slice_header(w: &mut BitWriter, p: &Pic, cabac: bool) {
     }
     if let Some(lsb) = p.poc_lsb {
         w.write_bits(lsb, 4);
+    }
+    if let Some(d) = p.poc_delta {
+        w.write_se(d);
     }
     if p.b {
         w.write_bit(true); // direct_spatial_mv_pred_flag
@@ -374,7 +397,7 @@ fn build_and_check(cabac: bool, threads: usize) {
         // 7: MMCO 5 picture made of PCM, then 8: P_Skip referencing it (only reference left)
         Pic { frame_num: 8, ref_idc: 2, mmcos: vec![(5, 0, 0)], mbs: pcm_pic(&mut seed), ..Default::default() },
     ];
-    let mut stream = sps(if cabac { 77 } else { 66 }, 8, true, false);
+    let mut stream = sps(if cabac { 77 } else { 66 }, 8, true, PocType::T2);
     stream.extend(pps(cabac, false));
     for p in &pics {
         stream.extend(slice_nal(p, cabac));
@@ -466,7 +489,7 @@ fn weighted_check(cabac: bool, threads: usize) {
         Pic { frame_num: 2, ref_idc: 0, poc_lsb: Some(4), b: true, mbs: skip.clone(), wt: Some(wb), ..Default::default() },
         Pic { frame_num: 2, ref_idc: 0, poc_lsb: Some(12), mbs: skip.clone(), wt: Some(wp), ..Default::default() },
     ];
-    let mut stream = sps(77, 2, false, true);
+    let mut stream = sps(77, 2, false, PocType::T0);
     stream.extend(pps(cabac, true));
     for p in &pics {
         stream.extend(slice_nal(p, cabac));
@@ -506,5 +529,35 @@ fn explicit_weighted_prediction_p_and_b_skip() {
     for cabac in [false, true] {
         weighted_check(cabac, 1);
         weighted_check(cabac, 3);
+    }
+}
+
+/// POC type 1: non-reference pictures are displayed before the preceding reference picture.
+#[test]
+fn poc_type1_reordering() {
+    for cabac in [false, true] {
+        let mut seed = 5u32;
+        let contents: Vec<Vec<Option<Vec<u8>>>> = (0..5).map(|_| (0..NMB).map(|_| Some(random_mb(&mut seed))).collect()).collect();
+        // (frame_num, ref_idc): POCs 0, 4, 1, 8, 5
+        let spec = [(0, 3), (1, 2), (2, 0), (2, 2), (3, 0)];
+        let mut stream = sps(77, 2, false, PocType::T1);
+        stream.extend(pps(cabac, false));
+        for (i, &(frame_num, ref_idc)) in spec.iter().enumerate() {
+            let p = Pic { idr: i == 0, frame_num, ref_idc, poc_delta: Some(0), mbs: contents[i].clone(), ..Default::default() };
+            stream.extend(slice_nal(&p, cabac));
+        }
+        let expected_order = [0usize, 2, 1, 4, 3];
+        let expected_poc = [0, 1, 4, 5, 8];
+        for threads in [1, 2] {
+            let mut dec = Decoder::with_threads(threads);
+            let mut out = dec.decode(&stream, 0).unwrap();
+            out.extend(dec.flush());
+            assert_eq!(out.len(), 5);
+            for (k, p) in out.iter().enumerate() {
+                let e = render(&contents[expected_order[k]], None);
+                assert_eq!(p.poc, expected_poc[k]);
+                assert!(p.y == e.0 && p.u == e.1 && p.v == e.2, "output {k} (cabac={cabac})");
+            }
+        }
     }
 }
