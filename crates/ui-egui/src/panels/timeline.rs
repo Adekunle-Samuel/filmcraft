@@ -458,9 +458,12 @@ fn draw_waveform(app: &mut FilmcraftApp, p: &egui::Painter, body: Rect, it: &Tra
     let clip = p.clip_rect().intersect(area);
     let mid = area.center().y;
     let amp = area.height() * 0.5;
-    let gain = filmcraft_render::audio::db_to_gain(it.effect("volume").map(|e| e.f64_at("level", it.source_in)).unwrap_or(0.0) + it.gain_db);
+    // Like Premiere, the waveform reflects clip gain (not the Volume effect); normalise so quiet
+    // material stays readable.
+    let peak = peaks.iter().fold(0f32, |m, (a, b)| m.max(a.abs()).max(b.abs())).max(1e-4);
+    let gain = filmcraft_render::audio::db_to_gain(it.gain_db) * (0.9 / peak).min(8.0);
     let col = fill.linear_multiply(0.45);
-    let dark = Color32::from_rgba_unmultiplied(0, 0, 0, 90);
+    let dark = Color32::from_rgba_unmultiplied(8, 40, 16, 150);
     let mut mesh = egui::Mesh::default();
     let x_start = clip.min.x.floor() as i32;
     let x_end = clip.max.x.ceil() as i32;
