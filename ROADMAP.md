@@ -2,7 +2,7 @@
 
 Progress toward feature parity with Adobe Premiere Pro, with estimates. Updated as milestones land.
 
-**Last updated:** 2026-09-30 · **Overall parity:** ~27% · **Code:** ~57k lines of Rust, 300+ tests
+**Last updated:** 2026-09-30 (midday) · **Overall parity:** ~30% · **Code:** ~85k lines of Rust, 400+ tests
 
 ## Estimate to parity
 
@@ -35,20 +35,21 @@ Status: ✅ done · 🟡 in progress · ⬜ not started. Estimates are remaining
 | M4 | Playback | 🟡 | Audio-clock master, prefetch, J/K/L, dropped-frame stats, playback resolution | Render previews, render bar, 4K/8K tuning | 8–12 |
 | M5 | Effects, keyframes, GPU | 🟡 | ~60 CPU effects, 30 transitions, keyframes + value/velocity graphs, wgpu compositor | Full ~150-effect catalogue, WGSL parity for all, masks + tracking, adjustment layers, presets, Warp Stabilizer, Morph Cut | 30–45 |
 | M6 | Export | ✅ | Own H.264 encoder (High/Main/Baseline, B-frames, VBR/CBR/2-pass) → MP4 + own AAC; ProRes, MJPEG, PNG, GIF, WAV; background jobs | Preset library, queue UI, smart render | 6–8 |
-| M7 | Audio | 🟡 | Mixer basics, peak meters; DSP crate (LUFS, EQ, dynamics, reverb…) in progress | Mixers with automation, Essential Sound, audio transitions, 5.1 | 10–15 |
+| M7 | Audio | 🟡 | Mixer basics, peak meters; DSP crate: BS.1770 loudness (LUFS, LRA, true peak), 8-band EQ, compressor, gate, limiter, delay, FDN reverb, DeHum, DeNoise, pitch shift | Wire DSP into the mixer and clip effects, LUFS meters, mixers with automation, Essential Sound, audio transitions, 5.1 | 8–12 |
 | M8 | Colour | 🟡 | Lumetri: basic, creative + looks, RGB & hue curves, wheels, HSL secondary, vignette; basic scopes | LUT import UI, colour match, colour management + HDR (PQ/HLG, log, tone mapping) | 8–12 |
-| M9 | More codecs | 🟡 | ProRes decode+encode, AAC decode+encode; HEVC decoder (bit-exact on 41 fixtures) and Matroska/WebM in progress | VP9, AV1 (rav1d), DNxHR, MXF, hardware decode | 20–30 |
+| M9 | More codecs | 🟡 | ProRes decode+encode, AAC decode+encode, HEVC Main/Main 10 decoder (bit-exact on 41 fixtures, ~225 fps 1080p) wired into import; Matroska/WebM demuxer (+ minimal muxer) | MKV import wiring, VP9 and Opus (in progress), AV1 (rav1d), DNxHR, MXF, hardware decode | 15–25 |
 | M10 | Graphics & captions | ⬜ | — | Text engine, Type tool, Essential Graphics, captions (SRT/VTT/SCC), speech-to-text | 20–30 |
 | M11 | Interchange & project management | 🟡 | `.fcproj` save/open | Autosave/recovery, FCP7 XML, FCPXML, EDL, OTIO, relink, project manager, proxies | 15 |
 | M12–M16 | Web (WASM), platform, long tail | 🟡 | L0–L4 crates compile to wasm32 | Web app shell (file access, WebCodecs, audio), ~850 remaining commands and dialogs, performance hardening | 40–65 |
 
 ## Running now
 
-- HEVC decoder (`crates/hevc`): synthetic-stream tests for tiles, PCM, dependent slices, long-term references
-- Audio DSP (`crates/audio-dsp`): BS.1770 loudness, EQ, dynamics, limiter, reverb, delay, denoise, pitch
-- Matroska/WebM demuxer (`crates/matroska`)
+- VP9 decoder (`crates/vp9`), from the public VP9 bitstream spec
+- Opus decoder (`crates/opus`), from RFC 6716/8251
+- Interchange (`crates/interchange`): CMX 3600 EDL, FCP7 XML, FCPXML, OTIO import and export
 
 ## Log
 
+- **2026-09-30 (midday):** HEVC decoder, Matroska/WebM demuxer and audio DSP merged; HEVC import wired; asset rules (AGENTS.md, ATTRIBUTION.md, `cargo xtask assets`); README with hero screenshot and the Craft family.
 - **2026-09-30 (late morning):** keyframe value/velocity graphs; xtask gates; H.264 MP4 export; Lumetri curves, wheels, looks, HSL secondary.
 - **2026-09-30 (early morning):** H.264 decoder, ProRes, AAC; GPU compositor; MCP; Premiere 26 visual fidelity pass.
