@@ -199,6 +199,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "filmcraft-isobmff"
+version = "0.1.0"
+dependencies = [
+ "filmcraft-bitstream",
+ "proptest",
+ "serde_json",
+ "thiserror",
+]
+
+[[package]]
 name = "filmcraft-media"
 version = "0.1.0"
 dependencies = [
