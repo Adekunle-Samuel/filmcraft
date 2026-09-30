@@ -1353,6 +1353,7 @@ dependencies = [
  "filmcraft-color",
  "filmcraft-frame",
  "filmcraft-h264",
+ "filmcraft-hevc",
  "filmcraft-isobmff",
  "filmcraft-media",
  "filmcraft-prores",
