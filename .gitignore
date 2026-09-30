@@ -4,3 +4,4 @@ plan/
 /dist
 /log
 .DS_Store
+.claude/worktrees/

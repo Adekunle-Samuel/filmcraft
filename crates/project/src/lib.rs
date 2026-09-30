@@ -1,0 +1,939 @@
+//! The FilmCraft document model.
+//!
+//! A [`Project`] owns a tree of bins and a flat map of [`ProjectItem`]s (media clips, sequences,
+//! synthetic items). A [`Sequence`] has video and audio [`Track`]s holding [`TrackItem`]s (clip
+//! instances) and [`Transition`]s. Everything is plain serde data; the engine wraps the project in an
+//! `Arc` and edits copy-on-write, so undo snapshots and background readers are free.
+//!
+//! Time: timeline positions are sequence ticks; `source_in` is media time.
+
+pub mod effect;
+pub mod keyframe;
+
+use std::collections::BTreeMap;
+
+use filmcraft_geom::Vec2;
+use filmcraft_media::{Generator, MediaInfo};
+use filmcraft_time::{FrameRate, TICKS_PER_SECOND, Tick, TimeRange};
+use serde::{Deserialize, Serialize};
+
+pub use effect::{EffectDef, EffectInstance, EffectKind, ParamDef, ParamKind, effect_defs, find_effect};
+pub use keyframe::{Interpolation, Keyframe, Param, ParamValue};
+
+macro_rules! id_type {
+    ($name:ident) => {
+        #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+        #[serde(transparent)]
+        pub struct $name(pub u64);
+    };
+}
+id_type!(ItemId);
+id_type!(BinId);
+id_type!(TrackId);
+id_type!(ClipId);
+id_type!(TransitionId);
+id_type!(MarkerId);
+
+/// Premiere-style label colours (names from the Label menu; values are our own).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum Label {
+    Violet,
+    Iris,
+    Caribbean,
+    Lavender,
+    Cerulean,
+    Forest,
+    Rose,
+    Mango,
+    Purple,
+    Blue,
+    Teal,
+    Magenta,
+    Tan,
+    Green,
+    Brown,
+    Yellow,
+}
+
+impl Label {
+    pub const ALL: [Label; 16] = [
+        Label::Violet,
+        Label::Iris,
+        Label::Caribbean,
+        Label::Lavender,
+        Label::Cerulean,
+        Label::Forest,
+        Label::Rose,
+        Label::Mango,
+        Label::Purple,
+        Label::Blue,
+        Label::Teal,
+        Label::Magenta,
+        Label::Tan,
+        Label::Green,
+        Label::Brown,
+        Label::Yellow,
+    ];
+    pub fn name(self) -> &'static str {
+        match self {
+            Label::Violet => "Violet",
+            Label::Iris => "Iris",
+            Label::Caribbean => "Caribbean",
+            Label::Lavender => "Lavender",
+            Label::Cerulean => "Cerulean",
+            Label::Forest => "Forest",
+            Label::Rose => "Rose",
+            Label::Mango => "Mango",
+            Label::Purple => "Purple",
+            Label::Blue => "Blue",
+            Label::Teal => "Teal",
+            Label::Magenta => "Magenta",
+            Label::Tan => "Tan",
+            Label::Green => "Green",
+            Label::Brown => "Brown",
+            Label::Yellow => "Yellow",
+        }
+    }
+    pub fn rgb(self) -> [u8; 3] {
+        match self {
+            Label::Violet => [166, 137, 219],
+            Label::Iris => [138, 151, 230],
+            Label::Caribbean => [37, 185, 148],
+            Label::Lavender => [224, 143, 222],
+            Label::Cerulean => [55, 161, 209],
+            Label::Forest => [96, 163, 57],
+            Label::Rose => [225, 92, 124],
+            Label::Mango => [237, 150, 58],
+            Label::Purple => [146, 83, 196],
+            Label::Blue => [60, 104, 229],
+            Label::Teal => [36, 145, 157],
+            Label::Magenta => [224, 71, 172],
+            Label::Tan => [199, 167, 124],
+            Label::Green => [78, 173, 72],
+            Label::Brown => [150, 97, 58],
+            Label::Yellow => [228, 208, 66],
+        }
+    }
+    pub fn from_name(s: &str) -> Option<Label> {
+        Self::ALL.iter().copied().find(|l| l.name().eq_ignore_ascii_case(s))
+    }
+}
+
+/// Where an item's pixels/samples come from.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub enum MediaRef {
+    /// A file on disk (native) or a named blob (web).
+    File { path: String },
+    /// A synthetic generator (Bars and Tone, Color Matte, demo footage…).
+    Generator(Generator),
+}
+
+/// Overrides applied when interpreting footage (Modify ▸ Interpret Footage).
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct Interpretation {
+    pub frame_rate: Option<FrameRate>,
+    pub par: Option<(u32, u32)>,
+    pub ignore_alpha: bool,
+    pub invert_alpha: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct MediaClip {
+    pub media: MediaRef,
+    pub info: MediaInfo,
+    pub interpret: Interpretation,
+    /// Source in/out marks (media time).
+    pub mark_in: Option<Tick>,
+    pub mark_out: Option<Tick>,
+    pub markers: Vec<Marker>,
+    pub offline: bool,
+    /// Proxy media, if attached.
+    pub proxy: Option<MediaRef>,
+}
+
+impl MediaClip {
+    pub fn frame_rate(&self) -> FrameRate {
+        self.interpret.frame_rate.unwrap_or_else(|| self.info.frame_rate())
+    }
+    pub fn duration(&self) -> Tick {
+        self.info.duration
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[allow(clippy::large_enum_variant)]
+pub enum ItemKind {
+    Media(MediaClip),
+    Sequence(Box<Sequence>),
+    /// A subclip: a media item restricted to a range.
+    Subclip {
+        parent: ItemId,
+        range: TimeRange,
+    },
+    AdjustmentLayer {
+        width: u32,
+        height: u32,
+        rate: FrameRate,
+        duration: Tick,
+    },
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ProjectItem {
+    pub id: ItemId,
+    pub name: String,
+    pub label: Label,
+    pub kind: ItemKind,
+    /// Free-form metadata (Description, Scene, Shot, Log Note…).
+    #[serde(default)]
+    pub metadata: BTreeMap<String, String>,
+    /// Import time counter (for "Date Created"/sorting), not wall clock.
+    #[serde(default)]
+    pub created: u64,
+}
+
+impl ProjectItem {
+    pub fn as_media(&self) -> Option<&MediaClip> {
+        match &self.kind {
+            ItemKind::Media(m) => Some(m),
+            _ => None,
+        }
+    }
+    pub fn as_media_mut(&mut self) -> Option<&mut MediaClip> {
+        match &mut self.kind {
+            ItemKind::Media(m) => Some(m),
+            _ => None,
+        }
+    }
+    pub fn as_sequence(&self) -> Option<&Sequence> {
+        match &self.kind {
+            ItemKind::Sequence(s) => Some(s),
+            _ => None,
+        }
+    }
+    pub fn as_sequence_mut(&mut self) -> Option<&mut Sequence> {
+        match &mut self.kind {
+            ItemKind::Sequence(s) => Some(s),
+            _ => None,
+        }
+    }
+    pub fn has_video(&self) -> bool {
+        match &self.kind {
+            ItemKind::Media(m) => m.info.has_video(),
+            ItemKind::Sequence(_) | ItemKind::AdjustmentLayer { .. } => true,
+            ItemKind::Subclip { .. } => true,
+        }
+    }
+    pub fn has_audio(&self) -> bool {
+        match &self.kind {
+            ItemKind::Media(m) => m.info.has_audio(),
+            ItemKind::Sequence(s) => !s.audio_tracks.is_empty(),
+            _ => false,
+        }
+    }
+    pub fn duration(&self) -> Tick {
+        match &self.kind {
+            ItemKind::Media(m) => m.duration(),
+            ItemKind::Sequence(s) => s.duration(),
+            ItemKind::Subclip { range, .. } => range.duration,
+            ItemKind::AdjustmentLayer { duration, .. } => *duration,
+        }
+    }
+    pub fn frame_rate(&self) -> FrameRate {
+        match &self.kind {
+            ItemKind::Media(m) => m.frame_rate(),
+            ItemKind::Sequence(s) => s.settings.frame_rate,
+            ItemKind::AdjustmentLayer { rate, .. } => *rate,
+            ItemKind::Subclip { .. } => FrameRate::default(),
+        }
+    }
+    /// Human-readable media type for the Project panel "Media Type" column.
+    pub fn type_label(&self) -> &'static str {
+        match &self.kind {
+            ItemKind::Media(m) => match m.info.kind {
+                filmcraft_media::MediaKind::Movie => "Movie",
+                filmcraft_media::MediaKind::AudioOnly => "Audio",
+                filmcraft_media::MediaKind::Still => "Still Image",
+                filmcraft_media::MediaKind::ImageSequence => "Image Sequence",
+                filmcraft_media::MediaKind::Synthetic => "Synthetic",
+            },
+            ItemKind::Sequence(_) => "Sequence",
+            ItemKind::Subclip { .. } => "Subclip",
+            ItemKind::AdjustmentLayer { .. } => "Adjustment Layer",
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub enum BinEntry {
+    Item(ItemId),
+    Bin(Bin),
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct Bin {
+    pub id: BinId,
+    pub name: String,
+    pub children: Vec<BinEntry>,
+}
+
+impl Bin {
+    pub fn find_bin_mut(&mut self, id: BinId) -> Option<&mut Bin> {
+        if self.id == id {
+            return Some(self);
+        }
+        for c in &mut self.children {
+            if let BinEntry::Bin(b) = c
+                && let Some(f) = b.find_bin_mut(id)
+            {
+                return Some(f);
+            }
+        }
+        None
+    }
+    pub fn find_bin(&self, id: BinId) -> Option<&Bin> {
+        if self.id == id {
+            return Some(self);
+        }
+        self.children.iter().find_map(|c| if let BinEntry::Bin(b) = c { b.find_bin(id) } else { None })
+    }
+    /// Remove an item anywhere in the tree.
+    pub fn remove_item(&mut self, id: ItemId) -> bool {
+        let before = self.children.len();
+        self.children.retain(|c| !matches!(c, BinEntry::Item(i) if *i == id));
+        if self.children.len() != before {
+            return true;
+        }
+        self.children.iter_mut().any(|c| if let BinEntry::Bin(b) = c { b.remove_item(id) } else { false })
+    }
+    /// All items in this bin and sub-bins.
+    pub fn all_items(&self, out: &mut Vec<ItemId>) {
+        for c in &self.children {
+            match c {
+                BinEntry::Item(i) => out.push(*i),
+                BinEntry::Bin(b) => b.all_items(out),
+            }
+        }
+    }
+    /// The bin containing an item.
+    pub fn parent_of(&self, id: ItemId) -> Option<BinId> {
+        for c in &self.children {
+            match c {
+                BinEntry::Item(i) if *i == id => return Some(self.id),
+                BinEntry::Bin(b) => {
+                    if let Some(p) = b.parent_of(id) {
+                        return Some(p);
+                    }
+                }
+                _ => {}
+            }
+        }
+        None
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum MarkerKind {
+    #[default]
+    Comment,
+    Chapter,
+    Segmentation,
+    WebLink,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Marker {
+    pub id: MarkerId,
+    pub start: Tick,
+    pub duration: Tick,
+    pub name: String,
+    pub comment: String,
+    pub kind: MarkerKind,
+    pub color: Label,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum TrackKind {
+    #[default]
+    Video,
+    Audio,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum AudioChannels {
+    Mono,
+    #[default]
+    Stereo,
+    Surround51,
+    Adaptive,
+}
+
+/// A clip instance on a track.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct TrackItem {
+    pub id: ClipId,
+    pub item: ItemId,
+    pub name: String,
+    pub label: Label,
+    /// Timeline position (sequence ticks).
+    pub start: Tick,
+    /// Duration on the timeline.
+    pub duration: Tick,
+    /// Media time of the first frame shown.
+    pub source_in: Tick,
+    /// Playback speed (1.0 = 100%). Negative = reverse.
+    pub speed: f64,
+    #[serde(default)]
+    pub reverse: bool,
+    pub enabled: bool,
+    /// Linked partner items (video ↔ audio of the same source).
+    #[serde(default)]
+    pub link: Option<u64>,
+    #[serde(default)]
+    pub group: Option<u64>,
+    pub effects: Vec<EffectInstance>,
+    #[serde(default)]
+    pub markers: Vec<Marker>,
+    /// Clip gain in dB (Audio Gain dialog), separate from the Volume effect.
+    #[serde(default)]
+    pub gain_db: f64,
+    /// Frame hold: media time frozen (Frame Hold Options).
+    #[serde(default)]
+    pub frame_hold: Option<Tick>,
+    /// Scale to frame size (Set to Frame Size / Scale to Frame Size).
+    #[serde(default)]
+    pub scale_to_frame: bool,
+}
+
+impl TrackItem {
+    pub fn end(&self) -> Tick {
+        self.start + self.duration
+    }
+    pub fn range(&self) -> TimeRange {
+        TimeRange::new(self.start, self.duration)
+    }
+    /// Media time displayed at timeline time `t` (ignores time remapping keyframes).
+    pub fn source_time_at(&self, t: Tick) -> Tick {
+        if let Some(h) = self.frame_hold {
+            return h;
+        }
+        let rel = t - self.start;
+        let scaled = Tick((rel.0 as f64 * self.speed.abs()).round() as i64);
+        if self.reverse {
+            self.source_in + Tick((self.duration.0 as f64 * self.speed.abs()).round() as i64) - scaled - Tick(1)
+        } else {
+            self.source_in + scaled
+        }
+    }
+    /// Media time consumed by the item (the source out point).
+    pub fn source_out(&self) -> Tick {
+        self.source_in + Tick((self.duration.0 as f64 * self.speed.abs()).round() as i64)
+    }
+    pub fn effect(&self, id: &str) -> Option<&EffectInstance> {
+        self.effects.iter().find(|e| e.effect == id)
+    }
+    pub fn effect_mut(&mut self, id: &str) -> Option<&mut EffectInstance> {
+        self.effects.iter_mut().find(|e| e.effect == id)
+    }
+    /// Standard (non-intrinsic) effects applied, for the fx badge.
+    pub fn has_standard_effects(&self) -> bool {
+        self.effects.iter().any(|e| e.def().is_some_and(|d| !d.intrinsic))
+    }
+    pub fn has_modified_intrinsics(&self) -> bool {
+        self.effects.iter().any(|e| {
+            e.def().is_some_and(|d| d.intrinsic)
+                && (e.is_animated()
+                    || e.def().is_some_and(|d| d.params.iter().any(|p| e.params.get(p.id).is_some_and(|v| !param_eq_default(&v.value, &p.default)))))
+        })
+    }
+}
+
+fn param_eq_default(v: &ParamValue, d: &ParamValue) -> bool {
+    match (v, d) {
+        (ParamValue::Vec2(_), ParamValue::Vec2(dd)) if dd.x.is_nan() => true,
+        _ => v == d,
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum TransitionAlign {
+    #[default]
+    CenterAtCut,
+    StartAtCut,
+    EndAtCut,
+}
+
+/// A transition on a track. `at` is the cut point (or clip edge for single-sided transitions).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Transition {
+    pub id: TransitionId,
+    pub effect: EffectInstance,
+    /// Timeline range covered by the transition.
+    pub start: Tick,
+    pub duration: Tick,
+    /// Outgoing clip (left) and incoming clip (right); one may be None (fade from/to nothing).
+    pub from: Option<ClipId>,
+    pub to: Option<ClipId>,
+    pub align: TransitionAlign,
+    #[serde(default)]
+    pub reverse: bool,
+}
+
+impl Transition {
+    pub fn end(&self) -> Tick {
+        self.start + self.duration
+    }
+    pub fn range(&self) -> TimeRange {
+        TimeRange::new(self.start, self.duration)
+    }
+    /// Progress 0..1 at timeline `t`.
+    pub fn progress(&self, t: Tick) -> f64 {
+        if self.duration.0 <= 0 {
+            return 1.0;
+        }
+        (((t - self.start).0 as f64) / self.duration.0 as f64).clamp(0.0, 1.0)
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Track {
+    pub id: TrackId,
+    pub kind: TrackKind,
+    pub name: String,
+    pub items: Vec<TrackItem>,
+    pub transitions: Vec<Transition>,
+    pub locked: bool,
+    pub sync_lock: bool,
+    /// Video: eye (output) toggle. Audio: not muted.
+    pub enabled: bool,
+    pub muted: bool,
+    pub solo: bool,
+    /// Audio track channel format.
+    pub channels: AudioChannels,
+    /// Audio track volume (dB) and pan (-100..100) for the Track Mixer.
+    pub volume_db: f64,
+    pub pan: f64,
+    /// Track-level audio effects (mixer inserts).
+    #[serde(default)]
+    pub effects: Vec<EffectInstance>,
+}
+
+impl Track {
+    pub fn new(id: TrackId, kind: TrackKind, name: String) -> Self {
+        Self {
+            id,
+            kind,
+            name,
+            items: Vec::new(),
+            transitions: Vec::new(),
+            locked: false,
+            sync_lock: true,
+            enabled: true,
+            muted: false,
+            solo: false,
+            channels: AudioChannels::Stereo,
+            volume_db: 0.0,
+            pan: 0.0,
+            effects: Vec::new(),
+        }
+    }
+    pub fn end(&self) -> Tick {
+        self.items.iter().map(|i| i.end()).max().unwrap_or(Tick::ZERO)
+    }
+    /// Item covering time `t`.
+    pub fn item_at(&self, t: Tick) -> Option<&TrackItem> {
+        // items are sorted by start
+        let idx = self.items.partition_point(|i| i.start <= t);
+        idx.checked_sub(1).map(|i| &self.items[i]).filter(|i| t < i.end())
+    }
+    pub fn item(&self, id: ClipId) -> Option<&TrackItem> {
+        self.items.iter().find(|i| i.id == id)
+    }
+    pub fn item_mut(&mut self, id: ClipId) -> Option<&mut TrackItem> {
+        self.items.iter_mut().find(|i| i.id == id)
+    }
+    pub fn sort(&mut self) {
+        self.items.sort_by_key(|i| i.start);
+        self.transitions.sort_by_key(|t| t.start);
+    }
+    /// Invariant check: items do not overlap.
+    pub fn check(&self) -> Result<(), String> {
+        for w in self.items.windows(2) {
+            if w[0].end() > w[1].start {
+                return Err(format!("{}: items {:?} and {:?} overlap", self.name, w[0].id, w[1].id));
+            }
+        }
+        for i in &self.items {
+            if i.duration.0 <= 0 {
+                return Err(format!("{}: item {:?} has non-positive duration", self.name, i.id));
+            }
+        }
+        Ok(())
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct SequenceSettings {
+    pub width: u32,
+    pub height: u32,
+    pub frame_rate: FrameRate,
+    pub par: (u32, u32),
+    pub sample_rate: u32,
+    pub drop_frame: bool,
+    /// Editing mode / preset name shown in the settings dialog.
+    pub preset: String,
+    pub audio_master: AudioChannels,
+    /// Preview file codec name.
+    pub preview_codec: String,
+    pub max_bit_depth: bool,
+    pub max_render_quality: bool,
+    /// Working colour space.
+    pub working_space: String,
+}
+
+impl Default for SequenceSettings {
+    fn default() -> Self {
+        Self {
+            width: 1920,
+            height: 1080,
+            frame_rate: FrameRate::FPS_23_976,
+            par: (1, 1),
+            sample_rate: 48_000,
+            drop_frame: false,
+            preset: "HD 1080p 23.976".into(),
+            audio_master: AudioChannels::Stereo,
+            preview_codec: "ProRes 422".into(),
+            max_bit_depth: false,
+            max_render_quality: false,
+            working_space: "Rec. 709".into(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Sequence {
+    pub settings: SequenceSettings,
+    pub video_tracks: Vec<Track>,
+    pub audio_tracks: Vec<Track>,
+    pub markers: Vec<Marker>,
+    pub mark_in: Option<Tick>,
+    pub mark_out: Option<Tick>,
+    /// Work area bar (optional; Premiere hides it by default now).
+    pub work_area: Option<TimeRange>,
+    /// Timecode of the first frame (frames), "Start Time" in Sequence settings.
+    pub start_timecode: i64,
+    /// Master audio volume (dB).
+    #[serde(default)]
+    pub master_volume_db: f64,
+    #[serde(default)]
+    pub master_effects: Vec<EffectInstance>,
+}
+
+impl Sequence {
+    pub fn duration(&self) -> Tick {
+        self.video_tracks.iter().chain(&self.audio_tracks).map(Track::end).max().unwrap_or(Tick::ZERO)
+    }
+    pub fn tracks(&self, kind: TrackKind) -> &Vec<Track> {
+        match kind {
+            TrackKind::Video => &self.video_tracks,
+            TrackKind::Audio => &self.audio_tracks,
+        }
+    }
+    pub fn tracks_mut(&mut self, kind: TrackKind) -> &mut Vec<Track> {
+        match kind {
+            TrackKind::Video => &mut self.video_tracks,
+            TrackKind::Audio => &mut self.audio_tracks,
+        }
+    }
+    pub fn all_tracks(&self) -> impl Iterator<Item = &Track> {
+        self.video_tracks.iter().chain(self.audio_tracks.iter())
+    }
+    pub fn all_tracks_mut(&mut self) -> impl Iterator<Item = &mut Track> {
+        self.video_tracks.iter_mut().chain(self.audio_tracks.iter_mut())
+    }
+    pub fn track(&self, id: TrackId) -> Option<&Track> {
+        self.all_tracks().find(|t| t.id == id)
+    }
+    pub fn track_mut(&mut self, id: TrackId) -> Option<&mut Track> {
+        self.all_tracks_mut().find(|t| t.id == id)
+    }
+    /// Find a track item anywhere: (track id, item).
+    pub fn find_item(&self, id: ClipId) -> Option<(TrackId, &TrackItem)> {
+        self.all_tracks().find_map(|t| t.item(id).map(|i| (t.id, i)))
+    }
+    pub fn find_item_mut(&mut self, id: ClipId) -> Option<(TrackId, &mut TrackItem)> {
+        self.all_tracks_mut().find_map(|t| {
+            let tid = t.id;
+            t.item_mut(id).map(|i| (tid, i))
+        })
+    }
+    pub fn frame_rate(&self) -> FrameRate {
+        self.settings.frame_rate
+    }
+    /// Sorted, de-duplicated edit points (clip boundaries) on all tracks.
+    pub fn edit_points(&self) -> Vec<Tick> {
+        let mut v: Vec<Tick> = self.all_tracks().flat_map(|t| t.items.iter().flat_map(|i| [i.start, i.end()])).collect();
+        v.sort_unstable();
+        v.dedup();
+        v
+    }
+    pub fn check(&self) -> Result<(), String> {
+        for t in self.all_tracks() {
+            t.check()?;
+        }
+        Ok(())
+    }
+}
+
+/// Project-level settings.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ProjectSettings {
+    pub renderer: String,
+    pub video_display: filmcraft_time::TimeDisplay,
+    pub audio_display_samples: bool,
+    pub default_still_duration: Tick,
+    pub default_transition_duration_frames: i64,
+    pub default_audio_transition_duration: Tick,
+}
+
+impl Default for ProjectSettings {
+    fn default() -> Self {
+        Self {
+            renderer: "FilmCraft GPU Acceleration (wgpu)".into(),
+            video_display: filmcraft_time::TimeDisplay::Timecode,
+            audio_display_samples: true,
+            default_still_duration: Tick(5 * TICKS_PER_SECOND),
+            default_transition_duration_frames: 24,
+            default_audio_transition_duration: Tick(TICKS_PER_SECOND),
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Project {
+    pub name: String,
+    pub settings: ProjectSettings,
+    pub root: Bin,
+    pub items: BTreeMap<ItemId, ProjectItem>,
+    /// Monotonic id source for all id types.
+    pub next_id: u64,
+    /// Format version of the serialized project.
+    pub version: u32,
+}
+
+pub const PROJECT_VERSION: u32 = 1;
+
+impl Default for Project {
+    fn default() -> Self {
+        Self::new("Untitled")
+    }
+}
+
+impl Project {
+    pub fn new(name: &str) -> Self {
+        Self {
+            name: name.into(),
+            settings: ProjectSettings::default(),
+            root: Bin { id: BinId(0), name: name.into(), children: Vec::new() },
+            items: BTreeMap::new(),
+            next_id: 1,
+            version: PROJECT_VERSION,
+        }
+    }
+
+    pub fn alloc_id(&mut self) -> u64 {
+        let id = self.next_id;
+        self.next_id += 1;
+        id
+    }
+
+    /// Add an item to a bin (root when None / not found).
+    pub fn add_item(&mut self, name: &str, label: Label, kind: ItemKind, bin: Option<BinId>) -> ItemId {
+        let id = ItemId(self.alloc_id());
+        let created = id.0;
+        self.items.insert(id, ProjectItem { id, name: name.into(), label, kind, metadata: BTreeMap::new(), created });
+        if let Some(b) = bin.and_then(|b| self.root.find_bin_mut(b)) {
+            b.children.push(BinEntry::Item(id));
+        } else {
+            self.root.children.push(BinEntry::Item(id));
+        }
+        id
+    }
+
+    pub fn add_bin(&mut self, name: &str, parent: Option<BinId>) -> BinId {
+        let id = BinId(self.alloc_id());
+        let bin = Bin { id, name: name.into(), children: Vec::new() };
+        match parent.and_then(|p| self.root.find_bin_mut(p)) {
+            Some(p) => p.children.push(BinEntry::Bin(bin)),
+            None => self.root.children.push(BinEntry::Bin(bin)),
+        }
+        id
+    }
+
+    pub fn item(&self, id: ItemId) -> Option<&ProjectItem> {
+        self.items.get(&id)
+    }
+    pub fn item_mut(&mut self, id: ItemId) -> Option<&mut ProjectItem> {
+        self.items.get_mut(&id)
+    }
+    pub fn sequence(&self, id: ItemId) -> Option<&Sequence> {
+        self.items.get(&id).and_then(ProjectItem::as_sequence)
+    }
+    pub fn sequence_mut(&mut self, id: ItemId) -> Option<&mut Sequence> {
+        self.items.get_mut(&id).and_then(ProjectItem::as_sequence_mut)
+    }
+    pub fn sequences(&self) -> impl Iterator<Item = &ProjectItem> {
+        self.items.values().filter(|i| matches!(i.kind, ItemKind::Sequence(_)))
+    }
+
+    /// Create an empty sequence with `v` video and `a` audio tracks.
+    pub fn new_sequence(&mut self, name: &str, settings: SequenceSettings, v: usize, a: usize, bin: Option<BinId>) -> ItemId {
+        let mut seq = Sequence {
+            settings,
+            video_tracks: Vec::new(),
+            audio_tracks: Vec::new(),
+            markers: Vec::new(),
+            mark_in: None,
+            mark_out: None,
+            work_area: None,
+            start_timecode: 0,
+            master_volume_db: 0.0,
+            master_effects: Vec::new(),
+        };
+        for i in 0..v {
+            let id = TrackId(self.alloc_id());
+            seq.video_tracks.push(Track::new(id, TrackKind::Video, format!("Video {}", i + 1)));
+        }
+        for i in 0..a {
+            let id = TrackId(self.alloc_id());
+            seq.audio_tracks.push(Track::new(id, TrackKind::Audio, format!("Audio {}", i + 1)));
+        }
+        self.add_item(name, Label::Forest, ItemKind::Sequence(Box::new(seq)), bin)
+    }
+
+    /// Build a track item for `item` placed at `start` covering `source` range (media time).
+    pub fn make_track_item(&mut self, item: ItemId, kind: TrackKind, start: Tick, source: TimeRange, seq_rate: FrameRate) -> Option<TrackItem> {
+        let it = self.items.get(&item)?;
+        let name = it.name.clone();
+        let label = if kind == TrackKind::Audio && !matches!(it.kind, ItemKind::Sequence(_)) { Label::Forest } else { it.label };
+        let effects = match kind {
+            TrackKind::Video => effect::intrinsic_video(),
+            TrackKind::Audio => effect::intrinsic_audio(),
+        };
+        let id = ClipId(self.alloc_id());
+        let dur = seq_rate.snap_nearest(source.duration).max(seq_rate.frame_duration());
+        Some(TrackItem {
+            id,
+            item,
+            name,
+            label,
+            start,
+            duration: dur,
+            source_in: source.start,
+            speed: 1.0,
+            reverse: false,
+            enabled: true,
+            link: None,
+            group: None,
+            effects,
+            markers: Vec::new(),
+            gain_db: 0.0,
+            frame_hold: None,
+            scale_to_frame: false,
+        })
+    }
+
+    pub fn to_json(&self) -> String {
+        serde_json::to_string_pretty(self).unwrap_or_default()
+    }
+    pub fn from_json(s: &str) -> Result<Project, String> {
+        let p: Project = serde_json::from_str(s).map_err(|e| e.to_string())?;
+        if p.version > PROJECT_VERSION {
+            return Err(format!("project version {} is newer than this FilmCraft ({PROJECT_VERSION})", p.version));
+        }
+        Ok(p)
+    }
+}
+
+/// Resolve NaN "auto" point defaults (frame centre / source centre) in an effect instance.
+pub fn resolve_auto_points(e: &mut EffectInstance, frame: (u32, u32), source: (u32, u32)) {
+    for (k, p) in e.params.iter_mut() {
+        if let ParamValue::Vec2(v) = &mut p.value {
+            let (w, h) = if k == "anchor" { source } else { frame };
+            if v.x.is_nan() {
+                v.x = w as f64 / 2.0;
+            }
+            if v.y.is_nan() {
+                v.y = if k == "end" { h as f64 } else { h as f64 / 2.0 };
+            }
+        }
+    }
+    let _ = Vec2::ZERO;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use filmcraft_media::{DemoScene, MediaSource};
+
+    fn demo_project() -> (Project, ItemId, ItemId) {
+        let mut p = Project::new("Test");
+        let src = filmcraft_media::generators::GeneratorSource::demo(DemoScene::OceanSunset);
+        let info = src.info().clone();
+        let clip = p.add_item(
+            "Ocean_Sunset.mp4",
+            Label::Iris,
+            ItemKind::Media(MediaClip {
+                media: MediaRef::Generator(Generator::Demo(DemoScene::OceanSunset)),
+                info,
+                interpret: Default::default(),
+                mark_in: None,
+                mark_out: None,
+                markers: vec![],
+                offline: false,
+                proxy: None,
+            }),
+            None,
+        );
+        let seq = p.new_sequence("Sequence 01", SequenceSettings::default(), 3, 3, None);
+        (p, clip, seq)
+    }
+
+    #[test]
+    fn json_roundtrip() {
+        let (mut p, clip, seq) = demo_project();
+        let rate = p.sequence(seq).unwrap().settings.frame_rate;
+        let mut ti = p.make_track_item(clip, TrackKind::Video, Tick::ZERO, TimeRange::new(Tick::ZERO, Tick(5 * TICKS_PER_SECOND)), rate).unwrap();
+        for e in &mut ti.effects {
+            resolve_auto_points(e, (1920, 1080), (1920, 1080));
+        }
+        p.sequence_mut(seq).unwrap().video_tracks[0].items.push(ti);
+        let s = p.to_json();
+        let q = Project::from_json(&s).unwrap();
+        assert_eq!(p, q);
+        assert!(q.sequence(seq).unwrap().check().is_ok());
+    }
+
+    #[test]
+    fn item_at_and_source_time() {
+        let (mut p, clip, seq) = demo_project();
+        let rate = FrameRate::FPS_24;
+        let mut a = p.make_track_item(clip, TrackKind::Video, Tick(0), TimeRange::new(Tick(1000), rate.tick_of(48)), rate).unwrap();
+        a.speed = 2.0;
+        let t = &mut p.sequence_mut(seq).unwrap().video_tracks[0];
+        t.items.push(a.clone());
+        assert_eq!(t.item_at(rate.tick_of(10)).unwrap().id, a.id);
+        assert!(t.item_at(rate.tick_of(48)).is_none());
+        assert_eq!(a.source_time_at(rate.tick_of(10)), Tick(1000) + rate.tick_of(20));
+    }
+
+    #[test]
+    fn bins() {
+        let mut p = Project::new("x");
+        let b = p.add_bin("Footage", None);
+        let i = p.add_item("a", Label::Iris, ItemKind::AdjustmentLayer { width: 10, height: 10, rate: FrameRate::FPS_24, duration: Tick(1) }, Some(b));
+        assert_eq!(p.root.parent_of(i), Some(b));
+        assert!(p.root.remove_item(i));
+        assert_eq!(p.root.parent_of(i), None);
+    }
+}
