@@ -16,6 +16,8 @@ pub enum ParamValue {
     Bool(bool),
     Choice(u32),
     Text(String),
+    /// Curve control points (x, y) in 0..1, sorted by x (Lumetri curves).
+    Curve(Vec<[f32; 2]>),
 }
 
 impl ParamValue {
@@ -36,6 +38,12 @@ impl ParamValue {
     pub fn as_color(&self) -> Option<[f32; 4]> {
         match self {
             ParamValue::Color(c) => Some(*c),
+            _ => None,
+        }
+    }
+    pub fn as_curve(&self) -> Option<&[[f32; 2]]> {
+        match self {
+            ParamValue::Curve(c) => Some(c),
             _ => None,
         }
     }

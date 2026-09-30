@@ -4,6 +4,7 @@
 pub mod dialogs;
 pub mod effect_controls;
 pub mod effects;
+pub mod lumetri;
 pub mod export_mode;
 pub mod import_mode;
 pub mod meters;
@@ -30,7 +31,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, p: PanelKind, rect: Rect)
         PanelKind::Effects => effects::show(app, ui, rect),
         PanelKind::EffectControls => effect_controls::show(app, ui, rect),
         PanelKind::AudioMeters => meters::show(app, ui, rect),
-        PanelKind::LumetriColor => effect_controls::lumetri_panel(app, ui, rect),
+        PanelKind::LumetriColor => lumetri::show(app, ui, rect),
         PanelKind::Properties => effect_controls::properties_panel(app, ui, rect),
         PanelKind::History => misc::history(app, ui, rect),
         PanelKind::Markers => misc::markers(app, ui, rect),

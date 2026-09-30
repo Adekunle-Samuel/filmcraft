@@ -1773,6 +1773,7 @@ fn json_to_param(template: &ParamValue, v: &Value) -> Option<ParamValue> {
         ParamValue::Bool(_) => ParamValue::Bool(v.as_bool()?),
         ParamValue::Choice(_) => ParamValue::Choice(v.as_u64()? as u32),
         ParamValue::Text(_) => ParamValue::Text(v.as_str()?.to_string()),
+        ParamValue::Curve(_) => ParamValue::Curve(v.as_array()?.iter().filter_map(|p| Some([p.get(0)?.as_f64()? as f32, p.get(1)?.as_f64()? as f32])).collect()),
     })
 }
 

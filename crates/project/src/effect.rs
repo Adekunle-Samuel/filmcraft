@@ -37,6 +37,10 @@ pub enum ParamKind {
     Choice(&'static [&'static str]),
     Angle,
     Text,
+    /// Tone curve (x in, y out); `hue` curves use a rainbow baseline with y = 0.5 as neutral.
+    Curve { hue: bool },
+    /// Colour wheel offset (x, y in −1..1).
+    Wheel,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -194,6 +198,13 @@ fn ch(id: &'static str, label: &'static str, opts: &'static [&'static str], def:
 }
 fn ang(id: &'static str, label: &'static str, def: f64) -> ParamDef {
     ParamDef { id, label, kind: ParamKind::Angle, default: ParamValue::Float(def), animatable: true, group: None }
+}
+fn curve(id: &'static str, label: &'static str, hue: bool) -> ParamDef {
+    let default = if hue { ParamValue::Curve(vec![]) } else { ParamValue::Curve(vec![[0.0, 0.0], [1.0, 1.0]]) };
+    ParamDef { id, label, kind: ParamKind::Curve { hue }, default, animatable: false, group: None }
+}
+fn wheel(id: &'static str, label: &'static str) -> ParamDef {
+    ParamDef { id, label, kind: ParamKind::Wheel, default: ParamValue::Vec2(Vec2::new(0.0, 0.0)), animatable: true, group: None }
 }
 fn grp(mut p: ParamDef, g: &'static str) -> ParamDef {
     p.group = Some(g);
@@ -391,13 +402,42 @@ fn build_effects() -> Vec<EffectDef> {
                 grp(f("whites", "Whites", 0.0, -100.0, 100.0, ""), "Basic Correction"),
                 grp(f("blacks", "Blacks", 0.0, -100.0, 100.0, ""), "Basic Correction"),
                 grp(fs("saturation", "Saturation", 100.0, (0.0, 200.0), (0.0, 200.0), "", 1), "Basic Correction"),
-                grp(f("faded_film", "Faded Film", 0.0, 0.0, 100.0, ""), "Creative"),
+                grp(ch("look", "Look", &["None", "Teal & Orange", "Warm Film", "Cool Blue", "Bleach Bypass", "Faded Matte", "Monochrome", "Golden Hour", "Night"], 0), "Creative"),
+            grp(fs("look_intensity", "Intensity", 100.0, (0.0, 200.0), (0.0, 200.0), "", 1), "Creative"),
+            grp(f("faded_film", "Faded Film", 0.0, 0.0, 100.0, ""), "Creative"),
                 grp(f("sharpen", "Sharpen", 0.0, -100.0, 100.0, ""), "Creative"),
                 grp(f("vibrance", "Vibrance", 0.0, -100.0, 100.0, ""), "Creative"),
                 grp(fs("creative_sat", "Saturation", 100.0, (0.0, 200.0), (0.0, 200.0), "", 1), "Creative"),
                 grp(col("shadow_tint", "Shadow Tint", [0.5, 0.5, 0.5, 1.0]), "Creative"),
                 grp(col("highlight_tint", "Highlight Tint", [0.5, 0.5, 0.5, 1.0]), "Creative"),
-                grp(f("vignette_amount", "Amount", 0.0, -5.0, 5.0, ""), "Vignette"),
+                grp(curve("curve_luma", "Luma Curve", false), "Curves"),
+            grp(curve("curve_red", "Red Curve", false), "Curves"),
+            grp(curve("curve_green", "Green Curve", false), "Curves"),
+            grp(curve("curve_blue", "Blue Curve", false), "Curves"),
+            grp(curve("hue_vs_sat", "Hue vs Sat", true), "Curves"),
+            grp(curve("hue_vs_hue", "Hue vs Hue", true), "Curves"),
+            grp(curve("hue_vs_luma", "Hue vs Luma", true), "Curves"),
+            grp(curve("luma_vs_sat", "Luma vs Sat", true), "Curves"),
+            grp(curve("sat_vs_sat", "Sat vs Sat", true), "Curves"),
+            grp(wheel("wheel_shadows", "Shadows"), "Color Wheels & Match"),
+            grp(f("wheel_shadows_l", "Shadows Lightness", 0.0, -100.0, 100.0, ""), "Color Wheels & Match"),
+            grp(wheel("wheel_midtones", "Midtones"), "Color Wheels & Match"),
+            grp(f("wheel_midtones_l", "Midtones Lightness", 0.0, -100.0, 100.0, ""), "Color Wheels & Match"),
+            grp(wheel("wheel_highlights", "Highlights"), "Color Wheels & Match"),
+            grp(f("wheel_highlights_l", "Highlights Lightness", 0.0, -100.0, 100.0, ""), "Color Wheels & Match"),
+            grp(b("hsl_on", "Enable HSL Secondary", false), "HSL Secondary"),
+            grp(fs("hsl_hue", "Hue Center", 0.0, (0.0, 360.0), (0.0, 360.0), "°", 0), "HSL Secondary"),
+            grp(fs("hsl_hue_range", "Hue Range", 30.0, (1.0, 180.0), (1.0, 180.0), "°", 0), "HSL Secondary"),
+            grp(fs("hsl_sat_min", "Saturation Min", 10.0, (0.0, 100.0), (0.0, 100.0), "", 0), "HSL Secondary"),
+            grp(fs("hsl_luma_min", "Luma Min", 5.0, (0.0, 100.0), (0.0, 100.0), "", 0), "HSL Secondary"),
+            grp(fs("hsl_luma_max", "Luma Max", 95.0, (0.0, 100.0), (0.0, 100.0), "", 0), "HSL Secondary"),
+            grp(f("hsl_soft", "Soften", 20.0, 0.0, 100.0, ""), "HSL Secondary"),
+            grp(ch("hsl_show_mask", "Show Mask", &["Off", "Color/Gray", "Color/Black", "White/Black"], 0), "HSL Secondary"),
+            grp(f("hsl_temp", "Temperature", 0.0, -100.0, 100.0, ""), "HSL Secondary"),
+            grp(f("hsl_tint", "Tint", 0.0, -100.0, 100.0, ""), "HSL Secondary"),
+            grp(fs("hsl_sat", "Saturation", 100.0, (0.0, 200.0), (0.0, 200.0), "", 1), "HSL Secondary"),
+            grp(f("hsl_hue_shift", "Hue Shift", 0.0, -180.0, 180.0, "°"), "HSL Secondary"),
+            grp(f("vignette_amount", "Amount", 0.0, -5.0, 5.0, ""), "Vignette"),
                 grp(f("vignette_midpoint", "Midpoint", 50.0, 0.0, 100.0, ""), "Vignette"),
                 grp(f("vignette_roundness", "Roundness", 0.0, -100.0, 100.0, ""), "Vignette"),
                 grp(f("vignette_feather", "Feather", 50.0, 0.0, 100.0, ""), "Vignette"),

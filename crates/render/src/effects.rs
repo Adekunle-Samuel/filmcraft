@@ -925,6 +925,7 @@ fn lumetri(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
         }
         dec(v)
     });
+    lumetri_advanced(img, e, cx);
     if sharpen.abs() > 1e-3 {
         unsharp(img, 1.2 * cx.px_scale.max(0.35), sharpen.max(-1.0), 0.0);
     }
@@ -1162,5 +1163,248 @@ mod tests {
         for (a, b) in img.px.iter().zip(&before.px) {
             assert!((a - b).abs() < 2e-3, "{a} {b}");
         }
+    }
+}
+
+/// Monotone cubic (Fritsch–Carlson) interpolation through sorted control points, as a LUT of `n`
+/// entries over x ∈ [0, 1]. Monotone curves never overshoot, which keeps tone curves well-behaved.
+pub fn curve_lut(points: &[[f32; 2]], n: usize) -> Vec<f32> {
+    let mut pts: Vec<[f32; 2]> = points.to_vec();
+    pts.sort_by(|a, b| a[0].total_cmp(&b[0]));
+    pts.dedup_by(|a, b| (a[0] - b[0]).abs() < 1e-6);
+    if pts.len() < 2 {
+        let y = pts.first().map_or(0.0, |p| p[1]);
+        return if pts.is_empty() { (0..n).map(|i| i as f32 / (n - 1) as f32).collect() } else { vec![y; n] };
+    }
+    let m = pts.len();
+    let d: Vec<f32> = (0..m - 1).map(|i| (pts[i + 1][1] - pts[i][1]) / (pts[i + 1][0] - pts[i][0]).max(1e-6)).collect();
+    let mut t = vec![0f32; m];
+    t[0] = d[0];
+    t[m - 1] = d[m - 2];
+    for i in 1..m - 1 {
+        t[i] = if d[i - 1] * d[i] <= 0.0 { 0.0 } else { (d[i - 1] + d[i]) / 2.0 };
+    }
+    for i in 0..m - 1 {
+        if d[i].abs() < 1e-9 {
+            t[i] = 0.0;
+            t[i + 1] = 0.0;
+            continue;
+        }
+        let a = t[i] / d[i];
+        let b = t[i + 1] / d[i];
+        let h = a * a + b * b;
+        if h > 9.0 {
+            let k = 3.0 / h.sqrt();
+            t[i] = k * a * d[i];
+            t[i + 1] = k * b * d[i];
+        }
+    }
+    (0..n)
+        .map(|j| {
+            let x = j as f32 / (n - 1) as f32;
+            if x <= pts[0][0] {
+                return pts[0][1];
+            }
+            if x >= pts[m - 1][0] {
+                return pts[m - 1][1];
+            }
+            let i = pts.partition_point(|p| p[0] <= x) - 1;
+            let hh = pts[i + 1][0] - pts[i][0];
+            let u = (x - pts[i][0]) / hh;
+            let (h00, h10, h01, h11) = (2.0 * u * u * u - 3.0 * u * u + 1.0, u * u * u - 2.0 * u * u + u, -2.0 * u * u * u + 3.0 * u * u, u * u * u - u * u);
+            h00 * pts[i][1] + h10 * hh * t[i] + h01 * pts[i + 1][1] + h11 * hh * t[i + 1]
+        })
+        .collect()
+}
+
+/// Periodic (hue) curve: points around the colour wheel, neutral 0.5 where there are none.
+fn hue_lut(points: &[[f32; 2]], n: usize) -> Option<Vec<f32>> {
+    if points.is_empty() {
+        return None;
+    }
+    // wrap: repeat points one period left and right, then sample 0..1
+    let mut ext = Vec::new();
+    for off in [-1.0f32, 0.0, 1.0] {
+        for p in points {
+            ext.push([p[0] + off, p[1]]);
+        }
+    }
+    let lut = curve_lut(&ext.iter().map(|p| [(p[0] + 1.0) / 3.0, p[1]]).collect::<Vec<_>>(), n * 3);
+    Some(lut[n..2 * n].to_vec())
+}
+
+fn curve_param(e: &EffectInstance, id: &str) -> Option<Vec<[f32; 2]>> {
+    e.param(id).and_then(|p| p.value.as_curve().map(|c| c.to_vec()))
+}
+
+fn is_identity_curve(c: &[[f32; 2]]) -> bool {
+    c.iter().all(|p| (p[0] - p[1]).abs() < 1e-4)
+}
+
+/// Wheel offset (zero-mean RGB direction for a wheel position).
+fn wheel_rgb(v: Vec2) -> [f32; 3] {
+    let len = (v.x * v.x + v.y * v.y).sqrt().min(1.0) as f32;
+    if len < 1e-5 {
+        return [0.0; 3];
+    }
+    let a = (v.y).atan2(v.x) as f32;
+    let tau = std::f32::consts::TAU;
+    [a.cos() * len, (a - tau / 3.0).cos() * len, (a + tau / 3.0).cos() * len]
+}
+
+/// Looks: our own procedural grades (no third-party LUTs), applied on display-encoded colour.
+fn apply_look(look: u32, c: [f32; 3]) -> [f32; 3] {
+    let l = 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
+    let mix = |a: [f32; 3], b: [f32; 3], k: f32| [a[0] + (b[0] - a[0]) * k, a[1] + (b[1] - a[1]) * k, a[2] + (b[2] - a[2]) * k];
+    let s_curve = |v: f32, k: f32| {
+        let x = v.clamp(0.0, 1.0);
+        x + (x * x * (3.0 - 2.0 * x) - x) * k
+    };
+    match look {
+        1 => {
+            // teal shadows, orange highlights
+            let shadow = [0.0, 0.08, 0.1];
+            let high = [0.1, 0.04, -0.06];
+            let c = [c[0] + shadow[0] * (1.0 - l) + high[0] * l, c[1] + shadow[1] * (1.0 - l) + high[1] * l, c[2] + shadow[2] * (1.0 - l) + high[2] * l];
+            c.map(|v| s_curve(v, 0.35))
+        }
+        2 => {
+            let c = [c[0] * 1.06 + 0.02, c[1] * 1.0 + 0.01, c[2] * 0.9];
+            mix(c, [l, l, l], 0.15).map(|v| v * 0.94 + 0.04)
+        }
+        3 => [c[0] * 0.9, c[1] * 0.98, c[2] * 1.1 + 0.02].map(|v| s_curve(v, 0.2)),
+        4 => mix(c, [l, l, l], 0.55).map(|v| s_curve(v, 0.6)),
+        5 => mix(c, [l, l, l], 0.25).map(|v| 0.08 + v * 0.84),
+        6 => [l, l, l].map(|v| s_curve(v, 0.3)),
+        7 => [c[0] * 1.1 + 0.03, c[1] * 1.02 + 0.01, c[2] * 0.82].map(|v| s_curve(v, 0.15)),
+        8 => [c[0] * 0.75, c[1] * 0.85, c[2] * 1.15].map(|v| v * 0.8),
+        _ => c,
+    }
+}
+
+fn lumetri_advanced(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
+    const N: usize = 1024;
+    let lut = |id: &str| curve_param(e, id).filter(|c| !is_identity_curve(c)).map(|c| curve_lut(&c, N));
+    let (luma_c, red_c, green_c, blue_c) = (lut("curve_luma"), lut("curve_red"), lut("curve_green"), lut("curve_blue"));
+    let hue = |id: &str| curve_param(e, id).and_then(|c| hue_lut(&c, N));
+    let (hvs, hvh, hvl, lvs, svs) = (hue("hue_vs_sat"), hue("hue_vs_hue"), hue("hue_vs_luma"), hue("luma_vs_sat"), hue("sat_vs_sat"));
+    let look = choice(e, "look");
+    let look_k = f(e, "look_intensity", cx) / 100.0;
+    let v2 = |id: &str| e.param(id).map(|p| p.vec2_at(cx.t)).unwrap_or_default();
+    let (ws, wm, wh) = (wheel_rgb(v2("wheel_shadows")), wheel_rgb(v2("wheel_midtones")), wheel_rgb(v2("wheel_highlights")));
+    let (ls, lm, lh) = (f(e, "wheel_shadows_l", cx) / 100.0, f(e, "wheel_midtones_l", cx) / 100.0, f(e, "wheel_highlights_l", cx) / 100.0);
+    let wheels = ws.iter().chain(&wm).chain(&wh).any(|v| v.abs() > 1e-5) || ls.abs() + lm.abs() + lh.abs() > 1e-5;
+    let hsl_on = b(e, "hsl_on");
+    let any = luma_c.is_some() || red_c.is_some() || green_c.is_some() || blue_c.is_some() || hvs.is_some() || hvh.is_some() || hvl.is_some() || lvs.is_some() || svs.is_some() || look > 0 || wheels || hsl_on;
+    if !any {
+        return;
+    }
+    let (hc, hr) = (f(e, "hsl_hue", cx) / 360.0, (f(e, "hsl_hue_range", cx) / 360.0).max(1e-3));
+    let (smin, lmin, lmax) = (f(e, "hsl_sat_min", cx) / 100.0, f(e, "hsl_luma_min", cx) / 100.0, f(e, "hsl_luma_max", cx) / 100.0);
+    let soft = (f(e, "hsl_soft", cx) / 100.0 * 0.3).max(0.01);
+    let show_mask = choice(e, "hsl_show_mask");
+    let (htemp, htint, hsat, hshift) = (f(e, "hsl_temp", cx) / 100.0, f(e, "hsl_tint", cx) / 100.0, f(e, "hsl_sat", cx) / 100.0, f(e, "hsl_hue_shift", cx) / 360.0);
+    let sample = |l: &Vec<f32>, x: f32| {
+        let p = x.clamp(0.0, 1.0) * (N - 1) as f32;
+        let i = p as usize;
+        let j = (i + 1).min(N - 1);
+        l[i] + (l[j] - l[i]) * (p - i as f32)
+    };
+    img.map_rgb(|c, _, _| {
+        let mut v = enc(c);
+        if look > 0 {
+            let lk = apply_look(look, v);
+            v = [v[0] + (lk[0] - v[0]) * look_k, v[1] + (lk[1] - v[1]) * look_k, v[2] + (lk[2] - v[2]) * look_k];
+        }
+        if wheels {
+            let l = (0.2126 * v[0] + 0.7152 * v[1] + 0.0722 * v[2]).clamp(0.0, 1.0);
+            let wsh = (1.0 - l).powi(2);
+            let whi = l * l;
+            let wmid = (1.0 - wsh - whi).max(0.0);
+            for k in 0..3 {
+                // lift (shadows), gamma-ish (midtones), gain (highlights)
+                v[k] += (ws[k] * 0.3 + ls * 0.3) * wsh;
+                v[k] += (wm[k] * 0.3 + lm * 0.3) * wmid;
+                v[k] *= 1.0 + (wh[k] * 0.5 + lh * 0.5) * whi;
+            }
+        }
+        if let Some(l) = &luma_c {
+            v = v.map(|q| sample(l, q));
+        }
+        if let Some(l) = &red_c {
+            v[0] = sample(l, v[0]);
+        }
+        if let Some(l) = &green_c {
+            v[1] = sample(l, v[1]);
+        }
+        if let Some(l) = &blue_c {
+            v[2] = sample(l, v[2]);
+        }
+        if hvs.is_some() || hvh.is_some() || hvl.is_some() || lvs.is_some() || svs.is_some() {
+            let mut h = rgb_to_hsl(v[0].clamp(0.0, 1.0), v[1].clamp(0.0, 1.0), v[2].clamp(0.0, 1.0));
+            let (h0, s0, l0) = (h[0], h[1], h[2]);
+            if let Some(t) = &hvh {
+                h[0] = (h[0] + (sample(t, h0) - 0.5)).rem_euclid(1.0);
+            }
+            let mut sm = 1.0;
+            if let Some(t) = &hvs {
+                sm *= sample(t, h0) * 2.0;
+            }
+            if let Some(t) = &lvs {
+                sm *= sample(t, l0) * 2.0;
+            }
+            if let Some(t) = &svs {
+                sm *= sample(t, s0) * 2.0;
+            }
+            h[1] = (h[1] * sm).clamp(0.0, 1.0);
+            if let Some(t) = &hvl {
+                h[2] = (h[2] + (sample(t, h0) - 0.5) * 0.5).clamp(0.0, 1.0);
+            }
+            v = hsl_to_rgb(h[0], h[1], h[2]);
+        }
+        if hsl_on {
+            let h = rgb_to_hsl(v[0].clamp(0.0, 1.0), v[1].clamp(0.0, 1.0), v[2].clamp(0.0, 1.0));
+            let dh = (h[0] - hc).abs().min(1.0 - (h[0] - hc).abs());
+            let mh = 1.0 - ((dh - hr / 2.0) / soft).clamp(0.0, 1.0);
+            let ms = ((h[1] - smin) / soft).clamp(0.0, 1.0);
+            let ml = ((h[2] - lmin) / soft).clamp(0.0, 1.0).min(((lmax - h[2]) / soft).clamp(0.0, 1.0));
+            let m = mh * ms * ml;
+            match show_mask {
+                1 => {
+                    let g = h[2];
+                    v = [g + (v[0] - g) * m, g + (v[1] - g) * m, g + (v[2] - g) * m];
+                }
+                2 => v = v.map(|q| q * m),
+                3 => v = [m, m, m],
+                _ => {
+                    let mut hh = h;
+                    hh[0] = (hh[0] + hshift).rem_euclid(1.0);
+                    hh[1] = (hh[1] * hsat).clamp(0.0, 1.0);
+                    let mut c2 = hsl_to_rgb(hh[0], hh[1], hh[2]);
+                    c2[0] *= 1.0 + 0.25 * htemp;
+                    c2[2] *= 1.0 - 0.25 * htemp;
+                    c2[1] *= 1.0 - 0.2 * htint;
+                    v = [v[0] + (c2[0] - v[0]) * m, v[1] + (c2[1] - v[1]) * m, v[2] + (c2[2] - v[2]) * m];
+                }
+            }
+        }
+        dec(v)
+    });
+}
+
+#[cfg(test)]
+mod curve_tests {
+    use super::*;
+
+    #[test]
+    fn identity_and_monotone() {
+        let l = curve_lut(&[[0.0, 0.0], [1.0, 1.0]], 64);
+        for (i, v) in l.iter().enumerate() {
+            assert!((v - i as f32 / 63.0).abs() < 1e-4);
+        }
+        let s = curve_lut(&[[0.0, 0.0], [0.25, 0.15], [0.75, 0.85], [1.0, 1.0]], 256);
+        assert!(s.windows(2).all(|w| w[1] >= w[0] - 1e-6), "monotone");
+        let h = hue_lut(&[[0.0, 0.8], [0.5, 0.2]], 64).unwrap();
+        assert!((h[0] - h[63]).abs() < 0.05, "periodic");
     }
 }

@@ -164,14 +164,14 @@ pub fn workspace(name: &str) -> DockNode {
             ),
             bottom_editing(),
         ),
-        "Color" => vsplit(
-            Ratio(0.58),
-            hsplit(
-                FixedB(330.0),
+        "Color" => hsplit(
+            FixedB(340.0),
+            vsplit(
+                Ratio(0.58),
                 hsplit(Ratio(0.42), tabs(&[LumetriScopes, Source, EffectControls], 0), tabs(&[Program], 0)),
-                tabs(&[LumetriColor, Effects], 0),
+                hsplit(Ratio(0.3), tabs(&[Project, Info, Markers, History], 0), bottom_editing()),
             ),
-            hsplit(FixedB(330.0), hsplit(Ratio(0.3), tabs(&[Project, Info, Markers, History], 0), bottom_editing()), tabs(&[LumetriColor], 0)),
+            tabs(&[LumetriColor, Effects], 0),
         ),
         "Effects" => hsplit(
             FixedB(320.0),
