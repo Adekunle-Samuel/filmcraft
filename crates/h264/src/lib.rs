@@ -17,12 +17,11 @@
 
 // Index loops over fixed-size blocks read more clearly than iterator chains in codec code.
 #![allow(clippy::needless_range_loop, clippy::too_many_arguments)]
-// Deblocking tables and per-slice filter parameters are consumed by the M2.5 loop filter.
-#![allow(dead_code)]
 
 mod cavlc;
 #[rustfmt::skip]
 mod cavlc_tables;
+mod deblock;
 mod decoder;
 mod dpb;
 mod error;

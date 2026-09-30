@@ -17,4 +17,17 @@ macro_rules! fixture_tests {
     };
 }
 
-fixture_tests!(intra_cavlc, intra_cavlc_noise, intra_cavlc_8x8, intra_cavlc_cqm, p_cavlc_nodeblock,);
+fixture_tests!(
+    intra_cavlc,
+    intra_cavlc_noise,
+    intra_cavlc_8x8,
+    intra_cavlc_cqm,
+    p_cavlc_nodeblock,
+    baseline_qcif,
+    baseline_cif_noise,
+    cavlc_b,
+    cavlc_b_temporal,
+    cavlc_weightp,
+    slices4_cavlc,
+    qp1_cavlc,
+);

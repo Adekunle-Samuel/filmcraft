@@ -1,5 +1,6 @@
 //! Top-level decoder: NAL dispatch, picture boundaries, POC, DPB, output.
 
+use crate::deblock;
 use crate::dpb::{Dpb, Output, OutputMeta};
 use crate::error::{Error, Result, ensure, unsupported};
 use crate::params::{Pps, Sps};
@@ -320,7 +321,8 @@ fn output_meta(sps: &Sps, pts: i64, key: bool) -> OutputMeta {
 
 impl Decoder {
     fn finish_picture(&mut self) {
-        let Some(cur) = self.cur.take() else { return };
+        let Some(mut cur) = self.cur.take() else { return };
+        deblock::deblock_picture(&mut cur.pic);
         // motion field for co-located use
         let n = cur.pic.mbs.len();
         let mut motion = MotionField {
