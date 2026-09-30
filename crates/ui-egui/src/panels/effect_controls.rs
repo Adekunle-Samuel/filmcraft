@@ -57,6 +57,17 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let lx = |tk: Tick| -> f32 { lane.min.x + (((tk - it.start).0 as f64 / dur) as f32).clamp(0.0, 1.0) * lane.width() };
     ui.painter().rect_filled(Rect::from_min_max(pos2(lane.min.x, lane.min.y + 2.0), pos2(lane.max.x, lane.min.y + 16.0)), 2.0, Color32::from_rgb(58, 58, 70));
     ui.painter().text(pos2(lane.min.x + 4.0, lane.min.y + 9.0), Align2::LEFT_CENTER, &it.name, Tokens::ui(10.0), t.text);
+    let scrub = Rect::from_min_max(lane.min, pos2(lane.max.x, lane.min.y + 18.0));
+    let sresp = ui.interact(scrub, egui::Id::new(("ec-scrub", clip.0)), Sense::click_and_drag());
+    app.auto.add("effectControls.lane", lane, "keyframe lane");
+    if (sresp.dragged() || sresp.clicked())
+        && let Some(pos) = sresp.interact_pointer_pos()
+    {
+        let f = ((pos.x - lane.min.x) / lane.width()).clamp(0.0, 1.0) as f64;
+        let tk = it.start + Tick((f * it.duration.0 as f64) as i64);
+        app.stop();
+        app.session.set_playhead(tk);
+    }
     let body = Rect::from_min_max(pos2(rect.min.x, head.max.y + 4.0), pos2(split, rect.max.y - 26.0));
     let mut actions: Vec<(String, Value)> = Vec::new();
     let mut bui = ui.new_child(egui::UiBuilder::new().max_rect(body).id_salt("ec-body"));
@@ -232,17 +243,118 @@ fn param_row(
     if let Some(v) = set {
         actions.push(("effects.setParam".into(), json!({"clip": clip.0, "effect": idx, "param": pd.id, "value": v})));
     }
-    // keyframes in the lane
+    // keyframe navigator ◀ ◆ ▶ (when animated)
+    let eff_json = json!(idx);
+    if pd.animatable && param.is_animated() {
+        let nx = r.max.x - 58.0;
+        let cy = r.center().y;
+        let at_key = param.keyframes.iter().any(|k| k.time == mt);
+        let prev = param.prev_keyframe(mt);
+        let next = param.next_keyframe(mt);
+        let to_tl = |k: Tick| it.start + Tick(((k - it.source_in).0 as f64 / it.speed.abs().max(1e-6)) as i64);
+        let pr = Rect::from_center_size(pos2(nx, cy), vec2(12.0, 14.0));
+        let kr = Rect::from_center_size(pos2(nx + 16.0, cy), vec2(12.0, 12.0));
+        let nr = Rect::from_center_size(pos2(nx + 32.0, cy), vec2(12.0, 14.0));
+        let arrow = |p: &egui::Painter, r: Rect, left: bool, on: bool| {
+            let c = r.center();
+            let pts = if left {
+                vec![c + vec2(3.0, -4.0), c + vec2(3.0, 4.0), c + vec2(-3.0, 0.0)]
+            } else {
+                vec![c + vec2(-3.0, -4.0), c + vec2(-3.0, 4.0), c + vec2(3.0, 0.0)]
+            };
+            p.add(egui::Shape::convex_polygon(pts, if on { t.text } else { t.text_faint }, Stroke::NONE));
+        };
+        arrow(ui.painter(), pr, true, prev.is_some());
+        arrow(ui.painter(), nr, false, next.is_some());
+        icons::paint(ui.painter(), kr, Icon::Keyframe, if at_key { t.hot_text } else { t.text_dim });
+        if ui.interact(pr, egui::Id::new(("kprev", clip.0, idx, pd.id)), Sense::click()).clicked()
+            && let Some(k) = prev
+        {
+            actions.push(("playhead.set".into(), json!({"time": to_tl(k).0})));
+        }
+        if ui.interact(nr, egui::Id::new(("knext", clip.0, idx, pd.id)), Sense::click()).clicked()
+            && let Some(k) = next
+        {
+            actions.push(("playhead.set".into(), json!({"time": to_tl(k).0})));
+        }
+        if ui.interact(kr, egui::Id::new(("kadd", clip.0, idx, pd.id)), Sense::click()).on_hover_text("Add/Remove Keyframe").clicked() {
+            actions.push(("effects.addKeyframe".into(), json!({"clip": clip.0, "effect": eff_json, "param": pd.id})));
+        }
+        app.auto.add(&format!("effectControls.{}.{}.addKeyframe", e.effect, pd.id), kr, "Add/Remove Keyframe");
+    }
+    // keyframes in the lane: draggable diamonds; right-click for interpolation
     if param.is_animated() {
         let y = r.center().y;
+        let dur = it.duration.0.max(1) as f64;
+        let rate = app.session.sequence_rate();
         for k in &param.keyframes {
-            // media time → timeline
             let tl = it.start + Tick(((k.time - it.source_in).0 as f64 / it.speed.abs().max(1e-6)) as i64);
-            let f = ((tl - it.start).0 as f64 / it.duration.0.max(1) as f64) as f32;
-            if (0.0..=1.0).contains(&f) {
-                let kx = lane.min.x + f * lane.width();
-                icons::paint(ui.painter(), Rect::from_center_size(pos2(kx, y), vec2(10.0, 10.0)), Icon::Keyframe, Color32::from_rgb(200, 200, 200));
+            let f = ((tl - it.start).0 as f64 / dur) as f32;
+            if !(-0.01..=1.01).contains(&f) {
+                continue;
             }
+            let id = egui::Id::new(("kf", clip.0, idx, pd.id, k.time.0));
+            let drag_off: Option<f32> = ui.data(|d| d.get_temp(id));
+            let kx = lane.min.x + f * lane.width() + drag_off.unwrap_or(0.0);
+            let kr = Rect::from_center_size(pos2(kx, y), vec2(11.0, 11.0));
+            let resp = ui.interact(kr.expand(2.0), id, Sense::click_and_drag());
+            app.auto.add(&format!("effectControls.{}.{}.keyframe.{}", e.effect, pd.id, k.time.0), kr, "keyframe");
+            let sel = k.time == mt || resp.dragged();
+            let col = if sel { t.hot_text } else { Color32::from_rgb(0xb0, 0xb0, 0xb0) };
+            match k.interp {
+                filmcraft_project::Interpolation::Hold => {
+                    ui.painter().rect_filled(Rect::from_center_size(kr.center(), vec2(8.0, 8.0)), 0.0, col);
+                }
+                filmcraft_project::Interpolation::Linear => icons::paint(ui.painter(), kr, Icon::Keyframe, col),
+                _ => {
+                    ui.painter().circle_filled(kr.center(), 4.5, col);
+                }
+            }
+            if resp.dragged() {
+                let off = drag_off.unwrap_or(0.0) + resp.drag_delta().x;
+                ui.data_mut(|d| d.insert_temp(id, off));
+            }
+            if resp.drag_stopped() {
+                let off = drag_off.unwrap_or(0.0);
+                ui.data_mut(|d| d.remove::<f32>(id));
+                let new_tl =
+                    rate.snap_nearest(it.start + Tick(((f + off / lane.width()) as f64 * dur) as i64)).clamp(it.start, it.end() - rate.frame_duration());
+                let new_media = it.source_in + Tick(((new_tl - it.start).0 as f64 * it.speed.abs()) as i64);
+                if new_media != k.time {
+                    actions.push((
+                        "effects.moveKeyframe".into(),
+                        json!({"clip": clip.0, "effect": eff_json, "param": pd.id, "mediaTime": k.time.0, "to": new_media.0}),
+                    ));
+                }
+            }
+            if resp.clicked() {
+                actions.push(("playhead.set".into(), json!({"time": tl.0})));
+            }
+            resp.context_menu(|ui| {
+                ui.label(egui::RichText::new("Temporal Interpolation").color(t.text_dim));
+                for (label, key) in [
+                    ("Linear", "linear"),
+                    ("Bezier", "bezier"),
+                    ("Auto Bezier", "autoBezier"),
+                    ("Continuous Bezier", "continuousBezier"),
+                    ("Hold", "hold"),
+                    ("Ease In", "easeIn"),
+                    ("Ease Out", "easeOut"),
+                ] {
+                    if ui.button(label).clicked() {
+                        actions.push((
+                            "effects.setInterpolation".into(),
+                            json!({"clip": clip.0, "effect": eff_json, "param": pd.id, "mediaTime": k.time.0, "interpolation": key}),
+                        ));
+                        ui.close();
+                    }
+                }
+                ui.separator();
+                if ui.button("Clear").clicked() {
+                    actions.push(("effects.deleteKeyframe".into(), json!({"clip": clip.0, "effect": eff_json, "param": pd.id, "mediaTime": k.time.0})));
+                    ui.close();
+                }
+            });
         }
     }
 }

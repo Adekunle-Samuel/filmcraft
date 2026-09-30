@@ -1501,6 +1501,30 @@ fn build() -> Vec<CommandSpec> {
             })?;
             Ok(Value::Null)
         }),
+        cmd!("effects.addKeyframe", "Add/Remove Keyframe", [], None, r#"{"clip":id,"effect":str|index,"param":str,"time":ticks?}"#, has_seq, |s, p| {
+            keyframe_op(s, p, "add")
+        }),
+        cmd!("effects.deleteKeyframe", "Delete Keyframe", [], None, r#"{"clip":id,"effect":str|index,"param":str,"mediaTime":ticks}"#, has_seq, |s, p| {
+            keyframe_op(s, p, "delete")
+        }),
+        cmd!(
+            "effects.moveKeyframe",
+            "Move Keyframe",
+            [],
+            None,
+            r#"{"clip":id,"effect":str|index,"param":str,"mediaTime":ticks,"to":ticks}"#,
+            has_seq,
+            |s, p| keyframe_op(s, p, "move")
+        ),
+        cmd!(
+            "effects.setInterpolation",
+            "Keyframe Interpolation",
+            [],
+            None,
+            r#"{"clip":id,"effect":str|index,"param":str,"mediaTime":ticks,"interpolation":"linear|bezier|autoBezier|continuousBezier|hold|easeIn|easeOut"}"#,
+            has_seq,
+            |s, p| keyframe_op(s, p, "interp")
+        ),
         // ================= Project panel =================
         cmd!("project.select", "Select Project Items", [], None, r#"{"items":[id]}"#, always, |s, p| {
             s.state.project_selection =
@@ -1625,6 +1649,71 @@ fn export_media(s: &mut Session, p: &Value) -> Result<Value> {
         std::thread::Builder::new().name("filmcraft-export".into()).spawn(run).map_err(|e| EngineError::Other(e.to_string()))?;
     }
     Ok(json!({"job": id}))
+}
+
+fn keyframe_op(s: &mut Session, p: &Value, op: &str) -> Result<Value> {
+    let c = clip_p(p, "clip").ok_or_else(|| bad("keyframe", "need `clip`"))?;
+    let pid = str_p(p, "param").ok_or_else(|| bad("keyframe", "need `param`"))?.to_string();
+    let eff = p.get("effect").cloned().unwrap_or(json!("motion"));
+    let ph = time_p(s, p, "").unwrap_or(s.playhead());
+    let mtime = p.get("mediaTime").and_then(Value::as_i64).map(Tick);
+    let to = p.get("to").and_then(Value::as_i64).map(Tick);
+    let interp = str_p(p, "interpolation").map(str::to_string);
+    let label = match op {
+        "add" => "Add Keyframe",
+        "delete" => "Delete Keyframe",
+        "move" => "Move Keyframe",
+        _ => "Keyframe Interpolation",
+    };
+    s.edit_sequence(label, |q, _, _| {
+        let (_, it) = q.find_item_mut(c).ok_or(filmcraft_edit::EditError::NoItem(c))?;
+        let mt_now = it.source_time_at(ph.clamp(it.start, it.end() - Tick(1)));
+        let e = match &eff {
+            Value::Number(n) => it.effects.get_mut(n.as_u64().unwrap_or(0) as usize),
+            Value::String(sid) => it.effects.iter_mut().find(|e| &e.effect == sid),
+            _ => None,
+        }
+        .ok_or_else(|| bad("keyframe", "no such effect"))?;
+        let prm = e.params.get_mut(&pid).ok_or_else(|| bad("keyframe", "no such param"))?;
+        match op {
+            "add" => {
+                // toggle: remove if a keyframe sits at the playhead, else add
+                if !prm.remove_keyframe_at(mt_now) {
+                    prm.add_keyframe(mt_now);
+                }
+            }
+            "delete" => {
+                prm.remove_keyframe_at(mtime.ok_or_else(|| bad("keyframe", "need `mediaTime`"))?);
+            }
+            "move" => {
+                let from = mtime.ok_or_else(|| bad("keyframe", "need `mediaTime`"))?;
+                let to = to.ok_or_else(|| bad("keyframe", "need `to`"))?;
+                if let Some(i) = prm.keyframes.iter().position(|k| k.time == from) {
+                    let mut k = prm.keyframes.remove(i);
+                    k.time = to;
+                    prm.keyframes.retain(|x| x.time != to);
+                    let at = prm.keyframes.partition_point(|x| x.time < to);
+                    prm.keyframes.insert(at, k);
+                }
+            }
+            _ => {
+                let at = mtime.unwrap_or(mt_now);
+                let kind = match interp.as_deref().unwrap_or("linear").to_ascii_lowercase().as_str() {
+                    "bezier" => filmcraft_project::Interpolation::Bezier,
+                    "autobezier" => filmcraft_project::Interpolation::AutoBezier,
+                    "continuousbezier" => filmcraft_project::Interpolation::ContinuousBezier,
+                    "hold" => filmcraft_project::Interpolation::Hold,
+                    "easein" => filmcraft_project::Interpolation::EaseIn,
+                    "easeout" => filmcraft_project::Interpolation::EaseOut,
+                    _ => filmcraft_project::Interpolation::Linear,
+                };
+                let k = prm.keyframes.iter_mut().find(|k| k.time == at).ok_or_else(|| bad("keyframe", "no keyframe at that time"))?;
+                k.interp = kind;
+            }
+        }
+        Ok(())
+    })?;
+    Ok(Value::Null)
 }
 
 fn in_out_range(s: &Session) -> Result<TimeRange> {
