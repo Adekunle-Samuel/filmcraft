@@ -35,6 +35,8 @@ mod slicedec;
 #[rustfmt::skip]
 #[allow(dead_code)]
 mod spec_tables;
+#[cfg(test)]
+mod synth_tests;
 mod tables;
 mod transform;
 
