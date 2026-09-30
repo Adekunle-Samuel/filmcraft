@@ -7,6 +7,8 @@
 
 mod audio;
 mod control_server;
+#[cfg(target_os = "macos")]
+mod native_menu;
 
 use filmcraft_engine::Session;
 use filmcraft_ui_egui::FilmcraftApp;
@@ -75,6 +77,12 @@ fn main() -> eframe::Result {
             }));
             app.hooks.pick_open_project =
                 Some(Box::new(|| rfd::FileDialog::new().add_filter("FilmCraft Project", &["fcproj"]).pick_file().map(|p| p.to_string_lossy().to_string())));
+            #[cfg(target_os = "macos")]
+            {
+                let rx = native_menu::install(&app, cc.egui_ctx.clone());
+                app.command_inbox = Some(rx);
+                app.ui.show_menu_bar = false;
+            }
             if let Some(port) = control_port {
                 let rx = control_server::start(port, cc.egui_ctx.clone());
                 app = app.with_control(rx);

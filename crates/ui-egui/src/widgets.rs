@@ -129,23 +129,27 @@ pub fn search_field(ui: &mut Ui, text: &mut String, hint: &str, width: f32, t: &
 
 /// Premiere-style dropdown text ("Fit ▾").
 pub fn dropdown_text(ui: &mut Ui, rect: Rect, text: &str, t: &Tokens, id: egui::Id) -> Response {
+    // Premiere: 24 pt, #0e0e0e fill, 1 pt #303030 border, radius 4, chevron at the right.
     let resp = ui.interact(rect, id, Sense::click());
-    if resp.hovered() {
-        ui.painter().rect_filled(rect, 3.0, t.hover);
-    }
-    ui.painter().text(pos2(rect.min.x + 6.0, rect.center().y), Align2::LEFT_CENTER, text, Tokens::ui(11.5), t.text);
-    icons::paint(ui.painter(), Rect::from_center_size(pos2(rect.max.x - 8.0, rect.center().y), vec2(9.0, 9.0)), Icon::ChevronDown, t.text_dim);
+    ui.painter().rect_filled(rect, 4.0, t.field_bg);
+    ui.painter().rect_stroke(
+        rect,
+        4.0,
+        Stroke::new(1.0, if resp.hovered() { Color32::from_rgb(0x4b, 0x4b, 0x4b) } else { t.field_border }),
+        StrokeKind::Inside,
+    );
+    ui.painter().text(pos2(rect.min.x + 9.0, rect.center().y), Align2::LEFT_CENTER, text, Tokens::ui(12.0), t.text);
+    icons::paint(ui.painter(), Rect::from_center_size(pos2(rect.max.x - 11.0, rect.center().y), vec2(9.0, 9.0)), Icon::ChevronDown, t.text_dim);
     resp
 }
 
 /// Level meter bar (dBFS), vertical.
 pub fn meter_bar(painter: &egui::Painter, rect: Rect, db: f32, peak_db: f32, t: &Tokens) {
-    painter.rect_filled(rect, 0.0, Color32::from_rgb(12, 12, 12));
+    // Premiere: green gradient (#579f51 → #70dc5d), yellow above −12 dB, red above −3 dB.
     let norm = |d: f32| ((d + 60.0) / 60.0).clamp(0.0, 1.0);
     let h = rect.height() * norm(db);
     if h > 0.0 {
-        // gradient green → yellow → red
-        let n = 24;
+        let n = 40;
         for i in 0..n {
             let f0 = i as f32 / n as f32;
             let f1 = (i + 1) as f32 / n as f32;
@@ -156,20 +160,20 @@ pub fn meter_bar(painter: &egui::Painter, rect: Rect, db: f32, peak_db: f32, t: 
             let y0 = rect.max.y - (f1 * rect.height()).min(h);
             let db_here = -60.0 + f1 * 60.0;
             let c = if db_here > -3.0 {
-                Color32::from_rgb(230, 60, 50)
+                Color32::from_rgb(0xe3, 0x48, 0x50)
             } else if db_here > -12.0 {
-                Color32::from_rgb(225, 200, 50)
+                Color32::from_rgb(0xf0, 0xf0, 0x4f)
             } else {
-                Color32::from_rgb(60, 190, 80)
+                let k = f1 / 0.8;
+                let lerp = |a: u8, b: u8| (a as f32 + (b as f32 - a as f32) * k) as u8;
+                Color32::from_rgb(lerp(0x57, 0x70), lerp(0x9f, 0xdc), lerp(0x51, 0x5d))
             };
             painter.rect_filled(Rect::from_min_max(pos2(rect.min.x, y0), pos2(rect.max.x, y1)), 0.0, c);
         }
     }
-    let py = rect.max.y - rect.height() * norm(peak_db);
-    if peak_db > -60.0 {
-        painter.line_segment(
-            [pos2(rect.min.x, py), pos2(rect.max.x, py)],
-            Stroke::new(1.0, if peak_db > -0.5 { t.danger } else { Color32::from_rgb(200, 200, 200) }),
-        );
-    }
+    let py = (rect.max.y - rect.height() * norm(peak_db)).min(rect.max.y - 1.0);
+    painter.line_segment(
+        [pos2(rect.min.x, py), pos2(rect.max.x, py)],
+        Stroke::new(1.0, if peak_db > -0.5 { t.danger } else { Color32::from_rgb(0xf0, 0xf0, 0x4f) }),
+    );
 }

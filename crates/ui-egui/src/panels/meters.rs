@@ -33,22 +33,28 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     }
     ui.data_mut(|d| d.insert_temp(id, st));
     let _ = now;
-    let area = Rect::from_min_max(pos2(rect.min.x + 6.0, rect.min.y + 6.0), pos2(rect.max.x - 22.0, rect.max.y - 24.0));
-    let w = ((area.width() - 3.0) / 2.0).max(3.0);
+    // Premiere: black meter area, scale 0 … −57 dB in 3 dB steps on the right, "dB" at the foot.
+    let area = Rect::from_min_max(pos2(rect.min.x + 8.0, rect.min.y + 8.0), pos2(rect.max.x - 26.0, rect.max.y - 30.0));
+    ui.painter().rect_filled(
+        Rect::from_min_max(pos2(rect.min.x + 4.0, rect.min.y + 4.0), pos2(rect.max.x - 4.0, rect.max.y - 26.0)),
+        0.0,
+        egui::Color32::BLACK,
+    );
+    let w = ((area.width() - 4.0) / 2.0).max(3.0);
     for c in 0..2 {
-        let r = Rect::from_min_size(pos2(area.min.x + c as f32 * (w + 3.0), area.min.y), vec2(w, area.height()));
+        let r = Rect::from_min_size(pos2(area.min.x + c as f32 * (w + 4.0), area.min.y), vec2(w, area.height()));
         crate::widgets::meter_bar(ui.painter(), r, st[c], st[c + 2], &t);
     }
-    // dB scale
-    for db in [0, -6, -12, -18, -24, -30, -36, -42, -48, -54] {
-        let y = area.max.y - area.height() * ((db as f32 + 60.0) / 60.0);
-        ui.painter().text(pos2(rect.max.x - 4.0, y), Align2::RIGHT_CENTER, format!("{db}"), Tokens::ui(8.5), t.text_faint);
+    let mut db = 0;
+    while db >= -57 {
+        let y = area.min.y + area.height() * (-db as f32 / 60.0);
+        ui.painter().text(pos2(rect.max.x - 6.0, y), Align2::RIGHT_CENTER, format!("{db}"), Tokens::ui(8.5), t.text_dim);
+        db -= 3;
     }
-    // S S solo buttons at the bottom (Premiere has solo toggles per channel)
+    ui.painter().text(pos2(rect.max.x - 6.0, area.max.y + 10.0), Align2::RIGHT_CENTER, "dB", Tokens::ui(8.5), t.text_dim);
     for c in 0..2 {
-        let r = Rect::from_min_size(pos2(area.min.x + c as f32 * (w + 3.0), rect.max.y - 20.0), vec2(w.max(12.0), 14.0));
-        ui.painter().rect_stroke(r, 7.0, egui::Stroke::new(1.0, t.separator), egui::StrokeKind::Inside);
-        ui.painter().text(r.center(), Align2::CENTER_CENTER, "S", Tokens::ui(8.5), t.text_dim);
+        let r = Rect::from_center_size(pos2(area.min.x + c as f32 * (w + 4.0) + w / 2.0, rect.max.y - 14.0), vec2(14.0, 14.0));
+        ui.painter().text(r.center(), Align2::CENTER_CENTER, "S", Tokens::ui(10.0), t.text_dim);
     }
     if app.playback.playing {
         ui.ctx().request_repaint();

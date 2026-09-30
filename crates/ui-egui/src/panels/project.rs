@@ -352,15 +352,14 @@ fn icon_view(app: &mut FilmcraftApp, ui: &mut egui::Ui, root: &Bin, filter: &str
             }
             let lc = it.label.rgb();
             ui.painter().rect_filled(Rect::from_min_size(pos2(r.min.x, r.max.y + 6.0), vec2(8.0, 12.0)), 1.5, Color32::from_rgb(lc[0], lc[1], lc[2]));
-            let clip = ui.painter().with_clip_rect(Rect::from_min_max(pos2(r.min.x + 12.0, r.max.y), pos2(r.max.x - 44.0, r.max.y + 20.0)));
-            clip.text(pos2(r.min.x + 12.0, r.max.y + 12.0), Align2::LEFT_CENTER, &it.name, Tokens::ui(11.0), t.text);
-            ui.painter().text(
-                pos2(r.max.x, r.max.y + 12.0),
-                Align2::RIGHT_CENTER,
-                format_time(dur, it.frame_rate(), false, TimeDisplay::Timecode, 48000),
-                Tokens::ui(10.0),
-                t.text_dim,
-            );
+            let secs = dur.seconds().max(0.0) as u64;
+            let dtext =
+                if secs >= 3600 { format!("{}:{:02}:{:02}", secs / 3600, (secs / 60) % 60, secs % 60) } else { format!("{}:{:02}", secs / 60, secs % 60) };
+            let dg = ui.painter().layout_no_wrap(dtext, Tokens::ui(11.0), t.text_dim);
+            let dw = dg.size().x;
+            ui.painter().galley(pos2(r.max.x - dw, r.max.y + 12.0 - dg.size().y / 2.0), dg, t.text_dim);
+            let clip = ui.painter().with_clip_rect(Rect::from_min_max(pos2(r.min.x, r.max.y), pos2(r.max.x - dw - 8.0, r.max.y + 20.0)));
+            clip.text(pos2(r.min.x + 12.0, r.max.y + 12.0), Align2::LEFT_CENTER, &it.name, Tokens::ui(11.5), t.text);
             app.auto.add(&format!("project.item.{}", id.0), r, &it.name);
             item_interactions(app, ui, &resp, *id, &it.kind, actions);
         }

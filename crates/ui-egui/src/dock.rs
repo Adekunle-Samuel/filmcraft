@@ -2,7 +2,7 @@
 //! thin gutters; each group has a tab strip (active tab bright, with a panel menu "≡"); the focused
 //! panel gets a blue outline. Gutters drag to resize; workspaces are serialized trees.
 
-use egui::{Align2, Color32, Rect, Sense, Stroke, StrokeKind, pos2, vec2};
+use egui::{Align2, Rect, Sense, Stroke, StrokeKind, pos2, vec2};
 use serde::{Deserialize, Serialize};
 
 use crate::icons::{self, Icon};
@@ -153,7 +153,7 @@ pub const WORKSPACES: [&str; 9] = ["Editing", "Assembly", "Color", "Effects", "A
 pub fn workspace(name: &str) -> DockNode {
     use PanelKind::*;
     use SplitSize::*;
-    let bottom_editing = || hsplit(FixedA(38.0), tabs(&[Tools], 0), hsplit(FixedB(58.0), tabs(&[Timeline], 0), tabs(&[AudioMeters], 0)));
+    let bottom_editing = || hsplit(FixedA(64.0), tabs(&[Tools], 0), hsplit(FixedB(116.0), tabs(&[Timeline], 0), tabs(&[AudioMeters], 0)));
     match name {
         "Assembly" => vsplit(
             Ratio(0.52),
@@ -209,11 +209,20 @@ pub fn workspace(name: &str) -> DockNode {
             ),
             hsplit(Ratio(0.26), tabs(&[Project, MediaBrowser, Libraries, Info, Effects, Markers, History], 0), bottom_editing()),
         ),
-        // Editing (default), Learning, Review
+        // Editing (default), Learning, Review — Premiere 26 factory layout:
+        // top: Source group | Program | Properties; bottom: Project group | Tools | Timeline | Meters.
         _ => vsplit(
-            Ratio(0.5),
-            hsplit(Ratio(0.5), tabs(&[Source, EffectControls, AudioClipMixer, Metadata], 0), tabs(&[Program], 0)),
-            hsplit(Ratio(0.27), tabs(&[Project, MediaBrowser, Libraries, Info, Effects, Markers, History], 0), bottom_editing()),
+            Ratio(0.57),
+            hsplit(
+                FixedB(450.0),
+                hsplit(Ratio(0.5), tabs(&[Source, EffectControls, AudioClipMixer, Metadata], 0), tabs(&[Program], 0)),
+                tabs(&[Properties, EssentialGraphics, Text], 0),
+            ),
+            hsplit(
+                Ratio(0.29),
+                tabs(&[Project, MediaBrowser, Libraries, Info, Effects, Markers, History], 0),
+                hsplit(FixedA(64.0), tabs(&[Tools], 0), hsplit(FixedB(116.0), tabs(&[Timeline], 0), tabs(&[AudioMeters], 0))),
+            ),
         ),
     }
 }
@@ -386,19 +395,18 @@ pub fn draw_group_chrome(ui: &mut egui::Ui, g: &Group, focused: PanelKind, t: &T
         }
     } else {
         let strip = Rect::from_min_size(g.rect.min, vec2(g.rect.width(), t.tab_h));
-        let mut x = strip.min.x + 10.0;
+        let mut x = strip.min.x + 12.0;
+        let text_y = strip.min.y + 16.0;
         for (i, p) in g.panels.iter().enumerate() {
             let is_active = i == g.active;
-            let font = if is_active { Tokens::semibold(12.0) } else { Tokens::ui(12.0) };
-            let galley = painter.layout_no_wrap(p.title().to_string(), font, if is_active { t.tab_text_active } else { t.tab_text });
-            let menu_w = if is_active { 18.0 } else { 0.0 };
+            let galley = painter.layout_no_wrap(p.title().to_string(), Tokens::ui(12.0), if is_active { t.tab_text_active } else { t.tab_text });
+            let menu_w = if is_active { 20.0 } else { 0.0 };
             let w = galley.size().x + 16.0 + menu_w;
             if x + w > strip.max.x - 20.0 && i > g.active {
-                // overflow chevron
-                let r = Rect::from_min_size(pos2(strip.max.x - 22.0, strip.min.y + 4.0), vec2(18.0, t.tab_h - 8.0));
+                let r = Rect::from_min_size(pos2(strip.max.x - 22.0, strip.min.y + 6.0), vec2(18.0, 20.0));
                 let resp = ui.interact(r, egui::Id::new(("tab-overflow", g.path.clone())), Sense::click());
-                icons::paint(&painter, r.shrink(3.0), Icon::ChevronRight, t.tab_text);
-                icons::paint(&painter, r.shrink(3.0).translate(vec2(4.0, 0.0)), Icon::ChevronRight, t.tab_text);
+                icons::paint(&painter, r.shrink(4.0).translate(vec2(-2.0, 0.0)), Icon::ChevronRight, t.tab_text);
+                icons::paint(&painter, r.shrink(4.0).translate(vec2(2.0, 0.0)), Icon::ChevronRight, t.tab_text);
                 if resp.clicked() {
                     let next = g.panels[(g.active + 1) % g.panels.len()];
                     actions.push(DockAction::Activate(next));
@@ -408,15 +416,21 @@ pub fn draw_group_chrome(ui: &mut egui::Ui, g: &Group, focused: PanelKind, t: &T
             let tab = Rect::from_min_size(pos2(x, strip.min.y), vec2(w, t.tab_h));
             let resp = ui.interact(tab, egui::Id::new(("tab", g.path.clone(), i)), Sense::click());
             reg.add(&format!("panel.tab.{}", p.id()), tab, p.title());
-            if resp.hovered() && !is_active {
-                painter.rect_filled(tab.shrink2(vec2(2.0, 4.0)), t.radius_sm, t.hover);
-            }
-            painter.galley(pos2(tab.min.x + 8.0, tab.center().y - galley.size().y / 2.0), galley, Color32::WHITE);
+            let label_x = tab.min.x + 8.0;
+            let label_w = galley.size().x;
+            let col = if is_active || resp.hovered() { t.tab_text_active } else { t.tab_text };
+            painter.galley_with_override_text_color(pos2(label_x, text_y - galley.size().y / 2.0), galley, col);
             if is_active {
-                let mr = Rect::from_center_size(pos2(tab.max.x - 8.0 - menu_w / 2.0 + 4.0, tab.center().y), vec2(14.0, 14.0));
-                let mresp = ui.interact(mr, egui::Id::new(("tab-menu", g.path.clone())), Sense::click());
+                let mr = Rect::from_center_size(pos2(label_x + label_w + 12.0, text_y), vec2(12.0, 10.0));
+                let mresp = ui.interact(mr.expand(3.0), egui::Id::new(("tab-menu", g.path.clone())), Sense::click());
                 reg.add(&format!("panel.menu.{}", p.id()), mr, "panel menu");
-                icons::paint(&painter, mr, Icon::Hamburger, if mresp.hovered() { t.tab_text_active } else { t.tab_text });
+                let mc = if mresp.hovered() { t.tab_text_active } else { t.tab_text };
+                for dy in [-3.5, 0.0, 3.5] {
+                    painter.line_segment([pos2(mr.min.x, mr.center().y + dy), pos2(mr.max.x, mr.center().y + dy)], Stroke::new(1.5, mc));
+                }
+                // 1 pt underline spanning label + ≡, 23 pt below the frame top
+                let uy = strip.min.y + 23.0;
+                painter.line_segment([pos2(label_x, uy), pos2(mr.max.x, uy)], Stroke::new(1.0, t.tab_text_active));
                 if mresp.clicked() {
                     actions.push(DockAction::PanelMenu(*p, mr.left_bottom()));
                 }
@@ -428,12 +442,12 @@ pub fn draw_group_chrome(ui: &mut egui::Ui, g: &Group, focused: PanelKind, t: &T
             if resp.middle_clicked() {
                 actions.push(DockAction::Close(*p));
             }
-            x += w + 2.0;
+            x += w + 8.0;
         }
     }
     // focus outline
     if active_panel == Some(focused) {
-        painter.rect_stroke(g.rect.shrink(0.5), t.radius, Stroke::new(1.5, t.focus), StrokeKind::Inside);
+        painter.rect_stroke(g.rect, 0.0, Stroke::new(1.0, t.focus), StrokeKind::Inside);
     }
     // clicking anywhere in the panel focuses it
     if let Some(p) = active_panel

@@ -36,9 +36,19 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     };
     let seq = app.session.active_sequence().expect("seq").clone();
     let split = rect.min.x + (rect.width() * 0.58).max(260.0).min(rect.width() - 60.0);
-    let head = Rect::from_min_size(rect.min + vec2(8.0, 2.0), vec2(split - rect.min.x - 8.0, 24.0));
-    ui.painter().text(pos2(head.min.x, head.center().y), Align2::LEFT_CENTER, format!("Source · {}", it.name), Tokens::ui(11.5), t.text_dim);
-    ui.painter().text(pos2(split - 6.0, head.center().y), Align2::RIGHT_CENTER, format!("{} · {}", seq_name(app), it.name), Tokens::ui(11.5), t.text);
+    let head = Rect::from_min_size(rect.min + vec2(8.0, 4.0), vec2(split - rect.min.x - 12.0, 24.0));
+    // Premiere: two pill tabs — "Source · clip" and "Sequence · clip" (active)
+    let pill = |ui: &mut egui::Ui, r: Rect, text: &str, active: bool| {
+        ui.painter().rect_filled(r, 4.0, if active { Color32::from_rgb(0x3a, 0x3a, 0x3a) } else { t.panel_bg });
+        if !active {
+            ui.painter().rect_stroke(r, 4.0, Stroke::new(1.0, t.separator), egui::StrokeKind::Inside);
+        }
+        let cp = ui.painter().with_clip_rect(r.shrink(2.0));
+        cp.text(pos2(r.min.x + 8.0, r.center().y), Align2::LEFT_CENTER, text, Tokens::ui(11.5), if active { t.text } else { t.text_dim });
+    };
+    let half = (head.width() - 6.0) / 2.0;
+    pill(ui, Rect::from_min_size(head.min, vec2(half, 24.0)), &format!("Source · {}", it.name), false);
+    pill(ui, Rect::from_min_size(head.min + vec2(half + 6.0, 0.0), vec2(half, 24.0)), &format!("{} · {}", seq_name(app), it.name), true);
     // keyframe lane header: mini ruler over the clip's duration
     let lane = Rect::from_min_max(pos2(split + 4.0, rect.min.y + 4.0), pos2(rect.max.x - 6.0, rect.max.y - 26.0));
     ui.painter().rect_filled(lane, 0.0, t.tl_bg);
@@ -312,6 +322,188 @@ pub fn lumetri_panel(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     });
     for a in actions {
         if let Err(e) = app.session.execute("effects.setParam", a) {
+            app.ui.status = e.to_string();
+        }
+    }
+}
+
+/// Properties panel (Premiere 26): a compact inspector for the selected clip.
+pub fn properties_panel(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
+    let t = app.tokens;
+    let Some((clip, it, kind)) = selected_clip(app) else {
+        crate::dock::placeholder(ui, rect, &t, "Select a clip to see its properties");
+        return;
+    };
+    let ph = app.session.playhead();
+    let mt = it.source_time_at(ph.clamp(it.start, it.end() - Tick(1)));
+    let mut actions: Vec<(String, Value)> = Vec::new();
+    let mut bui = ui.new_child(egui::UiBuilder::new().max_rect(rect.shrink2(vec2(14.0, 8.0))).id_salt("props"));
+    // header: clip name + menu
+    let (hr, _) = bui.allocate_exact_size(vec2(bui.available_width(), 30.0), Sense::hover());
+    let sw = Rect::from_center_size(pos2(hr.min.x + 8.0, hr.center().y), vec2(12.0, 12.0));
+    let lc = it.label.rgb();
+    bui.painter().rect_filled(sw, 2.0, Color32::from_rgb(lc[0], lc[1], lc[2]));
+    bui.painter().text(pos2(hr.min.x + 22.0, hr.center().y), Align2::LEFT_CENTER, &it.name, Tokens::semibold(12.5), t.text);
+    let row = |ui: &mut egui::Ui, label: &str| -> Rect {
+        let (r, _) = ui.allocate_exact_size(vec2(ui.available_width(), 32.0), Sense::hover());
+        ui.painter().text(pos2(r.min.x + 18.0, r.center().y), Align2::LEFT_CENTER, label, Tokens::ui(12.0), t.text_dim);
+        r
+    };
+    let section = |ui: &mut egui::Ui, app: &mut FilmcraftApp, name: &str, reset: Option<(usize, u64)>, actions: &mut Vec<(String, Value)>| -> bool {
+        ui.add_space(4.0);
+        let key = format!("props:{name}");
+        let open = !app.ui.collapsed_fx.contains(&key);
+        let (r, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 30.0), Sense::click());
+        ui.painter().line_segment([r.left_top(), r.right_top()], Stroke::new(1.0, t.separator));
+        icons::paint(
+            ui.painter(),
+            Rect::from_center_size(pos2(r.min.x + 6.0, r.center().y), vec2(10.0, 10.0)),
+            if open { Icon::ChevronDown } else { Icon::ChevronRight },
+            t.text_dim,
+        );
+        ui.painter().text(pos2(r.min.x + 18.0, r.center().y), Align2::LEFT_CENTER, name, Tokens::semibold(13.0), t.text);
+        if let Some((idx, c)) = reset {
+            let rr = Rect::from_center_size(pos2(r.max.x - 10.0, r.center().y), vec2(14.0, 14.0));
+            icons::paint(ui.painter(), rr, Icon::Reset, t.text_dim);
+            if ui.interact(rr, egui::Id::new(("props-reset", name, c)), Sense::click()).clicked() {
+                actions.push(("effects.reset".into(), json!({"clip": c, "index": idx})));
+            }
+        }
+        if resp.clicked() {
+            if open {
+                app.ui.collapsed_fx.push(key);
+            } else {
+                app.ui.collapsed_fx.retain(|k| *k != key);
+            }
+        }
+        open
+    };
+    let diamond = |ui: &mut egui::Ui, r: Rect, animated: bool, id: egui::Id| -> bool {
+        let dr = Rect::from_center_size(pos2(r.max.x - 10.0, r.center().y), vec2(10.0, 10.0));
+        let resp = ui.interact(dr.expand(3.0), id, Sense::click());
+        if animated {
+            icons::paint(ui.painter(), dr, Icon::Keyframe, t.hot_text);
+        } else {
+            let c = dr.center();
+            let s = 4.5;
+            ui.painter()
+                .add(egui::Shape::closed_line(vec![c + vec2(0.0, -s), c + vec2(s, 0.0), c + vec2(0.0, s), c + vec2(-s, 0.0)], Stroke::new(1.2, t.text_dim)));
+        }
+        resp.clicked()
+    };
+    let eff_idx = |id: &str| it.effects.iter().position(|e| e.effect == id);
+    let val = |eid: &str, p: &str| it.effect(eid).and_then(|e| e.param(p)).map(|p| p.value_at(mt));
+    let anim = |eid: &str, p: &str| it.effect(eid).and_then(|e| e.param(p)).is_some_and(|p| p.is_animated());
+    if kind == filmcraft_project::TrackKind::Video {
+        if section(&mut bui, app, "Transform", eff_idx("motion").map(|i| (i, clip.0)), &mut actions) {
+            for (label, p, unit, speed, range) in [
+                ("Position", "position", "", 1.0, (-100_000.0, 100_000.0)),
+                ("Anchor point", "anchor", "", 1.0, (-100_000.0, 100_000.0)),
+                ("Scale", "scale", " %", 0.5, (0.0, 10000.0)),
+                ("Rotation", "rotation", " °", 0.5, (-36000.0, 36000.0)),
+            ] {
+                let r = row(&mut bui, label);
+                let mut vui = bui.new_child(
+                    egui::UiBuilder::new()
+                        .max_rect(Rect::from_min_max(pos2(r.min.x + 150.0, r.min.y + 4.0), pos2(r.max.x - 24.0, r.max.y - 4.0)))
+                        .layout(egui::Layout::left_to_right(egui::Align::Center)),
+                );
+                match val("motion", p) {
+                    Some(ParamValue::Vec2(v)) => {
+                        let (_, nx) = crate::widgets::hot_number(&mut vui, egui::Id::new(("pp", p, "x", clip.0)), v.x, speed, range, 0, " X", &t);
+                        vui.add_space(10.0);
+                        let (_, ny) = crate::widgets::hot_number(&mut vui, egui::Id::new(("pp", p, "y", clip.0)), v.y, speed, range, 0, " Y", &t);
+                        if nx.is_some() || ny.is_some() {
+                            actions.push((
+                                "effects.setParam".into(),
+                                json!({"clip": clip.0, "effect": "motion", "param": p, "value": [nx.unwrap_or(v.x), ny.unwrap_or(v.y)]}),
+                            ));
+                        }
+                    }
+                    Some(ParamValue::Float(v)) => {
+                        let (_, nv) =
+                            crate::widgets::hot_number(&mut vui, egui::Id::new(("pp", p, clip.0)), v, speed, range, if p == "scale" { 0 } else { 1 }, unit, &t);
+                        if let Some(nv) = nv {
+                            actions.push(("effects.setParam".into(), json!({"clip": clip.0, "effect": "motion", "param": p, "value": nv})));
+                        }
+                    }
+                    _ => {}
+                }
+                if diamond(&mut bui, r, anim("motion", p), egui::Id::new(("pd", p, clip.0))) {
+                    actions.push(("effects.toggleAnimation".into(), json!({"clip": clip.0, "effect": "motion", "param": p})));
+                }
+            }
+            let r = row(&mut bui, "Opacity");
+            let mut vui = bui.new_child(
+                egui::UiBuilder::new()
+                    .max_rect(Rect::from_min_max(pos2(r.min.x + 150.0, r.min.y + 4.0), pos2(r.max.x - 24.0, r.max.y - 4.0)))
+                    .layout(egui::Layout::left_to_right(egui::Align::Center)),
+            );
+            if let Some(ParamValue::Float(v)) = val("opacity", "opacity") {
+                let (_, nv) = crate::widgets::hot_number(&mut vui, egui::Id::new(("pp-op", clip.0)), v, 0.5, (0.0, 100.0), 0, " %", &t);
+                if let Some(nv) = nv {
+                    actions.push(("effects.setParam".into(), json!({"clip": clip.0, "effect": "opacity", "param": "opacity", "value": nv})));
+                }
+            }
+            if diamond(&mut bui, r, anim("opacity", "opacity"), egui::Id::new(("pd-op", clip.0))) {
+                actions.push(("effects.toggleAnimation".into(), json!({"clip": clip.0, "effect": "opacity", "param": "opacity"})));
+            }
+        }
+        let crop = eff_idx("crop");
+        if section(&mut bui, app, "Crop", crop.map(|i| (i, clip.0)), &mut actions) {
+            for (label, p) in [("Left", "left"), ("Top", "top"), ("Right", "right"), ("Bottom", "bottom")] {
+                let r = row(&mut bui, label);
+                let mut vui = bui.new_child(
+                    egui::UiBuilder::new()
+                        .max_rect(Rect::from_min_max(pos2(r.min.x + 150.0, r.min.y + 4.0), pos2(r.max.x - 24.0, r.max.y - 4.0)))
+                        .layout(egui::Layout::left_to_right(egui::Align::Center)),
+                );
+                let v = val("crop", p).and_then(|v| v.as_f64()).unwrap_or(0.0);
+                let (_, nv) = crate::widgets::hot_number(&mut vui, egui::Id::new(("pp-crop", p, clip.0)), v, 0.2, (0.0, 100.0), 1, " %", &t);
+                if let Some(nv) = nv {
+                    if crop.is_none() {
+                        actions.push(("effects.apply".into(), json!({"clips": [clip.0], "effect": "crop"})));
+                    }
+                    actions.push(("effects.setParam".into(), json!({"clip": clip.0, "effect": "crop", "param": p, "value": nv})));
+                }
+                diamond(&mut bui, r, anim("crop", p), egui::Id::new(("pd-crop", p, clip.0)));
+            }
+        }
+    } else if section(&mut bui, app, "Audio", eff_idx("volume").map(|i| (i, clip.0)), &mut actions) {
+        let r = row(&mut bui, "Level");
+        let mut vui = bui.new_child(
+            egui::UiBuilder::new()
+                .max_rect(Rect::from_min_max(pos2(r.min.x + 150.0, r.min.y + 4.0), pos2(r.max.x - 24.0, r.max.y - 4.0)))
+                .layout(egui::Layout::left_to_right(egui::Align::Center)),
+        );
+        let v = val("volume", "level").and_then(|v| v.as_f64()).unwrap_or(0.0);
+        let (_, nv) = crate::widgets::hot_number(&mut vui, egui::Id::new(("pp-vol", clip.0)), v, 0.1, (-96.0, 15.0), 1, " dB", &t);
+        if let Some(nv) = nv {
+            actions.push(("effects.setParam".into(), json!({"clip": clip.0, "effect": "volume", "param": "level", "value": nv})));
+        }
+        if diamond(&mut bui, r, anim("volume", "level"), egui::Id::new(("pd-vol", clip.0))) {
+            actions.push(("effects.toggleAnimation".into(), json!({"clip": clip.0, "effect": "volume", "param": "level"})));
+        }
+        let r = row(&mut bui, "Pan");
+        let mut vui = bui.new_child(
+            egui::UiBuilder::new()
+                .max_rect(Rect::from_min_max(pos2(r.min.x + 150.0, r.min.y + 4.0), pos2(r.max.x - 24.0, r.max.y - 4.0)))
+                .layout(egui::Layout::left_to_right(egui::Align::Center)),
+        );
+        let v = val("panner", "balance").and_then(|v| v.as_f64()).unwrap_or(0.0);
+        let (_, nv) = crate::widgets::hot_number(&mut vui, egui::Id::new(("pp-pan", clip.0)), v, 0.5, (-100.0, 100.0), 0, "", &t);
+        if let Some(nv) = nv {
+            actions.push(("effects.setParam".into(), json!({"clip": clip.0, "effect": "panner", "param": "balance", "value": nv})));
+        }
+    }
+    // speed footer
+    bui.add_space(12.0);
+    let (br, bresp) = bui.allocate_exact_size(vec2(118.0, 26.0), Sense::click());
+    bui.painter().rect_filled(br, 4.0, if bresp.hovered() { t.hover } else { t.panel_bg });
+    bui.painter().rect_stroke(br, 4.0, Stroke::new(1.0, t.separator), egui::StrokeKind::Inside);
+    bui.painter().text(br.center(), Align2::CENTER_CENTER, format!("Speed {:.0}%", it.speed * 100.0), Tokens::ui(12.0), t.text);
+    for (cmd, p) in actions {
+        if let Err(e) = app.session.execute(&cmd, p) {
             app.ui.status = e.to_string();
         }
     }

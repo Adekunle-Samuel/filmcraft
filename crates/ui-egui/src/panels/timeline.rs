@@ -22,11 +22,11 @@ use crate::icons::{self, Icon};
 use crate::state::{TimelineView, Tool};
 use crate::theme::Tokens;
 
-const TOP_H: f32 = 64.0; // timecode + ruler block
-const RULER_H: f32 = 30.0;
-const SCROLLBAR_H: f32 = 14.0;
-const DIVIDER_H: f32 = 6.0;
-const MASTER_H: f32 = 30.0;
+const TOP_H: f32 = 58.0; // timecode + toolbar (left) / ruler (right)
+const RULER_H: f32 = 44.0;
+const SCROLLBAR_H: f32 = 17.0;
+const DIVIDER_H: f32 = 5.0;
+const MASTER_H: f32 = 34.0;
 const SNAP_PX: f32 = 9.0;
 
 /// Transient interaction state.
@@ -253,7 +253,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         for trn in &tr.transitions {
             let x0 = layout.x_of(trn.start);
             let x1 = layout.x_of(trn.end());
-            let tr_rect = Rect::from_min_max(pos2(x0, r.rect.min.y + 1.0), pos2(x1, r.rect.min.y + (r.rect.height() * 0.5).max(14.0)));
+            let tr_rect = Rect::from_min_max(pos2(x0, r.rect.min.y + 17.0), pos2(x1, r.rect.max.y - 1.0));
             draw_transition(&p, tr_rect, trn, &t);
             app.auto.add(&format!("timeline.transition.{}", trn.id.0), tr_rect, &trn.effect.effect);
         }
@@ -356,6 +356,22 @@ fn empty_state(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     }
 }
 
+fn lighten(c: Color32, f: f32) -> Color32 {
+    let l = |v: u8| (v as f32 + (255.0 - v as f32) * f).round() as u8;
+    Color32::from_rgb(l(c.r()), l(c.g()), l(c.b()))
+}
+
+/// Whether a clip lies inside the sequence In/Out range (Premiere brightens those).
+fn in_range(app: &FilmcraftApp, it: &TrackItem) -> bool {
+    let Some(q) = app.session.active_sequence() else { return false };
+    if q.mark_in.is_none() && q.mark_out.is_none() {
+        return false;
+    }
+    let a = q.mark_in.unwrap_or(Tick::ZERO);
+    let b = q.mark_out.map(|o| o + q.settings.frame_rate.frame_duration()).unwrap_or(Tick::MAX);
+    it.start < b && it.end() > a
+}
+
 #[allow(clippy::too_many_arguments)]
 fn draw_clip(
     app: &mut FilmcraftApp,
@@ -369,124 +385,142 @@ fn draw_clip(
     rate: FrameRate,
 ) {
     let base = label_color(it.label);
+    let inr = in_range(app, it);
     let fill = if !it.enabled {
-        Color32::from_rgb(70, 70, 70)
-    } else if kind == TrackKind::Video {
-        base.gamma_multiply(0.92)
+        Color32::from_rgb(0x2a, 0x2a, 0x2a)
+    } else if inr {
+        lighten(base, 0.12)
+    } else if selected {
+        lighten(base, 0.06)
     } else {
-        base.gamma_multiply(0.8)
+        base
     };
-    let r = 3.0;
-    p.rect_filled(body, r, fill);
+    p.rect_filled(body, 0.0, fill);
+    // 1 pt lighter top edge
+    p.line_segment([pos2(body.min.x, body.min.y + 0.5), pos2(body.max.x, body.min.y + 0.5)], Stroke::new(1.0, lighten(fill, 0.15)));
     let name_h = 16.0;
     let w = body.width();
-    // thumbnails (video) under the name band
-    if kind == TrackKind::Video && app.ui.timeline.show_thumbnails && body.height() > 30.0 && w > 24.0 && it.enabled {
-        let th_rect = Rect::from_min_max(pos2(body.min.x + 1.0, body.min.y + name_h), pos2(body.max.x - 1.0, body.max.y - 1.0));
-        let th_h = th_rect.height();
+    // head thumbnail (video): left-aligned, aspect-correct, below the name band
+    if kind == TrackKind::Video && app.ui.timeline.show_thumbnails && body.height() > 28.0 && w > 20.0 && it.enabled {
+        let th = Rect::from_min_max(pos2(body.min.x + 1.0, body.min.y + name_h), pos2(body.max.x - 1.0, body.max.y - 1.0));
         let aspect = app.session.project.item(it.item).and_then(|pi| match &pi.kind {
             filmcraft_project::ItemKind::Media(m) => m.info.video.as_ref().map(|v| v.width as f32 / v.height as f32),
             filmcraft_project::ItemKind::Sequence(s) => Some(s.settings.width as f32 / s.settings.height as f32),
             _ => None,
         });
         if let Some(aspect) = aspect {
-            let th_w = th_h * aspect;
-            let n = ((th_rect.width() / th_w).ceil() as usize).clamp(1, 60);
-            let clip_p = p.with_clip_rect(th_rect.intersect(p.clip_rect()));
-            for k in 0..n {
-                let x = th_rect.min.x + k as f32 * th_w;
-                if x > clip_p.clip_rect().max.x || x + th_w < clip_p.clip_rect().min.x {
-                    continue;
-                }
-                let frac = (k as f64 * th_w as f64) / w.max(1.0) as f64;
-                let tl = it.start + Tick((it.duration.0 as f64 * frac) as i64);
-                let mt = it.source_time_at(tl);
-                let mt = rate.snap(mt);
-                // quantise thumbnail times to 1/2 s so the cache hits
-                let q = Tick((mt.0 / (TICKS_PER_SECOND / 2)) * (TICKS_PER_SECOND / 2));
-                if let Some((tex, _)) = app.thumbnail(ctx, it.item, q, 128) {
-                    let tr = Rect::from_min_size(pos2(x, th_rect.min.y), vec2(th_w, th_h));
-                    clip_p.image(tex, tr, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::from_white_alpha(235));
-                }
+            let tw = (th.height() * aspect).min(th.width());
+            let mt = rate.snap(it.source_in);
+            if let Some((tex, _)) = app.thumbnail(ctx, it.item, mt, 160) {
+                let r = Rect::from_min_size(th.min, vec2(tw, th.height()));
+                let cp = p.with_clip_rect(th.intersect(p.clip_rect()));
+                cp.image(tex, r, Rect::from_min_max(pos2(0.0, 0.0), pos2((tw / (th.height() * aspect)).min(1.0), 1.0)), Color32::WHITE);
             }
         }
     }
-    // waveform (audio)
-    if kind == TrackKind::Audio && app.ui.timeline.show_waveforms && w > 4.0 {
-        draw_waveform(app, p, body, it, fill);
+    // waveform (audio): rectified, lower 40 %
+    if kind == TrackKind::Audio && app.ui.timeline.show_waveforms && w > 3.0 {
+        draw_waveform(app, p, body, it, if inr { Color32::from_rgb(0xc7, 0xe9, 0xfa) } else { Color32::from_rgb(0x79, 0xc0, 0xf9) });
     }
+    let clip_p = p.with_clip_rect(body.shrink2(vec2(1.0, 0.0)).intersect(p.clip_rect()));
     // name band
-    let text_col = if it.enabled { Color32::from_rgb(20, 20, 24) } else { t.text_dim };
-    let mut tx = body.min.x + 5.0;
-    if it.has_standard_effects() || it.has_modified_intrinsics() {
-        let fx = Rect::from_min_size(pos2(tx, body.min.y + 3.0), vec2(15.0, 10.0));
-        if fx.max.x < body.max.x {
-            p.rect_filled(fx, 2.0, if it.has_standard_effects() { Color32::from_rgb(236, 196, 58) } else { Color32::from_rgba_unmultiplied(0, 0, 0, 70) });
-            p.text(fx.center(), Align2::CENTER_CENTER, "fx", Tokens::semibold(8.5), Color32::from_rgb(30, 30, 30));
-            tx += 18.0;
-        }
-    }
-    if w > 30.0 {
-        let clip_p = p.with_clip_rect(body.shrink2(vec2(3.0, 0.0)).intersect(p.clip_rect()));
+    if w > 24.0 {
         let mut label = it.name.clone();
         if (it.speed - 1.0).abs() > 1e-6 || it.reverse {
             label = format!("{label} [{}%]", ((if it.reverse { -1.0 } else { 1.0 }) * it.speed * 100.0).round());
         }
-        clip_p.text(pos2(tx.max(clip_p.clip_rect().min.x + 4.0), body.min.y + 8.0), Align2::LEFT_CENTER, label, Tokens::ui(10.5), text_col);
+        clip_p.text(
+            pos2(body.min.x + 6.0, body.min.y + 8.5),
+            Align2::LEFT_CENTER,
+            label,
+            Tokens::ui(11.5),
+            if it.enabled { Color32::from_rgb(0xd9, 0xd9, 0xd9) } else { t.text_faint },
+        );
     }
-    if it.link.is_none() && kind == TrackKind::Video && w > 60.0 {
-        // unlinked items show no link indicator; linked ones are default
+    // fx badge right-aligned in the header (italic-ish "fx")
+    if (it.has_standard_effects() || it.has_modified_intrinsics()) && w > 40.0 {
+        let col = if it.has_standard_effects() { Color32::from_rgb(0xe8, 0xc5, 0x4a) } else { Color32::from_rgb(0x91, 0xa2, 0xac) };
+        clip_p.text(
+            pos2(body.max.x - 6.0, body.min.y + 8.5),
+            Align2::RIGHT_CENTER,
+            "fx",
+            egui::FontId::new(11.0, egui::FontFamily::Name("semibold".into())),
+            col,
+        );
     }
+    // corner triangles where the clip reaches the media's first/last frame (no handles)
+    let media_dur = app.session.project.item(it.item).map(|i| i.duration());
+    let no_head = it.source_in <= Tick::ZERO;
+    let no_tail = media_dur.is_some_and(|d| d.0 > 0 && it.source_out() >= d - rate.frame_duration());
+    let tri = 5.0;
+    if no_head && w > 12.0 {
+        clip_p.add(egui::Shape::convex_polygon(
+            vec![body.min, body.min + vec2(tri, 0.0), body.min + vec2(0.0, tri)],
+            Color32::from_white_alpha(220),
+            Stroke::NONE,
+        ));
+    }
+    if no_tail && w > 12.0 {
+        let tr = pos2(body.max.x, body.min.y);
+        clip_p.add(egui::Shape::convex_polygon(vec![tr, tr + vec2(0.0, tri), tr - vec2(tri, 0.0)], Color32::from_white_alpha(220), Stroke::NONE));
+    }
+    // 1 pt black separator at the clip's left edge
+    p.line_segment([pos2(body.min.x + 0.5, body.min.y), pos2(body.min.x + 0.5, body.max.y)], Stroke::new(1.0, Color32::BLACK));
     if selected {
-        p.rect_stroke(body, r, Stroke::new(1.5, t.clip_selected_border), StrokeKind::Inside);
-    } else {
-        p.rect_stroke(body, r, Stroke::new(1.0, Color32::from_black_alpha(90)), StrokeKind::Inside);
+        p.rect_stroke(body.shrink(1.0), 0.0, Stroke::new(1.0, Color32::BLACK), StrokeKind::Inside);
+        p.rect_stroke(body, 0.0, Stroke::new(2.0, t.clip_selected_border), StrokeKind::Inside);
     }
 }
 
-fn draw_waveform(app: &mut FilmcraftApp, p: &egui::Painter, body: Rect, it: &TrackItem, fill: Color32) {
-    let peaks = request_peaks(app, it.item);
-    let Some(peaks) = peaks else { return };
-    // peaks are per 256 samples at 48 kHz
+fn draw_waveform(app: &mut FilmcraftApp, p: &egui::Painter, body: Rect, it: &TrackItem, col: Color32) {
+    let Some(peaks) = request_peaks(app, it.item) else { return };
     let spp = 256.0;
     let sr = 48_000.0;
-    let area = body.shrink2(vec2(1.0, 3.0));
-    let area = Rect::from_min_max(pos2(area.min.x, area.min.y + 12.0), area.max);
-    if area.height() < 4.0 {
+    let zone_h = (body.height() * 0.42).max(8.0);
+    let area = Rect::from_min_max(pos2(body.min.x + 1.0, body.max.y - zone_h - 1.0), pos2(body.max.x - 1.0, body.max.y - 1.0));
+    let clip = p.clip_rect().intersect(area);
+    if clip.width() <= 0.0 {
         return;
     }
-    let clip = p.clip_rect().intersect(area);
-    let mid = area.center().y;
-    let amp = area.height() * 0.5;
-    // Like Premiere, the waveform reflects clip gain (not the Volume effect); normalise so quiet
-    // material stays readable.
     let peak = peaks.iter().fold(0f32, |m, (a, b)| m.max(a.abs()).max(b.abs())).max(1e-4);
-    let gain = filmcraft_render::audio::db_to_gain(it.gain_db) * (0.9 / peak).min(8.0);
-    let col = fill.linear_multiply(0.45);
-    let dark = Color32::from_rgba_unmultiplied(8, 40, 16, 150);
+    let gain = filmcraft_render::audio::db_to_gain(it.gain_db) / peak;
     let mut mesh = egui::Mesh::default();
-    let x_start = clip.min.x.floor() as i32;
-    let x_end = clip.max.x.ceil() as i32;
     let dur_px = body.width().max(1.0);
-    for x in (x_start..x_end).step_by(1) {
-        let f = (x as f32 - body.min.x) / dur_px;
-        let tl = it.start + Tick((it.duration.0 as f64 * f as f64) as i64);
-        let tl2 = it.start + Tick((it.duration.0 as f64 * ((x as f32 + 1.0 - body.min.x) / dur_px) as f64) as i64);
-        let s0 = (it.source_time_at(tl).seconds() * sr / spp) as usize;
-        let s1 = ((it.source_time_at(tl2).seconds() * sr / spp) as usize).max(s0 + 1);
-        let mut lo = 0f32;
-        let mut hi = 0f32;
+    for x in (clip.min.x.floor() as i32)..(clip.max.x.ceil() as i32) {
+        let f0 = (x as f32 - body.min.x) / dur_px;
+        let f1 = (x as f32 + 1.0 - body.min.x) / dur_px;
+        let t0 = it.start + Tick((it.duration.0 as f64 * f0 as f64) as i64);
+        let t1 = it.start + Tick((it.duration.0 as f64 * f1 as f64) as i64);
+        let s0 = (it.source_time_at(t0).seconds() * sr / spp) as usize;
+        let s1 = ((it.source_time_at(t1).seconds() * sr / spp) as usize).max(s0 + 1);
+        let mut m = 0f32;
         for (a, b) in peaks.iter().skip(s0).take(s1 - s0) {
-            lo = lo.min(*a);
-            hi = hi.max(*b);
+            m = m.max(a.abs()).max(b.abs());
         }
-        let y0 = mid - (hi * gain).clamp(-1.0, 1.0) * amp;
-        let y1 = mid - (lo * gain).clamp(-1.0, 1.0) * amp;
-        let r = Rect::from_min_max(pos2(x as f32, y0.min(mid - 0.5)), pos2(x as f32 + 1.0, y1.max(mid + 0.5)));
-        mesh.add_colored_rect(r, dark);
+        // logarithmic display scale (Premiere's default): −48 dB → 0, 0 dB → full
+        let db = 20.0 * (m * gain).max(1e-5).log10();
+        let h = ((db + 48.0) / 48.0).clamp(0.0, 1.0) * area.height();
+        if h > 0.3 {
+            mesh.add_colored_rect(Rect::from_min_max(pos2(x as f32, area.max.y - h), pos2(x as f32 + 1.0, area.max.y)), col);
+        }
     }
-    let _ = col;
     p.add(mesh);
+    // channel label box
+    let cb = Rect::from_min_size(pos2(body.min.x + 3.0, body.max.y - 11.0), vec2(8.0, 9.0));
+    if body.width() > 30.0 {
+        p.rect_filled(cb, 1.0, Color32::from_black_alpha(160));
+        p.text(cb.center(), Align2::CENTER_CENTER, "1", Tokens::ui(7.5), Color32::from_rgb(0xd9, 0xd9, 0xd9));
+    }
+    // volume rubber band (white line with a black shadow) at mid-height of the upper zone
+    let level = it.effect("volume").map(|e| e.f64_at("level", it.source_in)).unwrap_or(0.0);
+    let upper = Rect::from_min_max(pos2(body.min.x, body.min.y + 16.0), pos2(body.max.x, area.min.y));
+    if upper.height() > 6.0 {
+        let norm = ((level + 60.0) / 66.0).clamp(0.0, 1.0) as f32;
+        let y = upper.max.y - norm * upper.height();
+        let cp = p.with_clip_rect(body.intersect(p.clip_rect()));
+        cp.line_segment([pos2(body.min.x, y + 1.0), pos2(body.max.x, y + 1.0)], Stroke::new(1.0, Color32::BLACK));
+        cp.line_segment([pos2(body.min.x, y), pos2(body.max.x, y)], Stroke::new(1.0, Color32::WHITE));
+    }
 }
 
 fn request_peaks(app: &mut FilmcraftApp, item: ItemId) -> Option<Arc<Vec<(f32, f32)>>> {
@@ -535,16 +569,57 @@ fn request_peaks(app: &mut FilmcraftApp, item: ItemId) -> Option<Arc<Vec<(f32, f
 }
 
 fn draw_transition(p: &egui::Painter, r: Rect, trn: &filmcraft_project::Transition, _t: &Tokens) {
-    let fill = Color32::from_rgba_unmultiplied(120, 120, 150, 200);
-    p.rect_filled(r, 2.0, fill);
-    // diagonal (Premiere shows a diagonal line across transitions)
-    let clip = p.with_clip_rect(r.intersect(p.clip_rect()));
-    clip.line_segment([r.left_bottom(), r.right_top()], Stroke::new(1.0, Color32::from_black_alpha(120)));
-    p.rect_stroke(r, 2.0, Stroke::new(1.0, Color32::from_black_alpha(140)), StrokeKind::Inside);
-    if r.width() > 50.0 {
-        let name = trn.effect.def().map(|d| d.name).unwrap_or(&trn.effect.effect);
-        clip.text(pos2(r.min.x + 4.0, r.center().y), Align2::LEFT_CENTER, name, Tokens::ui(9.5), Color32::from_rgb(20, 20, 24));
+    let cp = p.with_clip_rect(r.intersect(p.clip_rect()));
+    cp.rect_filled(r, 0.0, Color32::from_black_alpha(90));
+    // 45° hatching
+    let step = 4.0;
+    let mut x = r.min.x - r.height();
+    while x < r.max.x {
+        cp.line_segment([pos2(x, r.max.y), pos2(x + r.height(), r.min.y)], Stroke::new(1.0, Color32::from_rgba_unmultiplied(0xd9, 0xd9, 0xd9, 110)));
+        x += step;
     }
+    let audio = matches!(trn.effect.def().map(|d| d.kind), Some(filmcraft_project::EffectKind::AudioTransition));
+    if audio {
+        // crossing fade curves
+        let n = 16;
+        let a: Vec<Pos2> = (0..=n)
+            .map(|i| {
+                pos2(r.min.x + r.width() * i as f32 / n as f32, r.min.y + r.height() * (1.0 - ((i as f32 / n as f32) * std::f32::consts::FRAC_PI_2).sin()))
+            })
+            .collect();
+        let b: Vec<Pos2> = (0..=n)
+            .map(|i| {
+                pos2(r.min.x + r.width() * i as f32 / n as f32, r.min.y + r.height() * (1.0 - ((i as f32 / n as f32) * std::f32::consts::FRAC_PI_2).cos()))
+            })
+            .collect();
+        cp.add(egui::Shape::line(a, Stroke::new(1.0, Color32::WHITE)));
+        cp.add(egui::Shape::line(b, Stroke::new(1.0, Color32::WHITE)));
+    }
+    cp.rect_stroke(r, 0.0, Stroke::new(1.0, Color32::from_rgb(0xeb, 0xeb, 0xeb)), StrokeKind::Inside);
+    if r.width() > 34.0 && !audio {
+        let name = trn.effect.def().map(|d| d.name).unwrap_or(&trn.effect.effect);
+        let tr = Rect::from_min_size(r.min + vec2(2.0, 2.0), vec2((r.width() - 4.0).min(80.0), 13.0));
+        cp.rect_filled(tr, 0.0, Color32::from_black_alpha(170));
+        cp.text(pos2(tr.min.x + 3.0, tr.center().y), Align2::LEFT_CENTER, name, Tokens::ui(10.5), Color32::from_rgb(0xd9, 0xd9, 0xd9));
+    }
+}
+
+/// A Premiere track-header button (patch / target): blue fill when on, full track height.
+fn patch_button(ui: &mut egui::Ui, r: Rect, clip: Rect, label: &str, on: bool, show_off: bool, id: egui::Id, t: &Tokens) -> egui::Response {
+    let resp = ui.interact(r.intersect(clip), id, Sense::click());
+    let p = ui.painter().with_clip_rect(clip);
+    if on {
+        p.rect_filled(r, 2.0, Color32::from_rgb(0x26, 0x5b, 0xc1));
+        p.text(r.center(), Align2::CENTER_CENTER, label, Tokens::semibold(10.0), Color32::from_rgb(0xeb, 0xeb, 0xeb));
+    } else if show_off {
+        if resp.hovered() {
+            p.rect_filled(r, 2.0, t.hover);
+        }
+        p.text(r.center(), Align2::CENTER_CENTER, label, Tokens::semibold(10.0), t.text_dim);
+    } else if resp.hovered() {
+        p.rect_stroke(r, 2.0, Stroke::new(1.0, t.separator), StrokeKind::Inside);
+    }
+    resp
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -555,87 +630,111 @@ fn draw_headers(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, rows:
     for r in rows {
         let tr = seq.track(r.track).expect("track");
         let clip_rect = if r.kind == TrackKind::Video { vclip } else { aclip };
-        let hrect = Rect::from_min_max(pos2(rect.min.x, r.rect.min.y), pos2(rect.min.x + hw - 2.0, r.rect.max.y));
+        let hrect = Rect::from_min_max(pos2(rect.min.x, r.rect.min.y), pos2(rect.min.x + hw, r.rect.max.y));
         let visible = hrect.intersect(clip_rect);
         if visible.height() <= 0.0 {
             continue;
         }
         let p = ui.painter().with_clip_rect(visible);
-        p.rect_filled(hrect.shrink2(vec2(0.0, 0.5)), 0.0, t.tl_header_bg);
+        p.rect_filled(hrect, 0.0, t.tl_header_bg);
+        p.line_segment([pos2(hrect.min.x, hrect.max.y - 0.5), pos2(hrect.max.x, hrect.max.y - 0.5)], Stroke::new(1.0, t.separator));
         let label = format!("{}{}", if r.kind == TrackKind::Video { "V" } else { "A" }, r.index + 1);
-        let cy = hrect.min.y + 13.0f32.min(hrect.height() / 2.0);
-        // source patch (left): shows the source track when patched
+        let btn_rect = |x0: f32| Rect::from_min_max(pos2(hrect.min.x + x0, hrect.min.y + 1.0), pos2(hrect.min.x + x0 + 24.0, hrect.max.y - 2.0));
+        // 1. source patch (absent when unpatched)
         let patched = if r.kind == TrackKind::Video { tg.video_dest == Some(r.track) } else { tg.audio_dest == Some(r.track) };
-        let pr = Rect::from_center_size(pos2(hrect.min.x + 14.0, cy), vec2(22.0, 17.0));
-        let presp = ui.interact(pr.intersect(visible), egui::Id::new(("patch", r.track.0)), Sense::click());
+        let pr = btn_rect(13.0);
         app.auto.add(&format!("timeline.track.{label}.sourcePatch"), pr, "Source patch");
-        if patched {
-            p.rect_filled(pr, 3.0, t.accent);
-            p.text(pr.center(), Align2::CENTER_CENTER, label.clone(), Tokens::semibold(10.0), Color32::WHITE);
-        } else {
-            p.rect_stroke(pr, 3.0, Stroke::new(1.0, t.separator), StrokeKind::Inside);
-        }
-        if presp.clicked() {
+        if patch_button(ui, pr, visible, &label, patched, false, egui::Id::new(("patch", r.track.0)), t).clicked() {
             actions.push(("timeline.setTargeting".into(), json!({"track": r.track.0, "sourcePatch": !patched})));
         }
-        // target toggle
+        // 2. track lock
+        let small = |x: f32, y: f32| Rect::from_center_size(pos2(hrect.min.x + x, y), vec2(18.0, 18.0));
+        let upper_y = hrect.min.y + (16.0f32).min(hrect.height() / 2.0);
+        let lock_r = small(49.0, hrect.center().y);
+        let lresp = crate::widgets::icon_toggle(
+            ui,
+            lock_r.intersect(visible),
+            if tr.locked { Icon::Lock } else { Icon::Unlock },
+            true,
+            t,
+            egui::Id::new(("locked", r.track.0)),
+            Some(if tr.locked { Color32::from_rgb(0xd1, 0xd1, 0xd1) } else { t.text_dim }),
+        );
+        app.auto.add(&format!("timeline.track.{label}.locked"), lock_r, "Toggle Track Lock");
+        if lresp.clicked() {
+            actions.push(("timeline.setTrack".into(), json!({"track": r.track.0, "locked": !tr.locked})));
+        }
+        if tr.locked {
+            // diagonal hatch over locked lanes is drawn by the lane painter; here a subtle tint
+            p.rect_filled(Rect::from_min_max(pos2(hrect.max.x - 4.0, hrect.min.y), hrect.max), 0.0, Color32::from_rgb(0x4b, 0x4b, 0x4b));
+        }
+        // 3. target
         let targeted = tg.targeted.contains(&r.track);
-        let trr = Rect::from_center_size(pos2(hrect.min.x + 40.0, cy), vec2(24.0, 17.0));
-        let tresp = ui.interact(trr.intersect(visible), egui::Id::new(("target", r.track.0)), Sense::click());
+        let trr = btn_rect(61.0);
         app.auto.add(&format!("timeline.track.{label}.target"), trr, "Toggle track targeting");
-        p.rect_filled(trr, 3.0, if targeted { Color32::from_rgb(70, 70, 70) } else { Color32::TRANSPARENT });
-        p.rect_stroke(trr, 3.0, Stroke::new(1.0, if targeted { t.accent } else { t.separator }), StrokeKind::Inside);
-        p.text(trr.center(), Align2::CENTER_CENTER, label.clone(), Tokens::semibold(10.0), if targeted { t.tab_text_active } else { t.text_dim });
-        if tresp.clicked() {
+        if patch_button(ui, trr, visible, &label, targeted, true, egui::Id::new(("target", r.track.0)), t).clicked() {
             actions.push(("timeline.setTargeting".into(), json!({"track": r.track.0, "targeted": !targeted})));
         }
-        // sync lock, lock
-        let mut x = hrect.min.x + 60.0;
-        let mut toggle = |icon: Icon, on: bool, name: &str, key: &str, on_col: Option<Color32>, actions: &mut Vec<(String, Value)>, app: &mut FilmcraftApp| {
-            let br = Rect::from_center_size(pos2(x + 9.0, cy), vec2(18.0, 18.0));
-            let resp = crate::widgets::icon_toggle(ui, br.intersect(visible), icon, on, t, egui::Id::new((key, r.track.0)), on_col);
-            app.auto.add(&format!("timeline.track.{label}.{key}"), br, name);
-            if resp.clicked() {
-                actions.push(("timeline.setTrack".into(), json!({"track": r.track.0, key: !on})));
-            }
-            x += 20.0;
-        };
-        toggle(Icon::SyncLock, tr.sync_lock, "Toggle Sync Lock", "syncLock", Some(t.icon), &mut actions, app);
-        toggle(
-            if tr.locked { Icon::Lock } else { Icon::Unlock },
-            tr.locked,
-            "Toggle Track Lock",
-            "locked",
-            Some(Color32::from_rgb(230, 190, 70)),
-            &mut actions,
-            app,
-        );
+        // 4. upper line icons
+        let mut x = 102.0;
+        let sr = small(x, upper_y);
+        let sresp =
+            crate::widgets::icon_toggle(ui, sr.intersect(visible), Icon::SyncLock, tr.sync_lock, t, egui::Id::new(("syncLock", r.track.0)), Some(t.text_dim));
+        app.auto.add(&format!("timeline.track.{label}.syncLock"), sr, "Toggle Sync Lock");
+        if sresp.clicked() {
+            actions.push(("timeline.setTrack".into(), json!({"track": r.track.0, "syncLock": !tr.sync_lock})));
+        }
+        x += 24.0;
         if r.kind == TrackKind::Video {
-            toggle(if tr.enabled { Icon::Eye } else { Icon::EyeOff }, tr.enabled, "Toggle Track Output", "enabled", Some(t.icon), &mut actions, app);
+            let er = small(x, upper_y);
+            let eresp = crate::widgets::icon_toggle(
+                ui,
+                er.intersect(visible),
+                if tr.enabled { Icon::Eye } else { Icon::EyeOff },
+                true,
+                t,
+                egui::Id::new(("enabled", r.track.0)),
+                Some(t.text_dim),
+            );
+            app.auto.add(&format!("timeline.track.{label}.enabled"), er, "Toggle Track Output");
+            if eresp.clicked() {
+                actions.push(("timeline.setTrack".into(), json!({"track": r.track.0, "enabled": !tr.enabled})));
+            }
         } else {
-            let mr = Rect::from_center_size(pos2(x + 9.0, cy), vec2(17.0, 15.0));
-            let mresp =
-                crate::widgets::letter_toggle(ui, mr.intersect(visible), "M", tr.muted, Color32::from_rgb(70, 190, 110), t, egui::Id::new(("mute", r.track.0)));
+            let mr = Rect::from_center_size(pos2(hrect.min.x + x, upper_y), vec2(14.0, 14.0));
+            let mresp = crate::widgets::letter_toggle(
+                ui,
+                mr.intersect(visible),
+                "M",
+                tr.muted,
+                Color32::from_rgb(0x2d, 0x9d, 0x78),
+                t,
+                egui::Id::new(("mute", r.track.0)),
+            );
             app.auto.add(&format!("timeline.track.{label}.muted"), mr, "Mute Track");
             if mresp.clicked() {
                 actions.push(("timeline.setTrack".into(), json!({"track": r.track.0, "muted": !tr.muted})));
             }
-            let sr = Rect::from_center_size(pos2(x + 29.0, cy), vec2(17.0, 15.0));
-            let sresp =
-                crate::widgets::letter_toggle(ui, sr.intersect(visible), "S", tr.solo, Color32::from_rgb(235, 200, 60), t, egui::Id::new(("solo", r.track.0)));
-            app.auto.add(&format!("timeline.track.{label}.solo"), sr, "Solo Track");
-            if sresp.clicked() {
+            let s2 = Rect::from_center_size(pos2(hrect.min.x + x + 20.0, upper_y), vec2(14.0, 14.0));
+            let so = crate::widgets::letter_toggle(
+                ui,
+                s2.intersect(visible),
+                "S",
+                tr.solo,
+                Color32::from_rgb(0xf0, 0xf0, 0x4f),
+                t,
+                egui::Id::new(("solo", r.track.0)),
+            );
+            app.auto.add(&format!("timeline.track.{label}.solo"), s2, "Solo Track");
+            if so.clicked() {
                 actions.push(("timeline.setTrack".into(), json!({"track": r.track.0, "solo": !tr.solo})));
             }
-            let vr = Rect::from_center_size(pos2(x + 49.0, cy), vec2(17.0, 15.0));
-            crate::widgets::icon_toggle(ui, vr.intersect(visible), Icon::Mic, false, t, egui::Id::new(("vo", r.track.0)), None);
-            x += 62.0;
+            let vr = small(x + 42.0, upper_y);
+            crate::widgets::icon_toggle(ui, vr.intersect(visible), Icon::Mic, true, t, egui::Id::new(("vo", r.track.0)), Some(t.text_dim));
         }
-        // name (when the track is tall enough) or label
-        if hrect.height() >= 38.0 {
-            p.text(pos2(hrect.min.x + 60.0, hrect.max.y - 11.0), Align2::LEFT_CENTER, &tr.name, Tokens::ui(10.5), t.text_dim);
-        } else if x + 30.0 < hrect.max.x {
-            p.text(pos2(hrect.max.x - 8.0, cy), Align2::RIGHT_CENTER, &tr.name, Tokens::ui(10.5), t.text_faint);
+        // 5. name on the lower line (or inline when short)
+        if hrect.height() >= 40.0 {
+            p.text(pos2(hrect.min.x + 94.0, hrect.min.y + 34.0), Align2::LEFT_CENTER, &tr.name, Tokens::ui(11.0), t.text_dim);
         }
         // resize track height by dragging the header's bottom edge
         let edge = Rect::from_min_max(pos2(hrect.min.x, hrect.max.y - 3.0), pos2(hrect.max.x, hrect.max.y + 2.0)).intersect(visible);
@@ -650,13 +749,18 @@ fn draw_headers(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, rows:
                 *h = (*h + d).clamp(22.0, 220.0);
             }
         }
-        // double-click header toggles tall/short
-        let resp = ui.interact(hrect.intersect(visible), egui::Id::new(("hdr", r.track.0)), Sense::click());
+        let resp = ui.interact(
+            Rect::from_min_max(pos2(hrect.min.x + 90.0, hrect.min.y + 26.0), hrect.max).intersect(visible),
+            egui::Id::new(("hdr", r.track.0)),
+            Sense::click(),
+        );
         if resp.double_clicked() {
             let h = if r.kind == TrackKind::Video { &mut app.ui.timeline.video_track_h } else { &mut app.ui.timeline.audio_track_h };
-            *h = if *h < 60.0 { 96.0 } else { 36.0 };
+            *h = if *h < 50.0 { 64.0 } else { 30.0 };
         }
     }
+    // column separator
+    ui.painter().line_segment([pos2(rect.min.x + hw - 0.5, vclip.min.y), pos2(rect.min.x + hw - 0.5, aclip.max.y + MASTER_H)], Stroke::new(1.0, t.separator));
     for (cmd, params) in actions {
         if let Err(e) = app.session.execute(&cmd, params) {
             app.ui.status = e.to_string();
@@ -667,34 +771,36 @@ fn draw_headers(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, rows:
 fn draw_top(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, seq: &Sequence, layout: &Layout, t: &Tokens, seq_id: ItemId) {
     let p = ui.painter().clone();
     let rate = seq.settings.frame_rate;
-    // sequence tabs (open sequences)
-    let tabs_rect = Rect::from_min_max(pos2(rect.min.x, rect.min.y), pos2(rect.max.x, rect.min.y + TOP_H - RULER_H));
-    let _ = tabs_rect;
-    // big timecode
     let hw = app.ui.timeline.header_w;
+    let ruler = layout.ruler;
+    // background of the whole top block
+    p.rect_filled(Rect::from_min_max(rect.min, pos2(rect.max.x, ruler.max.y)), 0.0, t.panel_bg);
+    // current timecode: 14 pt semibold accent
     let tc = format_time(app.session.playhead(), rate, seq.settings.drop_frame, TimeDisplay::Timecode, seq.settings.sample_rate as i64);
-    let tc_rect = Rect::from_min_size(pos2(rect.min.x + 10.0, rect.min.y + 6.0), vec2(hw - 16.0, 24.0));
-    p.text(pos2(tc_rect.min.x, tc_rect.center().y), Align2::LEFT_CENTER, &tc, Tokens::mono(18.0), t.timecode);
+    let tc_rect = Rect::from_min_size(pos2(rect.min.x + 14.0, rect.min.y + 4.0), vec2(hw - 20.0, 20.0));
+    p.text(pos2(tc_rect.min.x, tc_rect.center().y), Align2::LEFT_CENTER, &tc, Tokens::semibold(15.0), t.hot_text);
     app.auto.add("timeline.timecode", tc_rect, &tc);
-    // toggle row
-    let mut x = rect.min.x + 10.0;
-    let y = rect.min.y + TOP_H - 16.0;
-    let toggles: [(Icon, &str, bool, &str); 5] = [
-        (Icon::Nest, "nest", true, "Insert and overwrite sequences as nests or individual clips"),
-        (Icon::Magnet, "snap", app.session.state.snapping, "Snap in Timeline (S)"),
-        (Icon::Link, "linked", app.session.state.linked_selection, "Linked Selection"),
-        (Icon::Marker, "marker", false, "Add Marker (M)"),
-        (Icon::Wrench, "settings", false, "Timeline Display Settings"),
+    // toolbar: 30 × 30 buttons, "on" = #4b4b4b fill
+    let mut x = rect.min.x + 12.0;
+    let y = rect.min.y + 26.0;
+    let toggles: [(Icon, &str, bool, bool, &str); 6] = [
+        (Icon::Nest, "nest", true, true, "Insert and overwrite sequences as nests or individual clips"),
+        (Icon::Magnet, "snap", app.session.state.snapping, true, "Snap in Timeline (S)"),
+        (Icon::Link, "linked", app.session.state.linked_selection, true, "Linked Selection"),
+        (Icon::Captions, "captions", false, false, "Caption track options"),
+        (Icon::Marker, "marker", false, false, "Add Marker (M)"),
+        (Icon::Wrench, "settings", false, false, "Timeline Display Settings"),
     ];
-    for (icon, key, on, tip) in toggles {
-        let r = Rect::from_center_size(pos2(x + 11.0, y), vec2(22.0, 22.0));
+    for (icon, key, on, toggle, tip) in toggles {
+        let r = Rect::from_min_size(pos2(x, y), vec2(28.0, 28.0));
         let resp = ui.interact(r, egui::Id::new(("tl-toggle", key)), Sense::click()).on_hover_text(tip);
         app.auto.add(&format!("timeline.toggle.{key}"), r, tip);
-        if resp.hovered() {
-            p.rect_filled(r, 3.0, t.hover);
+        if toggle && on {
+            p.rect_filled(r, 4.0, Color32::from_rgb(0x4b, 0x4b, 0x4b));
+        } else if resp.hovered() {
+            p.rect_filled(r, 4.0, t.hover);
         }
-        let col = if on && matches!(key, "snap" | "linked") { t.icon_active } else { t.icon };
-        icons::paint(&p, r.shrink(4.0), icon, col);
+        icons::paint(&p, r.shrink(7.0), icon, if toggle && on { t.text } else { t.text_dim });
         if resp.clicked() {
             let _ = match key {
                 "snap" => app.session.execute("sequence.snap", json!({})),
@@ -709,8 +815,8 @@ fn draw_top(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, seq: &Sequenc
                 ui.checkbox(&mut app.ui.timeline.show_waveforms, "Show Audio Waveform");
                 ui.separator();
                 if ui.button("Expand All Tracks").clicked() {
-                    app.ui.timeline.video_track_h = 90.0;
-                    app.ui.timeline.audio_track_h = 70.0;
+                    app.ui.timeline.video_track_h = 64.0;
+                    app.ui.timeline.audio_track_h = 64.0;
                 }
                 if ui.button("Minimize All Tracks").clicked() {
                     app.ui.timeline.video_track_h = 26.0;
@@ -718,17 +824,16 @@ fn draw_top(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, seq: &Sequenc
                 }
             });
         }
-        x += 26.0;
+        x += 30.0;
     }
-    // ruler
-    let ruler = layout.ruler;
-    p.rect_filled(Rect::from_min_max(pos2(ruler.min.x, ruler.min.y - (TOP_H - RULER_H)), ruler.max), 0.0, t.panel_bg);
-    p.rect_filled(ruler, 0.0, t.tl_ruler_bg);
-    let pps = layout.pps;
-    // choose a tick step in frames so labels are ≥ 90 px apart
+    // ----- ruler: markers row · labels · ticks · 2 pt render bar
+    let clip = p.with_clip_rect(ruler);
+    let marker_y = ruler.min.y + 2.0;
+    let label_y = ruler.min.y + 24.0;
+    let tick_base = ruler.max.y - 3.0;
     let fps = rate.as_f64();
     let base = rate.timecode_base();
-    let steps_frames: Vec<i64> = vec![
+    let steps: Vec<i64> = vec![
         1,
         2,
         5,
@@ -747,67 +852,56 @@ fn draw_top(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, seq: &Sequenc
         base * 1800,
         base * 3600,
     ];
-    let frame_px = pps / fps;
-    let label_step = *steps_frames.iter().find(|s| **s as f64 * frame_px >= 90.0).unwrap_or(&(base * 3600));
-    let minor = *steps_frames.iter().find(|s| **s as f64 * frame_px >= 9.0).unwrap_or(&label_step);
-    let f0 = rate.frame_at(layout.tick_at(ruler.min.x)).max(0);
-    let f1 = rate.frame_at(layout.tick_at(ruler.max.x)) + 1;
-    let mut f = (f0 / minor) * minor;
-    let clip = p.with_clip_rect(ruler);
-    while f <= f1 {
-        let x = layout.x_of(rate.tick_of(f));
-        let major = f % label_step == 0;
-        let h = if major {
-            10.0
-        } else if f % (minor * 5) == 0 {
-            6.0
-        } else {
-            3.5
-        };
-        clip.line_segment([pos2(x, ruler.max.y - h), pos2(x, ruler.max.y)], Stroke::new(1.0, t.tl_ruler_tick));
-        if major {
-            let label = format_time(rate.tick_of(f), rate, seq.settings.drop_frame, TimeDisplay::Timecode, 48000);
-            clip.text(pos2(x + 3.0, ruler.min.y + 8.0), Align2::LEFT_CENTER, label, Tokens::ui(9.5), t.tl_ruler_text);
-        }
-        f += minor;
-    }
-    // in/out on ruler
+    let frame_px = layout.pps / fps;
+    let label_step = *steps.iter().find(|s| **s as f64 * frame_px >= 110.0).unwrap_or(&(base * 3600));
+    let minor = *steps.iter().find(|s| **s as f64 * frame_px >= 12.0).unwrap_or(&label_step);
+    // In/Out band
     if seq.mark_in.is_some() || seq.mark_out.is_some() {
         let a = layout.x_of(seq.mark_in.unwrap_or(Tick::ZERO));
         let b = layout.x_of(seq.mark_out.map(|o| o + rate.frame_duration()).unwrap_or(seq.duration()));
-        clip.rect_filled(Rect::from_min_max(pos2(a, ruler.min.y + 14.0), pos2(b, ruler.max.y - 6.0)), 0.0, Color32::from_white_alpha(40));
-        if seq.mark_in.is_some() {
-            clip.line_segment([pos2(a, ruler.min.y + 12.0), pos2(a, ruler.max.y)], Stroke::new(1.5, Color32::from_white_alpha(170)));
-        }
-        if seq.mark_out.is_some() {
-            clip.line_segment([pos2(b, ruler.min.y + 12.0), pos2(b, ruler.max.y)], Stroke::new(1.5, Color32::from_white_alpha(170)));
-        }
+        clip.rect_filled(Rect::from_min_max(pos2(a, label_y + 7.0), pos2(b, tick_base)), 0.0, Color32::from_rgb(0x5c, 0x5c, 0x5c));
     }
-    // render bar: yellow where effects/transitions need GPU work, green where cached
-    let rb = Rect::from_min_max(pos2(ruler.min.x, ruler.max.y - 3.0), pos2(ruler.max.x, ruler.max.y));
+    let f0 = rate.frame_at(layout.tick_at(ruler.min.x)).max(0);
+    let f1 = rate.frame_at(layout.tick_at(ruler.max.x)) + 1;
+    let mut f = (f0 / minor) * minor;
+    while f <= f1 {
+        let x = layout.x_of(rate.tick_of(f));
+        let major = f % label_step == 0;
+        let h = if major { 10.0 } else { 4.0 };
+        clip.line_segment([pos2(x, tick_base - h), pos2(x, tick_base)], Stroke::new(1.0, t.tl_ruler_tick));
+        if major {
+            let label = format_time(rate.tick_of(f), rate, seq.settings.drop_frame, TimeDisplay::Timecode, 48000);
+            clip.text(pos2(x + 1.0, label_y), Align2::CENTER_CENTER, label, Tokens::ui(11.0), t.tl_ruler_text);
+        }
+        f += minor;
+    }
+    // render bar
+    let rb = Rect::from_min_max(pos2(ruler.min.x, ruler.max.y - 2.0), ruler.max);
     for tr in &seq.video_tracks {
         for it in &tr.items {
-            let heavy = it.has_standard_effects() || it.has_modified_intrinsics();
-            let col = if heavy { t.render_yellow } else { continue };
+            if !(it.has_standard_effects() || it.has_modified_intrinsics()) {
+                continue;
+            }
             let r = Rect::from_min_max(pos2(layout.x_of(it.start), rb.min.y), pos2(layout.x_of(it.end()), rb.max.y)).intersect(ruler);
-            clip.rect_filled(r, 0.0, col);
+            clip.rect_filled(r, 0.0, t.render_yellow);
         }
         for trn in &tr.transitions {
             let r = Rect::from_min_max(pos2(layout.x_of(trn.start), rb.min.y), pos2(layout.x_of(trn.end()), rb.max.y)).intersect(ruler);
             clip.rect_filled(r, 0.0, t.render_yellow);
         }
     }
-    // markers
+    // markers: 8 × 12 pt pentagons in the marker colour, on the top row
     for m in &seq.markers {
         let x = layout.x_of(m.start);
-        let c = label_color(m.color);
-        let y0 = ruler.min.y + 14.0;
-        let shape = vec![pos2(x - 5.0, y0), pos2(x + 5.0, y0), pos2(x + 5.0, y0 + 7.0), pos2(x, y0 + 11.0), pos2(x - 5.0, y0 + 7.0)];
-        clip.add(egui::Shape::convex_polygon(shape, c, Stroke::NONE));
+        let c = m.color.marker_rgb();
+        let c = Color32::from_rgb(c[0], c[1], c[2]);
+        let shape =
+            vec![pos2(x - 4.0, marker_y), pos2(x + 4.0, marker_y), pos2(x + 4.0, marker_y + 8.0), pos2(x, marker_y + 12.0), pos2(x - 4.0, marker_y + 8.0)];
         if m.duration > Tick::ZERO {
-            clip.rect_filled(Rect::from_min_max(pos2(x, y0), pos2(layout.x_of(m.start + m.duration), y0 + 7.0)), 0.0, c.gamma_multiply(0.6));
+            clip.rect_filled(Rect::from_min_max(pos2(x, marker_y), pos2(layout.x_of(m.start + m.duration), marker_y + 8.0)), 0.0, c.gamma_multiply(0.6));
         }
-        let mr = Rect::from_center_size(pos2(x, y0 + 5.0), vec2(10.0, 11.0));
+        clip.add(egui::Shape::convex_polygon(shape, c, Stroke::NONE));
+        let mr = Rect::from_center_size(pos2(x, marker_y + 6.0), vec2(10.0, 13.0));
         app.auto.add(&format!("timeline.marker.{}", m.id.0), mr, &m.name);
         if ui.rect_contains_pointer(mr) && !m.name.is_empty() {
             egui::Tooltip::always_open(ui.ctx().clone(), ui.layer_id(), egui::Id::new(("mk", m.id.0)), egui::PopupAnchor::Pointer).show(|ui| {
@@ -821,27 +915,27 @@ fn draw_top(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, seq: &Sequenc
 
 fn zoom_scrollbar(app: &mut FilmcraftApp, ui: &mut egui::Ui, bar: Rect, dur_s: f64, t: &Tokens) {
     let p = ui.painter();
-    p.rect_filled(bar, bar.height() / 2.0, t.field_bg);
+    p.rect_filled(bar, bar.height() / 2.0, t.separator);
     let v = &mut app.ui.timeline;
     let total = (dur_s * 1.15).max(v.scroll + bar.width() as f64 / v.pps);
     let vis = bar.width() as f64 / v.pps;
     let a = bar.min.x + (v.scroll / total) as f32 * bar.width();
     let b = bar.min.x + ((v.scroll + vis) / total).min(1.0) as f32 * bar.width();
-    let thumb = Rect::from_min_max(pos2(a, bar.min.y + 1.0), pos2(b.max(a + 16.0), bar.max.y - 1.0));
+    let thumb = Rect::from_min_max(pos2(a, bar.min.y), pos2(b.max(a + 20.0), bar.max.y));
     let hover = ui.rect_contains_pointer(thumb);
-    p.rect_filled(thumb, thumb.height() / 2.0, if hover { Color32::from_rgb(110, 110, 110) } else { Color32::from_rgb(85, 85, 85) });
-    // end handles (circles) to zoom
-    for x in [thumb.min.x + 5.0, thumb.max.x - 5.0] {
-        p.circle_filled(pos2(x, thumb.center().y), 3.0, Color32::from_rgb(170, 170, 170));
+    p.rect_filled(thumb, thumb.height() / 2.0, if hover { Color32::from_rgb(0x6a, 0x6a, 0x6a) } else { Color32::from_rgb(0x4b, 0x4b, 0x4b) });
+    for x in [thumb.min.x + thumb.height() / 2.0, thumb.max.x - thumb.height() / 2.0] {
+        p.circle_filled(pos2(x, thumb.center().y), 4.5, t.panel_bg);
+        p.circle_stroke(pos2(x, thumb.center().y), 4.5, Stroke::new(1.5, Color32::from_rgb(0xd1, 0xd1, 0xd1)));
     }
     app.auto.add("timeline.zoomBar", thumb, "zoom scroll bar");
     let resp = ui.interact(bar, egui::Id::new("tl-zoombar"), Sense::drag());
     if resp.drag_started()
         && let Some(pos) = resp.interact_pointer_pos()
     {
-        let mode = if (pos.x - thumb.min.x).abs() < 8.0 {
+        let mode = if (pos.x - thumb.min.x).abs() < 9.0 {
             1
-        } else if (pos.x - thumb.max.x).abs() < 8.0 {
+        } else if (pos.x - thumb.max.x).abs() < 9.0 {
             2
         } else {
             0
@@ -955,7 +1049,7 @@ pub fn hit(seq: &Sequence, layout: &Layout, pos: Pos2) -> Hit {
     for trn in &tr.transitions {
         let x0 = layout.x_of(trn.start);
         let x1 = layout.x_of(trn.end());
-        if pos.x >= x0 && pos.x <= x1 && pos.y < row.rect.min.y + (row.rect.height() * 0.5).max(14.0) {
+        if pos.x >= x0 && pos.x <= x1 && pos.y > row.rect.min.y + 17.0 {
             return Hit::Transition { track: row.track, id: trn.id };
         }
     }

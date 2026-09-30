@@ -85,64 +85,66 @@ pub struct Tokens {
 
 impl Tokens {
     pub fn for_kind(kind: ThemeKind) -> Self {
+        // Measured from Premiere 26 "Darkest" (plan/premiere/02-ui-ux.md §1).
         let dark = Tokens {
             kind,
-            app_bg: Color32::from_rgb(10, 10, 10),
-            header_bg: Color32::from_rgb(19, 19, 19),
-            panel_bg: Color32::from_rgb(29, 29, 29),
-            tab_bg: Color32::from_rgb(29, 29, 29),
-            tab_text: Color32::from_rgb(160, 160, 160),
-            tab_text_active: Color32::from_rgb(236, 236, 236),
-            focus: Color32::from_rgb(57, 138, 243),
-            accent: Color32::from_rgb(57, 138, 243),
-            accent_hover: Color32::from_rgb(88, 160, 250),
-            text: Color32::from_rgb(214, 214, 214),
-            text_dim: Color32::from_rgb(160, 160, 160),
-            text_faint: Color32::from_rgb(110, 110, 110),
-            icon: Color32::from_rgb(190, 190, 190),
-            icon_active: Color32::from_rgb(57, 138, 243),
-            hover: Color32::from_rgb(52, 52, 52),
-            pressed: Color32::from_rgb(64, 64, 64),
-            field_bg: Color32::from_rgb(20, 20, 20),
-            field_border: Color32::from_rgb(58, 58, 58),
-            separator: Color32::from_rgb(44, 44, 44),
-            row_alt: Color32::from_rgb(33, 33, 33),
-            row_selected: Color32::from_rgb(52, 76, 110),
-            hot_text: Color32::from_rgb(76, 158, 255),
-            tl_bg: Color32::from_rgb(24, 24, 24),
-            tl_track_bg: Color32::from_rgb(29, 29, 29),
-            tl_track_bg_alt: Color32::from_rgb(33, 33, 33),
-            tl_header_bg: Color32::from_rgb(36, 36, 36),
-            tl_ruler_bg: Color32::from_rgb(29, 29, 29),
-            tl_ruler_tick: Color32::from_rgb(92, 92, 92),
-            tl_ruler_text: Color32::from_rgb(150, 150, 150),
-            playhead: Color32::from_rgb(57, 138, 243),
-            in_out_shade: Color32::from_rgba_unmultiplied(120, 120, 120, 40),
-            clip_selected_border: Color32::from_rgb(240, 240, 240),
-            render_red: Color32::from_rgb(210, 50, 45),
-            render_yellow: Color32::from_rgb(222, 196, 40),
-            render_green: Color32::from_rgb(64, 180, 70),
-            monitor_bg: Color32::from_rgb(0, 0, 0),
-            timecode: Color32::from_rgb(76, 158, 255),
-            danger: Color32::from_rgb(230, 80, 80),
-            radius: 4.0,
-            radius_sm: 3.0,
-            gap: 3.0,
-            tab_h: 28.0,
+            app_bg: Color32::from_rgb(0, 0, 0),
+            header_bg: Color32::from_rgb(0x1d, 0x1d, 0x1d),
+            panel_bg: Color32::from_rgb(0x1d, 0x1d, 0x1d),
+            tab_bg: Color32::from_rgb(0x1d, 0x1d, 0x1d),
+            tab_text: Color32::from_rgb(0xb0, 0xb0, 0xb0),
+            tab_text_active: Color32::from_rgb(0xd1, 0xd1, 0xd1),
+            focus: Color32::from_rgb(0x57, 0x94, 0xec),
+            accent: Color32::from_rgb(0x2f, 0x6b, 0xdf),
+            accent_hover: Color32::from_rgb(0x3f, 0x7c, 0xe8),
+            text: Color32::from_rgb(0xd1, 0xd1, 0xd1),
+            text_dim: Color32::from_rgb(0xb0, 0xb0, 0xb0),
+            text_faint: Color32::from_rgb(0x6e, 0x6e, 0x6e),
+            icon: Color32::from_rgb(0xb0, 0xb0, 0xb0),
+            icon_active: Color32::from_rgb(0xd1, 0xd1, 0xd1),
+            hover: Color32::from_rgb(0x2c, 0x2c, 0x2c),
+            pressed: Color32::from_rgb(0x4b, 0x4b, 0x4b),
+            field_bg: Color32::from_rgb(0x0e, 0x0e, 0x0e),
+            field_border: Color32::from_rgb(0x30, 0x30, 0x30),
+            separator: Color32::from_rgb(0x30, 0x30, 0x30),
+            row_alt: Color32::from_rgb(0x21, 0x21, 0x21),
+            row_selected: Color32::from_rgb(0x33, 0x33, 0x33),
+            hot_text: Color32::from_rgb(0x57, 0x94, 0xec),
+            tl_bg: Color32::from_rgb(0x1d, 0x1d, 0x1d),
+            tl_track_bg: Color32::from_rgb(0x1d, 0x1d, 0x1d),
+            tl_track_bg_alt: Color32::from_rgb(0x1d, 0x1d, 0x1d),
+            tl_header_bg: Color32::from_rgb(0x1d, 0x1d, 0x1d),
+            tl_ruler_bg: Color32::from_rgb(0x1d, 0x1d, 0x1d),
+            tl_ruler_tick: Color32::from_rgb(0x8d, 0x8d, 0x8d),
+            tl_ruler_text: Color32::from_rgb(0xb0, 0xb0, 0xb0),
+            playhead: Color32::from_rgb(0x58, 0x95, 0xec),
+            in_out_shade: Color32::from_rgb(0x3f, 0x3f, 0x3f),
+            clip_selected_border: Color32::from_rgb(0xeb, 0xeb, 0xeb),
+            render_red: Color32::from_rgb(0xe3, 0x48, 0x50),
+            render_yellow: Color32::from_rgb(0xf0, 0xf0, 0x4f),
+            render_green: Color32::from_rgb(0x2d, 0x9d, 0x78),
+            monitor_bg: Color32::from_rgb(0x1d, 0x1d, 0x1d),
+            timecode: Color32::from_rgb(0x57, 0x94, 0xec),
+            danger: Color32::from_rgb(0xdc, 0x51, 0x3d),
+            radius: 0.0,
+            radius_sm: 4.0,
+            gap: 4.0,
+            tab_h: 32.0,
         };
         match kind {
             ThemeKind::Dark => dark,
             ThemeKind::Medium => Tokens {
-                app_bg: Color32::from_rgb(22, 22, 22),
-                header_bg: Color32::from_rgb(34, 34, 34),
-                panel_bg: Color32::from_rgb(46, 46, 46),
-                tab_bg: Color32::from_rgb(46, 46, 46),
-                field_bg: Color32::from_rgb(34, 34, 34),
-                tl_bg: Color32::from_rgb(40, 40, 40),
-                tl_track_bg: Color32::from_rgb(46, 46, 46),
-                tl_track_bg_alt: Color32::from_rgb(50, 50, 50),
-                tl_header_bg: Color32::from_rgb(54, 54, 54),
-                tl_ruler_bg: Color32::from_rgb(46, 46, 46),
+                app_bg: Color32::from_rgb(20, 20, 20),
+                header_bg: Color32::from_rgb(0x32, 0x32, 0x32),
+                panel_bg: Color32::from_rgb(0x32, 0x32, 0x32),
+                tab_bg: Color32::from_rgb(0x32, 0x32, 0x32),
+                field_bg: Color32::from_rgb(0x22, 0x22, 0x22),
+                tl_bg: Color32::from_rgb(0x32, 0x32, 0x32),
+                tl_track_bg: Color32::from_rgb(0x32, 0x32, 0x32),
+                tl_track_bg_alt: Color32::from_rgb(0x32, 0x32, 0x32),
+                tl_header_bg: Color32::from_rgb(0x32, 0x32, 0x32),
+                tl_ruler_bg: Color32::from_rgb(0x32, 0x32, 0x32),
+                monitor_bg: Color32::from_rgb(0x32, 0x32, 0x32),
                 row_alt: Color32::from_rgb(50, 50, 50),
                 hover: Color32::from_rgb(64, 64, 64),
                 ..dark
@@ -215,7 +217,7 @@ pub fn apply_visuals(ctx: &egui::Context, t: &Tokens) {
     v.hyperlink_color = t.accent;
     v.window_stroke = Stroke::new(1.0, t.field_border);
     v.window_corner_radius = egui::CornerRadius::same(6);
-    v.menu_corner_radius = egui::CornerRadius::same(5);
+    v.menu_corner_radius = egui::CornerRadius::same(6);
     v.popup_shadow = egui::epaint::Shadow { offset: [0, 4], blur: 16, spread: 0, color: Color32::from_black_alpha(140) };
     v.window_shadow = v.popup_shadow;
     for w in [&mut v.widgets.noninteractive, &mut v.widgets.inactive, &mut v.widgets.hovered, &mut v.widgets.active, &mut v.widgets.open] {
@@ -242,10 +244,10 @@ pub fn apply_visuals(ctx: &egui::Context, t: &Tokens) {
     ctx.global_style_mut(|s| {
         s.spacing.item_spacing = egui::vec2(6.0, 4.0);
         s.spacing.button_padding = egui::vec2(8.0, 3.0);
-        s.spacing.interact_size.y = 20.0;
+        s.spacing.interact_size.y = 24.0;
         s.spacing.menu_margin = egui::Margin::same(4);
-        s.text_styles.insert(TextStyle::Body, FontId::new(12.5, FontFamily::Proportional));
-        s.text_styles.insert(TextStyle::Button, FontId::new(12.5, FontFamily::Proportional));
+        s.text_styles.insert(TextStyle::Body, FontId::new(12.0, FontFamily::Proportional));
+        s.text_styles.insert(TextStyle::Button, FontId::new(12.0, FontFamily::Proportional));
         s.text_styles.insert(TextStyle::Small, FontId::new(11.0, FontFamily::Proportional));
         s.text_styles.insert(TextStyle::Heading, FontId::new(15.0, FontFamily::Name("semibold".into())));
         s.text_styles.insert(TextStyle::Monospace, FontId::new(12.0, FontFamily::Monospace));

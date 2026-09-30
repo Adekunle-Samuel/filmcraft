@@ -20,7 +20,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::mpsc::{Receiver, Sender};
 
-use egui::{Color32, TextureHandle, TextureOptions};
+use egui::{TextureHandle, TextureOptions};
 use filmcraft_engine::{Services, Session};
 use filmcraft_time::Tick;
 use serde_json::{Value, json};
@@ -102,6 +102,8 @@ pub struct FilmcraftApp {
     bindings: Vec<(egui::Modifiers, egui::Key, String)>,
     pub toast: Option<(String, f64)>,
     pub tl: panels::timeline::TlState,
+    /// Commands from outside the UI (native menu bar), invoked on the UI thread.
+    pub command_inbox: Option<Receiver<String>>,
     /// GPU compositor (when running on wgpu): device state + compositor + the egui texture it feeds.
     pub gpu: Option<GpuState>,
 }
@@ -185,6 +187,7 @@ impl FilmcraftApp {
             bindings: menus::bindings(),
             toast: None,
             tl: Default::default(),
+            command_inbox: None,
             gpu: None,
         }
     }
@@ -606,30 +609,79 @@ impl FilmcraftApp {
             }
         }
         self.handle_drops(&ctx);
+        if let Some(rx) = self.command_inbox.take() {
+            while let Ok(id) = rx.try_recv() {
+                if let Err(e) = menus::invoke(self, &ctx, &id, json!({})) {
+                    self.ui.status = e;
+                }
+            }
+            self.command_inbox = Some(rx);
+        }
         self.handle_shortcuts(&ctx);
         self.advance_playback(&ctx);
         let t = self.tokens;
         let full = ui.max_rect();
         ui.painter().rect_filled(full, 0.0, t.app_bg);
-        let header_h = 40.0;
+        let header_h = 38.0;
         let header = egui::Rect::from_min_size(full.min, egui::vec2(full.width(), header_h));
         header::show(self, ui, header);
-        let body = egui::Rect::from_min_max(egui::pos2(full.min.x + 4.0, header.max.y + 1.0), egui::pos2(full.max.x - 4.0, full.max.y - 4.0));
+        let status_h = 20.0;
+        let body = egui::Rect::from_min_max(egui::pos2(full.min.x + 1.0, header.max.y + 1.0), egui::pos2(full.max.x - 1.0, full.max.y - status_h - 2.0));
         match self.ui.mode {
             state::Mode::Edit => self.dock_area(ui, body),
             state::Mode::Import => panels::import_mode::show(self, ui, body),
             state::Mode::Export => panels::export_mode::show(self, ui, body),
         }
         panels::dialogs::show(self, &ctx);
-        if !self.ui.status.is_empty() {
-            let r = egui::Rect::from_min_size(egui::pos2(full.center().x - 260.0, full.max.y - 34.0), egui::vec2(520.0, 26.0));
-            ui.painter().rect_filled(r, 13.0, Color32::from_black_alpha(210));
-            ui.painter().text(r.center(), egui::Align2::CENTER_CENTER, &self.ui.status, Tokens::ui(12.0), t.text);
-            let resp = ui.interact(r, egui::Id::new("status-toast"), egui::Sense::click());
-            if resp.clicked() {
-                self.ui.status.clear();
-            }
+        // Status / hint bar
+        let sb = egui::Rect::from_min_max(egui::pos2(full.min.x, full.max.y - status_h), full.max);
+        ui.painter().rect_filled(sb, 0.0, egui::Color32::from_rgb(0x1c, 0x1c, 0x1c));
+        let hint = if !self.ui.status.is_empty() { self.ui.status.clone() } else { self.hint_text() };
+        ui.painter().text(egui::pos2(sb.min.x + 10.0, sb.center().y), egui::Align2::LEFT_CENTER, hint, Tokens::ui(11.0), t.text_dim);
+        let resp = ui.interact(sb, egui::Id::new("status-bar"), egui::Sense::click());
+        if resp.clicked() {
+            self.ui.status.clear();
         }
+        let jobs_running = self
+            .session
+            .jobs
+            .iter()
+            .filter(|j| !j.progress.finished.load(std::sync::atomic::Ordering::Relaxed) && j.progress.error.lock().map(|e| e.is_none()).unwrap_or(true))
+            .count();
+        let right = if jobs_running > 0 {
+            let f = self
+                .session
+                .jobs
+                .iter()
+                .rev()
+                .find(|j| !j.progress.finished.load(std::sync::atomic::Ordering::Relaxed))
+                .map(|j| j.progress.fraction())
+                .unwrap_or(0.0);
+            ctx.request_repaint_after(std::time::Duration::from_millis(200));
+            format!("Exporting… {:.0}%", f * 100.0)
+        } else {
+            String::new()
+        };
+        ui.painter().text(egui::pos2(sb.max.x - 10.0, sb.center().y), egui::Align2::RIGHT_CENTER, right, Tokens::ui(11.0), t.text_dim);
+    }
+
+    /// Contextual hint for the status bar (Premiere shows tool/gesture hints here).
+    fn hint_text(&self) -> String {
+        match self.ui.tool {
+            state::Tool::Selection => "Click to select, or click in empty space and drag to marquee select. Use Shift, Opt, and Cmd for other options.",
+            state::Tool::TrackSelectForward => "Click to select all clips to the right in all tracks. Shift-click for a single track.",
+            state::Tool::TrackSelectBackward => "Click to select all clips to the left in all tracks. Shift-click for a single track.",
+            state::Tool::Ripple => "Drag an edit point to ripple trim; later clips move to keep the gap closed.",
+            state::Tool::Rolling => "Drag an edit point to roll it: the out of one clip and the in of the next move together.",
+            state::Tool::RateStretch => "Drag an edge to change the clip's speed so it fills the new duration.",
+            state::Tool::Razor => "Click to split a clip. Shift-click to split all tracks.",
+            state::Tool::Slip => "Drag a clip to slip its source in/out without moving it.",
+            state::Tool::Slide => "Drag a clip to slide it between its neighbours.",
+            state::Tool::Hand => "Drag to scroll the timeline.",
+            state::Tool::Zoom => "Click to zoom in; Opt-click to zoom out.",
+            _ => "",
+        }
+        .to_string()
     }
 
     fn dock_area(&mut self, ui: &mut egui::Ui, body: egui::Rect) {

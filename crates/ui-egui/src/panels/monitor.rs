@@ -25,7 +25,7 @@ pub enum Which {
 pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, which: Which) {
     let t = app.tokens;
     let ctx = ui.ctx().clone();
-    let controls_h = 26.0 + 18.0 + 34.0;
+    let controls_h = 28.0 + 24.0 + 36.0;
     let video_area = Rect::from_min_max(rect.min + vec2(4.0, 4.0), pos2(rect.max.x - 4.0, rect.max.y - controls_h));
     let (target, frame_size, rate, time, duration, drop_frame, mark_in, mark_out, name) = match which {
         Which::Program => {
@@ -174,9 +174,9 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, which: Which)
     }
 
     // ---- controls row: timecode | zoom | res | wrench | duration
-    let row1 = Rect::from_min_size(pos2(rect.min.x + 8.0, video_area.max.y + 2.0), vec2(rect.width() - 16.0, 24.0));
+    let row1 = Rect::from_min_size(pos2(rect.min.x + 14.0, video_area.max.y + 2.0), vec2(rect.width() - 28.0, 26.0));
     let tc = format_time(time, rate, drop_frame, TimeDisplay::Timecode, 48000);
-    ui.painter().text(pos2(row1.min.x, row1.center().y), Align2::LEFT_CENTER, &tc, Tokens::mono(15.0), t.timecode);
+    ui.painter().text(pos2(row1.min.x, row1.center().y), Align2::LEFT_CENTER, &tc, Tokens::semibold(15.0), t.hot_text);
     app.auto.add(&format!("{prefix}.timecode"), Rect::from_min_size(row1.min, vec2(110.0, row1.height())), &tc);
     let dur_tc = format_time(
         mark_out.map(|o| o + rate.frame_duration()).unwrap_or(duration) - mark_in.unwrap_or(Tick::ZERO),
@@ -185,15 +185,15 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, which: Which)
         TimeDisplay::Timecode,
         48000,
     );
-    ui.painter().text(pos2(row1.max.x, row1.center().y), Align2::RIGHT_CENTER, &dur_tc, Tokens::mono(15.0), t.text);
+    ui.painter().text(pos2(row1.max.x, row1.center().y), Align2::RIGHT_CENTER, &dur_tc, Tokens::semibold(15.0), t.text_dim);
     // zoom + resolution dropdowns centred-ish
-    let zr = Rect::from_min_size(pos2(row1.center().x - 70.0, row1.min.y + 2.0), vec2(56.0, 20.0));
+    let zr = Rect::from_min_size(pos2(row1.min.x + 116.0, row1.min.y), vec2(70.0, 24.0));
     let zoom_label = match if which == Which::Program { app.ui.program.zoom } else { app.ui.source.zoom } {
         None => "Fit".to_string(),
         Some(z) => format!("{}%", (z * 100.0) as i32),
     };
     crate::widgets::dropdown_text(ui, zr, &zoom_label, &t, egui::Id::new((prefix, "zoom")));
-    let rr = Rect::from_min_size(pos2(zr.max.x + 6.0, row1.min.y + 2.0), vec2(56.0, 20.0));
+    let rr = Rect::from_min_size(pos2(row1.max.x - 196.0, row1.min.y), vec2(62.0, 24.0));
     let rresp = crate::widgets::dropdown_text(ui, rr, res.label(), &t, egui::Id::new((prefix, "res")));
     app.auto.add(&format!("{prefix}.resolution"), rr, "Select Playback Resolution");
     egui::Popup::menu(&rresp).show(|ui| {
@@ -223,11 +223,11 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, which: Which)
     });
 
     // ---- mini timeline / scrub bar
-    let bar = Rect::from_min_size(pos2(rect.min.x + 8.0, row1.max.y + 1.0), vec2(rect.width() - 16.0, 16.0));
+    let bar = Rect::from_min_size(pos2(rect.min.x + 14.0, row1.max.y + 2.0), vec2(rect.width() - 28.0, 22.0));
     mini_timeline(app, ui, bar, which, time, duration, rate, mark_in, mark_out);
 
     // ---- transport buttons
-    let row3 = Rect::from_min_size(pos2(rect.min.x, bar.max.y + 2.0), vec2(rect.width(), 30.0));
+    let row3 = Rect::from_min_size(pos2(rect.min.x, bar.max.y + 4.0), vec2(rect.width(), 32.0));
     transport(app, ui, row3, which);
 }
 
@@ -256,29 +256,44 @@ fn mini_timeline(
 ) {
     let t = app.tokens;
     let p = ui.painter();
-    let track = Rect::from_min_max(pos2(bar.min.x, bar.center().y - 1.0), pos2(bar.max.x, bar.center().y + 1.0));
-    p.rect_filled(track, 1.0, t.separator);
     let dur = duration.0.max(1) as f64;
     let xof = |tk: Tick| bar.min.x + ((tk.0 as f64 / dur) as f32).clamp(0.0, 1.0) * bar.width();
+    // ticks: minor 4 pt, major 10 pt, ~20 pt spacing
+    let n = ((bar.width() / 20.0) as i32).max(2);
+    for i in 0..=n {
+        let x = bar.min.x + bar.width() * i as f32 / n as f32;
+        let h = if i % 5 == 0 { 8.0 } else { 3.5 };
+        p.line_segment([pos2(x, bar.max.y - h), pos2(x, bar.max.y)], Stroke::new(1.0, t.text_faint));
+    }
     if mark_in.is_some() || mark_out.is_some() {
         let a = xof(mark_in.unwrap_or(Tick::ZERO));
         let b = xof(mark_out.map(|o| o + rate.frame_duration()).unwrap_or(duration));
-        p.rect_filled(Rect::from_min_max(pos2(a, bar.min.y + 3.0), pos2(b, bar.max.y - 3.0)), 2.0, Color32::from_white_alpha(46));
+        p.rect_filled(Rect::from_min_max(pos2(a, bar.min.y + 8.0), pos2(b, bar.max.y)), 0.0, Color32::from_rgb(0x5c, 0x5c, 0x5c));
     }
-    // markers (program)
     if which == Which::Program
         && let Some(q) = app.session.active_sequence()
     {
         for m in &q.markers {
             let x = xof(m.start);
-            let c = Color32::from_rgb(m.color.rgb()[0], m.color.rgb()[1], m.color.rgb()[2]);
-            p.rect_filled(Rect::from_min_size(pos2(x - 2.0, bar.min.y), vec2(4.0, 5.0)), 1.0, c);
+            let c = m.color.marker_rgb();
+            let c = Color32::from_rgb(c[0], c[1], c[2]);
+            let y = bar.min.y;
+            p.add(egui::Shape::convex_polygon(
+                vec![pos2(x - 3.5, y), pos2(x + 3.5, y), pos2(x + 3.5, y + 7.0), pos2(x, y + 10.0), pos2(x - 3.5, y + 7.0)],
+                c,
+                Stroke::NONE,
+            ));
         }
     }
     let x = xof(time);
     // playhead: blue triangle over a line
-    p.add(egui::Shape::convex_polygon(vec![pos2(x - 5.0, bar.min.y), pos2(x + 5.0, bar.min.y), pos2(x, bar.min.y + 6.0)], t.playhead, Stroke::NONE));
-    p.line_segment([pos2(x, bar.min.y + 4.0), pos2(x, bar.max.y)], Stroke::new(1.5, t.playhead));
+    let hy = bar.max.y - 11.0;
+    p.add(egui::Shape::convex_polygon(
+        vec![pos2(x - 5.5, hy), pos2(x + 5.5, hy), pos2(x + 5.5, hy + 5.0), pos2(x, hy + 9.0), pos2(x - 5.5, hy + 5.0)],
+        t.playhead,
+        Stroke::NONE,
+    ));
+    p.line_segment([pos2(x, hy + 8.0), pos2(x, bar.max.y)], Stroke::new(1.0, t.playhead));
     let resp = ui.interact(bar, egui::Id::new((which as u8, "scrub")), Sense::click_and_drag());
     app.auto.add(if which == Which::Program { "program.scrubBar" } else { "source.scrubBar" }, bar, "scrub bar");
     if (resp.dragged() || resp.clicked())
