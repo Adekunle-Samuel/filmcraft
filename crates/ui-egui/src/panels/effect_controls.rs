@@ -55,59 +55,66 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let heading = if kind == filmcraft_project::TrackKind::Video { "Video" } else { "Audio" };
     bui.painter().text(pos2(body.min.x + 8.0, body.min.y + 8.0), Align2::LEFT_CENTER, heading, Tokens::semibold(11.5), t.text_dim);
     bui.add_space(18.0);
-    for (idx, e) in it.effects.iter().enumerate() {
-        let Some(def) = e.def() else { continue };
-        let key = format!("{}:{}", clip.0, idx);
-        let open = !app.ui.collapsed_fx.contains(&key);
-        let (r, resp) = bui.allocate_exact_size(vec2(body.width(), ROW_H), Sense::click());
-        if resp.hovered() {
-            bui.painter().rect_filled(r, 0.0, t.hover);
-        }
-        icons::paint(
-            bui.painter(),
-            Rect::from_center_size(pos2(r.min.x + 10.0, r.center().y), vec2(10.0, 10.0)),
-            if open { Icon::ChevronDown } else { Icon::ChevronRight },
-            t.text_dim,
-        );
-        // fx enable toggle
-        let fxr = Rect::from_center_size(pos2(r.min.x + 28.0, r.center().y), vec2(18.0, 14.0));
-        let fxresp = bui.interact(fxr, egui::Id::new(("fxen", clip.0, idx)), Sense::click());
-        bui.painter().text(fxr.center(), Align2::CENTER_CENTER, "fx", Tokens::semibold(10.5), if e.enabled { t.text } else { t.text_faint });
-        if !e.enabled {
-            bui.painter().line_segment([fxr.left_bottom(), fxr.right_top()], Stroke::new(1.0, t.text_faint));
-        }
-        if fxresp.clicked() {
-            actions.push(("effects.toggleEnabled".into(), json!({"clip": clip.0, "index": idx})));
-        }
-        bui.painter().text(pos2(r.min.x + 42.0, r.center().y), Align2::LEFT_CENTER, def.name, Tokens::ui(12.0), t.text);
-        // reset button
-        let rr = Rect::from_center_size(pos2(r.max.x - 14.0, r.center().y), vec2(16.0, 16.0));
-        let rresp = bui.interact(rr, egui::Id::new(("fxreset", clip.0, idx)), Sense::click()).on_hover_text("Reset Effect");
-        icons::paint(bui.painter(), rr.shrink(2.0), Icon::Reset, if rresp.hovered() { t.text } else { t.text_dim });
-        if rresp.clicked() {
-            actions.push(("effects.reset".into(), json!({"clip": clip.0, "index": idx})));
-        }
-        app.auto.add(&format!("effectControls.effect.{}", e.effect), r, def.name);
-        if resp.clicked() && !fxresp.clicked() && !rresp.clicked() {
-            if open {
-                app.ui.collapsed_fx.push(key.clone());
-            } else {
-                app.ui.collapsed_fx.retain(|k| *k != key);
+    // Premiere lists the fixed effects (Motion, Opacity, Time Remapping / Volume…) first.
+    let mut order: Vec<usize> = (0..it.effects.len()).collect();
+    order.sort_by_key(|i| !it.effects[*i].def().is_some_and(|d| d.intrinsic));
+    let scroll_out = egui::ScrollArea::vertical().id_salt("ec-scroll").auto_shrink([false, false]).show(&mut bui, |bui| {
+        for idx in order {
+            let e = &it.effects[idx];
+            let Some(def) = e.def() else { continue };
+            let key = format!("{}:{}", clip.0, idx);
+            let open = !app.ui.collapsed_fx.contains(&key);
+            let (r, resp) = bui.allocate_exact_size(vec2(body.width(), ROW_H), Sense::click());
+            if resp.hovered() {
+                bui.painter().rect_filled(r, 0.0, t.hover);
+            }
+            icons::paint(
+                bui.painter(),
+                Rect::from_center_size(pos2(r.min.x + 10.0, r.center().y), vec2(10.0, 10.0)),
+                if open { Icon::ChevronDown } else { Icon::ChevronRight },
+                t.text_dim,
+            );
+            // fx enable toggle
+            let fxr = Rect::from_center_size(pos2(r.min.x + 28.0, r.center().y), vec2(18.0, 14.0));
+            let fxresp = bui.interact(fxr, egui::Id::new(("fxen", clip.0, idx)), Sense::click());
+            bui.painter().text(fxr.center(), Align2::CENTER_CENTER, "fx", Tokens::semibold(10.5), if e.enabled { t.text } else { t.text_faint });
+            if !e.enabled {
+                bui.painter().line_segment([fxr.left_bottom(), fxr.right_top()], Stroke::new(1.0, t.text_faint));
+            }
+            if fxresp.clicked() {
+                actions.push(("effects.toggleEnabled".into(), json!({"clip": clip.0, "index": idx})));
+            }
+            bui.painter().text(pos2(r.min.x + 42.0, r.center().y), Align2::LEFT_CENTER, def.name, Tokens::ui(12.0), t.text);
+            // reset button
+            let rr = Rect::from_center_size(pos2(r.max.x - 14.0, r.center().y), vec2(16.0, 16.0));
+            let rresp = bui.interact(rr, egui::Id::new(("fxreset", clip.0, idx)), Sense::click()).on_hover_text("Reset Effect");
+            icons::paint(bui.painter(), rr.shrink(2.0), Icon::Reset, if rresp.hovered() { t.text } else { t.text_dim });
+            if rresp.clicked() {
+                actions.push(("effects.reset".into(), json!({"clip": clip.0, "index": idx})));
+            }
+            app.auto.add(&format!("effectControls.effect.{}", e.effect), r, def.name);
+            if resp.clicked() && !fxresp.clicked() && !rresp.clicked() {
+                if open {
+                    app.ui.collapsed_fx.push(key.clone());
+                } else {
+                    app.ui.collapsed_fx.retain(|k| *k != key);
+                }
+            }
+            resp.context_menu(|ui| {
+                if !def.intrinsic && ui.button("Clear").clicked() {
+                    actions.push(("effects.remove".into(), json!({"clip": clip.0, "index": idx})));
+                    ui.close();
+                }
+            });
+            if !open {
+                continue;
+            }
+            for pd in &def.params {
+                param_row(app, bui, body, clip, idx, e, pd, mt_now, &mut actions, &lane, &lx, &it);
             }
         }
-        resp.context_menu(|ui| {
-            if !def.intrinsic && ui.button("Clear").clicked() {
-                actions.push(("effects.remove".into(), json!({"clip": clip.0, "index": idx})));
-                ui.close();
-            }
-        });
-        if !open {
-            continue;
-        }
-        for pd in &def.params {
-            param_row(app, &mut bui, body, clip, idx, e, pd, mt_now, &mut actions, &lane, &lx, &it);
-        }
-    }
+    });
+    let _ = scroll_out;
     // playhead in lane
     let px = lx(ph);
     ui.painter().line_segment([pos2(px, lane.min.y), pos2(px, lane.max.y)], Stroke::new(1.0, t.playhead));

@@ -621,7 +621,19 @@ impl eframe::App for FilmcraftApp {
             self.fps = self.fps * 0.9 + (1.0 / dt).min(480.0) * 0.1;
         }
         self.last_time = now;
+        let had_synthetic = !self.synthetic.is_empty();
         self.drain_control(ctx);
+        if !self.synthetic.is_empty() && !had_synthetic {
+            // Occluded macOS windows stop running `ui`; raise the window so input is processed.
+            ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+        }
+        if !self.synthetic.is_empty() {
+            ctx.request_repaint();
+        } else if !self.input_waiters.is_empty() {
+            for w in self.input_waiters.drain(..) {
+                let _ = w.send(json!({"ok": true, "result": null}));
+            }
+        }
         self.issue_screenshots(ctx);
         self.collect_screenshots(ctx);
     }
@@ -636,6 +648,7 @@ impl eframe::App for FilmcraftApp {
         if !self.synthetic.is_empty() {
             ctx.request_repaint();
         } else if !self.input_waiters.is_empty() {
+            ctx.request_repaint();
             for w in self.input_waiters.drain(..) {
                 let _ = w.send(json!({"ok": true, "result": null}));
             }
