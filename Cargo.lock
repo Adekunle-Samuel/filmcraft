@@ -1309,6 +1309,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "filmcraft-audio-dsp"
+version = "0.1.0"
+
+[[package]]
 name = "filmcraft-automation"
 version = "0.1.0"
 dependencies = [
