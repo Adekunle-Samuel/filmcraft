@@ -1409,6 +1409,7 @@ dependencies = [
  "filmcraft-aac",
  "filmcraft-codecs",
  "filmcraft-frame",
+ "filmcraft-h264enc",
  "filmcraft-isobmff",
  "filmcraft-media",
  "filmcraft-project",

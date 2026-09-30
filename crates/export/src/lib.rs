@@ -178,7 +178,7 @@ pub type AudioEncoderFactory = fn(format: Format, sample_rate: u32, channels: u3
 
 fn video_factories() -> &'static RwLock<Vec<EncoderFactory>> {
     static F: OnceLock<RwLock<Vec<EncoderFactory>>> = OnceLock::new();
-    F.get_or_init(|| RwLock::new(vec![prores_factory, mjpeg_factory]))
+    F.get_or_init(|| RwLock::new(vec![h264_factory, prores_factory, mjpeg_factory]))
 }
 fn audio_factories() -> &'static RwLock<Vec<AudioEncoderFactory>> {
     static F: OnceLock<RwLock<Vec<AudioEncoderFactory>>> = OnceLock::new();
@@ -192,15 +192,10 @@ pub fn register_audio_encoder(f: AudioEncoderFactory) {
     audio_factories().write().unwrap_or_else(|e| e.into_inner()).insert(0, f);
 }
 
-/// Whether a format can currently be exported (its encoder is registered).
+/// Whether a format can currently be exported. Every [`Format`] has a built-in encoder; this stays
+/// as the hook for formats whose encoders are registered at runtime.
 pub fn available(format: Format) -> bool {
-    match format {
-        Format::PngSequence | Format::Gif | Format::Wav | Format::Mjpeg => true,
-        f => {
-            let s = ExportSettings { format: f, ..Default::default() };
-            video_factories().read().unwrap_or_else(|e| e.into_inner()).iter().any(|fac| fac(f, 64, 64, FrameRate::FPS_24, &s).is_some())
-        }
-    }
+    Format::ALL.contains(&format)
 }
 
 struct MjpegEncoder {
@@ -322,6 +317,101 @@ pub fn rgba_to_yuv422_10(rgba: &[u8], w: usize, h: usize, y: &mut [u16], cb: &mu
 fn prores_factory(format: Format, w: u32, h: u32, rate: FrameRate, _s: &ExportSettings) -> Option<Result<Box<dyn VideoEncoder>>> {
     (format == Format::ProRes)
         .then(|| Ok(Box::new(ProResEncoder { enc: filmcraft_prores::Encoder::new(filmcraft_prores::Profile::Hq, w, h), w, h, rate }) as Box<dyn VideoEncoder>))
+}
+
+/// H.264 High (our encoder): sRGB/709 RGBA8 → 8-bit limited-range BT.709 4:2:0, VBR at the
+/// requested bitrate, length-prefixed samples with the `avcC` in the sample entry.
+struct H264Encoder {
+    enc: filmcraft_h264enc::Encoder,
+    w: u32,
+    h: u32,
+    rate: FrameRate,
+    y: Vec<u8>,
+    u: Vec<u8>,
+    v: Vec<u8>,
+}
+
+impl H264Encoder {
+    fn packets(&self, ps: Vec<filmcraft_h264enc::Packet>) -> Vec<EncodedPacket> {
+        ps.into_iter()
+            .map(|p| EncodedPacket { data: p.data, key: p.keyframe, duration: self.rate.den as u32, composition_offset: (p.pts - p.dts) as i32 })
+            .collect()
+    }
+}
+
+impl VideoEncoder for H264Encoder {
+    fn sample_entry(&self) -> SampleEntry {
+        let cfg = filmcraft_isobmff::AvcConfig::parse(&self.enc.avcc()).unwrap_or_else(|_| {
+            let (sps, pps) = self.enc.sps_pps();
+            filmcraft_isobmff::AvcConfig::new(vec![sps], vec![pps], 4)
+        });
+        SampleEntry::avc(cfg, self.w as u16, self.h as u16)
+    }
+    fn timescale(&self) -> u32 {
+        self.rate.num as u32
+    }
+    fn encode(&mut self, f: &EncoderFrame) -> Result<Vec<EncodedPacket>> {
+        rgba_to_yuv420_8(f.rgba, f.width as usize, f.height as usize, &mut self.y, &mut self.u, &mut self.v);
+        let cw = (f.width as usize).div_ceil(2);
+        let frame = filmcraft_h264enc::YuvFrame { y: &self.y, u: &self.u, v: &self.v, y_stride: f.width as usize, uv_stride: cw };
+        let ps = self.enc.try_encode(&frame, f.index as i64 * self.rate.den).map_err(|e| ExportError::Encode(e.to_string()))?;
+        Ok(self.packets(ps))
+    }
+    fn flush(&mut self) -> Result<Vec<EncodedPacket>> {
+        let ps = self.enc.flush();
+        Ok(self.packets(ps))
+    }
+    fn media_start(&self) -> Option<i64> {
+        // With B-frames the first DTS is one frame before the first PTS.
+        (self.enc.delay() > 0).then_some(self.rate.den)
+    }
+}
+
+/// BT.709 limited-range 8-bit 4:2:0 from straight RGBA8 (2×2 chroma average).
+pub fn rgba_to_yuv420_8(rgba: &[u8], w: usize, h: usize, y: &mut Vec<u8>, u: &mut Vec<u8>, v: &mut Vec<u8>) {
+    let (cw, ch) = (w.div_ceil(2), h.div_ceil(2));
+    y.resize(w * h, 0);
+    u.resize(cw * ch, 0);
+    v.resize(cw * ch, 0);
+    y.par_chunks_mut(w * 2).zip(u.par_chunks_mut(cw).zip(v.par_chunks_mut(cw))).enumerate().for_each(|(cy, (yr, (ur, vr)))| {
+        let rows = yr.len() / w;
+        let mut us = vec![0f32; cw];
+        let mut vs = vec![0f32; cw];
+        let mut cnt = vec![0f32; cw];
+        for dy in 0..rows {
+            let row = cy * 2 + dy;
+            let src = &rgba[row * w * 4..(row + 1) * w * 4];
+            for x in 0..w {
+                let (r, g, b) = (src[x * 4] as f32 / 255.0, src[x * 4 + 1] as f32 / 255.0, src[x * 4 + 2] as f32 / 255.0);
+                let yy = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+                yr[dy * w + x] = (16.0 + 219.0 * yy).round().clamp(1.0, 254.0) as u8;
+                us[x / 2] += (b - yy) / 1.8556;
+                vs[x / 2] += (r - yy) / 1.5748;
+                cnt[x / 2] += 1.0;
+            }
+        }
+        for cx in 0..cw {
+            ur[cx] = (128.0 + 224.0 * us[cx] / cnt[cx]).round().clamp(1.0, 254.0) as u8;
+            vr[cx] = (128.0 + 224.0 * vs[cx] / cnt[cx]).round().clamp(1.0, 254.0) as u8;
+        }
+    });
+}
+
+fn h264_factory(format: Format, w: u32, h: u32, rate: FrameRate, s: &ExportSettings) -> Option<Result<Box<dyn VideoEncoder>>> {
+    if format != Format::H264 {
+        return None;
+    }
+    let mut cfg = filmcraft_h264enc::EncoderConfig::new(w, h, rate.num as u32, rate.den as u32);
+    cfg.format = filmcraft_h264enc::PacketFormat::LengthPrefixed;
+    cfg.aud = false;
+    cfg.keyint = (rate.num as f64 / rate.den as f64 * 2.0).round().max(1.0) as u32;
+    let kbps = s.bitrate_kbps.max(100);
+    cfg.rate = filmcraft_h264enc::RateControl::Vbr { target_kbps: kbps, max_kbps: kbps * 3 / 2 };
+    Some(
+        filmcraft_h264enc::Encoder::new(cfg)
+            .map(|enc| Box::new(H264Encoder { enc, w, h, rate, y: Vec::new(), u: Vec::new(), v: Vec::new() }) as Box<dyn VideoEncoder>)
+            .map_err(|e| ExportError::Encode(e.to_string())),
+    )
 }
 
 /// The range to export (settings → In/Out → whole sequence).

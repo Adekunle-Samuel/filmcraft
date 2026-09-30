@@ -1613,7 +1613,7 @@ fn export_media(s: &mut Session, p: &Value) -> Result<Value> {
     let seq = s.state.active_sequence.ok_or(EngineError::NoSequence)?;
     let format = str_p(p, "format").and_then(filmcraft_export::Format::from_name).unwrap_or(filmcraft_export::Format::H264);
     if !filmcraft_export::available(format) {
-        return Err(EngineError::Other(format!("{} export is not available yet (encoder in progress); use mjpeg, png, gif or wav", format.label())));
+        return Err(EngineError::Other(format!("{} export is not available (no encoder registered)", format.label())));
     }
     let path = str_p(p, "path").map(str::to_string).ok_or_else(|| bad("file.exportMedia", "need `path`"))?;
     let settings = filmcraft_export::ExportSettings {
