@@ -262,6 +262,7 @@ impl VideoEncoder for ProResEncoder {
 /// BT.709 limited-range 10-bit 4:2:2 from straight RGBA8 (chroma averaged horizontally).
 pub fn rgba_to_yuv422_10(rgba: &[u8], w: usize, h: usize, y: &mut [u16], cb: &mut [u16], cr: &mut [u16]) {
     let cw = w.div_ceil(2);
+    debug_assert!(y.len() >= w * h && rgba.len() >= w * h * 4);
     y.par_chunks_mut(w).zip(cb.par_chunks_mut(cw).zip(cr.par_chunks_mut(cw))).enumerate().for_each(|(row, (yr, (cbr, crr)))| {
         let src = &rgba[row * w * 4..(row + 1) * w * 4];
         let mut us = vec![0f32; w];
