@@ -20,6 +20,7 @@ filmcraft-isobmff = { path = "crates/isobmff" }
 filmcraft-h264 = { path = "crates/h264" }
 filmcraft-prores = { path = "crates/prores" }
 filmcraft-aac = { path = "crates/aac" }
+filmcraft-h264enc = { path = "crates/h264enc" }
 filmcraft-frame = { path = "crates/frame" }
 filmcraft-media = { path = "crates/media" }
 filmcraft-codecs = { path = "crates/codecs" }
