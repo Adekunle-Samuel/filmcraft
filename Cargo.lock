@@ -1349,6 +1349,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "filmcraft-h264"
+version = "0.1.0"
+dependencies = [
+ "filmcraft-bitstream",
+ "rayon",
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "filmcraft-isobmff"
 version = "0.1.0"
 dependencies = [
