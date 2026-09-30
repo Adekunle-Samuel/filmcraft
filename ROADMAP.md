@@ -2,7 +2,7 @@
 
 Progress toward feature parity with Adobe Premiere Pro, with estimates. Updated as milestones land.
 
-**Last updated:** 2026-09-30 (midday) · **Overall parity:** ~30% · **Code:** ~85k lines of Rust, 400+ tests
+**Last updated:** 2026-09-30 (midday) · **Overall parity:** ~30% · **Code:** ~71k lines of Rust, 400+ tests
 
 ## Estimate to parity
 
