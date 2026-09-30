@@ -53,6 +53,22 @@ async fn main() {
                 }
             }
         }
+        "bench-decode" => {
+            let path = args.get(1).unwrap_or_else(|| usage());
+            let n: i64 = opt(&args, "--frames").and_then(|v| v.parse().ok()).unwrap_or(120);
+            let src = filmcraft_codecs::open_bytes(path, std::fs::read(path).expect("read").into()).expect("open");
+            let rate = src.info().frame_rate();
+            let t0 = std::time::Instant::now();
+            for f in 0..n {
+                src.video_frame(filmcraft_media::FrameRequest::full(rate.tick_of(f))).expect("frame");
+            }
+            let dt = t0.elapsed().as_secs_f64();
+            println!("{n} frames in {dt:.2}s → {:.1} fps (sequential, via Mp4Source)", n as f64 / dt);
+            let t1 = std::time::Instant::now();
+            let f = src.video_frame(filmcraft_media::FrameRequest::full(rate.tick_of(n / 2))).expect("frame");
+            let (w, h, _) = f.to_linear_f32_decimated(2);
+            println!("½-res linear conversion {w}x{h}: {:.1} ms", t1.elapsed().as_secs_f64() * 1000.0);
+        }
         "commands" => {
             let f = args.get(1).map(|s| s.to_ascii_lowercase()).unwrap_or_default();
             for c in filmcraft_engine::command_specs() {
