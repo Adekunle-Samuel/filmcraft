@@ -1,0 +1,245 @@
+//! Smaller panels: History, Markers, Info, Media Browser, Lumetri Scopes.
+
+use egui::{Align2, Color32, Rect, Sense, pos2, vec2};
+use filmcraft_time::{TimeDisplay, format_time};
+use serde_json::json;
+
+use crate::FilmcraftApp;
+use crate::frames::{FrameKey, Target};
+use crate::theme::Tokens;
+
+pub fn history(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
+    let t = app.tokens;
+    let mut child = ui.new_child(egui::UiBuilder::new().max_rect(rect.shrink(6.0)));
+    let undo: Vec<String> = app.session.history.undo.iter().map(|h| h.0.clone()).collect();
+    let redo: Vec<String> = app.session.history.redo.iter().rev().map(|h| h.0.clone()).collect();
+    let mut target: Option<i64> = None;
+    egui::ScrollArea::vertical().auto_shrink([false, false]).show(&mut child, |ui| {
+        let row = |ui: &mut egui::Ui, label: &str, current: bool, dim: bool| -> bool {
+            let (r, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 20.0), Sense::click());
+            if current {
+                ui.painter().rect_filled(r, 0.0, t.row_selected);
+            } else if resp.hovered() {
+                ui.painter().rect_filled(r, 0.0, t.hover);
+            }
+            ui.painter().text(pos2(r.min.x + 8.0, r.center().y), Align2::LEFT_CENTER, label, Tokens::ui(12.0), if dim { t.text_faint } else { t.text });
+            resp.clicked()
+        };
+        if row(ui, "Open", undo.is_empty(), false) {
+            target = Some(-(undo.len() as i64));
+        }
+        for (i, l) in undo.iter().enumerate() {
+            if row(ui, l, i + 1 == undo.len(), false) {
+                target = Some(i as i64 + 1 - undo.len() as i64);
+            }
+        }
+        for (i, l) in redo.iter().enumerate() {
+            if row(ui, l, false, true) {
+                target = Some(i as i64 + 1);
+            }
+        }
+    });
+    if let Some(n) = target {
+        if n < 0 {
+            for _ in 0..-n {
+                app.session.undo();
+            }
+        } else {
+            for _ in 0..n {
+                app.session.redo();
+            }
+        }
+    }
+}
+
+pub fn markers(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
+    let t = app.tokens;
+    let Some(seq) = app.session.active_sequence().cloned() else {
+        crate::dock::placeholder(ui, rect, &t, "(no sequence)");
+        return;
+    };
+    let mut child = ui.new_child(egui::UiBuilder::new().max_rect(rect.shrink(6.0)));
+    let mut go = None;
+    egui::ScrollArea::vertical().auto_shrink([false, false]).show(&mut child, |ui| {
+        for m in &seq.markers {
+            let (r, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 38.0), Sense::click());
+            if resp.hovered() {
+                ui.painter().rect_filled(r, 3.0, t.hover);
+            }
+            let c = m.color.rgb();
+            ui.painter().rect_filled(Rect::from_min_size(r.min + vec2(4.0, 6.0), vec2(4.0, 26.0)), 2.0, Color32::from_rgb(c[0], c[1], c[2]));
+            ui.painter().text(
+                pos2(r.min.x + 16.0, r.min.y + 12.0),
+                Align2::LEFT_CENTER,
+                if m.name.is_empty() { "Marker" } else { &m.name },
+                Tokens::ui(12.0),
+                t.text,
+            );
+            let tc = format_time(m.start, seq.settings.frame_rate, seq.settings.drop_frame, TimeDisplay::Timecode, 48000);
+            ui.painter().text(pos2(r.min.x + 16.0, r.min.y + 27.0), Align2::LEFT_CENTER, tc, Tokens::mono(11.0), t.hot_text);
+            if resp.clicked() {
+                go = Some(m.start);
+            }
+        }
+        if seq.markers.is_empty() {
+            ui.label(egui::RichText::new("No markers. Press M to add one.").color(t.text_faint));
+        }
+    });
+    if let Some(g) = go {
+        app.session.set_playhead(g);
+    }
+}
+
+pub fn info(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
+    let t = app.tokens;
+    let mut child = ui.new_child(egui::UiBuilder::new().max_rect(rect.shrink(8.0)));
+    let ui = &mut child;
+    let line = |ui: &mut egui::Ui, k: &str, v: String| {
+        ui.horizontal(|ui| {
+            ui.add_sized(vec2(90.0, 16.0), egui::Label::new(egui::RichText::new(k).color(t.text_dim)));
+            ui.label(v);
+        });
+    };
+    if let Some(item) = app.session.state.project_selection.first().and_then(|i| app.session.project.item(*i)).cloned() {
+        ui.label(egui::RichText::new(&item.name).strong());
+        line(ui, "Type:", item.type_label().to_string());
+        if let Some(m) = item.as_media() {
+            if let Some(v) = &m.info.video {
+                line(ui, "Video:", format!("{} fps, {} x {} ({:.4})", v.frame_rate.label(), v.width, v.height, v.par.0 as f32 / v.par.1 as f32));
+                line(ui, "Codec:", v.codec.clone());
+            }
+            if let Some(a) = &m.info.audio {
+                line(ui, "Audio:", format!("{} Hz - {} ch - {}", a.sample_rate, a.channels, a.codec));
+            }
+        }
+        line(ui, "Duration:", format_time(item.duration(), item.frame_rate(), false, TimeDisplay::Timecode, 48000));
+        ui.separator();
+    }
+    if let Some(seq) = app.session.active_sequence() {
+        let name = app.session.state.active_sequence.and_then(|s| app.session.project.item(s)).map(|i| i.name.clone()).unwrap_or_default();
+        ui.label(egui::RichText::new(name).strong());
+        line(
+            ui,
+            "Settings:",
+            format!("{}x{} · {} fps · {} Hz", seq.settings.width, seq.settings.height, seq.settings.frame_rate.label(), seq.settings.sample_rate),
+        );
+        line(ui, "Playhead:", format_time(app.session.playhead(), seq.settings.frame_rate, seq.settings.drop_frame, TimeDisplay::Timecode, 48000));
+        for (i, tr) in seq.video_tracks.iter().enumerate().rev() {
+            let at = tr.item_at(app.session.playhead()).map(|x| x.name.clone()).unwrap_or_default();
+            line(ui, &format!("Video {}:", i + 1), at);
+        }
+        for (i, tr) in seq.audio_tracks.iter().enumerate() {
+            let at = tr.item_at(app.session.playhead()).map(|x| x.name.clone()).unwrap_or_default();
+            line(ui, &format!("Audio {}:", i + 1), at);
+        }
+    }
+    ui.separator();
+    line(ui, "UI:", format!("{:.0} fps · {} frames queued", app.fps, app.frames.queue_len()));
+}
+
+pub fn media_browser(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
+    let t = app.tokens;
+    let mut child = ui.new_child(egui::UiBuilder::new().max_rect(rect.shrink(8.0)));
+    let ui = &mut child;
+    let dir_id = egui::Id::new("media-browser-dir");
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let mut dir: String =
+            ui.data(|d| d.get_temp(dir_id)).unwrap_or_else(|| std::env::var("HOME").map(|h| format!("{h}/Movies")).unwrap_or_else(|_| "/".into()));
+        ui.horizontal(|ui| {
+            if ui.button("⬆").clicked()
+                && let Some(p) = std::path::Path::new(&dir).parent()
+            {
+                dir = p.to_string_lossy().to_string();
+            }
+            ui.add(egui::TextEdit::singleline(&mut dir).desired_width(ui.available_width()));
+        });
+        let mut entries: Vec<(bool, String)> = std::fs::read_dir(&dir)
+            .map(|rd| {
+                rd.flatten()
+                    .filter(|e| !e.file_name().to_string_lossy().starts_with('.'))
+                    .map(|e| (e.path().is_dir(), e.file_name().to_string_lossy().to_string()))
+                    .collect()
+            })
+            .unwrap_or_default();
+        entries.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.to_lowercase().cmp(&b.1.to_lowercase())));
+        let mut import = Vec::new();
+        egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+            for (is_dir, name) in &entries {
+                let path = format!("{dir}/{name}");
+                let ok = *is_dir || filmcraft_media::is_importable(std::path::Path::new(&path));
+                if !ok {
+                    continue;
+                }
+                let resp = ui.selectable_label(false, format!("{} {name}", if *is_dir { "📁" } else { "🎞" }));
+                if resp.double_clicked() {
+                    if *is_dir {
+                        dir = path.clone();
+                    } else {
+                        import.push(path.clone());
+                    }
+                }
+            }
+        });
+        ui.data_mut(|d| d.insert_temp(dir_id, dir));
+        if !import.is_empty() {
+            let r = app.session.execute("file.import", json!({"paths": import}));
+            if let Err(e) = r {
+                app.ui.status = e.to_string();
+            }
+        }
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = dir_id;
+        ui.label(egui::RichText::new("Use File ▸ Import to pick files.").color(t.text_dim));
+    }
+    let _ = t;
+}
+
+/// Lumetri Scopes: luma waveform + vectorscope of the program frame.
+pub fn scopes(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
+    let t = app.tokens;
+    let Some(seq_id) = app.session.state.active_sequence else { return };
+    let rate = app.session.sequence_rate();
+    let frame = rate.frame_at(app.session.playhead());
+    let key = FrameKey { target: Target::Sequence(seq_id), frame, size: 250, revision: app.session.revision };
+    let project = app.session.project.clone();
+    app.frames.request(key, rate.tick_of(frame), 0.25, &project, 2);
+    let Some(img) = app.frames.get(&key) else {
+        crate::dock::placeholder(ui, rect, &t, "…");
+        return;
+    };
+    let half = rect.width() / 2.0;
+    let wf = Rect::from_min_size(rect.min + vec2(8.0, 8.0), vec2(half - 12.0, rect.height() - 16.0));
+    let vs_size = (rect.height() - 16.0).min(half - 12.0);
+    let vs = Rect::from_center_size(pos2(rect.min.x + half + half / 2.0, rect.center().y), vec2(vs_size, vs_size));
+    ui.painter().rect_filled(wf, 0.0, Color32::BLACK);
+    ui.painter().rect_filled(vs, vs_size / 2.0, Color32::BLACK);
+    // waveform: plot luma per column
+    let mut mesh = egui::Mesh::default();
+    let (w, h) = (img.w, img.h);
+    let step_y = (h / 90).max(1);
+    for x in (0..w).step_by((w / wf.width().max(1.0) as usize).max(1)) {
+        for y in (0..h).step_by(step_y) {
+            let i = (y * w + x) * 4;
+            let l = 0.2126 * img.px[i] as f32 + 0.7152 * img.px[i + 1] as f32 + 0.0722 * img.px[i + 2] as f32;
+            let px = wf.min.x + x as f32 / w as f32 * wf.width();
+            let py = wf.max.y - l / 255.0 * wf.height();
+            mesh.add_colored_rect(Rect::from_min_size(pos2(px, py), vec2(1.0, 1.0)), Color32::from_rgba_unmultiplied(120, 255, 140, 60));
+            // vectorscope
+            let (r, g, b) = (img.px[i] as f32 / 255.0, img.px[i + 1] as f32 / 255.0, img.px[i + 2] as f32 / 255.0);
+            let ycc = filmcraft_color::rgb_to_ycbcr(r, g, b, filmcraft_color::Matrix::Bt709);
+            let vx = vs.center().x + ycc[1] * vs_size;
+            let vy = vs.center().y - ycc[2] * vs_size;
+            mesh.add_colored_rect(Rect::from_min_size(pos2(vx, vy), vec2(1.0, 1.0)), Color32::from_rgba_unmultiplied(200, 255, 200, 50));
+        }
+    }
+    ui.painter().add(mesh);
+    for v in [0, 25, 50, 75, 100] {
+        let y = wf.max.y - v as f32 / 100.0 * wf.height();
+        ui.painter().line_segment([pos2(wf.min.x, y), pos2(wf.max.x, y)], egui::Stroke::new(0.5, Color32::from_white_alpha(30)));
+        ui.painter().text(pos2(wf.min.x + 2.0, y - 6.0), Align2::LEFT_CENTER, v.to_string(), Tokens::ui(8.0), t.text_faint);
+    }
+    ui.painter().circle_stroke(vs.center(), vs_size / 2.0, egui::Stroke::new(1.0, Color32::from_white_alpha(40)));
+}

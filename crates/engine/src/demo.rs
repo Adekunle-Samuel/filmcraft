@@ -1,3 +1,4 @@
+#![allow(clippy::option_map_unit_fn)]
 //! A ready-made demo project (synthetic footage, a cut sequence with transitions, titles-free
 //! effects, markers and music) so the editor shows a realistic workspace with no files at all.
 
