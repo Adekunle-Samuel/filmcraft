@@ -16,7 +16,7 @@ use crate::{CodecError, Result};
 
 enum Inner {
     /// Our own AAC-LC decoder.
-    Aac { dec: filmcraft_aac::Decoder, asc: Vec<u8> },
+    Aac { dec: Box<filmcraft_aac::Decoder>, asc: Vec<u8> },
     /// Bootstrap decoders (MP3, ALAC, FLAC, HE-AAC…) via symphonia.
     Symphonia(Box<dyn Decoder>),
 }
@@ -41,7 +41,7 @@ impl PacketDecoder {
     pub fn aac(asc: &[u8], sample_rate: u32) -> Result<Self> {
         let lc = asc.first().map(|b| b >> 3) == Some(2);
         if lc && let Ok(dec) = filmcraft_aac::Decoder::new(asc) {
-            return Ok(Self { inner: Inner::Aac { dec, asc: asc.to_vec() }, channels: 0 });
+            return Ok(Self { inner: Inner::Aac { dec: Box::new(dec), asc: asc.to_vec() }, channels: 0 });
         }
         Self::new(CODEC_TYPE_AAC, sample_rate, Some(asc.to_vec()))
     }
@@ -86,7 +86,7 @@ impl PacketDecoder {
         match &mut self.inner {
             Inner::Aac { dec, asc } => {
                 if let Ok(d) = filmcraft_aac::Decoder::new(asc) {
-                    *dec = d;
+                    **dec = d;
                 }
             }
             Inner::Symphonia(d) => d.reset(),
