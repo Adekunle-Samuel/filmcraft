@@ -1396,6 +1396,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "filmcraft-prores"
+version = "0.1.0"
+dependencies = [
+ "filmcraft-bitstream",
+ "rayon",
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "filmcraft-render"
 version = "0.1.0"
 dependencies = [

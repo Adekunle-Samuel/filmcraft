@@ -18,6 +18,7 @@ filmcraft-color = { path = "crates/color" }
 filmcraft-bitstream = { path = "crates/bitstream" }
 filmcraft-isobmff = { path = "crates/isobmff" }
 filmcraft-h264 = { path = "crates/h264" }
+filmcraft-prores = { path = "crates/prores" }
 filmcraft-frame = { path = "crates/frame" }
 filmcraft-media = { path = "crates/media" }
 filmcraft-codecs = { path = "crates/codecs" }
