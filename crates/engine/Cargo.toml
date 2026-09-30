@@ -15,6 +15,7 @@ filmcraft-geom = { workspace = true }
 filmcraft-color = { workspace = true }
 filmcraft-frame = { workspace = true }
 filmcraft-media = { workspace = true }
+filmcraft-codecs = { workspace = true }
 filmcraft-project = { workspace = true }
 filmcraft-edit = { workspace = true }
 filmcraft-render = { workspace = true }

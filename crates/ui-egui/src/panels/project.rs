@@ -178,7 +178,7 @@ fn list_bin(
     filter: &str,
     row: &mut usize,
     actions: &mut Vec<(String, serde_json::Value)>,
-    root: bool,
+    _root: bool,
 ) {
     let t = app.tokens;
     for e in &bin.children {
@@ -230,7 +230,7 @@ fn list_bin(
                 }
                 *row += 1;
                 let cols = columns(r);
-                let x = r.min.x + 6.0 + depth as f32 * 14.0 + if root { 0.0 } else { 0.0 };
+                let x = r.min.x + 6.0 + depth as f32 * 14.0;
                 // label swatch
                 let lc = it.label.rgb();
                 ui.painter().rect_filled(Rect::from_center_size(pos2(x + 5.0, r.center().y), vec2(8.0, 12.0)), 1.5, Color32::from_rgb(lc[0], lc[1], lc[2]));

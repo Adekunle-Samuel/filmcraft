@@ -1,0 +1,23 @@
+[package]
+name = "filmcraft-codecs"
+description = "Container + codec hub: MP4/MOV sources, GOP-aware seeking, decoder registry, audio decoding"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+filmcraft-time = { workspace = true }
+filmcraft-color = { workspace = true }
+filmcraft-frame = { workspace = true }
+filmcraft-media = { workspace = true }
+filmcraft-isobmff = { workspace = true }
+filmcraft-bitstream = { workspace = true }
+thiserror = { workspace = true }
+log = { workspace = true }
+image = { version = "0.25", default-features = false, features = ["jpeg"] }
+# Bootstrap audio decoding (MPL-2.0, used unmodified); replaced by own decoders over time.
+symphonia = { version = "0.5.5", default-features = false, features = ["aac", "mp3", "flac", "alac", "pcm", "wav", "ogg", "vorbis", "isomp4"] }

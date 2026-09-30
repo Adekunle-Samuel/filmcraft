@@ -243,13 +243,7 @@ pub fn menu_items(app: &FilmcraftApp) -> Vec<MenuItem> {
 /// Pretty shortcut text for menus (macOS glyphs).
 pub fn shortcut_text(s: &str) -> String {
     if cfg!(target_os = "macos") {
-        s.replace("Cmd+", "⌘")
-            .replace("Shift+", "⇧")
-            .replace("Alt+", "⌥")
-            .replace("Ctrl+", "⌃")
-            .replace("Backspace", "⌫")
-            .replace("Delete", "⌦")
-            .replace("Space", "Space")
+        s.replace("Cmd+", "⌘").replace("Shift+", "⇧").replace("Alt+", "⌥").replace("Ctrl+", "⌃").replace("Backspace", "⌫").replace("Delete", "⌦")
     } else {
         s.replace("Cmd+", "Ctrl+")
     }

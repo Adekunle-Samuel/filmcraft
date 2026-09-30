@@ -10,11 +10,17 @@ use filmcraft_project::{ItemId, ItemKind, MediaRef, Project};
 
 use crate::Services;
 
-#[derive(Default)]
 pub struct MediaPool {
     sources: RwLock<HashMap<ItemId, SharedSource>>,
     /// Openers tried before the built-in ones (MP4/MOV + codecs register here).
     pub openers: RwLock<Vec<Opener>>,
+}
+
+impl Default for MediaPool {
+    /// A pool with the built-in container/codec openers registered.
+    fn default() -> Self {
+        Self { sources: RwLock::new(HashMap::new()), openers: RwLock::new(filmcraft_codecs::openers()) }
+    }
 }
 
 impl MediaPool {

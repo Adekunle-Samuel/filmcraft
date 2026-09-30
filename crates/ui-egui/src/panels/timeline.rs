@@ -1257,12 +1257,7 @@ fn interact(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, layout: &
                 let first = clips.iter().filter_map(|c| seq.find_item(*c).map(|(_, i)| i.start)).min().unwrap_or_default();
                 let last = clips.iter().filter_map(|c| seq.find_item(*c).map(|(_, i)| i.end())).max().unwrap_or_default();
                 let s1 = snap(app, seq, layout, first + raw, &clips) - first;
-                let offset = if s1 != raw {
-                    s1
-                } else {
-                    let s2 = snap(app, seq, layout, last + raw, &clips) - last;
-                    s2
-                };
+                let offset = if s1 != raw { s1 } else { snap(app, seq, layout, last + raw, &clips) - last };
                 let offset = offset.max(-first);
                 let cur_row = layout.row_at(p.y);
                 let start_row = layout.rows.iter().find(|r| r.track == start_track);
@@ -1435,10 +1430,10 @@ fn interact(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, layout: &
     if let Some(effect) = crate::panels::dragged_effect(ui)
         && let Some(p) = ctx.pointer_hover_pos()
         && layout.content.contains(p)
+        && let Hit::Clip { clip, .. } = hit(seq, layout, p)
+        && let Some((tid, it)) = seq.find_item(clip)
+        && let Some(row) = layout.rows.iter().find(|r| r.track == tid)
     {
-        if let Hit::Clip { clip, .. } = hit(seq, layout, p)
-            && let Some((tid, it)) = seq.find_item(clip)
-            && let Some(row) = layout.rows.iter().find(|r| r.track == tid)
         {
             let r = Rect::from_min_max(pos2(layout.x_of(it.start), row.rect.min.y), pos2(layout.x_of(it.end()), row.rect.max.y));
             ui.painter().rect_stroke(r, 3.0, Stroke::new(2.0, app.tokens.accent), StrokeKind::Inside);
