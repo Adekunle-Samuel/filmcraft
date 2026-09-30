@@ -1,6 +1,7 @@
 //! Test fixture generation (ffmpeg/libx264 as an external oracle) and comparison helpers.
 #![allow(dead_code)]
 
+use filmcraft_h264::{Decoder, Picture};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -363,4 +364,90 @@ pub fn split_access_units(data: &[u8]) -> Vec<&[u8]> {
         aus.push(&data[au_start..]);
     }
     aus
+}
+
+/// Decode a whole Annex-B file access unit by access unit (pts = AU index).
+/// Failed decode: (access unit index, error, pictures output before the error).
+pub type DecodeFailure = (usize, filmcraft_h264::Error, Vec<Picture>);
+
+pub fn decode_file(path: &Path) -> Result<Vec<Picture>, DecodeFailure> {
+    let data = std::fs::read(path).unwrap();
+    let mut dec = Decoder::new();
+    let mut out = Vec::new();
+    for (i, au) in split_access_units(&data).into_iter().enumerate() {
+        match dec.decode(au, i as i64) {
+            Ok(p) => out.extend(p),
+            Err(e) => return Err((i, e, out)),
+        }
+    }
+    out.extend(dec.flush());
+    Ok(out)
+}
+
+/// Compare decoded pictures with a raw yuv420p reference; returns a diagnostic on the first mismatch.
+pub fn compare(pics: &[Picture], reference: &[u8], w: usize, h: usize) -> Result<(), String> {
+    let (cw, ch) = (w.div_ceil(2), h.div_ceil(2));
+    let fsize = w * h + 2 * cw * ch;
+    let nref = reference.len() / fsize;
+    for (i, p) in pics.iter().enumerate() {
+        if i >= nref {
+            return Err(format!("decoder produced {} frames, reference has {}", pics.len(), nref));
+        }
+        if p.width as usize != w || p.height as usize != h {
+            return Err(format!("frame {i}: size {}x{} != {}x{}", p.width, p.height, w, h));
+        }
+        let f = &reference[i * fsize..(i + 1) * fsize];
+        let planes =
+            [("Y", &p.y[..], &f[..w * h], w, h, 16), ("U", &p.u[..], &f[w * h..w * h + cw * ch], cw, ch, 8), ("V", &p.v[..], &f[w * h + cw * ch..], cw, ch, 8)];
+        for (name, got, exp, pw, ph, mbs) in planes {
+            if got != exp {
+                let mut first = None;
+                let mut count = 0usize;
+                let mut maxd = 0i32;
+                for y in 0..ph {
+                    for x in 0..pw {
+                        let (a, b) = (got[y * pw + x], exp[y * pw + x]);
+                        if a != b {
+                            count += 1;
+                            maxd = maxd.max((a as i32 - b as i32).abs());
+                            if first.is_none() {
+                                first = Some((x, y, a, b));
+                            }
+                        }
+                    }
+                }
+                let (x, y, a, b) = first.unwrap();
+                let mb_w = pw.div_ceil(mbs);
+                return Err(format!(
+                    "frame {i} (poc {}, pts {}) plane {name}: first mismatch at ({x},{y}) MB {} (mb_x {}, mb_y {}): got {a} want {b}; {count} samples differ, max diff {maxd}",
+                    p.poc,
+                    p.pts,
+                    (y / mbs) * mb_w + x / mbs,
+                    x / mbs,
+                    y / mbs
+                ));
+            }
+        }
+    }
+    if pics.len() != nref {
+        return Err(format!("decoder produced {} frames, reference has {}", pics.len(), nref));
+    }
+    Ok(())
+}
+
+/// Full check of one fixture: generate, decode, compare. Returns Ok(false) when skipped.
+pub fn check_fixture(name: &str) -> Result<bool, String> {
+    let f = fixture(name);
+    let Some((h264, yuv)) = ensure(f) else { return Ok(false) };
+    let reference = std::fs::read(&yuv).unwrap();
+    let pics = match decode_file(&h264) {
+        Ok(p) => p,
+        Err((au, e, partial)) => {
+            // still report comparison of what was decoded
+            let cmp = compare(&partial, &reference, f.width as usize, f.height as usize).err().unwrap_or_default();
+            return Err(format!("{name}: decode error at access unit {au}: {e} (after {} pictures) {cmp}", partial.len()));
+        }
+    };
+    compare(&pics, &reference, f.width as usize, f.height as usize).map_err(|e| format!("{name}: {e}"))?;
+    Ok(true)
 }
