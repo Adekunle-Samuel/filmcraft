@@ -534,6 +534,22 @@ fn build() -> Vec<CommandSpec> {
             s.events.push(crate::Event::ProjectChanged { revision: s.revision });
             Ok(Value::Null)
         }),
+        cmd!(
+            "file.exportMedia",
+            "Media…",
+            ["File", "Export"],
+            None,
+            r#"{"path":str,"format":"h264|prores|mjpeg|png|gif|wav","scale":f32=1,"audio":bool=true,"quality":0..100}"#,
+            has_seq,
+            |s, p| export_media(s, p)
+        ),
+        query!("jobs.list", "List Jobs", "{}", |s, _| Ok(Value::Array(s.jobs.iter().map(crate::Job::to_json).collect()))),
+        cmd!("jobs.cancel", "Cancel Job", [], None, r#"{"job":id}"#, always, |s, p| {
+            let id = u64_p(p, "job").ok_or_else(|| bad("jobs.cancel", "need `job`"))?;
+            let j = s.jobs.iter().find(|j| j.id == id).ok_or_else(|| bad("jobs.cancel", "no such job"))?;
+            j.progress.cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+            Ok(Value::Null)
+        }),
         // ================= Edit =================
         cmd!("edit.undo", "Undo", ["Edit"], Some("Cmd+Z"), "{}", can_undo, |s, _| Ok(json!({"undone": s.undo()}))),
         cmd!("edit.redo", "Redo", ["Edit"], Some("Cmd+Shift+Z"), "{}", can_redo, |s, _| Ok(json!({"redone": s.redo()}))),
@@ -1567,6 +1583,48 @@ fn build() -> Vec<CommandSpec> {
     }
     v.shrink_to_fit();
     v
+}
+
+fn export_media(s: &mut Session, p: &Value) -> Result<Value> {
+    let seq = s.state.active_sequence.ok_or(EngineError::NoSequence)?;
+    let format = str_p(p, "format").and_then(filmcraft_export::Format::from_name).unwrap_or(filmcraft_export::Format::H264);
+    if !filmcraft_export::available(format) {
+        return Err(EngineError::Other(format!("{} export is not available yet (encoder in progress); use mjpeg, png, gif or wav", format.label())));
+    }
+    let path = str_p(p, "path").map(str::to_string).ok_or_else(|| bad("file.exportMedia", "need `path`"))?;
+    let settings = filmcraft_export::ExportSettings {
+        format,
+        path: path.clone(),
+        range: None,
+        scale: f64_p(p, "scale").unwrap_or(1.0) as f32,
+        include_audio: bool_p(p, "audio").unwrap_or(true),
+        quality: u64_p(p, "quality").unwrap_or(90).min(100) as u8,
+        bitrate_kbps: u64_p(p, "bitrateKbps").unwrap_or(20_000) as u32,
+    };
+    let id = s.jobs.len() as u64 + 1;
+    let job = crate::Job {
+        id,
+        label: format!("Export {}", std::path::Path::new(&path).file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or(path.clone())),
+        progress: Default::default(),
+        result: Default::default(),
+    };
+    let project = s.project.clone();
+    let provider = s.media.provider(project.clone(), s.services.clone());
+    let (prog, res) = (job.progress.clone(), job.result.clone());
+    let run = move || {
+        let r = filmcraft_export::export(&project, seq, &settings, &provider, &prog).map_err(|e| e.to_string());
+        if let Err(e) = &r {
+            *prog.error.lock().unwrap_or_else(|x| x.into_inner()) = Some(e.clone());
+        }
+        *res.lock().unwrap_or_else(|x| x.into_inner()) = Some(r);
+    };
+    s.jobs.push(job);
+    if bool_p(p, "wait").unwrap_or(false) || cfg!(target_arch = "wasm32") {
+        run();
+    } else {
+        std::thread::Builder::new().name("filmcraft-export".into()).spawn(run).map_err(|e| EngineError::Other(e.to_string()))?;
+    }
+    Ok(json!({"job": id}))
 }
 
 fn in_out_range(s: &Session) -> Result<TimeRange> {

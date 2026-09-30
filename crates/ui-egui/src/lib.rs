@@ -85,6 +85,9 @@ pub struct FilmcraftApp {
     /// Named textures (monitors, thumbnails) with the key they show.
     textures: HashMap<String, (FrameKey, TextureHandle)>,
     control_rx: Option<Receiver<ControlRequest>>,
+    /// Requests waiting for the UI to show an element: (request, give-up time).
+    deferred: Vec<(ControlRequest, f64)>,
+    last_ui_time: f64,
     pub(crate) synthetic: Vec<egui::Event>,
     pending_screenshots: Vec<(u64, Option<String>, Option<[f32; 4]>, Sender<Value>)>,
     queued_screenshots: Vec<(u64, f64, u32)>,
@@ -120,6 +123,8 @@ impl FilmcraftApp {
             auto: Default::default(),
             textures: HashMap::new(),
             control_rx: None,
+            deferred: Vec::new(),
+            last_ui_time: 0.0,
             synthetic: Vec::new(),
             pending_screenshots: Vec::new(),
             queued_screenshots: Vec::new(),
@@ -452,11 +457,29 @@ impl FilmcraftApp {
 
     fn drain_control(&mut self, ctx: &egui::Context) {
         let Some(rx) = self.control_rx.take() else { return };
+        let now = ctx.input(|i| i.time);
+        let mut reqs: Vec<(ControlRequest, f64)> = std::mem::take(&mut self.deferred);
         while let Ok(req) = rx.try_recv() {
+            // UI requests need rendered frames: raise the window if `ui` hasn't run recently
+            // (occluded macOS windows stop running `ui`).
+            if req.method.starts_with("ui.") && now - self.last_ui_time > 0.25 {
+                ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+            }
+            reqs.push((req, now + 3.0));
+        }
+        for (req, deadline) in reqs {
             let reply = req.reply.clone();
             match control::handle(self, ctx, &req) {
                 control::Outcome::Done(v) => {
                     let _ = reply.send(v);
+                }
+                control::Outcome::Retry(msg) => {
+                    if now < deadline {
+                        self.deferred.push((req, deadline));
+                        ctx.request_repaint();
+                    } else {
+                        let _ = reply.send(json!({"ok": false, "error": msg}));
+                    }
                 }
                 control::Outcome::AfterInput => self.input_waiters.push(reply),
                 control::Outcome::Screenshot { path, crop } => {
@@ -645,6 +668,7 @@ impl eframe::App for FilmcraftApp {
         }
         self.frame(ui);
         let ctx = ui.ctx().clone();
+        self.last_ui_time = ctx.input(|i| i.time);
         if !self.synthetic.is_empty() {
             ctx.request_repaint();
         } else if !self.input_waiters.is_empty() {

@@ -1299,6 +1299,7 @@ dependencies = [
  "filmcraft-codecs",
  "filmcraft-color",
  "filmcraft-edit",
+ "filmcraft-export",
  "filmcraft-frame",
  "filmcraft-geom",
  "filmcraft-media",
@@ -1306,6 +1307,24 @@ dependencies = [
  "filmcraft-render",
  "filmcraft-time",
  "log",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "filmcraft-export"
+version = "0.1.0"
+dependencies = [
+ "filmcraft-codecs",
+ "filmcraft-frame",
+ "filmcraft-isobmff",
+ "filmcraft-media",
+ "filmcraft-project",
+ "filmcraft-render",
+ "filmcraft-time",
+ "image",
+ "rayon",
  "serde",
  "serde_json",
  "thiserror 2.0.21",

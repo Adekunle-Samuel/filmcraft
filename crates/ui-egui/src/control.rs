@@ -27,6 +27,9 @@ use crate::FilmcraftApp;
 use crate::dock::PanelKind;
 use crate::state::{Mode, PlaybackRes, Tool};
 
+/// Prefix marking errors that may resolve after another frame.
+pub const RETRY: &str = "\u{1}";
+
 pub struct ControlRequest {
     pub method: String,
     pub params: Value,
@@ -42,6 +45,8 @@ impl ControlRequest {
 
 pub enum Outcome {
     Done(Value),
+    /// Try again on a later frame (e.g. the element is not on screen yet).
+    Retry(String),
     /// Reply once queued synthetic input has been processed.
     AfterInput,
     Screenshot {
@@ -66,7 +71,7 @@ fn modifiers(p: &Value) -> egui::Modifiers {
 /// Resolve a point from `{id}` (element centre) or `{x, y}`.
 fn point(app: &FilmcraftApp, p: &Value) -> Result<egui::Pos2, String> {
     if let Some(id) = p.get("id").and_then(Value::as_str) {
-        let e = app.auto.find(id).ok_or_else(|| format!("no element `{id}` (see ui.elements)"))?;
+        let e = app.auto.find(id).ok_or_else(|| format!("{RETRY}no element `{id}` (see ui.elements)"))?;
         let fx = p.get("fx").and_then(Value::as_f64).unwrap_or(0.5) as f32;
         let fy = p.get("fy").and_then(Value::as_f64).unwrap_or(0.5) as f32;
         return Ok(egui::pos2(e.rect[0] + e.rect[2] * fx, e.rect[1] + e.rect[3] * fy));
@@ -167,6 +172,7 @@ pub fn handle(app: &mut FilmcraftApp, ctx: &egui::Context, req: &ControlRequest)
         "ui.click" | "ui.move" => {
             let pos = match point(app, p) {
                 Ok(p) => p,
+                Err(e) if e.starts_with(RETRY) => return Outcome::Retry(e.trim_start_matches(RETRY).to_string()),
                 Err(e) => return err(e),
             };
             let m = modifiers(p);
@@ -189,6 +195,7 @@ pub fn handle(app: &mut FilmcraftApp, ctx: &egui::Context, req: &ControlRequest)
             let (Some(from), Some(to)) = (p.get("from"), p.get("to")) else { return err("need `from` and `to`") };
             let (a, b) = match (point(app, from), point(app, to)) {
                 (Ok(a), Ok(b)) => (a, b),
+                (Err(e), _) | (_, Err(e)) if e.starts_with(RETRY) => return Outcome::Retry(e.trim_start_matches(RETRY).to_string()),
                 (Err(e), _) | (_, Err(e)) => return err(e),
             };
             let steps = p.get("steps").and_then(Value::as_u64).unwrap_or(12).max(2);

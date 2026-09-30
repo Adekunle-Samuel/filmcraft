@@ -38,27 +38,71 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
             let tex = app.texture_for(&ctx, "export-preview", key, &img);
             ui.painter().image(tex, pic, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
         }
-        // settings summary
+        // settings
+        let seq_name = app.session.project.item(seq_id).map(|i| i.name.clone()).unwrap_or_default();
+        let fmt = filmcraft_engine::export::Format::from_name(&app.ui.export_format).unwrap_or(filmcraft_engine::export::Format::Mjpeg);
+        if app.ui.export_path.is_empty() || !app.ui.export_path.ends_with(fmt.extension()) {
+            let dir = std::env::var("HOME").map(|h| format!("{h}/Movies")).unwrap_or_else(|_| ".".into());
+            app.ui.export_path = format!("{dir}/{}.{}", seq_name.replace(' ', "_"), fmt.extension());
+        }
+        let mut sui = ui.new_child(egui::UiBuilder::new().max_rect(right.shrink(16.0)).id_salt("export-settings"));
+        sui.label(egui::RichText::new("Settings").strong().size(14.0));
+        sui.add_space(8.0);
+        sui.label(egui::RichText::new("File name / location").color(t.text_dim));
+        sui.add(egui::TextEdit::singleline(&mut app.ui.export_path).desired_width(f32::INFINITY));
+        sui.add_space(6.0);
+        sui.label(egui::RichText::new("Format").color(t.text_dim));
+        egui::ComboBox::from_id_salt("export-format").selected_text(fmt.label()).width(sui.available_width()).show_ui(&mut sui, |ui| {
+            for f in filmcraft_engine::export::Format::ALL {
+                let avail = filmcraft_engine::export::available(f);
+                let label = if avail { f.label().to_string() } else { format!("{} (encoder in progress)", f.label()) };
+                if ui.add_enabled(avail, egui::Button::selectable(f == fmt, label)).clicked() {
+                    app.ui.export_format = format!("{f:?}").to_ascii_lowercase();
+                    app.ui.export_path.clear();
+                }
+            }
+        });
+        sui.add_space(6.0);
         let lines = [
-            ("File name", format!("{}.mp4", app.session.project.item(seq_id).map(|i| i.name.clone()).unwrap_or_default())),
-            ("Preset", "Match Source - Adaptive High Bitrate".into()),
-            ("Format", "H.264".into()),
-            ("Video", format!("{}x{} · {} fps · VBR 1 pass, target 20 Mbps", q.settings.width, q.settings.height, q.settings.frame_rate.label())),
-            ("Audio", format!("AAC · {} Hz · Stereo · 320 kbps", q.settings.sample_rate)),
-            ("Range", "Entire Source".into()),
+            ("Video", format!("{}x{} · {} fps", q.settings.width, q.settings.height, q.settings.frame_rate.label())),
+            ("Audio", format!("{} Hz · Stereo", q.settings.sample_rate)),
+            ("Range", if q.mark_in.is_some() || q.mark_out.is_some() { "Sequence In/Out".to_string() } else { "Entire Sequence".to_string() }),
         ];
-        let mut y = right.min.y + 22.0;
-        ui.painter().text(pos2(right.min.x + 16.0, y), Align2::LEFT_CENTER, "Settings", Tokens::semibold(13.0), t.text);
-        y += 28.0;
         for (k, v) in lines {
-            ui.painter().text(pos2(right.min.x + 16.0, y), Align2::LEFT_CENTER, k, Tokens::ui(11.5), t.text_dim);
-            ui.painter().text(pos2(right.min.x + 16.0, y + 16.0), Align2::LEFT_CENTER, v, Tokens::ui(12.5), t.text);
-            y += 42.0;
+            sui.horizontal(|ui| {
+                ui.add_sized(vec2(60.0, 16.0), egui::Label::new(egui::RichText::new(k).color(t.text_dim)));
+                ui.label(v);
+            });
+        }
+        sui.add_space(12.0);
+        // jobs
+        let jobs: Vec<serde_json::Value> = app.session.jobs.iter().rev().take(4).map(|j| j.to_json()).collect();
+        for j in &jobs {
+            let frac = j["progress"].as_f64().unwrap_or(0.0) as f32;
+            let label = j["label"].as_str().unwrap_or("");
+            let err = j["result"]["error"].as_str();
+            let done = j["finished"].as_bool().unwrap_or(false);
+            sui.label(egui::RichText::new(label).size(12.0));
+            sui.add(egui::ProgressBar::new(frac).text(match (done, err) {
+                (true, Some(e)) => format!("Failed: {e}"),
+                (true, None) => format!("Done · {:.1} fps", j["result"]["render_fps"].as_f64().unwrap_or(0.0)),
+                _ => format!("{:.0}%", frac * 100.0),
+            }));
+            if !done {
+                ui.ctx().request_repaint_after(std::time::Duration::from_millis(100));
+            }
         }
         let b = Rect::from_min_size(pos2(right.max.x - 120.0, right.max.y - 44.0), vec2(104.0, 30.0));
-        ui.painter().rect_filled(b, 15.0, t.accent);
+        let resp = ui.interact(b, egui::Id::new("export-go"), egui::Sense::click());
+        ui.painter().rect_filled(b, 15.0, if resp.hovered() { t.accent_hover } else { t.accent });
         ui.painter().text(b.center(), Align2::CENTER_CENTER, "Export", Tokens::semibold(13.0), Color32::WHITE);
         app.auto.add("export.button", b, "Export");
+        if resp.clicked() {
+            let r = app.session.execute("file.exportMedia", serde_json::json!({"path": app.ui.export_path, "format": app.ui.export_format}));
+            if let Err(e) = r {
+                app.ui.status = e.to_string();
+            }
+        }
     } else {
         crate::dock::placeholder(ui, mid, &t, "Open a sequence to export");
     }

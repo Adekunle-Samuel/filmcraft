@@ -21,6 +21,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 pub use commands::{CommandSpec, command_specs, find as find_command};
+pub use filmcraft_export as export;
 pub use filmcraft_project as project;
 pub use filmcraft_render as render;
 pub use filmcraft_time as time;
@@ -140,6 +141,34 @@ pub struct Session {
     pub events: Vec<Event>,
     /// Commands executed (for macros/debugging): (id, params).
     pub journal: Vec<(String, Value)>,
+    /// Background jobs (exports, …).
+    pub jobs: Vec<Job>,
+}
+
+/// A background job with shared progress.
+#[derive(Clone)]
+pub struct Job {
+    pub id: u64,
+    pub label: String,
+    pub progress: Arc<filmcraft_export::Progress>,
+    pub result: Arc<std::sync::Mutex<Option<std::result::Result<filmcraft_export::Report, String>>>>,
+}
+
+impl Job {
+    pub fn to_json(&self) -> Value {
+        use std::sync::atomic::Ordering;
+        let res = self.result.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        serde_json::json!({
+            "id": self.id,
+            "label": self.label,
+            "progress": self.progress.fraction(),
+            "done": self.progress.done.load(Ordering::Relaxed),
+            "total": self.progress.total.load(Ordering::Relaxed),
+            "status": self.progress.status.lock().unwrap_or_else(|e| e.into_inner()).clone(),
+            "finished": res.is_some(),
+            "result": match res { Some(Ok(r)) => serde_json::to_value(r).unwrap_or_default(), Some(Err(e)) => serde_json::json!({"error": e}), None => Value::Null },
+        })
+    }
 }
 
 impl Default for Session {
@@ -167,6 +196,7 @@ impl Session {
             services,
             events: Vec::new(),
             journal: Vec::new(),
+            jobs: Vec::new(),
         }
     }
 

@@ -258,6 +258,11 @@ pub struct UiState {
     pub show_scopes: bool,
     /// Transient status line shown in the footer.
     pub status: String,
+    /// Export mode: chosen format id and output path.
+    #[serde(default)]
+    pub export_format: String,
+    #[serde(default)]
+    pub export_path: String,
 }
 
 impl Default for UiState {
@@ -282,6 +287,8 @@ impl Default for UiState {
             dark: true,
             show_scopes: false,
             status: String::new(),
+            export_format: "mjpeg".into(),
+            export_path: String::new(),
         }
     }
 }

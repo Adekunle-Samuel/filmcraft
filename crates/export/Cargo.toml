@@ -1,6 +1,6 @@
 [package]
-name = "filmcraft-engine"
-description = "FilmCraft engine façade: session, command registry, history, media pool"
+name = "filmcraft-export"
+description = "Export pipeline: parallel render → encode → mux, presets, progress/cancel"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -11,16 +11,16 @@ workspace = true
 
 [dependencies]
 filmcraft-time = { workspace = true }
-filmcraft-geom = { workspace = true }
-filmcraft-color = { workspace = true }
 filmcraft-frame = { workspace = true }
 filmcraft-media = { workspace = true }
-filmcraft-codecs = { workspace = true }
 filmcraft-project = { workspace = true }
-filmcraft-edit = { workspace = true }
 filmcraft-render = { workspace = true }
-filmcraft-export = { workspace = true }
+filmcraft-isobmff = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
-log = { workspace = true }
+rayon = { workspace = true }
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif"] }
+
+[dev-dependencies]
+filmcraft-codecs = { workspace = true }

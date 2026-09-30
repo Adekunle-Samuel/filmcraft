@@ -23,6 +23,7 @@ filmcraft-codecs = { path = "crates/codecs" }
 filmcraft-project = { path = "crates/project" }
 filmcraft-edit = { path = "crates/edit" }
 filmcraft-render = { path = "crates/render" }
+filmcraft-export = { path = "crates/export" }
 filmcraft-engine = { path = "crates/engine" }
 filmcraft-ui-egui = { path = "crates/ui-egui" }
 filmcraft-automation = { path = "crates/automation" }
