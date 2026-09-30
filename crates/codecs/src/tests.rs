@@ -135,3 +135,46 @@ fn prores_mov_decodes() {
     let c = &px[(100 * 640 + 20) * 4..][..3];
     assert!((c[0] as i32 - 104).abs() < 6, "{c:?}");
 }
+
+/// Solid-colour Matroska fixtures: decoded frames must match the colour, audio must be a 1 kHz tone.
+fn check_mkv(name: &str, vcodec: &[&str], acodec: &[&str]) {
+    let mut args: Vec<&str> =
+        vec!["-f", "lavfi", "-i", "color=c=0x3060c0:s=320x240:r=25:d=2", "-f", "lavfi", "-i", "sine=frequency=1000:sample_rate=48000:d=2"];
+    args.extend_from_slice(vcodec);
+    args.extend_from_slice(acodec);
+    let Some(b) = fixture(name, &args) else { return };
+    let src = crate::open_bytes(name, b).expect("open");
+    let info = src.info();
+    assert_eq!(info.container, "Matroska");
+    let v = info.video.as_ref().expect("video");
+    assert_eq!((v.width, v.height), (320, 240));
+    assert_eq!(v.frame_rate.num as f64 / v.frame_rate.den as f64, 25.0);
+    let d = info.duration.0 as f64 / TICKS_PER_SECOND as f64;
+    assert!((d - 2.0).abs() < 0.1, "duration {d}");
+    for secs in [0.0, 1.24, 0.4] {
+        let f = src.video_frame(FrameRequest { time: Tick((secs * TICKS_PER_SECOND as f64) as i64), scale: 1.0 }).expect("frame");
+        let rgba = f.to_rgba8();
+        let px = &rgba[(120 * 320 + 160) * 4..][..3];
+        for (got, want) in px.iter().zip([0x30u8, 0x60, 0xc0]) {
+            assert!((*got as i32 - want as i32).abs() <= 6, "{name} at {secs}s: {px:?}");
+        }
+    }
+    let a = src.audio(24_000, 4800, 48_000).expect("audio");
+    let peak = a.channels[0].iter().fold(0f32, |m, s| m.max(s.abs()));
+    assert!(peak > 0.05 && peak < 1.0, "{name}: audio peak {peak}");
+}
+
+#[test]
+fn matroska_h264_aac() {
+    check_mkv("blue_h264_aac.mkv", &["-c:v", "libx264", "-bf", "2", "-pix_fmt", "yuv420p"], &["-c:a", "aac"]);
+}
+
+#[test]
+fn matroska_hevc_flac() {
+    check_mkv("blue_hevc_flac.mkv", &["-c:v", "libx265", "-x265-params", "log-level=error", "-pix_fmt", "yuv420p"], &["-c:a", "flac"]);
+}
+
+#[test]
+fn matroska_prores_pcm() {
+    check_mkv("blue_prores_pcm.mkv", &["-c:v", "prores_ks", "-profile:v", "2"], &["-c:a", "pcm_s16le"]);
+}
