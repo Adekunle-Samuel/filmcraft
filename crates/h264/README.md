@@ -143,8 +143,8 @@ Pro (14 cores) while the machine was heavily shared (load average 40-180), so th
 
 | threads | fps |
 |---|---|
-| 1 | ~100-115 (≈ 36 Mcycles per frame) |
-| 14 | ~570-600 |
+| 1 | ~105-122 (≈ 33 Mcycles per frame) |
+| 14 | ~500-600 |
 
 The example `cargo run --release -p filmcraft-h264 --example h264dec -- in.h264 out.yuv` decodes a
 file; `H264_BENCH_ITERS=n` (and `H264_THREADS=t`) turns it into a benchmark, `H264_STATS=1` prints

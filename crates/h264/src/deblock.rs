@@ -231,6 +231,10 @@ pub fn deblock_mb(pic: &mut PicState, addr: usize, mb_w: usize) {
         }
     } else {
         let qids = ref_ids8(q, sq);
+        let q_uniform = (0..2).all(|l| {
+            let r = q.ref_idx[l];
+            r[1] == r[0] && r[2] == r[0] && r[3] == r[0] && q.mv[l].iter().all(|m| *m == q.mv[l][0])
+        });
         let qm: [Motion; 16] = std::array::from_fn(|r| block_motion(q, &qids, r));
         for dir in 0..2 {
             let neighbor = if dir == 0 { left } else { top };
@@ -246,6 +250,10 @@ pub fn deblock_mb(pic: &mut PicState, addr: usize, mb_w: usize) {
                             if (p.nz_mask >> rp) & 1 != 0 || (q.nz_mask >> rq) & 1 != 0 { 2 } else { motion_bs(&block_motion(p, &pids, rp), &qm[rq]) };
                     }
                 }
+            }
+            if q_uniform && q.nz_mask == 0 {
+                // one motion for the whole MB and no coefficients: all internal edges have bS 0
+                continue;
             }
             for e in 1..4 {
                 if t8 && e % 2 == 1 {

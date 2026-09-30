@@ -64,7 +64,10 @@ impl PicState {
     /// Reuse the buffers of a finished picture of the same size for a new frame.
     pub fn reset(&mut self, frame: FrameRef) {
         debug_assert_eq!((self.mb_w, self.mb_h), (frame.mb_w, frame.mb_h()));
-        self.mbs.fill(MbState::default());
+        // start_mb() re-initialises each macroblock before use; only availability must be reset
+        for m in &mut self.mbs {
+            m.slice_num = u32::MAX;
+        }
         self.slices.clear();
         self.poc = frame.poc;
         self.decoded_mbs = 0;
