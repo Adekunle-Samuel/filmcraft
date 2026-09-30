@@ -91,6 +91,10 @@ pub struct Packet {
     pub discard_padding_ns: Option<i64>,
     /// Absolute offset of the stored frame data.
     pub offset: u64,
+    /// Index of the frame within a laced block (0 when not laced). Laced frames after the first
+    /// only have exact timestamps when the block or track carries a duration; otherwise they
+    /// repeat the block timestamp and `duration` is 0.
+    pub lace: u16,
     /// Frame bytes with header stripping undone. Frames of tracks with other content encodings
     /// (zlib, encryption) are returned as stored; see [`Track::frames_readable`].
     pub data: Vec<u8>,
@@ -419,19 +423,24 @@ fn expand(b: &BlockRef, t: &Track, scale: u64, skip: u16, out: &mut impl Extend<
     let scale_i = scale as i128;
     // round half away from zero
     let to_ticks = |ns: i128| -> i64 { (if ns >= 0 { (ns + scale_i / 2) / scale_i } else { (ns - scale_i / 2) / scale_i }) as i64 };
-    let base_ns = b.ts as i128 * scale_i - t.codec_delay_ns as i128;
+    // CodecDelay is subtracted from every timestamp (RFC 9559 §5.1.4.1.25); in ticks it is rounded
+    // once, so tick timestamps stay on the block grid.
+    let delay_ns = t.codec_delay_ns as i128;
+    let delay_ticks = to_ticks(delay_ns);
+    let base_ns = b.ts as i128 * scale_i;
     out.extend(b.frames.iter().enumerate().skip(skip as usize).map(|(i, &(offset, size))| {
         let (start, end) = match block_ns {
             Some(total) => ((total * i as u128 / n as u128) as i128, Some((total * (i as u128 + 1) / n as u128) as i128)),
             None => (0, None),
         };
-        let pts_ns = base_ns + start;
+        let pts_ns = base_ns + start - delay_ns;
+        let pts = to_ticks(base_ns + start) - delay_ticks;
         let duration = end.map_or(0, |e| (to_ticks(e) - to_ticks(start)).max(0) as u64);
         FrameRef {
             track: b.track,
             offset,
             size,
-            pts: to_ticks(pts_ns),
+            pts,
             pts_ns: pts_ns as i64,
             duration,
             duration_ns: end.map_or(0, |e| (e - start).max(0) as u64),
@@ -824,7 +833,7 @@ impl MkvFile {
         if !t.frames_readable() {
             return Err(Error::Unsupported(format!("content encoding of track {} (compression/encryption)", t.number)));
         }
-        let mut data = t.stripped_header().map(<[u8]>::to_vec).unwrap_or_default();
+        let mut data = t.frame_prefix(s.size as u64);
         let at = data.len();
         data.resize(at + s.size as usize, 0);
         src.read_at(s.offset, &mut data[at..])?;
@@ -1023,7 +1032,7 @@ impl<S: ByteSource> Demuxer<S> {
 
     fn materialize(&mut self, f: FrameRef) -> Result<Packet> {
         let t = &self.file.tracks[f.track];
-        let mut data = if t.frames_readable() { t.stripped_header().map(<[u8]>::to_vec).unwrap_or_default() } else { Vec::new() };
+        let mut data = if t.frames_readable() { t.frame_prefix(f.size as u64) } else { Vec::new() };
         let at = data.len();
         data.resize(at + f.size as usize, 0);
         let mut io = Io::new(&self.src, &mut self.cache);
@@ -1048,6 +1057,7 @@ impl<S: ByteSource> Demuxer<S> {
             invisible: f.invisible,
             discard_padding_ns: f.discard_padding,
             offset: f.offset,
+            lace: f.lace,
             data,
         })
     }

@@ -45,7 +45,7 @@ pub enum Codec {
     Mp2,
     /// `S_TEXT/UTF8` (SubRip-style plain text).
     SubRip,
-    /// `S_TEXT/WEBVTT`.
+    /// `S_TEXT/WEBVTT`, or WebM's `D_WEBVTT/{SUBTITLES,CAPTIONS,DESCRIPTIONS,METADATA}`.
     WebVtt,
     /// `S_TEXT/ASS` / `S_TEXT/SSA`; `header` is the script header from `CodecPrivate`.
     Ass { header: Vec<u8>, ssa: bool },
@@ -169,7 +169,7 @@ pub(crate) fn map_codec(id: &str, private: &[u8], audio: Option<&crate::AudioInf
         "A_MPEG/L3" => Codec::Mp3,
         "A_MPEG/L2" => Codec::Mp2,
         "S_TEXT/UTF8" => Codec::SubRip,
-        "S_TEXT/WEBVTT" => Codec::WebVtt,
+        "S_TEXT/WEBVTT" | "D_WEBVTT/SUBTITLES" | "D_WEBVTT/CAPTIONS" | "D_WEBVTT/DESCRIPTIONS" | "D_WEBVTT/METADATA" => Codec::WebVtt,
         "S_TEXT/ASS" | "S_ASS" => Codec::Ass { header: p, ssa: false },
         "S_TEXT/SSA" | "S_SSA" => Codec::Ass { header: p, ssa: true },
         _ if id.starts_with("A_AAC/") => {

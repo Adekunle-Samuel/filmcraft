@@ -47,7 +47,8 @@ pub fn read_size(data: &[u8]) -> Option<(Size, usize)> {
     Some((if ones { Size::Unknown } else { Size::Known(v) }, len))
 }
 
-/// Decode an element ID (marker bits kept, 1..=4 bytes). Rejects all-zero / all-ones value bits.
+/// Decode an element ID (marker bits kept, 1..=4 bytes). Rejects all-ones value bits (reserved).
+/// All-zero value bits are accepted, because Matroska's `ChapterDisplay` uses ID `0x80`.
 pub fn read_id(data: &[u8]) -> Option<(u32, usize)> {
     let first = *data.first()?;
     let len = vint_len(first)?;
@@ -55,7 +56,7 @@ pub fn read_id(data: &[u8]) -> Option<(u32, usize)> {
         return None;
     }
     let (v, _, ones) = read_vint(&data[..len])?;
-    if ones || v == 0 {
+    if ones || (v == 0 && len > 1) {
         return None;
     }
     let mut id = 0u32;
@@ -364,7 +365,8 @@ mod tests {
         assert_eq!(read_id(&[0xA3]).unwrap(), (0xA3, 1));
         assert_eq!(read_id(&[0x42, 0x86]).unwrap(), (0x4286, 2));
         assert!(read_id(&[0xFF]).is_none()); // reserved
-        assert!(read_id(&[0x80]).is_none()); // zero value
+        assert_eq!(read_id(&[0x80]).unwrap(), (0x80, 1)); // ChapterDisplay
+        assert!(read_id(&[0x40, 0x00]).is_none()); // zero value
         assert!(read_id(&[0x08, 0, 0, 0, 1]).is_none()); // 5-byte ID
         for id in [0xA3u32, 0x4286, 0x2AD7B1, 0x1F43B675] {
             let mut b = Vec::new();

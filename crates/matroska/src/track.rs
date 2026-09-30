@@ -220,10 +220,25 @@ impl Track {
         })
     }
 
-    /// Decoded frame size of sample `i` (stored size plus stripped header).
+    /// Bytes to put in front of a stored frame of `stored_size` bytes to get the codec frame:
+    /// header-stripped bytes, or for `V_PRORES` the 8-byte frame header (`size` + `icpf`) that the
+    /// Matroska ProRes mapping omits.
+    pub fn frame_prefix(&self, stored_size: u64) -> Vec<u8> {
+        let mut p = self.stripped_header().map(<[u8]>::to_vec).unwrap_or_default();
+        if matches!(self.codec, Codec::ProRes { .. }) {
+            let total = stored_size + p.len() as u64 + 8;
+            let mut h = (total as u32).to_be_bytes().to_vec();
+            h.extend_from_slice(b"icpf");
+            h.extend_from_slice(&p);
+            p = h;
+        }
+        p
+    }
+
+    /// Frame size of sample `i` as returned by `read_sample` / packets (stored size plus prefix).
     pub fn sample_size(&self, i: usize) -> Option<u64> {
         let s = self.samples.get(i)?;
-        Some(s.size as u64 + self.stripped_header().map_or(0, |h| h.len() as u64))
+        Some(s.size as u64 + self.frame_prefix(s.size as u64).len() as u64)
     }
 
     /// Indices of keyframe samples, ascending by file order.
