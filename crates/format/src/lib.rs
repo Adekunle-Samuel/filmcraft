@@ -22,6 +22,8 @@
 //! - **v3** (M10.2): graphic clips (`ItemKind::Graphic`, text/shape layers). The shape of older
 //!   data is unchanged (no-op step); the bump makes builds without graphics refuse such files
 //!   cleanly instead of failing to parse them.
+//! - **v4** (M7.4): Essential Sound (clip audio types and settings, `EffectInstance::essential`).
+//!   No-op step; older builds would otherwise drop these fields silently when saving.
 
 pub mod atomic;
 pub mod autosave;
@@ -40,7 +42,7 @@ pub type Migration = fn(Value) -> Result<Value, String>;
 
 /// `MIGRATIONS[i]` upgrades schema `i + 1` to `i + 2`. Append one function per schema bump; never
 /// edit a shipped one.
-pub const MIGRATIONS: &[Migration] = &[v1_to_v2, v2_to_v3];
+pub const MIGRATIONS: &[Migration] = &[v1_to_v2, v2_to_v3, v3_to_v4];
 
 /// The schema version this build writes (and the newest it reads).
 pub const SCHEMA_VERSION: u32 = MIGRATIONS.len() as u32 + 1;
@@ -219,13 +221,18 @@ fn v2_to_v3(doc: Value) -> Result<Value, String> {
     Ok(doc)
 }
 
+/// v3 → v4: Essential Sound fields added; existing data needs no change.
+fn v3_to_v4(doc: Value) -> Result<Value, String> {
+    Ok(doc)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn schema_version_matches_table() {
-        assert_eq!(SCHEMA_VERSION, 3);
+        assert_eq!(SCHEMA_VERSION, 4);
     }
 
     #[test]
