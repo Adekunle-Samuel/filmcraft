@@ -304,6 +304,7 @@ impl FilmcraftApp {
     pub fn stop(&mut self) {
         self.playback.playing = false;
         self.playback.meter.finish();
+        self.frames.stop_prefetch();
         if let Some(a) = self.audio.as_mut() {
             a.stop();
         }

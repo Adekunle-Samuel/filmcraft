@@ -8,6 +8,7 @@
 //! Time passed to a source is **media time** (0 = first frame of the media), in ticks.
 
 pub mod cache;
+pub mod cancel;
 pub mod digits;
 pub mod generators;
 pub mod still;
@@ -36,6 +37,9 @@ pub enum MediaError {
     NoStream(&'static str),
     #[error("media offline: {0}")]
     Offline(String),
+    /// The request was cancelled (see [`cancel`]).
+    #[error("cancelled")]
+    Cancelled,
 }
 
 pub type Result<T> = std::result::Result<T, MediaError>;

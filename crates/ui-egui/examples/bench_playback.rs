@@ -230,6 +230,7 @@ struct PlayReport {
     ui_cpu: f64,
     jobs: usize,
     wasted_jobs: usize,
+    cancelled_jobs: usize,
     preview_jobs: usize,
     gop: filmcraft_codecs::GopStats,
     uploaded_mb: f64,
@@ -306,8 +307,9 @@ impl Bench {
         }
         meter.finish();
         let wall = anchor.elapsed().as_secs_f64();
-        // Let in-flight jobs finish so their CPU is counted, then drop the rest of the queue.
-        self.server.retain_queue(|_| false);
+        // Stop as the app does (drop and cancel prefetch), letting running jobs wind down so their
+        // CPU is counted.
+        self.server.stop_prefetch();
         std::thread::sleep(Duration::from_millis(50));
         let process_cpu = ms(process_cpu_time().unwrap_or_default().saturating_sub(p0));
         let recs: Vec<JobRecord> = self.server.take_records();
@@ -355,6 +357,9 @@ impl Bench {
             }
             if r.preview {
                 rep.preview_jobs += 1;
+            }
+            if r.cancelled {
+                rep.cancelled_jobs += 1;
             }
         }
         rep.present = display.present.iter().map(|d| ms(*d)).collect();
@@ -422,7 +427,7 @@ impl Bench {
 
 fn print_header() {
     println!(
-        "{:<34} {:>6} {:>5} {:>5} {:>7} | {:>6} {:>6} {:>6} | {:>6} {:>6} | {:>6} {:>6} {:>6} | {:>6} {:>6} | {:>7} {:>6} | {:>5} {:>5} {:>5} | load",
+        "{:<34} {:>6} {:>5} {:>5} {:>7} | {:>6} {:>6} {:>6} | {:>6} {:>6} | {:>6} {:>6} {:>6} | {:>6} {:>6} | {:>7} {:>6} | {:>5} {:>5} {:>5} {:>4} | load",
         "scenario",
         "wall s",
         "shown",
@@ -442,7 +447,8 @@ fn print_header() {
         "cores",
         "seeks",
         "dec",
-        "waste"
+        "waste",
+        "canc"
     );
 }
 
@@ -450,7 +456,7 @@ fn print_row(r: &PlayReport, fps: f64) {
     let frames = (r.shown + r.dropped).max(1) as f64;
     let cpu_per_frame = r.process_cpu / frames;
     println!(
-        "{:<34} {:>6.2} {:>5} {:>5} {:>6.0}% | {:>6.1} {:>6.1} {:>6.1} | {:>6.1} {:>6.1} | {:>6.1} {:>6.1} {:>6.1} | {:>6.2} {:>6.2} | {:>7.1} {:>6.2} | {:>5} {:>5} {:>5} | {}",
+        "{:<34} {:>6.2} {:>5} {:>5} {:>6.0}% | {:>6.1} {:>6.1} {:>6.1} | {:>6.1} {:>6.1} | {:>6.1} {:>6.1} {:>6.1} | {:>6.2} {:>6.2} | {:>7.1} {:>6.2} | {:>5} {:>5} {:>5} {:>4} | {}",
         r.label,
         r.seconds,
         r.shown,
@@ -471,6 +477,7 @@ fn print_row(r: &PlayReport, fps: f64) {
         r.gop.seeks,
         r.gop.decoded,
         r.wasted_jobs,
+        r.cancelled_jobs,
         r.load
     );
 }
@@ -488,7 +495,7 @@ fn to_json(r: &PlayReport, scenario: &str, res: &str, path: &str) -> Value {
         "source_cpu_ms_mean": r.src_cpu.iter().sum::<f64>() / r.jobs.max(1) as f64,
         "present_ms": {"p50": pct(&r.present, 0.5), "p95": pct(&r.present, 0.95), "max": pct(&r.present, 1.0)},
         "ui_cpu_ms": r.ui_cpu, "process_cpu_ms": r.process_cpu, "cpu_ms_per_frame": r.process_cpu / frames,
-        "jobs": r.jobs, "wasted_jobs": r.wasted_jobs, "preview_jobs": r.preview_jobs, "uploaded_mb": r.uploaded_mb,
+        "jobs": r.jobs, "wasted_jobs": r.wasted_jobs, "cancelled_jobs": r.cancelled_jobs, "preview_jobs": r.preview_jobs, "uploaded_mb": r.uploaded_mb,
         "gop": {"hits": r.gop.hits, "misses": r.gop.misses, "seeks": r.gop.seeks, "decoded": r.gop.decoded, "evicted": r.gop.evicted},
         "loadavg": r.load,
     })
@@ -617,7 +624,7 @@ fn main() {
         load_avg()
     );
     println!(
-        "lat = queue→ready per job, svc = worker time per job, cpu/j = worker thread CPU, src/j = source fetch (decode) wall, srcC/j = its thread CPU,\nui = present time on the UI thread (GPU upload+draw / texture conversion), cpu ms/f = process CPU per due frame, cores = CPU cores that rate needs at the sequence fps,\nseeks/dec = decoder restarts / samples decoded, waste = finished jobs for frames never due (all times ms)\n"
+        "lat = queue→ready per job, svc = worker time per job, cpu/j = worker thread CPU, src/j = source fetch (decode) wall, srcC/j = its thread CPU,\nui = present time on the UI thread (GPU upload+draw / texture conversion), cpu ms/f = process CPU per due frame, cores = CPU cores that rate needs at the sequence fps,\nseeks/dec = decoder restarts / samples decoded, waste = finished jobs for frames never due, canc = jobs cancelled while running (all times ms)\n"
     );
     print_header();
     let mut out = Vec::new();

@@ -46,6 +46,10 @@ pub struct Rgba {
 struct Job {
     key: FrameKey,
     queued: Instant,
+    /// Set when the job is no longer wanted; sources poll it (`filmcraft_media::cancel`).
+    cancel: Arc<std::sync::atomic::AtomicBool>,
+    /// Queued by playback prefetch (dropped when playback stops).
+    prefetch: bool,
     time: Tick,
     /// Output scale relative to the target's frame size.
     scale: f32,
@@ -58,7 +62,8 @@ struct Shared {
     cv: Condvar,
     done: Mutex<Cache>,
     plans: Mutex<HashMap<FrameKey, (Arc<filmcraft_render::plan::FramePlan>, u64)>>,
-    in_flight: Mutex<Vec<FrameKey>>,
+    /// Running jobs: key, cancel flag, prefetch.
+    in_flight: Mutex<Vec<(FrameKey, Arc<std::sync::atomic::AtomicBool>, bool)>>,
     /// Per-job timings, collected while profiling is on (benchmarks, `ui.inspect`).
     profiling: AtomicBool,
     records: Mutex<Vec<JobRecord>>,
@@ -80,6 +85,8 @@ pub struct JobRecord {
     pub source_cpu: Duration,
     /// The frame came from a render preview.
     pub preview: bool,
+    /// The job was cancelled while running (its result was discarded).
+    pub cancelled: bool,
 }
 
 /// CPU time consumed by the calling thread (None where the platform has no thread clock).
@@ -276,20 +283,25 @@ impl FrameServer {
 
     /// Queue a job unless it is cached, queued or in flight.
     pub fn request(&self, key: FrameKey, time: Tick, scale: f32, project: &Arc<Project>, prio: u32) {
+        self.request_job(key, time, scale, project, prio, false);
+    }
+
+    fn request_job(&self, key: FrameKey, time: Tick, scale: f32, project: &Arc<Project>, prio: u32, prefetch: bool) {
         if self.shared.done.lock().unwrap_or_else(|e| e.into_inner()).map.contains_key(&key)
             || self.shared.plans.lock().unwrap_or_else(|e| e.into_inner()).contains_key(&key)
         {
             return;
         }
-        if self.shared.in_flight.lock().unwrap_or_else(|e| e.into_inner()).contains(&key) {
+        if self.shared.in_flight.lock().unwrap_or_else(|e| e.into_inner()).iter().any(|(k, c, _)| *k == key && !c.load(Ordering::Relaxed)) {
             return;
         }
         let mut q = self.shared.queue.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(j) = q.iter_mut().find(|j| j.key == key) {
             j.prio = j.prio.min(prio);
+            j.prefetch &= prefetch;
             return;
         }
-        q.push_back(Job { key, queued: Instant::now(), time, scale, project: project.clone(), prio });
+        q.push_back(Job { key, queued: Instant::now(), cancel: Default::default(), prefetch, time, scale, project: project.clone(), prio });
         drop(q);
         self.shared.cv.notify_one();
         #[cfg(target_arch = "wasm32")]
@@ -307,7 +319,7 @@ impl FrameServer {
         for i in 1..=ahead {
             let f = key.frame + i * dir * step;
             if f >= 0 {
-                self.request(FrameKey { frame: f, ..key }, rate.tick_of(f), scale, project, i as u32);
+                self.request_job(FrameKey { frame: f, ..key }, rate.tick_of(f), scale, project, i as u32, true);
             }
         }
         let (target, rev, cur) = (key.target, key.revision, key.frame);
@@ -315,8 +327,26 @@ impl FrameServer {
     }
 
     /// Drop queued jobs that fail `keep` (e.g. stale revisions or frames far from the playhead).
+    /// Jobs already running for such frames are cancelled: a worker blocked behind a decoder
+    /// would otherwise go on to decode a frame playback has passed, possibly from its keyframe.
     pub fn retain_queue(&self, keep: impl Fn(&FrameKey) -> bool) {
         self.shared.queue.lock().unwrap_or_else(|e| e.into_inner()).retain(|j| keep(&j.key));
+        for (k, c, _) in self.shared.in_flight.lock().unwrap_or_else(|e| e.into_inner()).iter() {
+            if !keep(k) {
+                c.store(true, Ordering::Relaxed);
+            }
+        }
+    }
+
+    /// Playback stopped: drop its queued prefetch jobs and cancel the running ones (left alone,
+    /// they would keep the workers busy, e.g. rendering effects for frames nobody will see).
+    pub fn stop_prefetch(&self) {
+        self.shared.queue.lock().unwrap_or_else(|e| e.into_inner()).retain(|j| !j.prefetch);
+        for (_, c, prefetch) in self.shared.in_flight.lock().unwrap_or_else(|e| e.into_inner()).iter() {
+            if *prefetch {
+                c.store(true, Ordering::Relaxed);
+            }
+        }
     }
 
     pub fn queue_len(&self) -> usize {
@@ -432,30 +462,37 @@ fn worker(
                 q = sh.cv.wait(q).unwrap_or_else(|e| e.into_inner());
             }
         };
-        sh.in_flight.lock().unwrap_or_else(|e| e.into_inner()).push(job.key);
+        sh.in_flight.lock().unwrap_or_else(|e| e.into_inner()).push((job.key, job.cancel.clone(), job.prefetch));
         let profiling = sh.profiling.load(Ordering::Relaxed);
         let (started, cpu0) = (Instant::now(), if profiling { thread_cpu_time().unwrap_or_default() } else { Duration::ZERO });
         SOURCE_TIME.with(|s| s.set((Duration::ZERO, Duration::ZERO)));
-        let preview;
-        if let Target::SequencePlan(seq) = job.key.target {
-            let (plan, pv) = plan_job(&job, seq, &pool, &services, &previews, profiling);
-            preview = pv;
-            let mut g = sh.plans.lock().unwrap_or_else(|e| e.into_inner());
-            let clock = g.values().map(|v| v.1).max().unwrap_or(0) + 1;
-            g.insert(job.key, (Arc::new(plan), clock));
-            if g.len() > 96 {
-                let mut v: Vec<(u64, FrameKey)> = g.iter().map(|(k, v)| (v.1, *k)).collect();
-                v.sort_unstable_by_key(|x| x.0);
-                for (_, k) in v.into_iter().take(g.len() - 96) {
-                    g.remove(&k);
+        // A cancelled job may have missed layers (its source gave up): its result is not cached.
+        let preview = filmcraft_media::cancel::with_cancel(&job.cancel, || {
+            if let Target::SequencePlan(seq) = job.key.target {
+                let (plan, pv) = plan_job(&job, seq, &pool, &services, &previews, profiling);
+                if !job.cancel.load(Ordering::Relaxed) {
+                    let mut g = sh.plans.lock().unwrap_or_else(|e| e.into_inner());
+                    let clock = g.values().map(|v| v.1).max().unwrap_or(0) + 1;
+                    g.insert(job.key, (Arc::new(plan), clock));
+                    if g.len() > 96 {
+                        let mut v: Vec<(u64, FrameKey)> = g.iter().map(|(k, v)| (v.1, *k)).collect();
+                        v.sort_unstable_by_key(|x| x.0);
+                        for (_, k) in v.into_iter().take(g.len() - 96) {
+                            g.remove(&k);
+                        }
+                    }
                 }
+                pv
+            } else {
+                let (img, pv) = render_job(&job, &pool, &services, &previews, profiling);
+                if !job.cancel.load(Ordering::Relaxed) {
+                    sh.done.lock().unwrap_or_else(|e| e.into_inner()).insert(job.key, Arc::new(img));
+                }
+                pv
             }
-        } else {
-            let (img, pv) = render_job(&job, &pool, &services, &previews, profiling);
-            preview = pv;
-            sh.done.lock().unwrap_or_else(|e| e.into_inner()).insert(job.key, Arc::new(img));
-        }
-        sh.in_flight.lock().unwrap_or_else(|e| e.into_inner()).retain(|k| *k != job.key);
+        });
+        let cancelled = job.cancel.load(Ordering::Relaxed);
+        sh.in_flight.lock().unwrap_or_else(|e| e.into_inner()).retain(|(k, c, _)| !(*k == job.key && Arc::ptr_eq(c, &job.cancel)));
         if profiling {
             let (source_wall, source_cpu) = SOURCE_TIME.with(|s| s.get());
             let rec = JobRecord {
@@ -468,6 +505,7 @@ fn worker(
                 source_wall,
                 source_cpu,
                 preview,
+                cancelled,
             };
             sh.records.lock().unwrap_or_else(|e| e.into_inner()).push(rec);
         }

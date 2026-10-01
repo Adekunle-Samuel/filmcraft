@@ -172,6 +172,11 @@ impl GopCache {
             st.decoder = Some(d);
             st.next = usize::MAX;
         }
+        // Nothing cached: the work ahead (possibly a seek and a GOP of decoding) is only worth it
+        // while someone still wants the frame.
+        if filmcraft_media::cancel::cancelled() {
+            return Err(CodecError::Cancelled);
+        }
         if st.intra {
             return self.intra_frame(st, s, i, want_pts);
         }
@@ -196,6 +201,10 @@ impl GopCache {
         }
         let limit = (i.max(st.next) + 64).min(n);
         while st.next < limit {
+            if filmcraft_media::cancel::cancelled() {
+                // The decoder state stays consistent (`next`, `out_max`): a later request continues.
+                return Err(CodecError::Cancelled);
+            }
             let k = st.next;
             let data = s.read(k)?;
             let out = st.decoder.as_mut().expect("decoder").decode(&data, s.pts(k))?;
@@ -384,5 +393,21 @@ mod tests {
         // a frame two threads miss at the same moment may decode twice; nothing more
         assert!(s.decodes.load(Ordering::Relaxed) <= 64 + 4 * 4);
         assert_eq!(s.resets.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn cancelled_request_stops_decoding_and_keeps_state() {
+        let s = samples(300, 250, 0, false);
+        let c = GopCache::new(None);
+        assert_eq!(index_of(&c.frame(&s, 5_000).expect("frame")), 5);
+        let flag = Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let r = filmcraft_media::cancel::with_cancel(&flag, || c.frame(&s, 200_000));
+        assert!(matches!(r, Err(CodecError::Cancelled)));
+        assert_eq!(s.decodes.load(Ordering::Relaxed), 6);
+        // cached frames are still served, and the decoder carries on from where it was
+        let r = filmcraft_media::cancel::with_cancel(&flag, || c.frame(&s, 3_000));
+        assert_eq!(index_of(&r.expect("cached")), 3);
+        assert_eq!(index_of(&c.frame(&s, 7_000).expect("frame")), 7);
+        assert_eq!(s.resets.load(Ordering::Relaxed), 1);
     }
 }

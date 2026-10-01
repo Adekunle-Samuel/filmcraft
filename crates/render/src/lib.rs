@@ -75,6 +75,10 @@ fn render_seq(project: &Project, seq: &Sequence, t: Tick, opts: RenderOptions, s
     }
     let tc = format_time(t, seq.settings.frame_rate, seq.settings.drop_frame, TimeDisplay::Timecode, seq.settings.sample_rate as i64);
     for track in &seq.video_tracks {
+        // A cancelled frame job (playback moved on) stops here; its result is discarded.
+        if filmcraft_media::cancel::cancelled() {
+            return canvas;
+        }
         if !track.enabled {
             continue;
         }
@@ -240,6 +244,9 @@ pub(crate) fn item_layer(
     if opts.effects {
         let cx = effects::FxCtx { t: mt, px_scale, seconds: (t - item.start).seconds(), timecode: tc, clip_name: &item.name };
         for e in item.effects.iter().filter(|e| e.def().is_some_and(|d| !d.intrinsic)) {
+            if filmcraft_media::cancel::cancelled() {
+                return None;
+            }
             effects::apply(&mut layer, e, &cx);
         }
     }

@@ -32,6 +32,9 @@ pub enum CodecError {
     Decode(String),
     #[error("container: {0}")]
     Container(String),
+    /// The frame is no longer wanted (`filmcraft_media::cancel`).
+    #[error("cancelled")]
+    Cancelled,
 }
 
 pub type Result<T> = std::result::Result<T, CodecError>;
@@ -40,6 +43,7 @@ impl From<CodecError> for filmcraft_media::MediaError {
     fn from(e: CodecError) -> Self {
         match e {
             CodecError::Unsupported(s) => filmcraft_media::MediaError::Unsupported(s),
+            CodecError::Cancelled => filmcraft_media::MediaError::Cancelled,
             other => filmcraft_media::MediaError::Decode(other.to_string()),
         }
     }
