@@ -7,7 +7,7 @@ default-members = ["crates/*", "apps/*", "xtask"]
 version = "0.1.0"
 edition = "2024"
 license = "MIT OR Apache-2.0"
-rust-version = "1.90"
+rust-version = "1.95"
 repository = "https://github.com/storytold/filmcraft"
 
 [workspace.dependencies]
@@ -23,6 +23,7 @@ filmcraft-hevc = { path = "crates/hevc" }
 filmcraft-vp9 = { path = "crates/vp9" }
 filmcraft-prores = { path = "crates/prores" }
 filmcraft-aac = { path = "crates/aac" }
+filmcraft-opus = { path = "crates/opus" }
 filmcraft-h264enc = { path = "crates/h264enc" }
 filmcraft-audio-dsp = { path = "crates/audio-dsp" }
 filmcraft-frame = { path = "crates/frame" }
@@ -31,12 +32,15 @@ filmcraft-codecs = { path = "crates/codecs" }
 filmcraft-project = { path = "crates/project" }
 filmcraft-edit = { path = "crates/edit" }
 filmcraft-interchange = { path = "crates/interchange" }
+filmcraft-captions = { path = "crates/captions" }
 filmcraft-render = { path = "crates/render" }
 filmcraft-gpu = { path = "crates/gpu" }
 filmcraft-export = { path = "crates/export" }
+filmcraft-format = { path = "crates/format" }
 filmcraft-engine = { path = "crates/engine" }
 filmcraft-ui-egui = { path = "crates/ui-egui" }
 filmcraft-automation = { path = "crates/automation" }
+filmcraft-testkit = { path = "crates/testkit" }
 
 # foundation
 thiserror = "2"
@@ -68,6 +72,28 @@ opt-level = 2
 
 [profile.dev]
 opt-level = 1
+
+# Codec hot loops: debug-build tests (RFC/oracle vectors) are minutes slower below opt-level 3.
+[profile.dev.package.filmcraft-h264]
+opt-level = 3
+
+[profile.dev.package.filmcraft-h264enc]
+opt-level = 3
+
+[profile.dev.package.filmcraft-hevc]
+opt-level = 3
+
+[profile.dev.package.filmcraft-prores]
+opt-level = 3
+
+[profile.dev.package.filmcraft-aac]
+opt-level = 3
+
+[profile.dev.package.filmcraft-opus]
+opt-level = 3
+
+[profile.dev.package.filmcraft-vp9]
+opt-level = 3
 
 [profile.release]
 lto = "thin"

@@ -24,6 +24,9 @@ Householder FDN, phase vocoder).
 - Gated integrated loudness (−70 LUFS / −10 LU) and LRA (−70 / −20 LU, 10th–95th percentile) use a
   0.01 LU histogram with exact energy sums: fixed memory for programmes of any length.
 - True peak: 4× (2× at 88.2/96 kHz) polyphase Kaiser-sinc interpolation.
+- Oracle-tested against ffmpeg's `ebur128` filter (`tests/loudness_oracle.rs`, skipped without ffmpeg):
+  M/S within 0.0005 LU, I within 0.007 LU, LRA within 0.04 LU and true peak within 0.045 dB (0.053 dB of the analytic value on an fs/4 tone) on
+  sine, pink-noise, speech-like and gated stereo signals at 44.1/48/96 kHz.
 - `normalize_gain_db(measured, target)` and `normalize_gain_db_peak_limited(...)` for Normalize /
   Essential Sound loudness auto-match.
 

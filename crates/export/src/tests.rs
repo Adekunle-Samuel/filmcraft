@@ -65,7 +65,7 @@ fn mjpeg_mov_roundtrip() {
     let a = src.audio(0, 24_000, 48_000).unwrap();
     let pk = a.peaks()[0];
     assert!((pk - 0.5).abs() < 0.05, "tone at -6 dB: {pk}");
-    if let Some(ffprobe) = ["/opt/homebrew/bin/ffprobe", "/usr/bin/ffprobe"].into_iter().find(|p| std::path::Path::new(p).exists()) {
+    if let Some(ffprobe) = filmcraft_testkit::ffprobe_or_skip("export mjpeg frame count") {
         let out = std::process::Command::new(ffprobe)
             .args(["-v", "error", "-count_frames", "-select_streams", "v:0", "-show_entries", "stream=nb_read_frames", "-of", "csv=p=0", &path])
             .output()
@@ -98,4 +98,80 @@ fn prores_export_roundtrip() {
     assert!(src.info().video.as_ref().unwrap().codec.contains("ProRes 422 HQ"));
     let f = src.video_frame(FrameRequest::full(Tick(TICKS_PER_SECOND / 3))).unwrap().to_rgba8();
     assert!(f[0] > 240 && f[1] < 15 && f[2] < 15, "{:?}", &f[..4]);
+}
+
+/// Burn-in: an H.264 export of a dark-blue matte with a caption, decoded by ffmpeg (external test
+/// oracle only), has bright caption pixels in the lower part of the frame, and none without
+/// `burn_captions` or above the caption.
+#[test]
+fn caption_burn_in_h264_ffmpeg_oracle() {
+    let Some(ffmpeg) = ["/opt/homebrew/bin/ffmpeg", "/usr/local/bin/ffmpeg", "/usr/bin/ffmpeg"].into_iter().find(|p| std::path::Path::new(p).exists()) else {
+        eprintln!("ffmpeg not found; skipping oracle test");
+        return;
+    };
+    let mut p = Project::new("cap");
+    let (w, h) = (640u32, 360u32);
+    let g = GeneratorSource::new(Generator::ColorMatte { color: [0.0, 0.0, 0.2, 1.0] }, w, h, FrameRate::FPS_24, Tick(2 * TICKS_PER_SECOND));
+    let info = g.info().clone();
+    let matte = p.add_item(
+        "matte",
+        Label::Iris,
+        ItemKind::Media(MediaClip {
+            media: MediaRef::Generator(g.generator.clone()),
+            info,
+            interpret: Default::default(),
+            mark_in: None,
+            mark_out: None,
+            markers: vec![],
+            offline: false,
+            proxy: None,
+        }),
+        None,
+    );
+    let r = FrameRate::FPS_24;
+    let seq = p.new_sequence("s", SequenceSettings { width: w, height: h, frame_rate: r, ..Default::default() }, 1, 0, None);
+    let v = p.make_track_item(matte, TrackKind::Video, Tick::ZERO, TimeRange::new(Tick::ZERO, r.tick_of(24)), r).unwrap();
+    let tid = filmcraft_project::TrackId(p.alloc_id());
+    let cid = filmcraft_project::ClipId(p.alloc_id());
+    let mut ct = filmcraft_project::CaptionTrack::new(tid, "Subtitle".into(), filmcraft_project::CaptionFormat::Subtitle);
+    ct.style.background = false;
+    ct.captions.push(filmcraft_project::Caption {
+        id: cid,
+        start: Tick::ZERO,
+        duration: r.tick_of(24),
+        text: "BURNED IN".into(),
+        speaker: None,
+        cue_id: None,
+        settings: String::new(),
+    });
+    let q = p.sequence_mut(seq).unwrap();
+    q.video_tracks[0].items.push(v);
+    q.caption_tracks.push(ct);
+    let mut m = SourceMap::default();
+    m.0.insert(matte, Arc::new(g));
+    let p = Arc::new(p);
+    let decode = |burn: bool| -> Vec<u8> {
+        let path = tmp(if burn { "burn.mp4" } else { "noburn.mp4" });
+        let s = ExportSettings { format: Format::H264, path: path.clone(), include_audio: false, burn_captions: burn, ..Default::default() };
+        export(&p, seq, &s, &m, &Progress::default()).unwrap();
+        let out = std::process::Command::new(ffmpeg)
+            .args(["-v", "error", "-i", &path, "-vf", "select=eq(n\\,12)", "-frames:v", "1", "-f", "rawvideo", "-pix_fmt", "rgb24", "-"])
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+        assert_eq!(out.stdout.len(), (w * h * 3) as usize);
+        out.stdout
+    };
+    let bright = |rgb: &[u8], y0: u32, y1: u32, x0: u32, x1: u32| -> usize {
+        (y0..y1).flat_map(|y| (x0..x1).map(move |x| ((y * w + x) * 3) as usize)).filter(|&i| rgb[i] > 200 && rgb[i + 1] > 200 && rgb[i + 2] > 200).count()
+    };
+    let with = decode(true);
+    let without = decode(false);
+    let lower = bright(&with, h * 2 / 3, h, 0, w);
+    assert!(lower > 300, "white caption text in the lower third: {lower}");
+    assert_eq!(bright(&with, 0, h / 2, 0, w), 0, "nothing above the caption");
+    assert_eq!(bright(&without, 0, h, 0, w), 0, "no burn-in unless asked");
+    // centred: text on both sides of the centre line
+    let (left, right) = (bright(&with, h * 2 / 3, h, 0, w / 2), bright(&with, h * 2 / 3, h, w / 2, w));
+    assert!(left > 100 && right > 100, "{left} / {right}");
 }

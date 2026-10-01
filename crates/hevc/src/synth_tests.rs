@@ -546,14 +546,10 @@ fn as_u8(p: &crate::Plane) -> &[u8] {
 
 /// Compare with ffmpeg's decode of the same stream (skipped when ffmpeg is absent).
 fn check_ffmpeg(name: &str, stream: &[u8], pics: &[crate::Picture]) {
-    let Some(ff) = ["/opt/homebrew/bin/ffmpeg", "/usr/local/bin/ffmpeg", "/usr/bin/ffmpeg"].iter().find(|p| std::path::Path::new(p).exists()) else {
-        eprintln!("SKIP ffmpeg check for {name}");
-        return;
-    };
-    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/fixtures/hevc");
-    std::fs::create_dir_all(&dir).unwrap();
-    let src = dir.join(format!("synth_{name}.hevc"));
-    let yuv = dir.join(format!("synth_{name}.yuv"));
+    let Some(ff) = filmcraft_testkit::ffmpeg_or_skip(name) else { return };
+    let dir = filmcraft_testkit::fixtures_dir("hevc");
+    let src = filmcraft_testkit::temp_path(&dir.join(format!("synth_{name}.hevc")));
+    let yuv = filmcraft_testkit::temp_path(&dir.join(format!("synth_{name}.yuv")));
     std::fs::write(&src, stream).unwrap();
     let st = std::process::Command::new(ff)
         .args(["-hide_banner", "-loglevel", "error", "-y", "-i"])
@@ -577,6 +573,7 @@ fn check_ffmpeg(name: &str, stream: &[u8], pics: &[crate::Picture]) {
         }
     }
     let _ = std::fs::remove_file(&yuv);
+    let _ = std::fs::remove_file(&src);
 }
 
 fn run(name: &str, tiles: Tiles, pcm_lf_disabled: bool, segments: Vec<Segment>) {

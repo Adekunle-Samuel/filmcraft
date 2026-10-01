@@ -1,0 +1,212 @@
+//! Scripted UI tests: the real `FilmcraftApp` runs headless under `egui_kittest` (no window, no
+//! GPU) and is driven through the same JSON control channel that agents use over TCP/MCP
+//! (`docs/control-protocol.md`). Each test opens the demo project, sends control requests
+//! (`engine.execute`, `ui.menu.invoke`, `ui.click`, `ui.inspect`, …) between frames and asserts on
+//! the replies and on `sequence.inspect` JSON.
+//!
+//! The harness steps egui frames itself: synthetic input queued by `ui.click`/`ui.key` is moved
+//! into the next frame's `RawInput` through the app's own `raw_input_hook`, exactly as eframe does.
+//! Screenshots (`ui.screenshot`) need a real viewport and are not covered here.
+
+use std::sync::mpsc::{Sender, channel};
+
+use egui_kittest::Harness;
+use filmcraft_engine::Session;
+use filmcraft_ui_egui::FilmcraftApp;
+use filmcraft_ui_egui::control::ControlRequest;
+use serde_json::{Value, json};
+
+struct Driver {
+    harness: Harness<'static, FilmcraftApp>,
+    tx: Sender<ControlRequest>,
+}
+
+impl Driver {
+    /// The app with the demo project open, after its first frames (theme and fonts installed).
+    fn demo() -> Self {
+        let mut session = Session::default();
+        session.execute("file.openDemoProject", json!({})).expect("demo project");
+        let (tx, rx) = channel();
+        let app = FilmcraftApp::new(session).with_control(rx);
+        let harness = Harness::builder().with_size(egui::vec2(1600.0, 980.0)).with_max_steps(10_000).build_eframe(move |_cc| app);
+        let mut d = Driver { harness, tx };
+        d.frames(4);
+        d
+    }
+
+    /// Run `n` frames, feeding queued synthetic input like eframe's `raw_input_hook`.
+    fn frames(&mut self, n: usize) {
+        for _ in 0..n {
+            let ctx = self.harness.ctx.clone();
+            let mut raw = std::mem::take(self.harness.input_mut());
+            eframe::App::raw_input_hook(self.harness.state_mut(), &ctx, &mut raw);
+            *self.harness.input_mut() = raw;
+            self.harness.step();
+        }
+    }
+
+    /// Send a control request and run frames until it is answered.
+    fn call(&mut self, method: &str, params: Value) -> Value {
+        let (req, reply) = ControlRequest::new(method, params.clone());
+        self.tx.send(req).unwrap();
+        for _ in 0..600 {
+            self.frames(1);
+            if let Ok(v) = reply.try_recv() {
+                return v;
+            }
+        }
+        panic!("no reply to {method} {params}");
+    }
+
+    /// `call` that must succeed; returns `result`.
+    fn ok(&mut self, method: &str, params: Value) -> Value {
+        let v = self.call(method, params.clone());
+        assert_eq!(v["ok"], json!(true), "{method} {params} failed: {v}");
+        v["result"].clone()
+    }
+
+    fn exec(&mut self, command: &str, params: Value) -> Value {
+        self.ok("engine.execute", json!({"command": command, "params": params}))
+    }
+
+    fn sequence(&mut self) -> Value {
+        self.exec("sequence.inspect", json!({}))
+    }
+
+    fn inspect(&mut self) -> Value {
+        self.ok("ui.inspect", json!({}))
+    }
+
+    fn element_ids(&mut self, prefix: &str) -> Vec<String> {
+        let v = self.ok("ui.elements", json!({"prefix": prefix}));
+        v.as_array().unwrap().iter().filter_map(|e| e["id"].as_str().map(str::to_string)).collect()
+    }
+}
+
+/// Clips on a video track in `sequence.inspect` JSON.
+fn track_clips(seq: &Value, track: usize) -> Vec<Value> {
+    seq["video"][track]["items"].as_array().cloned().unwrap_or_default()
+}
+
+#[test]
+fn demo_project_opens_headless_and_registers_widgets() {
+    let mut d = Driver::demo();
+    let ui = d.inspect();
+    assert!(ui["activeSequence"].is_u64(), "demo sequence is active: {ui}");
+    assert!(ui["elements"].as_u64().unwrap() > 50, "widgets registered: {}", ui["elements"]);
+    let panels = d.element_ids("panel.");
+    for p in ["panel.Timeline", "panel.Program", "panel.Project", "panel.tab.Timeline"] {
+        assert!(panels.iter().any(|x| x == p), "{p} missing from {panels:?}");
+    }
+    let tools = d.element_ids("tools.");
+    assert!(tools.len() >= 5, "tool buttons: {tools:?}");
+    let seq = d.sequence();
+    assert_eq!(track_clips(&seq, 0).len(), 6, "demo V1 clips: {seq}");
+}
+
+#[test]
+fn razor_then_undo_through_the_control_channel() {
+    let mut d = Driver::demo();
+    let before = track_clips(&d.sequence(), 0).len();
+    d.exec("playhead.set", json!({"seconds": 2.0}));
+    let r = d.exec("timeline.razor", json!({"track": "V1"}));
+    assert_eq!(r["cuts"], json!(1), "{r}");
+    let after = track_clips(&d.sequence(), 0);
+    assert_eq!(after.len(), before + 1);
+    // the timeline shows the new clip on the next frame
+    d.frames(2);
+    let new_clip = after[1]["clip"].as_u64().unwrap();
+    let at = d.ok("ui.timeline.locate", json!({"clip": new_clip}));
+    assert!(at["x"].as_f64().is_some(), "{at}");
+    // Undo from the menu path (UI command dispatch), then Redo by shortcut-free command id.
+    d.ok("ui.menu.invoke", json!({"id": "edit.undo"}));
+    assert_eq!(track_clips(&d.sequence(), 0).len(), before);
+    d.exec("edit.redo", json!({}));
+    assert_eq!(track_clips(&d.sequence(), 0).len(), before + 1);
+}
+
+#[test]
+fn insert_from_source_ripples_the_sequence() {
+    let mut d = Driver::demo();
+    let project = d.exec("project.inspect", json!({}));
+    let item = first_media_item(&project).unwrap_or_else(|| panic!("no media item in {project}"));
+    let dur0 = d.sequence()["duration"].as_i64().unwrap();
+    d.exec("source.open", json!({"item": item}));
+    let rate = &d.sequence()["settings"]["frame_rate"];
+    let (num, den) = (rate["num"].as_i64().unwrap(), rate["den"].as_i64().unwrap());
+    let tick = |f: i64| f * 254_016_000_000 * den / num;
+    d.exec("project.setMarks", json!({"item": item, "in": tick(24), "out": tick(47)}));
+    d.exec("playhead.set", json!({"frame": 0}));
+    d.exec("source.insert", json!({}));
+    let dur1 = d.sequence()["duration"].as_i64().unwrap();
+    assert!(dur1 > dur0, "insert lengthens the sequence: {dur0} → {dur1}");
+    d.frames(2);
+}
+
+/// First movie item id anywhere in `project.inspect` JSON.
+fn first_media_item(v: &Value) -> Option<u64> {
+    match v {
+        Value::Object(m) => {
+            if let Some(id) = m.get("item").and_then(Value::as_u64)
+                && m.get("type").and_then(Value::as_str).is_some_and(|t| t == "Movie")
+            {
+                return Some(id);
+            }
+            m.values().find_map(first_media_item)
+        }
+        Value::Array(a) => a.iter().find_map(first_media_item),
+        _ => None,
+    }
+}
+
+#[test]
+fn apply_effect_appears_in_effect_controls() {
+    let mut d = Driver::demo();
+    let clip = track_clips(&d.sequence(), 0)[0]["clip"].as_u64().unwrap();
+    d.exec("timeline.select", json!({"clips": [clip]}));
+    d.exec("effects.apply", json!({"effect": "Gaussian Blur"}));
+    let seq = d.sequence();
+    let fx: Vec<String> = track_clips(&seq, 0)[0]["effects"].as_array().unwrap().iter().filter_map(|e| e["effect"].as_str().map(str::to_string)).collect();
+    assert!(fx.iter().any(|e| e == "gaussian_blur"), "{fx:?}");
+    d.ok("ui.panel.show", json!({"panel": "Effect Controls"}));
+    d.frames(3);
+    let ids = d.element_ids("effectControls.effect.");
+    assert!(ids.iter().any(|i| i == "effectControls.effect.gaussian_blur"), "{ids:?}");
+    d.ok("ui.menu.invoke", json!({"id": "edit.undo"}));
+    d.frames(2);
+    assert!(!d.element_ids("effectControls.effect.").iter().any(|i| i == "effectControls.effect.gaussian_blur"));
+}
+
+#[test]
+fn playback_toggle_and_stop() {
+    let mut d = Driver::demo();
+    assert_eq!(d.inspect()["playback"]["playing"], json!(false));
+    let r = d.ok("ui.menu.invoke", json!({"id": "playback.toggle"}));
+    assert_eq!(r["playing"], json!(true), "{r}");
+    d.frames(5);
+    assert_eq!(d.inspect()["playback"]["playing"], json!(true));
+    let r = d.ok("ui.playback", json!({"action": "stop"}));
+    assert_eq!(r["playing"], json!(false), "{r}");
+    assert_eq!(d.inspect()["playback"]["playing"], json!(false));
+}
+
+#[test]
+fn clicking_a_tool_button_by_automation_id() {
+    let mut d = Driver::demo();
+    assert_ne!(d.inspect()["ui"]["tool"], json!("Razor"));
+    d.ok("ui.click", json!({"id": "tools.Razor"}));
+    d.frames(2);
+    let ui = d.inspect();
+    assert_eq!(ui["ui"]["tool"], json!("Razor"), "{}", ui["ui"]["tool"]);
+    d.ok("ui.set", json!({"tool": "selection"}));
+    assert_eq!(d.inspect()["ui"]["tool"], json!("Selection"));
+}
+
+#[test]
+fn unknown_methods_and_commands_fail_cleanly() {
+    let mut d = Driver::demo();
+    let v = d.call("ui.nope", json!({}));
+    assert_eq!(v["ok"], json!(false));
+    let v = d.call("engine.execute", json!({"command": "no.such.command"}));
+    assert_eq!(v["ok"], json!(false));
+}

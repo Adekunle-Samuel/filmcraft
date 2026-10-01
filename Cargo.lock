@@ -1104,6 +1104,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "egui_kittest"
+version = "0.36.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5eb3f3effb2726fee23449293e67acbf6cc6ce35525b1722bd5743bb348114d5"
+dependencies = [
+ "eframe",
+ "egui",
+ "kittest",
+ "log",
+ "serde",
+ "toml 1.1.6+spec-1.1.0",
+]
+
+[[package]]
 name = "either"
 version = "1.18.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1288,6 +1302,7 @@ dependencies = [
 name = "filmcraft"
 version = "0.1.0"
 dependencies = [
+ "chrono",
  "cpal",
  "eframe",
  "egui",
@@ -1304,6 +1319,7 @@ name = "filmcraft-aac"
 version = "0.1.0"
 dependencies = [
  "filmcraft-bitstream",
+ "filmcraft-testkit",
  "rayon",
  "thiserror 2.0.21",
 ]
@@ -1311,6 +1327,9 @@ dependencies = [
 [[package]]
 name = "filmcraft-audio-dsp"
 version = "0.1.0"
+dependencies = [
+ "filmcraft-testkit",
+]
 
 [[package]]
 name = "filmcraft-automation"
@@ -1333,6 +1352,18 @@ name = "filmcraft-bitstream"
 version = "0.1.0"
 dependencies = [
  "proptest",
+]
+
+[[package]]
+name = "filmcraft-captions"
+version = "0.1.0"
+dependencies = [
+ "filmcraft-color",
+ "filmcraft-project",
+ "filmcraft-time",
+ "proptest",
+ "skrifa",
+ "thiserror 2.0.21",
 ]
 
 [[package]]
@@ -1361,6 +1392,7 @@ dependencies = [
  "filmcraft-isobmff",
  "filmcraft-matroska",
  "filmcraft-media",
+ "filmcraft-opus",
  "filmcraft-prores",
  "filmcraft-time",
  "filmcraft-vp9",
@@ -1393,10 +1425,12 @@ dependencies = [
 name = "filmcraft-engine"
 version = "0.1.0"
 dependencies = [
+ "filmcraft-captions",
  "filmcraft-codecs",
  "filmcraft-color",
  "filmcraft-edit",
  "filmcraft-export",
+ "filmcraft-format",
  "filmcraft-frame",
  "filmcraft-geom",
  "filmcraft-interchange",
@@ -1423,9 +1457,22 @@ dependencies = [
  "filmcraft-project",
  "filmcraft-prores",
  "filmcraft-render",
+ "filmcraft-testkit",
  "filmcraft-time",
  "image",
  "rayon",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "filmcraft-format"
+version = "0.1.0"
+dependencies = [
+ "filmcraft-media",
+ "filmcraft-project",
+ "filmcraft-time",
  "serde",
  "serde_json",
  "thiserror 2.0.21",
@@ -1450,6 +1497,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "filmcraft-golden"
+version = "0.1.0"
+dependencies = [
+ "filmcraft-geom",
+ "filmcraft-gpu",
+ "filmcraft-media",
+ "filmcraft-project",
+ "filmcraft-render",
+ "filmcraft-testkit",
+ "filmcraft-time",
+ "pollster 0.4.0",
+ "wgpu",
+]
+
+[[package]]
 name = "filmcraft-gpu"
 version = "0.1.0"
 dependencies = [
@@ -1469,6 +1531,7 @@ name = "filmcraft-h264"
 version = "0.1.0"
 dependencies = [
  "filmcraft-bitstream",
+ "filmcraft-testkit",
  "rayon",
  "thiserror 2.0.21",
 ]
@@ -1478,6 +1541,7 @@ name = "filmcraft-h264enc"
 version = "0.1.0"
 dependencies = [
  "filmcraft-bitstream",
+ "filmcraft-testkit",
  "rayon",
  "thiserror 2.0.21",
 ]
@@ -1487,6 +1551,7 @@ name = "filmcraft-hevc"
 version = "0.1.0"
 dependencies = [
  "filmcraft-bitstream",
+ "filmcraft-testkit",
  "rayon",
  "thiserror 2.0.21",
 ]
@@ -1512,6 +1577,7 @@ name = "filmcraft-isobmff"
 version = "0.1.0"
 dependencies = [
  "filmcraft-bitstream",
+ "filmcraft-testkit",
  "proptest",
  "serde_json",
  "thiserror 2.0.21",
@@ -1521,6 +1587,7 @@ dependencies = [
 name = "filmcraft-matroska"
 version = "0.1.0"
 dependencies = [
+ "filmcraft-testkit",
  "serde_json",
 ]
 
@@ -1535,6 +1602,13 @@ dependencies = [
  "rayon",
  "serde",
  "thiserror 2.0.21",
+]
+
+[[package]]
+name = "filmcraft-opus"
+version = "0.1.0"
+dependencies = [
+ "filmcraft-testkit",
 ]
 
 [[package]]
@@ -1556,6 +1630,7 @@ name = "filmcraft-prores"
 version = "0.1.0"
 dependencies = [
  "filmcraft-bitstream",
+ "filmcraft-testkit",
  "rayon",
  "thiserror 2.0.21",
 ]
@@ -1565,6 +1640,7 @@ name = "filmcraft-render"
 version = "0.1.0"
 dependencies = [
  "filmcraft-audio-dsp",
+ "filmcraft-captions",
  "filmcraft-color",
  "filmcraft-frame",
  "filmcraft-geom",
@@ -1573,6 +1649,15 @@ dependencies = [
  "filmcraft-time",
  "image",
  "rayon",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "filmcraft-testkit"
+version = "0.1.0"
+dependencies = [
+ "png",
 ]
 
 [[package]]
@@ -1589,6 +1674,7 @@ version = "0.1.0"
 dependencies = [
  "eframe",
  "egui",
+ "egui_kittest",
  "filmcraft-audio-dsp",
  "filmcraft-color",
  "filmcraft-edit",
@@ -2427,6 +2513,16 @@ name = "khronos_api"
 version = "3.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e2db585e1d738fc771bf08a151420d3ed193d9d895a36df7f6f8a9456b911ddc"
+
+[[package]]
+name = "kittest"
+version = "0.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "90ceaa75eb0036a32b6b9833962eb18137449e9817e2e586006471925b727fd5"
+dependencies = [
+ "accesskit",
+ "accesskit_consumer 0.35.0",
+]
 
 [[package]]
 name = "kurbo"
@@ -3926,6 +4022,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "serde_spanned"
+version = "1.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6662b5879511e06e8999a8a235d848113e942c9124f211511b16466ee2995f26"
+dependencies = [
+ "serde_core",
+]
+
+[[package]]
 name = "shlex"
 version = "2.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4302,7 +4407,7 @@ dependencies = [
  "cfg-expr",
  "heck 0.5.0",
  "pkg-config",
- "toml",
+ "toml 0.8.2",
  "version-compare",
 ]
 
@@ -4435,9 +4540,22 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "185d8ab0dfbb35cf1399a6344d8484209c088f75f8f68230da55d48d95d43e3d"
 dependencies = [
  "serde",
- "serde_spanned",
+ "serde_spanned 0.6.9",
  "toml_datetime 0.6.3",
  "toml_edit 0.20.2",
+]
+
+[[package]]
+name = "toml"
+version = "1.1.6+spec-1.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "920602543f0911ab71da12c50d59701da54c196d1a2bf5cb4b75667f137a406a"
+dependencies = [
+ "serde_core",
+ "serde_spanned 1.1.1",
+ "toml_datetime 1.1.1+spec-1.1.0",
+ "toml_parser",
+ "winnow 1.0.4",
 ]
 
 [[package]]
@@ -4477,7 +4595,7 @@ checksum = "396e4d48bbb2b7554c944bde63101b5ae446cff6ec4a24227428f15eb72ef338"
 dependencies = [
  "indexmap",
  "serde",
- "serde_spanned",
+ "serde_spanned 0.6.9",
  "toml_datetime 0.6.3",
  "winnow 0.5.40",
 ]
@@ -5613,6 +5731,7 @@ checksum = "e450f9b2ed1dff33c94c12589a87338689467b9c4f5d8a5710bd09a847d2c8a7"
 name = "xtask"
 version = "0.1.0"
 dependencies = [
+ "filmcraft-testkit",
  "serde_json",
 ]
 

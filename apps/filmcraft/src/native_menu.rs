@@ -26,6 +26,8 @@ pub fn install(app: &FilmcraftApp, ctx: egui::Context) -> Receiver<String> {
     let _ = app_menu.append_items(&[
         &MenuItem::with_id("app.about", "About FilmCraft", true, None),
         &PredefinedMenuItem::separator(),
+        &MenuItem::with_id("app.preferences.autoSave", "Settings…", true, None),
+        &PredefinedMenuItem::separator(),
         &PredefinedMenuItem::hide(None),
         &PredefinedMenuItem::hide_others(None),
         &PredefinedMenuItem::separator(),

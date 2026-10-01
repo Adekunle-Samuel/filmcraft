@@ -91,3 +91,14 @@ fn compare_detects_mismatch() {
     let err = common::compare(&pics, &reference, f.width as usize, f.height as usize, f.bit_depth).unwrap_err();
     assert!(err.contains("plane V"), "{err}");
 }
+
+/// Pre-generate every fixture and its reference decode (`cargo xtask fixtures`).
+#[test]
+#[ignore]
+fn generate_fixtures() {
+    let dir = common::fixtures_dir();
+    for f in common::FIXTURES {
+        let outs = [dir.join(format!("{}.hevc", f.name)), dir.join(format!("{}.yuv", f.name))];
+        filmcraft_testkit::fixtures::generate_and_report(&format!("hevc/{}", f.name), &outs, || common::ensure(f));
+    }
+}

@@ -8,10 +8,13 @@
 //! The project is an `Arc<Project>` edited copy-on-write; undo keeps whole-project snapshots (cheap
 //! thanks to structural sharing of untouched items).
 
+pub mod autosave;
+pub mod captions;
 pub mod commands;
 pub mod demo;
 pub mod interchange;
 pub mod media_pool;
+pub mod previews;
 pub mod trim;
 
 use std::sync::Arc;
@@ -62,10 +65,8 @@ impl Services for FsServices {
         std::fs::read(path)
     }
     fn write_file(&self, path: &str, data: &[u8]) -> std::io::Result<()> {
-        // Atomic save: write a sibling temp file then rename over the target.
-        let tmp = format!("{path}.fcsave~");
-        std::fs::write(&tmp, data)?;
-        std::fs::rename(&tmp, path)
+        // Atomic + durable: temp file in the same directory, fsync, rename, fsync the directory.
+        filmcraft_format::atomic_write(std::path::Path::new(path), data)
     }
 }
 
@@ -123,6 +124,9 @@ pub struct EditorState {
     /// Selected edit points (trim mode).
     #[serde(default)]
     pub edit_points: Vec<trim::EditPoint>,
+    /// Selected captions (caption tracks / Captions panel).
+    #[serde(default)]
+    pub caption_selection: Vec<ClipId>,
 }
 
 /// Events for frontends (drained each frame).
@@ -146,8 +150,18 @@ pub struct Session {
     pub events: Vec<Event>,
     /// Commands executed (for macros/debugging): (id, params).
     pub journal: Vec<(String, Value)>,
-    /// Background jobs (exports, …).
+    /// Background jobs (exports, render previews…).
     pub jobs: Vec<Job>,
+    /// User preferences (`prefs.*` commands) and where they persist (None = not persisted).
+    pub prefs: autosave::Preferences,
+    pub prefs_path: Option<std::path::PathBuf>,
+    /// Auto-save ring + crash-recovery journal (native frontends start it; None = off).
+    pub persistence: Option<autosave::Persistence>,
+    /// Schema version of the file at `path` as found on disk (older = upgraded on load; the first
+    /// save over it keeps a backup of the original).
+    pub loaded_schema: u32,
+    /// Render preview files + render-bar segments (shared with the frontend's frame workers).
+    pub previews: Arc<previews::PreviewStore>,
 }
 
 /// A background job with shared progress.
@@ -202,6 +216,91 @@ impl Session {
             events: Vec::new(),
             journal: Vec::new(),
             jobs: Vec::new(),
+            prefs: Default::default(),
+            prefs_path: None,
+            persistence: None,
+            loaded_schema: filmcraft_format::SCHEMA_VERSION,
+            previews: Arc::new(previews::PreviewStore::temp()),
+        }
+    }
+
+    /// Start auto-save and the crash-recovery journal (native frontends). Loads preferences from
+    /// the data directory and finds unsaved changes left by sessions that died
+    /// ([`Session::recovery_candidates`]).
+    pub fn start_autosave(&mut self, cfg: autosave::AutosaveConfig) -> std::io::Result<()> {
+        let prefs_path = cfg.data_dir.join("preferences.json");
+        self.prefs = autosave::Preferences::load(&prefs_path);
+        self.prefs_path = Some(prefs_path);
+        self.persistence = Some(autosave::Persistence::start(&cfg, self.prefs.auto_save.clone())?);
+        self.sync_persistence();
+        Ok(())
+    }
+
+    /// Clean shutdown: flush and stop the worker. Unsaved changes stay in the journal (offered on
+    /// the next launch); otherwise the session's journal directory is removed.
+    pub fn shutdown(&mut self) {
+        self.sync_persistence();
+        if let Some(p) = self.persistence.take() {
+            p.close();
+        }
+    }
+
+    pub fn recovery_candidates(&self) -> &[autosave::RecoveryCandidate] {
+        self.persistence.as_ref().map(|p| p.candidates.as_slice()).unwrap_or(&[])
+    }
+
+    /// Tell the worker about the current project state if it changed (cheap: an `Arc` clone and a
+    /// channel send; serialization happens on the worker). Called after every command.
+    pub fn sync_persistence(&mut self) {
+        let dirty = self.is_dirty();
+        let Some(p) = self.persistence.as_mut() else { return };
+        let cur = autosave::Sent { revision: self.revision, saved_revision: self.saved_revision, path: self.path.clone() };
+        if p.last_sent.as_ref() == Some(&cur) {
+            return;
+        }
+        if dirty {
+            p.send_dirty(self.project.clone(), self.revision, self.path.clone());
+        } else {
+            p.send_clean();
+        }
+        p.last_sent = Some(cur);
+    }
+
+    /// Apply worker notifications (call regularly, e.g. once per UI frame).
+    pub fn poll_persistence(&mut self) {
+        let Some(p) = self.persistence.as_mut() else { return };
+        for ev in p.drain_events() {
+            match ev {
+                autosave::WorkerEvent::SavedProject { path, revision } => {
+                    if self.path.as_deref() == Some(path.as_str()) && revision > self.saved_revision && revision <= self.revision {
+                        self.saved_revision = revision;
+                    }
+                }
+                autosave::WorkerEvent::Error(m) => self.events.push(Event::Toast { message: m, error: true }),
+                _ => {}
+            }
+        }
+        self.sync_persistence();
+    }
+
+    /// Replace preferences (persisting them and updating the worker).
+    pub fn set_prefs(&mut self, p: autosave::Preferences) -> std::io::Result<()> {
+        self.prefs = p;
+        if let Some(w) = &self.persistence {
+            w.set_prefs(self.prefs.auto_save.clone());
+        }
+        match &self.prefs_path {
+            Some(path) => self.prefs.save(path),
+            None => Ok(()),
+        }
+    }
+
+    /// Keep render previews next to the saved project (moves an unsaved project's previews).
+    pub fn previews_follow_path(&mut self) {
+        if let Some(p) = &self.path
+            && !cfg!(target_arch = "wasm32")
+        {
+            self.previews.move_to(previews::dir_for_project(p));
         }
     }
 
@@ -214,6 +313,7 @@ impl Session {
         let spec = commands::find(id).ok_or_else(|| EngineError::UnknownCommand(id.to_string()))?;
         (spec.enabled)(self).map_err(|why| EngineError::Disabled(id.to_string(), why))?;
         let r = (spec.run)(self, &params);
+        self.sync_persistence();
         if r.is_ok() && spec.journal {
             self.journal.push((id.to_string(), params));
             if self.journal.len() > 10_000 {
@@ -299,8 +399,10 @@ impl Session {
         }
         if let Some(seq) = self.state.active_sequence.and_then(|s| p.sequence(s)) {
             self.state.selection.retain(|c| seq.find_item(*c).is_some());
+            self.state.caption_selection.retain(|c| seq.find_caption(*c).is_some());
         } else {
             self.state.selection.clear();
+            self.state.caption_selection.clear();
         }
         self.state.project_selection.retain(|i| p.item(*i).is_some());
     }
@@ -362,7 +464,8 @@ impl Session {
     pub fn render_program(&self, scale: f32) -> Option<filmcraft_render::Image> {
         let seq = self.state.active_sequence?;
         let provider = self.media.provider(self.project.clone(), self.services.clone());
-        Some(filmcraft_render::render_sequence(&self.project, seq, self.playhead(), filmcraft_render::RenderOptions { scale, ..Default::default() }, &provider))
+        let opts = filmcraft_render::RenderOptions { scale, captions: true, ..Default::default() };
+        Some(filmcraft_render::render_sequence(&self.project, seq, self.playhead(), opts, &provider))
     }
 }
 
@@ -380,5 +483,11 @@ pub fn media_duration(p: &Project, _pool: &MediaPool, id: ItemId) -> Option<Tick
     }
 }
 
+#[cfg(test)]
+mod autosave_tests;
+#[cfg(test)]
+mod file_tests;
+#[cfg(test)]
+mod previews_tests;
 #[cfg(test)]
 mod tests;

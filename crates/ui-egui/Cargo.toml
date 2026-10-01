@@ -27,3 +27,6 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 log = { workspace = true }
 rayon = { workspace = true }
+
+[dev-dependencies]
+egui_kittest = { workspace = true, features = ["eframe"] }

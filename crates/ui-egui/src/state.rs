@@ -263,6 +263,26 @@ pub struct UiState {
     pub export_format: String,
     #[serde(default)]
     pub export_path: String,
+    /// Export mode: burn visible caption tracks into the video.
+    #[serde(default)]
+    pub export_burn_captions: bool,
+    /// Text panel: active tab ("Transcript" / "Captions" / "Graphics").
+    #[serde(default = "captions_tab")]
+    pub text_tab: String,
+    /// Text panel: caption search filter.
+    #[serde(default)]
+    pub caption_search: String,
+    /// Preferences ▸ Playback: play the rendered range when a preview render finishes.
+    #[serde(default = "yes")]
+    pub play_after_render: bool,
+}
+
+fn captions_tab() -> String {
+    "Captions".into()
+}
+
+fn yes() -> bool {
+    true
 }
 
 impl Default for UiState {
@@ -289,6 +309,10 @@ impl Default for UiState {
             status: String::new(),
             export_format: "h264".into(),
             export_path: String::new(),
+            export_burn_captions: false,
+            text_tab: captions_tab(),
+            caption_search: String::new(),
+            play_after_render: true,
         }
     }
 }

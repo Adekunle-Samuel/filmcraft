@@ -1,8 +1,13 @@
 //! Matroska/WebM media source (`filmcraft-matroska` demux, GOP-aware video via [`crate::gop`]).
 //!
 //! Video codecs are mapped onto ISO-BMFF sample entries so the same decoder factories serve both
-//! containers (H.264, HEVC, VP9, ProRes, MJPEG; AV1 once its decoder lands). Audio: AAC via our
-//! decoder, PCM directly, MP3/FLAC/Vorbis via the bootstrap decoders.
+//! containers (H.264, HEVC, VP9, ProRes, MJPEG; AV1 once its decoder lands). Audio: AAC and Opus
+//! via our decoders, PCM directly, MP3/FLAC/Vorbis via the bootstrap decoders.
+//!
+//! Opus (`A_OPUS`): `CodecPrivate` is the `OpusHead`; output is always 48 kHz. The demuxer
+//! subtracts `CodecDelay` from timestamps, so the pre-skip samples land before zero and are never
+//! read; random access decodes `SeekPreRoll` (at least [`crate::audio::OPUS_PRE_ROLL`]) of preceding
+//! packets before the target. Packet starts are accumulated from TOC durations (see [`opus_starts`]).
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -42,6 +47,47 @@ pub struct MkvSource {
     audio: Mutex<AudioState>,
     /// Audio packet start positions in source sample frames.
     audio_starts: Vec<i64>,
+    /// Decoder pre-roll after a seek, in source sample frames (0: prime with one packet).
+    audio_preroll: i64,
+}
+
+/// Sample-exact Opus packet start positions (48 kHz frames, pre-skip removed).
+///
+/// Block timestamps are quantised to `TimestampScale` (usually 1 ms) and the demuxer subtracts a
+/// rounded `CodecDelay`, so they are only accurate to a tick. Starts are therefore accumulated from
+/// each packet's TOC duration, resynchronising to the timestamp only across real gaps (more than
+/// two ticks off). Pre-skip is the exact `CodecDelay` (or the header's pre-skip when it is absent).
+fn opus_starts(file: &MkvFile, bytes: &[u8], ti: usize, head: &filmcraft_opus::OpusHead, rate: i64) -> Vec<i64> {
+    let t = &file.tracks[ti];
+    let (n, d) = tb(t);
+    let scale_ns = (n as i128 * 1_000_000_000 / d as i128).max(1);
+    let delay_ns = t.codec_delay_ns as i128;
+    // The demuxer's rounding of CodecDelay to ticks (half away from zero), undone here.
+    let delay_ticks = ((delay_ns + scale_ns / 2) / scale_ns) as i64;
+    let skip = if t.codec_delay_ns > 0 { (delay_ns * rate as i128 / 1_000_000_000) as i64 } else { head.pre_skip as i64 };
+    let at = |pts: i64| ((pts + delay_ticks) as i128 * n as i128 * rate as i128 / d as i128) as i64 - skip;
+    let tolerance = (2 * scale_ns * rate as i128 / 1_000_000_000) as i64 + 1;
+    let mut starts = Vec::with_capacity(t.samples.len());
+    let mut next: Option<i64> = None;
+    for (i, s) in t.samples.iter().enumerate() {
+        let stamped = at(s.pts);
+        let start = match next {
+            Some(p) if (p - stamped).abs() <= tolerance => p,
+            _ => stamped,
+        };
+        starts.push(start);
+        let dur = file.read_sample(bytes, ti, i).ok().and_then(|p| crate::audio::opus_packet_samples(&p));
+        next = dur.map(|k| start + k as i64);
+    }
+    starts
+}
+
+/// The parsed `OpusHead` of an `A_OPUS` track.
+fn opus_head(c: &Codec) -> Option<filmcraft_opus::OpusHead> {
+    match c {
+        Codec::Opus { head } => filmcraft_opus::OpusHead::parse(head).ok(),
+        _ => None,
+    }
 }
 
 /// Seconds per track timestamp unit as a rational.
@@ -196,13 +242,13 @@ impl MkvSource {
         let audio = atrack.map(|i| {
             let t = &file.tracks[i];
             let a = t.audio.clone().unwrap_or_default();
-            let rate = a.output_sampling_frequency.unwrap_or(a.sampling_frequency).round().max(1.0) as u32;
-            AudioStreamInfo {
-                sample_rate: rate,
-                channels: (a.channels as u32).max(1),
-                codec: codec_label(&t.codec),
-                bits_per_sample: a.bit_depth.map(|b| b as u32),
+            let mut rate = a.output_sampling_frequency.unwrap_or(a.sampling_frequency).round().max(1.0) as u32;
+            let mut channels = (a.channels as u32).max(1);
+            if let Some(h) = opus_head(&t.codec) {
+                rate = crate::audio::OPUS_RATE;
+                channels = h.channels as u32;
             }
+            AudioStreamInfo { sample_rate: rate, channels, codec: codec_label(&t.codec), bits_per_sample: a.bit_depth.map(|b| b as u32) }
         });
         let duration = match file.duration_ns() {
             Some(ns) => Tick::from_rational(ns as i64, 1, 1_000_000_000),
@@ -230,9 +276,26 @@ impl MkvSource {
                 let t = &file.tracks[i];
                 let rate = info.audio.as_ref().map_or(48_000, |a| a.sample_rate) as i64;
                 let (n, d) = tb(t);
-                t.samples.iter().map(|s| (s.pts as i128 * n as i128 * rate as i128 / d as i128) as i64).collect()
+                let at = |pts: i64| (pts as i128 * n as i128 * rate as i128 / d as i128) as i64;
+                match opus_head(&t.codec) {
+                    Some(h) => opus_starts(&file, &bytes, i, &h, rate),
+                    None => t.samples.iter().map(|s| at(s.pts)).collect(),
+                }
             })
             .unwrap_or_default();
+        let audio_preroll = atrack
+            .map(|i| {
+                let t = &file.tracks[i];
+                let rate = info.audio.as_ref().map_or(48_000, |a| a.sample_rate) as i64;
+                match t.codec {
+                    Codec::Opus { .. } => {
+                        let container = (t.seek_pre_roll_ns as u128 * rate as u128).div_ceil(1_000_000_000) as i64;
+                        container.max(crate::audio::OPUS_PRE_ROLL as i64 * rate / 48_000)
+                    }
+                    _ => 0,
+                }
+            })
+            .unwrap_or(0);
         Ok(Self {
             info,
             bytes,
@@ -243,6 +306,7 @@ impl MkvSource {
             video: GopCache::new(explicit_color),
             audio: Mutex::new(AudioState { decoder: None, packets: HashMap::new(), order: Vec::new(), last_decoded: None }),
             audio_starts,
+            audio_preroll,
         })
     }
 
@@ -254,6 +318,7 @@ impl MkvSource {
         use symphonia::core::codecs::{CODEC_TYPE_FLAC, CODEC_TYPE_MP3, CODEC_TYPE_VORBIS};
         match c {
             Codec::Aac { asc } => PacketDecoder::aac(asc, rate),
+            Codec::Opus { head } => PacketDecoder::opus(filmcraft_opus::OpusHead::parse(head).map_err(|e| CodecError::Unsupported(format!("Opus: {e}")))?),
             Codec::Mp3 => PacketDecoder::new(CODEC_TYPE_MP3, rate, None),
             // symphonia wants the STREAMINFO block body: skip `fLaC` + the 4-byte block header.
             Codec::Flac { private } => PacketDecoder::new(CODEC_TYPE_FLAC, rate, private.get(8..42).map(<[u8]>::to_vec)),
@@ -290,14 +355,20 @@ impl MkvSource {
                 if st.decoder.is_none() {
                     st.decoder = Some(self.audio_decoder(c, ainfo.sample_rate)?);
                 }
-                // Non-sequential access: reset and prime with the previous packet (codec pre-roll).
+                // Non-sequential access: reset and prime with the preceding packets (codec pre-roll:
+                // one packet, or `SeekPreRoll` worth for Opus).
                 if st.last_decoded.is_none_or(|l| l + 1 != i) {
                     let d = st.decoder.as_mut().expect("decoder");
                     d.reset();
-                    if i > 0
-                        && let Ok(prev) = self.read(ti, i - 1)
-                    {
-                        let _ = d.decode(&prev, 0);
+                    let from = if self.audio_preroll > 0 {
+                        self.audio_starts.partition_point(|&x| x <= self.audio_starts[i] - self.audio_preroll).saturating_sub(1)
+                    } else {
+                        i.saturating_sub(1)
+                    };
+                    for j in from..i {
+                        if let Ok(prev) = self.read(ti, j) {
+                            let _ = d.decode(&prev, 0);
+                        }
                     }
                 }
                 let r = st.decoder.as_mut().expect("decoder").decode(&data, self.audio_starts[i].max(0) as u64);

@@ -27,6 +27,9 @@ struct Uploaded {
     code_scale: f32,
     chroma: (u32, u32),
     last_used: u64,
+    /// The uploaded pixel buffers, kept alive while cached: the cache key is the buffer address,
+    /// and a freed buffer's address can be reused by a different frame (stale texture).
+    _pixels: PixelData,
 }
 
 pub struct GpuCompositor {
@@ -245,12 +248,12 @@ impl GpuCompositor {
         let up = match &f.data {
             PixelData::Rgba8(d) => {
                 let v = self.plane_texture(w, h, wgpu::TextureFormat::Rgba8UnormSrgb, d, 4);
-                Uploaded { views: [v, dummy(), dummy()], kind: 0, code_scale: 1.0, chroma: (w, h), last_used: self.clock }
+                Uploaded { views: [v, dummy(), dummy()], kind: 0, code_scale: 1.0, chroma: (w, h), last_used: self.clock, _pixels: f.data.clone() }
             }
             PixelData::RgbaF32(d) => {
                 let half: Vec<u8> = d.iter().flat_map(|v| f32_to_f16(*v).to_le_bytes()).collect();
                 let v = self.plane_texture(w, h, wgpu::TextureFormat::Rgba16Float, &half, 8);
-                Uploaded { views: [v, dummy(), dummy()], kind: 1, code_scale: 1.0, chroma: (w, h), last_used: self.clock }
+                Uploaded { views: [v, dummy(), dummy()], kind: 1, code_scale: 1.0, chroma: (w, h), last_used: self.clock, _pixels: f.data.clone() }
             }
             PixelData::Yuv8 { planes, chroma, .. } => {
                 let (sx, sy) = chroma.shifts();
@@ -258,7 +261,7 @@ impl GpuCompositor {
                 let y = self.plane_texture(w, h, wgpu::TextureFormat::R8Unorm, &planes[0], 1);
                 let u = self.plane_texture(cw, ch, wgpu::TextureFormat::R8Unorm, &planes[1], 1);
                 let v = self.plane_texture(cw, ch, wgpu::TextureFormat::R8Unorm, &planes[2], 1);
-                Uploaded { views: [y, u, v], kind: 2, code_scale: 255.0, chroma: (cw, ch), last_used: self.clock }
+                Uploaded { views: [y, u, v], kind: 2, code_scale: 255.0, chroma: (cw, ch), last_used: self.clock, _pixels: f.data.clone() }
             }
             PixelData::Yuv16 { planes, chroma, bits, .. } => {
                 let (sx, sy) = chroma.shifts();
@@ -270,7 +273,7 @@ impl GpuCompositor {
                 let u = self.plane_texture(cw, ch, wgpu::TextureFormat::R16Float, &pu, 2);
                 let v = self.plane_texture(cw, ch, wgpu::TextureFormat::R16Float, &pv, 2);
                 let _ = Chroma::C420;
-                Uploaded { views: [y, u, v], kind: 2, code_scale: scale, chroma: (cw, ch), last_used: self.clock }
+                Uploaded { views: [y, u, v], kind: 2, code_scale: scale, chroma: (cw, ch), last_used: self.clock, _pixels: f.data.clone() }
             }
         };
         self.uploads.insert(key, up);

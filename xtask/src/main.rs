@@ -1,10 +1,13 @@
 //! Workspace automation: `cargo xtask <layers|wasm|ci>`.
 //!
-//! - `layers`: enforces the dependency layering of `plan/architecture.md` §3 (downward-only edges,
+//! - `layers`: enforces the dependency layering of `docs/architecture.md` §1 (downward-only edges,
 //!   listed same-layer edges, L0 codec crates depend on `bitstream` only, no UI/OS crates below L5).
 //! - `wasm`: `cargo check --target wasm32-unknown-unknown` for every crate in L0–L4.
 //! - `assets`: every asset file (image, icon, font, LUT, audio, video…) has a complete
 //!   `<file>.attribution` sidecar and an entry in `ATTRIBUTION.md` (AGENTS.md §1).
+//! - `fixtures [crate…]`: pre-generate the ffmpeg fixture matrix of the oracle tests (runs each
+//!   crate's ignored `generate_fixtures` test, i.e. the same generators the tests use) and print
+//!   what was made, reused or skipped.
 //! - `ci`: fmt check, clippy -D warnings, tests, layers, assets, wasm.
 
 use std::process::{Command, ExitCode};
@@ -13,6 +16,7 @@ use serde_json::Value;
 
 /// (crate name without the `filmcraft-` prefix, layer).
 const LAYERS: &[(&str, u8)] = &[
+    ("testkit", 0),
     ("time", 0),
     ("geom", 0),
     ("color", 0),
@@ -28,6 +32,7 @@ const LAYERS: &[(&str, u8)] = &[
     ("mjpeg", 0),
     ("dnx", 0),
     ("aac", 0),
+    ("opus", 0),
     ("frame", 1),
     ("media", 1),
     ("project", 1),
@@ -42,6 +47,7 @@ const LAYERS: &[(&str, u8)] = &[
     ("interchange", 2),
     ("render", 3),
     ("gpu", 3),
+    ("golden", 3),
     ("scopes", 3),
     ("playback", 3),
     ("export", 3),
@@ -55,7 +61,7 @@ const LAYERS: &[(&str, u8)] = &[
 ];
 
 /// L0 crates that are not codecs/containers (no `bitstream`-only restriction).
-const L0_FOUNDATION: &[&str] = &["time", "geom", "color", "bitstream"];
+const L0_FOUNDATION: &[&str] = &["time", "geom", "color", "bitstream", "testkit"];
 
 /// Allowed same-layer edges (from, to).
 const SAME_LAYER: &[(&str, &str)] = &[
@@ -115,7 +121,7 @@ fn layers() -> Result<(), String> {
     let mut errors = Vec::new();
     for (name, deps) in workspace_crates(&md) {
         let Some(l) = layer_of(&name) else {
-            errors.push(format!("{name}: not assigned a layer (add it to xtask LAYERS and plan/architecture.md §3)"));
+            errors.push(format!("{name}: not assigned a layer (add it to xtask LAYERS and docs/architecture.md §1)"));
             continue;
         };
         for d in &deps {
@@ -236,6 +242,47 @@ fn wasm() -> Result<(), String> {
     Ok(())
 }
 
+/// (crate, test target) whose ignored `generate_fixtures` test builds that crate's fixture matrix.
+const FIXTURE_GENERATORS: &[(&str, &str)] =
+    &[("h264", "conformance"), ("hevc", "conformance"), ("isobmff", "oracle_demux"), ("matroska", "oracle"), ("prores", "oracle_decode")];
+
+fn fixtures(only: &[String]) -> Result<(), String> {
+    let unknown: Vec<&String> = only.iter().filter(|o| !FIXTURE_GENERATORS.iter().any(|(c, _)| *c == short(o))).collect();
+    if !unknown.is_empty() {
+        let known: Vec<&str> = FIXTURE_GENERATORS.iter().map(|(c, _)| *c).collect();
+        return Err(format!("no fixture generator for {unknown:?} (known: {})", known.join(", ")));
+    }
+    let Some(ff) = filmcraft_testkit::ffmpeg() else {
+        return Err("ffmpeg not found: set FILMCRAFT_FFMPEG=/path/to/ffmpeg or put ffmpeg on PATH".into());
+    };
+    println!("ffmpeg:   {}", ff.display());
+    println!("fixtures: {}", filmcraft_testkit::fixtures::fixtures_root().display());
+    let (mut made, mut cached, mut skipped) = (0, 0, 0);
+    let mut failed = Vec::new();
+    for (krate, target) in FIXTURE_GENERATORS.iter().filter(|(c, _)| only.is_empty() || only.iter().any(|o| short(o) == *c)) {
+        let pkg = format!("filmcraft-{krate}");
+        println!("\n== {pkg} ({target})");
+        let mut cmd = Command::new(env!("CARGO"));
+        cmd.args(["test", "--release", "-p", &pkg, "--test", target, "--", "--ignored", "--exact", "generate_fixtures", "--nocapture"]);
+        cmd.stderr(std::process::Stdio::inherit());
+        let out = cmd.output().map_err(|e| e.to_string())?;
+        for line in String::from_utf8_lossy(&out.stdout).lines() {
+            let Some(rest) = line.strip_prefix("FIXTURE ") else { continue };
+            match rest.split_whitespace().next() {
+                Some("made") => made += 1,
+                Some("cached") => cached += 1,
+                _ => skipped += 1,
+            }
+            println!("  {rest}");
+        }
+        if !out.status.success() {
+            failed.push(pkg);
+        }
+    }
+    println!("\nfixtures: {made} made, {cached} already present, {skipped} skipped");
+    if failed.is_empty() { Ok(()) } else { Err(format!("fixture generation failed in {}", failed.join(", "))) }
+}
+
 fn ci() -> Result<(), String> {
     let cargo = env!("CARGO");
     run(Command::new(cargo).args(["fmt", "--check"]))?;
@@ -252,8 +299,9 @@ fn main() -> ExitCode {
         "layers" => layers(),
         "wasm" => wasm(),
         "assets" => assets(),
+        "fixtures" => fixtures(&std::env::args().skip(2).collect::<Vec<_>>()),
         "ci" => ci(),
-        _ => Err("usage: cargo xtask <layers|assets|wasm|ci>".into()),
+        _ => Err("usage: cargo xtask <layers|assets|wasm|fixtures [crate…]|ci>".into()),
     };
     match r {
         Ok(()) => ExitCode::SUCCESS,

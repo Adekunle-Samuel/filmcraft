@@ -73,6 +73,12 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                 ui.label(v);
             });
         }
+        if !q.caption_tracks.is_empty() {
+            sui.add_space(6.0);
+            sui.label(egui::RichText::new("Captions").color(t.text_dim));
+            let r = sui.checkbox(&mut app.ui.export_burn_captions, "Burn Captions Into Video");
+            app.auto.add("export.burnCaptions", r.rect, "Burn Captions Into Video");
+        }
         sui.add_space(12.0);
         // jobs
         let jobs: Vec<serde_json::Value> = app.session.jobs.iter().rev().take(4).map(|j| j.to_json()).collect();
@@ -97,7 +103,10 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         ui.painter().text(b.center(), Align2::CENTER_CENTER, "Export", Tokens::semibold(13.0), Color32::WHITE);
         app.auto.add("export.button", b, "Export");
         if resp.clicked() {
-            let r = app.session.execute("file.exportMedia", serde_json::json!({"path": expand_home(&app.ui.export_path), "format": app.ui.export_format}));
+            let r = app.session.execute(
+                "file.exportMedia",
+                serde_json::json!({"path": expand_home(&app.ui.export_path), "format": app.ui.export_format, "burnCaptions": app.ui.export_burn_captions}),
+            );
             if let Err(e) = r {
                 app.ui.status = e.to_string();
             }

@@ -341,3 +341,126 @@ fn mkv_vp9_rgb() {
         assert!((*got as i32 - want as i32).abs() <= 2, "{c:?}");
     }
 }
+
+/// ffmpeg + libopus decode of a container fixture (pre-skip / codec delay / edit list applied) as
+/// interleaved f32 at 48 kHz: the reference for our Opus path.
+fn opus_reference(name: &str) -> Option<Vec<f32>> {
+    let ff = ffmpeg()?;
+    let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/fixtures/codecs");
+    let out = dir.join(format!("{name}.ref.f32"));
+    let st = Command::new(ff)
+        .args(["-y", "-v", "error", "-c:a", "libopus", "-i"])
+        .arg(dir.join(name))
+        .args(["-f", "f32le", "-ar", "48000"])
+        .arg(&out)
+        .status()
+        .ok()?;
+    if !st.success() {
+        return None;
+    }
+    Some(std::fs::read(out).ok()?.chunks_exact(4).map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]])).collect())
+}
+
+fn snr_db(reference: &[f32], test: &[f32]) -> f64 {
+    let (mut s, mut e) = (0f64, 0f64);
+    for (r, t) in reference.iter().zip(test) {
+        s += (*r as f64).powi(2);
+        e += (*r as f64 - *t as f64).powi(2);
+    }
+    if e == 0.0 { 200.0 } else { 10.0 * (s.max(1e-20) / e).log10() }
+}
+
+/// Interleaves `frames` of `src.audio` from `start` (48 kHz).
+fn read_interleaved(src: &filmcraft_media::SharedSource, start: i64, frames: usize) -> Vec<f32> {
+    let a = src.audio(start, frames, 48_000).expect("audio");
+    let ch = a.channels.len();
+    let mut v = vec![0f32; frames * ch];
+    for (c, chan) in a.channels.iter().enumerate() {
+        for (i, s) in chan.iter().enumerate() {
+            v[i * ch + c] = *s;
+        }
+    }
+    v
+}
+
+/// Opus in a container: metadata, sample-exact alignment (pre-skip honoured) against libopus for a
+/// sequential read, and the same samples after random access (pre-roll).
+fn check_opus(name: &str, channels: usize, expr: &str, extra: &[&str], container: &str) {
+    let mut args: Vec<&str> = vec!["-f", "lavfi", "-i", expr, "-t", "3", "-c:a", "libopus"];
+    args.extend_from_slice(extra);
+    let Some(b) = fixture(name, &args) else { return };
+    let Some(reference) = opus_reference(name) else {
+        eprintln!("libopus decoder unavailable; skipping {name}");
+        return;
+    };
+    let src = crate::open_bytes(name, b).expect("open");
+    let info = src.info().clone();
+    assert_eq!(info.container, container);
+    let a = info.audio.as_ref().expect("audio");
+    assert_eq!((a.codec.as_str(), a.sample_rate, a.channels as usize), ("Opus", 48_000, channels));
+    let d = info.duration.seconds();
+    assert!((d - 3.0).abs() < 0.03, "{name}: duration {d}");
+    let total = reference.len() / channels;
+    assert!((total as i64 - 144_000).abs() < 960, "{name}: reference length {total}");
+
+    // Sequential read in 100 ms blocks.
+    let mut ours = Vec::with_capacity(reference.len());
+    let mut pos = 0;
+    while pos < total {
+        let n = 4800.min(total - pos);
+        ours.extend(read_interleaved(&src, pos as i64, n));
+        pos += n;
+    }
+    let snr = snr_db(&reference, &ours);
+    eprintln!("{name}: sequential SNR vs libopus {snr:.1} dB");
+    assert!(snr > 40.0, "{name}: sequential SNR {snr:.1} dB");
+
+    // Random access on a fresh source (cold decoder): 100 ms at 1.7 s, then back to 0.5 s.
+    let src = crate::open_bytes(name, fixture(name, &args).expect("fixture")).expect("open");
+    for start in [81_600usize, 24_000] {
+        let got = read_interleaved(&src, start as i64, 4800);
+        let want = &reference[start * channels..(start + 4800) * channels];
+        let snr = snr_db(want, &got);
+        eprintln!("{name}: random access at {start}: SNR {snr:.1} dB");
+        assert!(snr > 40.0, "{name}: random access at {start}: SNR {snr:.1} dB");
+    }
+}
+
+#[test]
+fn opus_webm_stereo() {
+    check_opus(
+        "tones_opus.webm",
+        2,
+        "aevalsrc=0.4*sin(2*PI*440*t)+0.1*sin(2*PI*5000*t)|0.3*sin(2*PI*660*t)+0.1*sin(2*PI*3100*t):s=48000",
+        &["-b:a", "128k"],
+        "WebM",
+    );
+}
+
+#[test]
+fn opus_mkv_mono_speechlike_16k() {
+    // Low bitrate VoIP mode exercises SILK/hybrid; the input rate is 16 kHz but Opus still outputs 48 kHz.
+    check_opus("tones_opus_voip.mkv", 1, "aevalsrc=0.4*sin(2*PI*220*t)*(0.6+0.4*sin(2*PI*3*t)):s=16000", &["-b:a", "16k", "-application", "voip"], "Matroska");
+}
+
+#[test]
+fn opus_mkv_surround_51() {
+    check_opus(
+        "tones_opus_51.mkv",
+        6,
+        "aevalsrc=0.3*sin(2*PI*300*t)|0.3*sin(2*PI*400*t)|0.3*sin(2*PI*500*t)|0.3*sin(2*PI*60*t)|0.3*sin(2*PI*700*t)|0.3*sin(2*PI*800*t):s=48000:c=5.1",
+        &["-b:a", "256k"],
+        "Matroska",
+    );
+}
+
+#[test]
+fn opus_mp4_stereo() {
+    check_opus(
+        "tones_opus.mp4",
+        2,
+        "aevalsrc=0.4*sin(2*PI*440*t)+0.1*sin(2*PI*5000*t)|0.3*sin(2*PI*660*t)+0.1*sin(2*PI*3100*t):s=48000",
+        &["-b:a", "128k"],
+        "MPEG-4",
+    );
+}

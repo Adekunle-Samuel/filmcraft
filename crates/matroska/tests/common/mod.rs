@@ -6,32 +6,13 @@ use serde_json::Value;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
-pub fn tool(name: &str) -> Option<PathBuf> {
-    for dir in ["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin"] {
-        let p = Path::new(dir).join(name);
-        if p.exists() {
-            return Some(p);
-        }
-    }
-    let ok = Command::new(name).arg("-version").output().map(|o| o.status.success()).unwrap_or(false);
-    ok.then(|| PathBuf::from(name))
-}
-
-/// (ffmpeg, ffprobe), or `None` (test skipped) if either is missing.
+/// (ffmpeg, ffprobe), or `None` after printing `SKIPPED` (see `filmcraft_testkit::oracle`).
 pub fn tools() -> Option<(PathBuf, PathBuf)> {
-    match (tool("ffmpeg"), tool("ffprobe")) {
-        (Some(a), Some(b)) => Some((a, b)),
-        _ => {
-            eprintln!("ffmpeg/ffprobe not found; skipping oracle test");
-            None
-        }
-    }
+    Some((filmcraft_testkit::ffmpeg_or_skip("matroska oracle")?, filmcraft_testkit::ffprobe_or_skip("matroska oracle")?))
 }
 
 pub fn fixture_dir() -> PathBuf {
-    let d = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/fixtures/matroska");
-    std::fs::create_dir_all(&d).unwrap();
-    d
+    filmcraft_testkit::fixtures_dir("matroska")
 }
 
 const V: &[&str] = &["-f", "lavfi", "-i", "testsrc2=size=160x120:rate=25"];
@@ -43,6 +24,22 @@ fn write_subs(dir: &Path) {
     let vtt = "WEBVTT\n\n00:00:00.200 --> 00:00:00.900\nHello\n\n00:00:01.000 --> 00:00:01.500\nWorld\n\n";
     std::fs::write(dir.join("in.vtt"), vtt).unwrap();
 }
+
+/// Every fixture `spec`/`fixture` knows (for `cargo xtask fixtures`).
+pub const ALL_FIXTURES: &[&str] = &[
+    "h264_aac.mkv",
+    "vp9_opus.webm",
+    "flac.mkv",
+    "vorbis.mkv",
+    "subs.mkv",
+    "webvtt.webm",
+    "cues_front.mkv",
+    "hevc_hdr.mkv",
+    "prores_pcm.mkv",
+    "mjpeg_ac3.mkv",
+    "av1.mkv",
+    "live.mkv",
+];
 
 /// Fixture name → ffmpeg arguments (after `-y -v error`, before the output path).
 /// `None` for fixtures written through a pipe (no Cues, unknown sizes).
@@ -93,8 +90,7 @@ pub fn fixture(ffmpeg: &Path, name: &str) -> Option<PathBuf> {
         return Some(out);
     }
     write_subs(&dir);
-    let tid = format!("{:?}", std::thread::current().id()).replace(|c: char| !c.is_ascii_alphanumeric(), "");
-    let tmp = dir.join(format!("{name}.{}.{tid}.tmp", std::process::id()));
+    let tmp = filmcraft_testkit::temp_path(&out);
     let ok = match spec(name) {
         Some(args) => {
             let mut c = Command::new(ffmpeg);

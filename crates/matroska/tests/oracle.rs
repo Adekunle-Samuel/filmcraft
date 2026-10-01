@@ -360,3 +360,14 @@ fn not_matroska() {
     assert!(matches!(open(&ebml[..]), Err(Error::NotMatroska(_))));
     let _ = Value::Null;
 }
+
+/// Pre-generate every fixture (`cargo xtask fixtures`).
+#[test]
+#[ignore]
+fn generate_fixtures() {
+    let Some((ffmpeg, _)) = tools() else { return };
+    for name in ALL_FIXTURES {
+        let out = [fixture_dir().join(name)];
+        filmcraft_testkit::fixtures::generate_and_report(&format!("matroska/{name}"), &out, || fixture(&ffmpeg, name));
+    }
+}

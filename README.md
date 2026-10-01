@@ -103,7 +103,7 @@ FilmCraft is a non-linear editor for people who know Premiere: the same panels, 
 
 ## Formats and codecs
 
-No FFmpeg inside. The video codecs, AAC and the containers are our own Rust code, implemented from the public ITU-T, ISO and IETF specifications and tested frame by frame against ffmpeg as an external oracle.
+No FFmpeg inside. The video codecs, AAC, Opus and the containers are our own Rust code, implemented from the public ITU-T, ISO and IETF specifications and tested frame by frame against ffmpeg as an external oracle.
 
 | | Decode | Encode | Notes |
 |---|:---:|:---:|---|
@@ -111,13 +111,14 @@ No FFmpeg inside. The video codecs, AAC and the containers are our own Rust code
 | **HEVC / H.265** | ✓ | | Main and Main 10, bit-exact on 41 streams (tiles, WPP, PCM, long-term references), about 225 fps at 1080p |
 | **Apple ProRes** | ✓ | ✓ | Decodes 422 Proxy to 4444 XQ; export writes 422 HQ |
 | **AAC-LC** | ✓ | ✓ | |
+| **Opus** | ✓ | | SILK, CELT, hybrid and multistream surround; range-exact on every RFC 8251 conformance vector; in WebM/Matroska and MP4 |
 | **MJPEG, PCM** | ✓ | ✓ | |
 | **MP3, FLAC, ALAC, Vorbis** | ✓ | | Via the [symphonia](https://github.com/pdeljanov/Symphonia) crate (MPL-2.0) for now, to be replaced by our own |
 | **MP4 / MOV** | ✓ | ✓ | Fragmented MP4, edit lists, timecode tracks |
 | **Matroska / WebM** | ✓ | | Lacing, Cues, header stripping, HDR colour metadata |
 | **Stills** | ✓ | ✓ | Import PNG, JPEG, GIF, WebP, TIFF and BMP; export PNG sequences and animated GIF |
 
-VP9, Opus, AV1, DNxHR and MXF are next ([roadmap](ROADMAP.md)).
+VP9, AV1, DNxHR and MXF are next ([roadmap](ROADMAP.md)).
 
 <br>
 
@@ -182,6 +183,18 @@ cargo run --release -p filmcraft-cli -- mcp                # MCP server (headles
 
 The control protocol is documented in [docs/control-protocol.md](docs/control-protocol.md).
 
+## Documentation
+
+| | |
+|---|---|
+| [CONTRIBUTING.md](CONTRIBUTING.md) · [docs/contributing.md](docs/contributing.md) | Setup, quality gates, commit conventions, how to add commands, effects, codecs, panels and assets |
+| [AGENTS.md](AGENTS.md) | The rules every contributor must follow: assets, clean room, licences |
+| [docs/architecture.md](docs/architecture.md) | Layers, data model, time base, command system, render and export pipeline |
+| [docs/testing.md](docs/testing.md) | Unit, property and ffmpeg-oracle tests, accuracy criteria, benchmarks |
+| [docs/agents.md](docs/agents.md) | Driving FilmCraft over MCP and the control channel; how agents develop it |
+| [docs/control-protocol.md](docs/control-protocol.md) | Control-channel and MCP reference |
+| [ROADMAP.md](ROADMAP.md) | Milestones and estimates |
+
 ## Status
 
 FilmCraft is young and moving fast: roughly 30% of the way to Premiere Pro parity, with editing, colour, keyframes, codecs and export working today. [ROADMAP.md](ROADMAP.md) tracks every milestone with estimates.
@@ -233,3 +246,7 @@ Open-source, clean-room, pure-Rust creative tools. Each runs natively on macOS, 
 **Footage and music in the screenshots:** *Night of the Living Dead* (1968), *Carnival of Souls* (1962) and *Charade* (1963), all in the US public domain; *Earth Views from the ISS* by NASA (a US Government work; NASA does not endorse this project); Chopin's Nocturne Op. 48 No. 1 and Ballade No. 1, performed for Musopen and released under CC0. The media itself is not in this repository. Sources and details for every asset are in [ATTRIBUTION.md](ATTRIBUTION.md).
 
 FilmCraft is an independent implementation. It contains no Adobe code, icons, images, presets or LUTs, and no GPL or LGPL code; every icon is drawn in code and every asset is openly licensed and attributed ([AGENTS.md](AGENTS.md)). ffmpeg is used only as an external test oracle. Adobe and Premiere Pro are trademarks of Adobe Inc.; FilmCraft is not affiliated with Adobe.
+
+## License
+
+FilmCraft is dual-licensed under [MIT](LICENSE-MIT) or [Apache-2.0](LICENSE-APACHE), at your option. Bundled assets keep their own open licences, listed in [ATTRIBUTION.md](ATTRIBUTION.md).
