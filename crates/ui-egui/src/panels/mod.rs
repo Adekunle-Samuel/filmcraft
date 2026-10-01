@@ -17,6 +17,7 @@ pub mod meters;
 pub mod misc;
 pub mod mixer;
 pub mod monitor;
+pub mod presets;
 pub mod project;
 pub mod shortcuts_dialog;
 pub mod text;
@@ -106,7 +107,10 @@ pub fn drag_ghost(app: &FilmcraftApp, ui: &egui::Ui) {
     if let Some(p) = ctx.pointer_hover_pos() {
         let label = match &pl {
             DragPayload::Item(i) => app.session.project.item(*i).map(|x| x.name.clone()).unwrap_or_default(),
-            DragPayload::Effect(e) => filmcraft_project::find_effect(e).map(|d| d.name.to_string()).unwrap_or_default(),
+            DragPayload::Effect(e) => match e.strip_prefix("preset:") {
+                Some(name) => name.to_string(),
+                None => filmcraft_project::find_effect(e).map(|d| d.name.to_string()).unwrap_or_default(),
+            },
         };
         let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Tooltip, egui::Id::new("drag-ghost")));
         let r = Rect::from_min_size(p + egui::vec2(12.0, 8.0), egui::vec2(label.len() as f32 * 7.0 + 16.0, 20.0));

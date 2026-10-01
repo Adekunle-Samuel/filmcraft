@@ -1583,7 +1583,9 @@ fn interact(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, layout: &
             if ctx.input(|i| i.pointer.any_released()) {
                 let is_transition = filmcraft_project::find_effect(&effect)
                     .is_some_and(|d| matches!(d.kind, filmcraft_project::EffectKind::VideoTransition | filmcraft_project::EffectKind::AudioTransition));
-                let r = if is_transition {
+                let r = if let Some(name) = effect.strip_prefix("preset:") {
+                    app.session.execute("presets.apply", json!({"preset": name, "clips": [clip.0]}))
+                } else if is_transition {
                     let edge = if p.x - layout.x_of(it.start) < layout.x_of(it.end()) - p.x { "in" } else { "out" };
                     app.session.execute("effects.apply", json!({"effect": effect, "clip": clip.0, "edge": edge}))
                 } else {

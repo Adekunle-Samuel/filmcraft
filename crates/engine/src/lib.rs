@@ -19,6 +19,7 @@ pub mod interchange;
 pub mod masks;
 pub mod media_pool;
 pub mod mixer;
+pub mod presets;
 pub mod previews;
 pub mod project_manager;
 pub mod proxies;
@@ -219,6 +220,8 @@ pub struct Session {
     pub media_jobs: Vec<proxies::PendingJob>,
     /// Mask tracking jobs whose keyframes are still being written.
     pub mask_jobs: Vec<masks::PendingTrack>,
+    /// Effect presets (built-in + the user's, persisted in the data directory).
+    pub presets: presets::PresetLibrary,
     /// Nesting depth of [`Session::execute`] (commands that run other commands).
     exec_depth: u32,
 }
@@ -286,6 +289,7 @@ impl Session {
             offline: Default::default(),
             media_jobs: Vec::new(),
             mask_jobs: Vec::new(),
+            presets: Default::default(),
             exec_depth: 0,
         }
     }
@@ -298,6 +302,7 @@ impl Session {
         self.prefs = autosave::Preferences::load(&prefs_path);
         self.media.set_use_proxies(self.prefs.media.enable_proxies);
         self.shortcuts.set_dir(&cfg.data_dir);
+        self.presets.set_dir(&cfg.data_dir);
         self.prefs_path = Some(prefs_path);
         self.persistence = Some(autosave::Persistence::start(&cfg, self.prefs.auto_save.clone())?);
         self.sync_persistence();
@@ -641,6 +646,8 @@ mod masks_tests;
 mod media_test_util;
 #[cfg(test)]
 mod mixer_tests;
+#[cfg(test)]
+mod presets_tests;
 #[cfg(test)]
 mod previews_tests;
 #[cfg(test)]

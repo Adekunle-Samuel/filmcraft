@@ -23,8 +23,16 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     // folder tree: top-level categories in Premiere's order
     let tops = ["Presets", "Lumetri Presets", "Audio Effects", "Audio Transitions", "Video Effects", "Video Transitions"];
     let mut apply: Option<String> = None;
+    let mut preset_action: Option<(String, String)> = None;
     egui::ScrollArea::vertical().id_salt("fx-scroll").auto_shrink([false, false]).show(&mut bui, |ui| {
         for top in tops {
+            if top == "Presets" {
+                let any = filter.is_empty() || app.session.presets.all().iter().any(|p| p.name.to_ascii_lowercase().contains(&filter));
+                if any && folder_row(app, ui, top, 0, &filter) {
+                    preset_action = crate::panels::presets::folder_rows(app, ui, &filter).or(preset_action.take());
+                }
+                continue;
+            }
             let items: Vec<_> = defs
                 .iter()
                 .filter(|d| d.category.first() == Some(&top))
@@ -85,6 +93,9 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
             }
         }
     });
+    if let Some((cmd, name)) = preset_action {
+        crate::panels::presets::run(app, &cmd, &name);
+    }
     if let Some(id) = apply {
         let r = app.session.execute("effects.apply", json!({"effect": id}));
         if let Err(e) = r {

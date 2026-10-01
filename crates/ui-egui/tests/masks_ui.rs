@@ -1,6 +1,6 @@
 //! Effect masks in the UI, driven headless through the control channel: create masks from the
 //! Effect Controls mask icons, edit them on the Program monitor (vertex, Bézier handle, feather,
-//! whole-mask drags), draw a pen mask, toggle Inverted.
+//! whole-mask drags), draw a pen mask, toggle Inverted, track a mask; apply and save effect presets.
 //!
 //! With `FILMCRAFT_UI_SHOTS=<dir>` the test also renders the UI with wgpu and writes PNGs there.
 
@@ -214,4 +214,51 @@ fn create_and_edit_masks_on_the_monitor() {
     let pen = m.iter().find(|x| x["effectId"] == "opacity").unwrap();
     assert_eq!(pen["pathKeyframes"].as_array().unwrap().len(), 2, "{pen}");
     d.shot("mask-tracked");
+}
+
+#[test]
+fn presets_bin_drag_and_save_dialog() {
+    let mut d = Driver::demo();
+    d.ok("ui.set", json!({"workspace": "Effects"}));
+    let seq = d.exec("sequence.inspect", json!({}));
+    let clip = &seq["video"][0]["items"][0];
+    let (id, start, dur) = (clip["clip"].as_u64().unwrap(), clip["start"].as_i64().unwrap(), clip["duration"].as_i64().unwrap());
+    d.exec("playhead.set", json!({"time": start + dur / 2}));
+    d.exec("timeline.select", json!({"clips": [id]}));
+    // Presets bin: open the folder, double-click a built-in preset
+    d.ok("ui.click", json!({"id": "effects.folder.Presets"}));
+    d.frames(2);
+    d.rect("effects.preset.Soft Vignette");
+    // drag the preset onto the clip in the timeline
+    let (fx0, fy0) = d.center("effects.preset.Soft Vignette");
+    let (cx, cy) = d.center(&format!("timeline.clip.{id}"));
+    d.ok("ui.drag", json!({"from": {"x": fx0, "y": fy0}, "to": {"x": cx, "y": cy}, "steps": 10}));
+    d.frames(3);
+    let seq = d.exec("sequence.inspect", json!({}));
+    let fx = seq["video"][0]["items"][0]["effects"].as_array().unwrap().clone();
+    let bc = fx.iter().find(|e| e["effect"] == "brightness_contrast").unwrap_or_else(|| panic!("{fx:?}"));
+    assert_eq!(bc["masks"], 1);
+    d.shot("presets-bin");
+    // Save Preset dialog from the effect's context menu (opened through the command-equivalent UI state)
+    for fx in ["motion", "opacity", "time_remap"] {
+        d.ok("ui.click", json!({"id": format!("effectControls.effect.{fx}")}));
+        d.frames(2);
+    }
+    d.ok("ui.click", json!({"id": "effectControls.effect.brightness_contrast", "button": "right"}));
+    d.frames(2);
+    d.ok("ui.click", json!({"id": "effectControls.effect.brightness_contrast.savePreset"}));
+    d.frames(2);
+    d.rect("savePreset.name");
+    d.ok("ui.click", json!({"id": "savePreset.name"}));
+    d.ok("ui.key", json!({"key": "Cmd+A"}));
+    d.ok("ui.type", json!({"text": "My Vignette"}));
+    d.ok("ui.click", json!({"id": "savePreset.keyframes.anchorIn"}));
+    d.shot("save-preset-dialog");
+    d.ok("ui.click", json!({"id": "savePreset.ok"}));
+    d.frames(3);
+    let l = d.exec("presets.list", json!({}));
+    let mine = l["presets"].as_array().unwrap().iter().find(|p| p["name"] == "My Vignette").cloned().expect("saved");
+    assert_eq!(mine["keyframes"], "Anchor to In Point");
+    assert_eq!(mine["masks"], 1);
+    d.rect("effects.preset.My Vignette");
 }

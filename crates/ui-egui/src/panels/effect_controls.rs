@@ -121,12 +121,23 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                     app.ui.collapsed_fx.retain(|k| *k != key);
                 }
             }
+            let mut save_preset = false;
+            let fx_id = e.effect.clone();
             resp.context_menu(|ui| {
+                let sp = ui.button("Save Preset…");
+                app.auto.add(&format!("effectControls.effect.{fx_id}.savePreset"), sp.rect, "Save Preset…");
+                if sp.clicked() {
+                    save_preset = true;
+                    ui.close();
+                }
                 if !def.intrinsic && ui.button("Clear").clicked() {
                     actions.push(("effects.remove".into(), json!({"clip": clip.0, "index": idx})));
                     ui.close();
                 }
             });
+            if save_preset {
+                crate::panels::presets::open_save(app, clip.0, vec![idx], def.name);
+            }
             if !open {
                 continue;
             }

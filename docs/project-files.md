@@ -322,3 +322,27 @@ new paths and fingerprints, so it opens with no missing media.
 Dialog ids: `pm.seq.<id>`, `pm.mode.<collect|consolidate>`, `pm.preset.<id>`, `pm.excludeUnused`,
 `pm.handles`, `pm.includeProxies`, `pm.includePreviews`, `pm.destination`, `pm.browse`,
 `pm.calculate`, `pm.sizes`, `pm.ok`, `pm.cancel`.
+
+## Effect presets
+
+Effect presets (Effects panel ▸ Presets; Effect Controls ▸ right-click an effect ▸ Save Preset…) are
+not part of the project. Built-in presets are defined in code (`filmcraft_engine::presets`); user
+presets live in `<data dir>/effect-presets.json`, and `presets.export` / `presets.import` read and
+write the same JSON format:
+
+```json
+{"format": "filmcraft.effect-presets", "version": 1, "presets": [
+  {"name": "My Vignette", "description": "", "keyframes": "AnchorToIn",
+   "source_duration": 2540160000000, "source_size": [1920, 1080],
+   "effects": [ /* EffectInstance, exactly as in .fcproj: effect, enabled, params, masks */ ]}
+]}
+```
+
+Keyframe times are relative to the in point of the clip the preset was saved from
+(`source_duration` is that clip's media length in ticks). Applying re-times them: `Scale` stretches
+them over the target clip, `AnchorToIn` / `AnchorToOut` keep their distance from the target's in /
+out point. Point parameters, mask paths, feather and expansion are scaled by the target / source
+frame-size ratio. Intrinsic effects (Motion, Opacity…) replace the clip's own instance; other
+effects are added. Applying is one undo step; saving, renaming, deleting and importing change the
+library, not the project, and are not undoable. Files with another `format`, a newer `version` or
+unknown effect ids are refused.
