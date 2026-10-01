@@ -283,6 +283,21 @@ pub struct UiState {
     /// Audio Track Mixer: effects and sends section expanded.
     #[serde(default)]
     pub mixer_fx_open: bool,
+    /// Audio Gain dialog draft (mode, dB values).
+    #[serde(default)]
+    pub audio_gain: AudioGainDraft,
+}
+
+/// The Audio Gain dialog (Clip ▸ Audio Gain…, G).
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AudioGainDraft {
+    /// "set" | "adjust" | "normalizeMax" | "normalizeAll"
+    pub mode: String,
+    pub set_db: f64,
+    pub adjust_db: f64,
+    pub max_peak_db: f64,
+    pub all_peaks_db: f64,
 }
 
 fn captions_tab() -> String {
@@ -322,6 +337,7 @@ impl Default for UiState {
             caption_search: String::new(),
             play_after_render: true,
             mixer_fx_open: false,
+            audio_gain: AudioGainDraft::default(),
         }
     }
 }

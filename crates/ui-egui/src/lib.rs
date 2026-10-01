@@ -63,6 +63,8 @@ pub enum Dialog {
     Recovery,
     /// "Are you sure you want to discard your changes?" (File ▸ Revert).
     RevertConfirm,
+    /// Clip ▸ Audio Gain… (G).
+    AudioGain,
 }
 
 #[derive(Default)]

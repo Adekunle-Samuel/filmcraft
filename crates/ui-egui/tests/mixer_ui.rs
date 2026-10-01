@@ -254,3 +254,24 @@ fn clip_mixer_strips_follow_the_playhead() {
     assert!(level < -8.0, "clip volume lowered from the demo's -8 dB: {level}");
     d.snapshot("mixer-clip-mixer", Some("clipMixer."));
 }
+
+#[test]
+fn audio_gain_dialog_normalizes_the_selection() {
+    let mut d = Driver::demo();
+    let seq = d.exec("sequence.inspect", json!({}));
+    let clip = seq["audio"][0]["items"][0]["clip"].as_u64().unwrap();
+    d.exec("timeline.select", json!({"clips": [clip]}));
+    let r = d.ok("ui.menu.invoke", json!({"id": "clip.audioGain"}));
+    assert_eq!(r["dialog"], "audioGain", "{r}");
+    d.frames(3);
+    let ids = d.ids("audioGain.");
+    for id in ["audioGain.set", "audioGain.adjust", "audioGain.normalizeMax", "audioGain.normalizeAll", "audioGain.ok", "audioGain.peak"] {
+        assert!(ids.iter().any(|i| i == id), "{id} missing: {ids:?}");
+    }
+    d.click("audioGain.normalizeMax");
+    d.snapshot("mixer-audio-gain-dialog", Some("audioGain."));
+    d.click("audioGain.ok");
+    let pk = d.exec("clip.audioPeak", json!({"clips": [clip]}));
+    assert!(pk["peakDb"].as_f64().unwrap().abs() < 1e-6, "normalized to 0 dB: {pk}");
+    assert!(d.ids("audioGain.").is_empty(), "dialog closed");
+}

@@ -876,20 +876,16 @@ fn build() -> Vec<CommandSpec> {
             })?;
             Ok(Value::Null)
         }),
-        cmd!("clip.audioGain", "Audio Gain…", ["Clip"], Some("G"), r#"{"db":f64,"relative":bool}"#, has_selection, |s, p| {
-            let db = f64_p(p, "db").unwrap_or(0.0);
-            let rel = bool_p(p, "relative").unwrap_or(true);
-            let sel = with_links(s, &s.state.selection.clone());
-            s.edit_sequence("Audio Gain", |q, _, _| {
-                for t in q.audio_tracks.iter_mut() {
-                    for i in t.items.iter_mut().filter(|i| sel.contains(&i.id)) {
-                        i.gain_db = if rel { i.gain_db + db } else { db };
-                    }
-                }
-                Ok(())
-            })?;
-            Ok(Value::Null)
-        }),
+        cmd!(
+            "clip.audioGain",
+            "Audio Gain…",
+            ["Clip"],
+            Some("G"),
+            r#"{"mode":"set|adjust|normalizeMax|normalizeAll"?,"db":f64,"relative":bool?}"#,
+            has_selection,
+            |s, p| crate::mixer::audio_gain(s, p)
+        ),
+        query!("clip.audioPeak", "Audio Clip Peak Amplitude", r#"{"clips":[id]?}"#, |s, p| crate::mixer::audio_peak(s, p)),
         cmd!("clip.frameHold", "Add Frame Hold", ["Clip", "Video Options"], None, "{}", has_selection, |s, _| {
             let t = s.playhead();
             let sel = s.state.selection.clone();

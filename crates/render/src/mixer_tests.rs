@@ -432,3 +432,22 @@ fn perf_24_tracks_3_effects_realtime_factor() {
     let min = if cfg!(debug_assertions) { 1.0 } else { 4.0 };
     assert!(rt > min, "realtime factor {rt:.2}");
 }
+
+#[test]
+fn audio_transition_curves() {
+    use crate::transitions::audio_gains;
+    for i in 0..=20 {
+        let p = i as f32 / 20.0;
+        let (a, b) = audio_gains("constant_power", p);
+        assert!(close(a * a + b * b, 1.0, 1e-5), "constant power keeps power at {p}");
+        let (a, b) = audio_gains("constant_gain", p);
+        assert!(close(a + b, 1.0, 1e-6), "constant gain keeps amplitude at {p}");
+        let (a, b) = audio_gains("exponential_fade", p);
+        assert!((0.0..=1.0).contains(&a) && (0.0..=1.0).contains(&b));
+    }
+    for k in ["constant_power", "constant_gain", "exponential_fade"] {
+        assert_eq!(audio_gains(k, 0.0), (1.0, 0.0), "{k} starts on A");
+        let (a, b) = audio_gains(k, 1.0);
+        assert!(a.abs() < 1e-6 && close(b, 1.0, 1e-6), "{k} ends on B");
+    }
+}

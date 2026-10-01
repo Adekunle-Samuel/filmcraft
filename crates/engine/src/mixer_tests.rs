@@ -280,3 +280,47 @@ fn recorded_pass_plays_back_through_the_mix() {
     assert_eq!(s.active_sequence().unwrap().master_volume_at(Tick(sec(1.0))), -6.0);
     assert!(s.active_sequence().unwrap().strip(MASTER_STRIP).is_some());
 }
+
+#[test]
+fn audio_gain_modes_and_peak() {
+    let mut s = demo();
+    let clips: Vec<u64> = a1(&s).items.iter().take(3).map(|i| i.id.0).collect();
+    s.execute("timeline.select", json!({"clips": clips})).unwrap();
+    let pk = s.execute("clip.audioPeak", json!({})).unwrap();
+    let peak = pk["peakDb"].as_f64().unwrap();
+    assert!(peak.is_finite() && peak > -60.0, "{pk}");
+    // adjust (and the old {db, relative} form)
+    s.execute("clip.audioGain", json!({"mode": "adjust", "db": -2.0})).unwrap();
+    assert_eq!(a1(&s).items[0].gain_db, -2.0);
+    s.execute("clip.audioGain", json!({"db": 1.0, "relative": true})).unwrap();
+    assert_eq!(a1(&s).items[0].gain_db, -1.0);
+    s.execute("clip.audioGain", json!({"mode": "set", "db": 3.0})).unwrap();
+    assert!(a1(&s).items.iter().take(3).all(|i| i.gain_db == 3.0));
+    // normalize max peak: the loudest clip lands on the target, the others keep their offsets
+    s.execute("clip.audioGain", json!({"mode": "normalizeMax", "db": -1.0})).unwrap();
+    let pk = s.execute("clip.audioPeak", json!({})).unwrap();
+    assert!((pk["peakDb"].as_f64().unwrap() + 1.0).abs() < 1e-6, "{pk}");
+    let g: Vec<f64> = a1(&s).items.iter().take(3).map(|i| i.gain_db).collect();
+    assert!(g.windows(2).all(|w| (w[0] - w[1]).abs() < 1e-9), "same adjustment for all: {g:?}");
+    // normalize all peaks: every clip on the target
+    s.execute("clip.audioGain", json!({"mode": "normalizeAll", "db": -6.0})).unwrap();
+    let pk = s.execute("clip.audioPeak", json!({})).unwrap();
+    for c in pk["clips"].as_array().unwrap() {
+        let total = c["sourcePeakDb"].as_f64().unwrap() + c["gainDb"].as_f64().unwrap();
+        assert!((total + 6.0).abs() < 1e-6, "{c}");
+    }
+    assert!(s.execute("clip.audioGain", json!({"mode": "loud"})).is_err());
+}
+
+#[test]
+fn default_audio_transition_is_used_by_apply() {
+    let mut s = demo();
+    s.execute("effects.setDefaultTransition", json!({"effect": "Exponential Fade"})).unwrap();
+    assert_eq!(s.state.default_audio_transition, "exponential_fade");
+    assert!(s.execute("effects.setDefaultTransition", json!({"effect": "amplify"})).is_err());
+    let clip = a1(&s).items[1].id.0;
+    s.execute("sequence.applyAudioTransition", json!({"clip": clip})).unwrap();
+    let tr = &a1(&s).transitions;
+    assert_eq!(tr.len(), 1);
+    assert_eq!(tr[0].effect.effect, "exponential_fade");
+}

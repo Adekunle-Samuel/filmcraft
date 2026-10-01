@@ -163,6 +163,15 @@ pub fn invoke(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, params: Val
             app.dialog = Some(crate::Dialog::Preferences);
             return Ok(Value::Null);
         }
+        // Audio Gain from the menu or G opens the dialog; with params it applies directly.
+        "clip.audioGain" if params.as_object().is_none_or(|m| m.is_empty()) => {
+            filmcraft_engine::find_command("clip.audioGain").map_or(Ok(()), |c| (c.enabled)(&app.session))?;
+            if app.ui.audio_gain.mode.is_empty() {
+                app.ui.audio_gain.mode = "adjust".into();
+            }
+            app.dialog = Some(crate::Dialog::AudioGain);
+            return Ok(json!({"dialog": "audioGain"}));
+        }
         // From menus/shortcuts (no params) these ask first; agents pass params to act directly.
         "file.revert" if params.as_object().is_none_or(|m| m.is_empty()) && app.session.is_dirty() => {
             if app.session.path.is_none() {

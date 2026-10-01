@@ -869,6 +869,119 @@ fn clip_set(s: &mut Session, p: &Value) -> Result<Value> {
     Ok(Value::Null)
 }
 
+// ------------------------------------------------------------------------------------- audio gain
+
+/// Peak (dBFS, before clip gain) of each selected audio clip's source range.
+fn clip_peaks(s: &Session, clips: &[filmcraft_project::ClipId]) -> Vec<(filmcraft_project::ClipId, f64)> {
+    let Some(seq) = s.active_sequence() else { return Vec::new() };
+    let sr = seq.settings.sample_rate.max(1);
+    let provider = s.media.provider(s.project.clone(), s.services.clone());
+    let mut out = Vec::new();
+    for t in &seq.audio_tracks {
+        for it in t.items.iter().filter(|i| clips.contains(&i.id)) {
+            let Some(src) = filmcraft_render::SourceProvider::source(&provider, it.item) else { continue };
+            if !src.info().has_audio() {
+                continue;
+            }
+            let s0 = it.source_in.to_units_floor(sr as i64);
+            let len = ((it.duration.to_units_floor(sr as i64) as f64) * it.speed.abs().max(1e-6)).ceil() as i64;
+            let mut peak = 0f32;
+            let mut pos = s0;
+            while pos < s0 + len {
+                let n = (s0 + len - pos).min(sr as i64) as usize;
+                if let Ok(b) = src.audio(pos, n, sr) {
+                    peak = b.peaks().into_iter().fold(peak, f32::max);
+                }
+                pos += n as i64;
+            }
+            out.push((it.id, 20.0 * (peak.max(1e-9) as f64).log10()));
+        }
+    }
+    out
+}
+
+fn gain_targets(s: &Session, p: &Value) -> Vec<filmcraft_project::ClipId> {
+    let sel: Vec<filmcraft_project::ClipId> = match p.get("clips").and_then(Value::as_array) {
+        Some(a) => a.iter().filter_map(|v| v.as_u64().map(filmcraft_project::ClipId)).collect(),
+        None => s.state.selection.clone(),
+    };
+    crate::commands::with_links(s, &sel)
+}
+
+/// `clip.audioPeak`: the peak amplitude of the selection (with its current clip gain), as the Audio
+/// Gain dialog shows it.
+pub fn audio_peak(s: &mut Session, p: &Value) -> Result<Value> {
+    let clips = gain_targets(s, p);
+    let seq = active_seq(s)?;
+    let gain = |c: filmcraft_project::ClipId| seq.find_item(c).map(|(_, i)| i.gain_db).unwrap_or(0.0);
+    let peaks = clip_peaks(s, &clips);
+    let max = peaks.iter().map(|(c, pk)| pk + gain(*c)).fold(f64::NEG_INFINITY, f64::max);
+    Ok(json!({
+        "peakDb": if max.is_finite() { json!(max) } else { Value::Null },
+        "clips": peaks.iter().map(|(c, pk)| json!({"clip": c.0, "sourcePeakDb": pk, "gainDb": gain(*c)})).collect::<Vec<_>>(),
+    }))
+}
+
+/// `clip.audioGain`: Set Gain to / Adjust Gain by / Normalize Max Peak to / Normalize All Peaks to.
+pub fn audio_gain(s: &mut Session, p: &Value) -> Result<Value> {
+    let db = f64_p(p, "db").unwrap_or(0.0);
+    let mode = match str_p(p, "mode") {
+        Some(m) => m.to_string(),
+        None => if bool_p(p, "relative").unwrap_or(true) { "adjust" } else { "set" }.to_string(),
+    };
+    let clips = gain_targets(s, p);
+    let new_gain: Vec<(filmcraft_project::ClipId, f64)> = match mode.as_str() {
+        "set" => clips.iter().map(|c| (*c, db)).collect(),
+        "adjust" => {
+            let seq = active_seq(s)?;
+            clips.iter().filter_map(|c| seq.find_item(*c).map(|(_, i)| (*c, i.gain_db + db))).collect()
+        }
+        "normalizeMax" | "normalizeAll" => {
+            let peaks = clip_peaks(s, &clips);
+            if peaks.is_empty() {
+                return Err(bad("clip.audioGain", "no audio clips with audio in the selection"));
+            }
+            let seq = active_seq(s)?;
+            let gain = |c: filmcraft_project::ClipId| seq.find_item(c).map(|(_, i)| i.gain_db).unwrap_or(0.0);
+            if mode == "normalizeAll" {
+                peaks.iter().map(|(c, pk)| (*c, db - pk)).collect()
+            } else {
+                let loudest = peaks.iter().map(|(c, pk)| pk + gain(*c)).fold(f64::NEG_INFINITY, f64::max);
+                let delta = db - loudest;
+                peaks.iter().map(|(c, _)| (*c, gain(*c) + delta)).collect()
+            }
+        }
+        m => return Err(bad("clip.audioGain", format!("unknown mode `{m}` (set, adjust, normalizeMax, normalizeAll)"))),
+    };
+    let n = new_gain.len();
+    let applied = new_gain.clone();
+    s.edit_sequence("Audio Gain", move |q, _, _| {
+        for t in q.audio_tracks.iter_mut() {
+            for i in t.items.iter_mut() {
+                if let Some((_, g)) = new_gain.iter().find(|(c, _)| *c == i.id) {
+                    i.gain_db = g.clamp(-96.0, 96.0);
+                }
+            }
+        }
+        Ok(())
+    })?;
+    Ok(json!({"mode": mode, "clips": n, "gainDb": applied.iter().map(|(c, g)| json!({"clip": c.0, "gainDb": g})).collect::<Vec<_>>()}))
+}
+
+/// Effects panel ▸ Set Selected as Default Transition (video or audio, from the effect's kind).
+fn set_default_transition(s: &mut Session, p: &Value) -> Result<Value> {
+    let id = str_p(p, "effect").ok_or_else(|| bad("effects.setDefaultTransition", "need `effect`"))?;
+    let def = find_effect(id)
+        .or_else(|| filmcraft_project::effect_defs().iter().find(|d| d.name.eq_ignore_ascii_case(id)))
+        .ok_or_else(|| bad("effects.setDefaultTransition", format!("no effect `{id}`")))?;
+    match def.kind {
+        filmcraft_project::EffectKind::AudioTransition => s.state.default_audio_transition = def.id.to_string(),
+        filmcraft_project::EffectKind::VideoTransition => s.state.default_video_transition = def.id.to_string(),
+        _ => return Err(bad("effects.setDefaultTransition", format!("`{}` is not a transition", def.name))),
+    }
+    Ok(json!({"video": s.state.default_video_transition, "audio": s.state.default_audio_transition}))
+}
+
 fn not_recording(s: &Session) -> std::result::Result<(), String> {
     has_seq(s)?;
     if s.mixrec.active() { Err("an automation pass is already recording".into()) } else { Ok(()) }
@@ -986,6 +1099,16 @@ pub fn commands() -> Vec<CommandSpec> {
             r#"{"clip":id,"effect":"volume"|"panner","param":"level"|"balance","value":f64,"keyframe":bool?,"time":ticks?,"begin":bool?}"#,
             has_seq,
             clip_set,
+            true,
+        ),
+        spec(
+            "effects.setDefaultTransition",
+            "Set Selected as Default Transition",
+            &[],
+            None,
+            r#"{"effect":"constant_power|constant_gain|exponential_fade|<video transition>"}"#,
+            always,
+            set_default_transition,
             true,
         ),
         spec("mixer.addSubmix", "Add Audio Submix Track", &["Sequence"], None, r#"{"name":str?,"channels":"Mono|Stereo|5.1"?}"#, has_seq, add_submix, true),
