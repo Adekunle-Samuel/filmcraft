@@ -1399,6 +1399,7 @@ dependencies = [
  "filmcraft-opus",
  "filmcraft-prores",
  "filmcraft-time",
+ "filmcraft-vp9",
  "image",
  "log",
  "symphonia",
@@ -1707,6 +1708,15 @@ dependencies = [
  "rayon",
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "filmcraft-vp9"
+version = "0.1.0"
+dependencies = [
+ "filmcraft-bitstream",
+ "rayon",
+ "thiserror 2.0.21",
 ]
 
 [[package]]

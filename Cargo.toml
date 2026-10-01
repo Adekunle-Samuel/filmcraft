@@ -20,6 +20,7 @@ filmcraft-isobmff = { path = "crates/isobmff" }
 filmcraft-matroska = { path = "crates/matroska" }
 filmcraft-h264 = { path = "crates/h264" }
 filmcraft-hevc = { path = "crates/hevc" }
+filmcraft-vp9 = { path = "crates/vp9" }
 filmcraft-prores = { path = "crates/prores" }
 filmcraft-aac = { path = "crates/aac" }
 filmcraft-opus = { path = "crates/opus" }
@@ -90,6 +91,9 @@ opt-level = 3
 opt-level = 3
 
 [profile.dev.package.filmcraft-opus]
+opt-level = 3
+
+[profile.dev.package.filmcraft-vp9]
 opt-level = 3
 
 [profile.release]

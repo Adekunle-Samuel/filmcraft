@@ -80,10 +80,19 @@ impl GopCache {
             st.decoder = Some(s.make_decoder()?);
             st.next = usize::MAX;
         }
-        let key = s.sync_before(i);
+        let mut key = s.sync_before(i);
         // Continue the running decoder when the wanted sample is ahead within this GOP run.
         let continuing = st.next != usize::MAX && st.next > key && st.next <= i + 16 && st.next <= n;
         if !continuing {
+            // The container's sync flags may be wrong for the codec (an MP4 without `stss` marks
+            // every sample): step back to a sample the decoder can start from.
+            while key > 0 {
+                let data = s.read(key)?;
+                if st.decoder.as_ref().expect("decoder").is_random_access(&data) != Some(false) {
+                    break;
+                }
+                key = s.sync_before(key - 1);
+            }
             if let Some(d) = st.decoder.as_mut() {
                 d.reset();
             }

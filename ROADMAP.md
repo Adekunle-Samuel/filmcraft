@@ -2,7 +2,7 @@
 
 Progress toward feature parity with Adobe Premiere Pro, with estimates. Updated as milestones land.
 
-**Last updated:** 2026-09-30 (midday) · **Overall parity:** ~32% · **Code:** ~71k lines of Rust, 400+ tests
+**Last updated:** 2026-10-01 · **Overall parity:** ~40% · **Code:** ~106k lines of Rust in 30 crates, 724 tests
 
 ## Estimate to parity
 
@@ -37,17 +37,20 @@ Status: ✅ done · 🟡 in progress · ⬜ not started. Estimates are remaining
 | M6 | Export | ✅ | Own H.264 encoder (High/Main/Baseline, B-frames, VBR/CBR/2-pass) → MP4 + own AAC; ProRes, MJPEG, PNG, GIF, WAV; background jobs | Preset library, queue UI, smart render | 6–8 |
 | M7 | Audio | 🟡 | Mixer basics, peak meters, BS.1770 loudness meters (M/S/I LUFS, true peak; matches ffmpeg), DSP crate, 12 clip audio effects running on it (EQ, filters, dynamics, limiter, delay, reverb, DeNoise, DeHum, pitch) with keyframes | Effects UI polish (EQ curve), remaining effects (multiband, convolution reverb), track effects/mixers with automation, Essential Sound, audio transitions, 5.1 | 6–10 |
 | M8 | Colour | 🟡 | Lumetri: basic, creative + looks, RGB & hue curves, wheels, HSL secondary, vignette; basic scopes | LUT import UI, colour match, colour management + HDR (PQ/HLG, log, tone mapping) | 8–12 |
-| M9 | More codecs | 🟡 | ProRes decode+encode, AAC decode+encode, HEVC Main/Main 10 decoder (bit-exact on 41 fixtures, ~225 fps 1080p), Matroska/WebM import (H.264/HEVC/ProRes/MJPEG + AAC/Opus/FLAC/MP3/Vorbis/PCM), Opus decoder (SILK/CELT/hybrid, 5.1/7.1 multistream; all RFC 8251 vectors range-exact; WebM/MKV/MP4) | VP9 (in progress), Ogg Opus files, AV1 (rav1d), DNxHR, MXF, hardware decode | 12–20 |
+| M9 | More codecs | 🟡 | ProRes decode+encode, AAC decode+encode, HEVC Main/Main 10 decoder (bit-exact on 41 fixtures, ~225 fps 1080p), VP9 decoder (profiles 0–3, 8/10/12-bit, bit-exact on 50+ fixtures; WebM/MKV `V_VP9` and MP4 `vp09` import with key-frame-checked seeking), Matroska/WebM import (H.264/HEVC/VP9/ProRes/MJPEG + AAC/Opus/FLAC/MP3/Vorbis/PCM), Opus decoder (SILK/CELT/hybrid, 5.1/7.1 multistream; all RFC 8251 vectors range-exact; WebM/MKV/MP4) | VP9 frame threading, Ogg Opus files, AV1 (rav1d), DNxHR, MXF, hardware decode | 12–20 |
 | M10 | Graphics & captions | 🟡 | Caption tracks (Subtitle/CEA-608/708/Teletext formats, track style), SRT/WebVTT/SCC import+export (frame-exact, property-tested), caption editing (add/split/merge/trim/move, sync-locked insert/extract), Text panel Captions tab, burn-in in Program monitor and export; text engine (`crates/text`: bundled + system fonts, harfrust shaping, bidi, line breaking, paragraph layout, glyph cache; 3-line 1080p title ≈ 0.15 ms warm); graphic clips with text + shape layers (fill, 2 strokes, background, shadow, keyframable transform), Type tool with on-monitor editing, shape/pen tools, Properties/Essential Graphics editor, align/distribute | Responsive design pins, rolls/crawls, per-character styles, motion graphics templates, MCC/STL/TTML, 608/708 embedding, speech-to-text | 12–18 |
 | M11 | Interchange & project management | 🟡 | `.fcproj` schema versions + migrations, atomic saves, Save a Copy/Revert, auto-save ring + crash-recovery journal (Preferences ▸ Auto Save, recovery prompt), FCP7 XML, FCPXML, EDL, OTIO | Relink/offline, project manager, proxies | 8 |
 | M12–M16 | Web (WASM), platform, long tail | 🟡 | L0–L4 crates compile to wasm32 | Web app shell (file access, WebCodecs, audio), ~850 remaining commands and dialogs, performance hardening | 40–65 |
 
 ## Running now
 
-- VP9 decoder (`crates/vp9`), from the public VP9 bitstream spec
-- Interchange (`crates/interchange`): CMX 3600 EDL, FCP7 XML, FCPXML, OTIO import and export
+- Playback: fix a UI hang after preview renders, then a load-robust playback benchmark and profiling (target: 3 × 1080p streams with 0 dropped frames)
+- Text engine (shaping, layout), Type tool, graphics clips and Essential Graphics (M10.1–2)
+- Audio Track Mixer: track effects, sends, submixes, automation modes (M7.2)
 
 ## Log
+
+- **2026-10-01:** recovered from a machine crash with no lost work. Merged: VP9 decoder (profiles 0–3, bit-exact, WebM/MKV/MP4), Opus decoder (RFC 8251 range-exact; WebM/MKV/MP4), captions (SRT/VTT/SCC, burn-in), render bar + render previews, project schema versioning + atomic saves + auto-save + crash-recovery journal, test infrastructure (golden images, loudness oracle vs ffmpeg, headless scripted UI tests; fixed a GPU stale-texture bug), public contributor docs and licence files.
 
 - **2026-09-30 (evening):** Opus decoder (RFC 6716/8251, range-exact on every conformance vector, ~80–110× realtime 48 kHz stereo) wired into WebM/MKV and MP4 import.
 - **2026-09-30 (afternoon):** Matroska/WebM import; LUFS meters; clip audio effects on the DSP crate.
