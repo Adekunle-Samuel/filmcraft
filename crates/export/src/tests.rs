@@ -175,3 +175,62 @@ fn caption_burn_in_h264_ffmpeg_oracle() {
     let (left, right) = (bright(&with, h * 2 / 3, h, 0, w / 2), bright(&with, h * 2 / 3, h, w / 2, w));
     assert!(left > 100 && right > 100, "{left} / {right}");
 }
+
+/// HDR sequences export PQ / HLG with colour signalling in the bitstream (VUI, ProRes header) and
+/// the container (`colr`, `mdcv`, `clli`); our demuxer and ffprobe both read it back, and the
+/// picture survives the round trip.
+#[test]
+fn hdr_exports_signal_pq_and_hlg() {
+    use filmcraft_color::{ColorPipeline, Transfer, WorkingSpace};
+    for (ws, fmt, ext, transfer, ff_transfer) in [
+        (WorkingSpace::Rec2100Pq, Format::ProRes, "mov", Transfer::Pq, "smpte2084"),
+        (WorkingSpace::Rec2100Pq, Format::H264, "mp4", Transfer::Pq, "smpte2084"),
+        (WorkingSpace::Rec2100Hlg, Format::ProRes, "mov", Transfer::Hlg, "arib-std-b67"),
+        (WorkingSpace::Rec2100Hlg, Format::H264, "mp4", Transfer::Hlg, "arib-std-b67"),
+    ] {
+        let (p, seq, m) = project();
+        let mut p = (*p).clone();
+        p.sequence_mut(seq).unwrap().settings.color = ColorPipeline { working: ws, ..ColorPipeline::REC709 };
+        let p = Arc::new(p);
+        let path = tmp(&format!("hdr-{}.{ext}", ws.id()));
+        let s = ExportSettings { format: fmt, path: path.clone(), include_audio: false, ..Default::default() };
+        export(&p, seq, &s, &m, &Progress::default()).unwrap();
+        // our demuxer/decoder sees the signalling
+        let bytes: Arc<[u8]> = std::fs::read(&path).unwrap().into();
+        let src = filmcraft_codecs::open_bytes(&path, bytes).unwrap();
+        let v = src.info().video.clone().unwrap();
+        assert_eq!(v.color.transfer, transfer, "{path}");
+        assert_eq!(v.color.primaries, filmcraft_color::Primaries::Bt2020, "{path}");
+        assert_eq!(v.color.matrix, filmcraft_color::Matrix::Bt2020Ncl, "{path}");
+        // 709 red matte → BT.2020 HDR → decoded back into Rec. 709 (tone mapped) stays red
+        let f = src.video_frame(FrameRequest::full(Tick::ZERO)).unwrap();
+        let back = filmcraft_render::colorman::decode(&Project::new("x"), ItemId(0), &f, 1, &ColorPipeline::REC709);
+        let c = filmcraft_render::Image::unpremul(back.get(160, 90));
+        assert!(c[0] > 0.6 && c[1] < 0.05 && c[2] < 0.05, "{path}: {c:?}");
+        // ffprobe agrees
+        let Some(ffprobe) = filmcraft_testkit::ffprobe_or_skip("hdr export signalling") else { continue };
+        let out = std::process::Command::new(&ffprobe)
+            .args([
+                "-v",
+                "error",
+                "-select_streams",
+                "v:0",
+                "-show_entries",
+                "stream=color_transfer,color_primaries,color_space:stream_side_data",
+                "-of",
+                "default=nw=1",
+                &path,
+            ])
+            .output()
+            .unwrap();
+        let txt = String::from_utf8_lossy(&out.stdout).to_string();
+        assert!(txt.contains(&format!("color_transfer={ff_transfer}")), "{path}: {txt}");
+        assert!(txt.contains("color_primaries=bt2020"), "{path}: {txt}");
+        assert!(txt.contains("color_space=bt2020nc"), "{path}: {txt}");
+        if transfer == Transfer::Pq {
+            assert!(txt.contains("Mastering display metadata") && txt.contains("max_luminance=10000000/10000"), "{path}: {txt}");
+            assert!(txt.contains("Content light level metadata"), "{path}: {txt}");
+        }
+        eprintln!("{path}:\n{txt}");
+    }
+}

@@ -165,3 +165,41 @@ fn lumetri_lut_menus_and_section_switches() {
     let e = lumetri(&mut d, clip);
     assert_eq!(e["params"]["creative_on"]["value"], json!("Bool(true)"), "{e}");
 }
+
+#[test]
+fn interpret_footage_and_sequence_color_dialogs_and_hdr_scopes() {
+    let mut d = Driver::demo();
+    d.ok("ui.set", json!({"workspace": "Color"}));
+    d.frames(3);
+    let clip = select_first_clip(&mut d);
+    let seq = d.exec("sequence.inspect", json!({}));
+    let item = seq["video"][0]["items"].as_array().unwrap().iter().find(|i| i["clip"] == clip).unwrap()["item"].clone();
+    // Clip ▸ Modify ▸ Interpret Footage… opens the dialog (no params)
+    let r = d.ok("ui.menu.invoke", json!({"id": "clip.interpretFootage"}));
+    assert_eq!(r["dialog"], "interpretFootage");
+    d.frames(3);
+    d.click("colorDialog.space.slog3-sgamut3cine");
+    d.snapshot("color-interpret-footage", None);
+    d.click("colorDialog.ok");
+    let info = d.exec("media.colorInfo", json!({"item": item}));
+    assert_eq!(info["override"], "slog3-sgamut3cine", "{info}");
+    // Sequence ▸ Color Management…: Rec. 2100 PQ
+    let r = d.ok("ui.menu.invoke", json!({"id": "sequence.colorSettings"}));
+    assert_eq!(r["dialog"], "sequenceColor");
+    d.frames(3);
+    d.click("colorDialog.working.rec2100-pq");
+    d.snapshot("color-sequence-settings", None);
+    d.click("colorDialog.ok");
+    let st = d.exec("sequence.colorSettings", json!({"autoToneMap": true}));
+    assert_eq!(st["workingSpace"], "rec2100-pq");
+    // the scopes switch to the HDR waveform (cd/m², PQ scale)
+    d.ok("ui.panel.show", json!({"panel": "LumetriScopes"}));
+    d.frames(6);
+    assert!(d.ids("scopes.").iter().any(|i| i == "scopes.hdrWaveform"), "{:?}", d.ids("scopes."));
+    d.snapshot("color-hdr-scopes", None);
+    // undo the working space and the interpretation
+    d.exec("edit.undo", json!({}));
+    d.exec("edit.undo", json!({}));
+    let info = d.exec("media.colorInfo", json!({"item": item}));
+    assert_eq!(info["override"], Value::Null, "{info}");
+}

@@ -153,6 +153,9 @@ pub struct Interpretation {
     pub par: Option<(u32, u32)>,
     pub ignore_alpha: bool,
     pub invert_alpha: bool,
+    /// Color Management ▸ override the colour space detected from the file's metadata.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub color_space: Option<filmcraft_color::ColorSpace>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -623,8 +626,16 @@ pub struct SequenceSettings {
     pub preview_codec: String,
     pub max_bit_depth: bool,
     pub max_render_quality: bool,
-    /// Working colour space.
+    /// Working colour space (display label; [`SequenceSettings::color`] is authoritative).
     pub working_space: String,
+    /// Colour pipeline: working space (Rec. 709 / Rec. 2100 PQ / HLG), wide-gamut compositing,
+    /// Auto Tone Map Media.
+    #[serde(default = "default_color_pipeline")]
+    pub color: filmcraft_color::ColorPipeline,
+}
+
+fn default_color_pipeline() -> filmcraft_color::ColorPipeline {
+    filmcraft_color::ColorPipeline::REC709
 }
 
 impl Default for SequenceSettings {
@@ -642,6 +653,7 @@ impl Default for SequenceSettings {
             max_bit_depth: false,
             max_render_quality: false,
             working_space: "Rec. 709".into(),
+            color: filmcraft_color::ColorPipeline::REC709,
         }
     }
 }

@@ -195,6 +195,9 @@ pub struct InputTransform {
     hlg: Option<([f32; 3], f32)>,
     tone: Option<ToneMap>,
     compress: bool,
+    /// Display-referred wide-gamut media (BT.2020 / P3 / HDR): desaturate into the working gamut
+    /// with these luma weights instead of the camera-gamut compression.
+    desaturate: Option<[f32; 3]>,
 }
 
 impl InputTransform {
@@ -215,13 +218,18 @@ impl InputTransform {
             _ => REFERENCE_WHITE_NITS,
         };
         let tone = (src.is_hdr() && !pipe.working.is_hdr() && pipe.auto_tone_map).then(|| ToneMap::new(peak, REFERENCE_WHITE_NITS));
-        let compress = !identity_matrix && !gamut_within(src.gamut(), wg);
-        InputTransform { source: src, table: DecodeTable::for_curve(curve, range), matrix: to_f32(&m), identity_matrix, hlg, tone, compress }
+        let wider = !identity_matrix && !gamut_within(src.gamut(), wg);
+        // camera gamuts (log media) get the soft compression; display gamuts keep their in-gamut
+        // colours exactly (BT.709 content in a BT.2020 file comes back unchanged)
+        let compress = wider && src.is_log();
+        let l = wg.luma();
+        let desaturate = (wider && !src.is_log()).then(|| [l[0] as f32, l[1] as f32, l[2] as f32]);
+        InputTransform { source: src, table: DecodeTable::for_curve(curve, range), matrix: to_f32(&m), identity_matrix, hlg, tone, compress, desaturate }
     }
 
     /// Whether anything happens after the per-channel table.
     pub fn has_pixel_stage(&self) -> bool {
-        !self.identity_matrix || self.hlg.is_some() || self.tone.is_some() || self.compress
+        !self.identity_matrix || self.hlg.is_some() || self.tone.is_some() || self.compress || self.desaturate.is_some()
     }
 
     /// The per-pixel stage (input: the table's output).
@@ -240,6 +248,9 @@ impl InputTransform {
         }
         if self.compress {
             c = gamut_compress(c);
+        }
+        if let Some(l) = self.desaturate {
+            c = desaturate_into_gamut(c, l);
         }
         c
     }

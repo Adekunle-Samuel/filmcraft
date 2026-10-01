@@ -16,6 +16,8 @@ workspace = true
 
 [dev-dependencies]
 filmcraft-testkit = { workspace = true }
+filmcraft-color = { workspace = true }
+filmcraft-frame = { workspace = true }
 filmcraft-time = { workspace = true }
 filmcraft-geom = { workspace = true }
 filmcraft-media = { workspace = true }

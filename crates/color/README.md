@@ -90,6 +90,8 @@ on the sRGB curve).
   the achromatic axis, after the ACES Reference Gamut Compression: for each channel
   d = (max − c)/max; distances below 0.8 are unchanged, distances from 0.8 to 1.25 are compressed
   into 0.8–1.0 with a power-1.2 curve. Colours within 80 % of the boundary are untouched.
+* **Display-referred wide-gamut input** (BT.2020 / P3 / PQ / HLG media into a narrower working
+  gamut) and
 * **Output** (BT.2020 working → BT.709 monitor/export): colours with a negative component are
   desaturated towards their BT.709 luminance just enough to fit (`desaturate_into_gamut`); in-gamut
   colours, such as BT.709 media in a wide-gamut sequence, come back exactly.

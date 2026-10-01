@@ -7,7 +7,7 @@
 
 use std::sync::Arc;
 
-use filmcraft_color::{ColorInfo, Matrix, Range, linear_to_srgb_u8, normalize_c, normalize_y, srgb_u8_to_linear_table, to_linear, ycbcr_to_rgb};
+use filmcraft_color::{ColorInfo, DecodeTable, Matrix, Range, linear_to_srgb_u8, normalize_c, normalize_y, srgb_u8_to_linear_table, to_linear, ycbcr_to_rgb};
 use filmcraft_time::Tick;
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
@@ -107,6 +107,13 @@ impl VideoFrame {
     /// in linear light. Reduced-resolution playback uses this so it never builds full-size float
     /// buffers. Returns (width, height, pixels).
     pub fn to_linear_f32_decimated(&self, n: usize) -> (usize, usize, Vec<f32>) {
+        self.to_linear_f32_decimated_with(n, None)
+    }
+
+    /// Like [`VideoFrame::to_linear_f32_decimated`], decoding each channel's signal through
+    /// `decode` (a colour-managed curve: log, PQ, HLG scene light…) instead of the frame's
+    /// transfer. Float frames are already linear and ignore it.
+    pub fn to_linear_f32_decimated_with(&self, n: usize, decode: Option<&DecodeTable>) -> (usize, usize, Vec<f32>) {
         let n = n.max(1);
         let (w, h) = (self.width as usize, self.height as usize);
         let (ow, oh) = ((w / n).max(1), (h / n).max(1));
@@ -119,8 +126,11 @@ impl VideoFrame {
         }
         // Encoded (0..1, quantised to 12 bits) → linear lookup for this frame's transfer.
         let info = self.color;
-        let lin: Vec<f32> = (0..4096).map(|i| to_linear(i as f32 / 4095.0, info.transfer)).collect();
-        let q = |v: f32| lin[(v.clamp(0.0, 1.0) * 4095.0 + 0.5) as usize];
+        let lin: Vec<f32> = if decode.is_some() { Vec::new() } else { (0..4096).map(|i| to_linear(i as f32 / 4095.0, info.transfer)).collect() };
+        let q = |v: f32| match decode {
+            Some(t) => t.lookup(v),
+            None => lin[(v.clamp(0.0, 1.0) * 4095.0 + 0.5) as usize],
+        };
         let inv = 1.0 / (n * n) as f32;
         match &self.data {
             PixelData::RgbaF32(d) => {
@@ -144,7 +154,14 @@ impl VideoFrame {
                 });
             }
             PixelData::Rgba8(d) => {
-                let lut = srgb_u8_to_linear_table();
+                let table: Vec<f32>;
+                let lut: &[f32] = match decode {
+                    Some(t) => {
+                        table = (0..256).map(|i| t.lookup(i as f32 / 255.0)).collect();
+                        &table
+                    }
+                    None => srgb_u8_to_linear_table(),
+                };
                 out.par_chunks_mut(ow * 4).enumerate().for_each(|(oy, row)| {
                     for ox in 0..ow {
                         let mut acc = [0f32; 4];

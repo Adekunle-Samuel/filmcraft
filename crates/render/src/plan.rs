@@ -56,6 +56,10 @@ fn gpu_simple(project: &Project, item: &TrackItem, mt: Tick) -> bool {
 pub fn plan_frame(project: &Project, seq_id: ItemId, t: Tick, opts: RenderOptions, sources: &dyn SourceProvider) -> FramePlan {
     let Some(seq) = project.sequence(seq_id) else { return FramePlan::Image(crate::Image::new(1, 1)) };
     let (w, h) = output_size(seq, opts.scale);
+    // HDR / wide-gamut sequences composite and convert on the CPU.
+    if !seq.settings.color.is_plain() {
+        return FramePlan::Image(crate::render_sequence(project, seq_id, t, opts, sources));
+    }
     // Whole-frame fallback: adjustment layers or complex transitions anywhere at t.
     for tr in &seq.video_tracks {
         if !tr.enabled {
@@ -162,10 +166,14 @@ fn push_item(
         let lin = ((motion.a * motion.a + motion.b * motion.b).sqrt()).max((motion.c * motion.c + motion.d * motion.d).sqrt());
         let want = (lin * opts.scale as f64).clamp(1.0 / 64.0, 1.0) as f32;
         let Ok(frame) = src.video_frame(FrameRequest { time: mt, scale: want }) else { return };
-        let px_scale = frame.width as f64 / size.0.max(1) as f64;
-        let m = Affine::scale(opts.scale as f64, opts.scale as f64).then_apply(&motion).then_apply(&Affine::scale(1.0 / px_scale, 1.0 / px_scale));
-        out.push(PlanLayer { frame, matrix: m, opacity: op * extra_opacity });
-        return;
+        let cs = crate::colorman::source_space(project, item.item, &frame);
+        // log / HDR / wide-gamut media is converted on the CPU (below)
+        if !crate::colorman::needs_management(&seq.settings.color, cs, &frame) {
+            let px_scale = frame.width as f64 / size.0.max(1) as f64;
+            let m = Affine::scale(opts.scale as f64, opts.scale as f64).then_apply(&motion).then_apply(&Affine::scale(1.0 / px_scale, 1.0 / px_scale));
+            out.push(PlanLayer { frame, matrix: m, opacity: op * extra_opacity });
+            return;
+        }
     }
     // CPU-rendered layer (standard effects): drawn by the GPU as a pre-rendered canvas image.
     let tc = filmcraft_time::format_time(t, seq.settings.frame_rate, seq.settings.drop_frame, filmcraft_time::TimeDisplay::Timecode, 48_000);

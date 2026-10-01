@@ -10,6 +10,7 @@
 pub mod audio;
 pub mod audio_fx;
 pub mod blend;
+pub mod colorman;
 pub mod effects;
 pub mod graphic_clip;
 pub mod graphics;
@@ -52,11 +53,14 @@ pub struct RenderOptions {
     /// Draw the sequence's visible caption tracks over the picture (Program monitor, burn-in on
     /// export). Never applies to nested sequences.
     pub captions: bool,
+    /// Return the image in the sequence's working space (HDR exports, scopes) instead of
+    /// converting it for an SDR monitor. Only matters for HDR / wide-gamut sequences.
+    pub working_output: bool,
 }
 
 impl Default for RenderOptions {
     fn default() -> Self {
-        Self { scale: 1.0, effects: true, depth: 0, captions: false }
+        Self { scale: 1.0, effects: true, depth: 0, captions: false, working_output: false }
     }
 }
 
@@ -138,6 +142,9 @@ fn render_seq(project: &Project, seq: &Sequence, t: Tick, opts: RenderOptions, s
         if let Some((layer, op, bl)) = item_layer(project, seq, item, t, opts, sources, &tc) {
             blend::composite(&mut canvas, &layer, op, bl);
         }
+    }
+    if opts.depth == 0 && !opts.working_output {
+        colorman::to_display(&mut canvas, &seq.settings.color);
     }
     if opts.captions && opts.depth == 0 {
         for o in caption_overlays(seq, t, w, h) {
@@ -238,11 +245,10 @@ pub(crate) fn item_layer(
             let src = sources.source(item.item)?;
             let frame = src.video_frame(FrameRequest { time: mt, scale: want }).ok()?;
             let n = decimation(frame.width as f32, src_size.0 as f32 * want);
-            let (w, h, px) = frame.to_linear_f32_decimated(n);
-            Image { w, h, px }
+            colorman::decode(project, item.item, &frame, n, &seq.settings.color)
         }
         ItemKind::Sequence(nested) => {
-            let sub = RenderOptions { scale: want, effects: opts.effects, depth: opts.depth + 1, captions: false };
+            let sub = RenderOptions { scale: want, effects: opts.effects, depth: opts.depth + 1, captions: false, working_output: true };
             render_seq(project, nested, mt, sub, sources)
         }
         ItemKind::AdjustmentLayer { .. } => return None,
@@ -307,8 +313,8 @@ pub fn render_item(project: &Project, item: ItemId, t: Tick, scale: f32, sources
             let f = src.video_frame(FrameRequest { time: t, scale }).ok()?;
             let full_w = src.info().video.as_ref().map_or(f.width, |v| v.width) as f32;
             let n = decimation(f.width as f32, full_w * scale);
-            let (w, h, px) = f.to_linear_f32_decimated(n);
-            Some(Image { w, h, px })
+            // the Source monitor shows media as SDR Rec. 709 (log/HDR tone mapped per its colour space)
+            Some(colorman::decode(project, item, &f, n, &filmcraft_color::ColorPipeline::REC709))
         }
     }
 }

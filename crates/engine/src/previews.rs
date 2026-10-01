@@ -459,6 +459,9 @@ pub fn render(s: &mut Session, mode: RenderMode, p: &Value) -> Result<Value> {
                 // Captions stay live over previews and are not part of the preview hash.
                 burn_captions: false,
                 part_of_batch: true,
+                // previews stand in for the monitor picture: display-referred SDR
+                sdr: true,
+                ..Default::default()
             };
             match filmcraft_export::export(&project, seq, &settings, &provider, &prog) {
                 Ok(r) => {

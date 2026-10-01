@@ -171,7 +171,7 @@ fn track_p(s: &Session, p: &Value, k: &str) -> Option<TrackId> {
     let tracks = if kind.eq_ignore_ascii_case("v") { &seq.video_tracks } else { &seq.audio_tracks };
     tracks.get(i.checked_sub(1)?).map(|t| t.id)
 }
-fn item_p(p: &Value, k: &str) -> Option<ItemId> {
+pub(crate) fn item_p(p: &Value, k: &str) -> Option<ItemId> {
     u64_p(p, k).map(ItemId)
 }
 
@@ -1883,6 +1883,8 @@ fn export_media(s: &mut Session, p: &Value) -> Result<Value> {
         bitrate_kbps: u64_p(p, "bitrateKbps").unwrap_or(20_000) as u32,
         burn_captions: bool_p(p, "burnCaptions").unwrap_or(false),
         part_of_batch: false,
+        sdr: bool_p(p, "sdr").unwrap_or(false),
+        ..Default::default()
     };
     let id = s.jobs.len() as u64 + 1;
     let job = crate::Job {
