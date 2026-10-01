@@ -134,14 +134,15 @@ verified first), or `VP9_THREADS=n VP9_LOOPS=k cargo run --release -p filmcraft-
 vp9dec -- in.ivf` (decodes the file k times and prints the statistics).
 
 Apple M4 Pro (14 cores), 1080p 8-bit `bench_1080p` fixture (libvpx speed 4, 4 MB/s, 4 tile
-columns, 60 frames). The machine was shared with other builds during measurement (load average
-140-210), so wall-clock numbers are the best of several runs and still far below what an idle
-machine gives; single-thread CPU time is the stable figure.
+columns), 120 frames per run, before / after binaries alternated. The machine was shared with
+other builds (load average 80-110 during the multi-thread runs, up to 200 earlier), so
+wall-clock numbers are the best of 3 runs and still well below what an idle machine gives;
+single-thread CPU time is the stable figure.
 
 | | before (5e9d7d9) | now |
 |---|---|---|
-| 1 thread, CPU time | 55 fps | 98 fps |
-| 14 threads, wall clock (best of 4, loaded machine) | 45 fps | 115 fps |
+| 1 thread, CPU time | 52-55 fps | 98-102 fps |
+| 14 threads, wall clock (best of 3, load ~90) | 82-89 fps | 143-145 fps |
 
 What made the difference:
 
