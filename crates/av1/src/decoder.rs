@@ -201,8 +201,10 @@ impl Decoder {
             }
             return Ok(Some(pic));
         }
-        if fh.frame_width > seq.max_frame_width || fh.frame_height > seq.max_frame_height {
-            return Err(Error::Invalid("frame larger than the sequence maximum"));
+        // Encoders exist that code frames slightly larger than the sequence maximum (e.g. a
+        // 270-line stream coded as 272 lines); like other decoders we accept them.
+        if fh.upscaled_width > 65536 || fh.frame_height > 65536 {
+            return Err(Error::Invalid("frame size"));
         }
         let fs = FrameState::new(&seq, &fh);
         let cdfs = if fh.primary_ref_frame == PRIMARY_REF_NONE {

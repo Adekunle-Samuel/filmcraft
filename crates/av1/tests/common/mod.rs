@@ -127,19 +127,69 @@ pub fn compare(p: &Picture, raw: &[u16]) -> (Option<(usize, u32, u32, u16, u16)>
     (first, count)
 }
 
+/// The raw pixel format matching a decoded picture.
+pub fn pix_fmt_for(p: &Picture) -> &'static str {
+    let hi = p.bit_depth > 8;
+    if p.mono_chrome {
+        return match p.bit_depth {
+            8 => "gray",
+            10 => "gray10le",
+            _ => "gray12le",
+        };
+    }
+    match (p.subsampling_x, p.subsampling_y, p.bit_depth) {
+        (1, 1, 8) => "yuv420p",
+        (1, 1, 10) => "yuv420p10le",
+        (1, 1, _) => "yuv420p12le",
+        (1, 0, 8) => "yuv422p",
+        (1, 0, 10) => "yuv422p10le",
+        (1, 0, _) => "yuv422p12le",
+        (_, _, 8) => "yuv444p",
+        (_, _, 10) => "yuv444p10le",
+        _ if hi => "yuv444p12le",
+        _ => "yuv444p",
+    }
+}
+
 /// Decode a fixture and compare every frame with libdav1d; panics with details on mismatch.
 pub fn check_bit_exact(ff: &Path, spec: &Spec) {
     let path = make(ff, spec);
-    let pics = decode_all(&path).unwrap_or_else(|e| panic!("{}: {e}", spec.name));
-    let raw = reference(ff, &path, spec.pix_fmt);
-    assert!(!pics.is_empty(), "{}: no frames", spec.name);
+    check_file(ff, spec.name, &path);
+}
+
+/// Decode an IVF file and compare every frame with libdav1d; panics with details on mismatch.
+pub fn check_file(ff: &Path, name: &str, path: &Path) {
+    let pics = decode_all(path).unwrap_or_else(|e| panic!("{name}: {e}"));
+    assert!(!pics.is_empty(), "{name}: no frames");
+    let raw = reference(ff, path, pix_fmt_for(&pics[0]));
     let per = picture_samples(&pics[0]);
-    assert_eq!(raw.len(), per * pics.len(), "{}: frame count/size ({} pictures)", spec.name, pics.len());
+    assert_eq!(raw.len(), per * pics.len(), "{name}: frame count/size ({} pictures)", pics.len());
     for (i, p) in pics.iter().enumerate() {
         let (first, count) = compare(p, &raw[i * per..(i + 1) * per]);
         if let Some((plane, x, y, a, b)) = first {
-            panic!("{}: frame {i} differs in {count} samples; first at plane {plane} ({x},{y}): ours {a}, reference {b}", spec.name);
+            panic!("{name}: frame {i} differs in {count} samples; first at plane {plane} ({x},{y}): ours {a}, reference {b}");
         }
     }
-    println!("{:<28} {} frames {}x{} bit-exact", spec.name, pics.len(), pics[0].width, pics[0].height);
+    println!("{:<34} {:>3} frames {}x{} {}-bit bit-exact", name, pics.len(), pics[0].width, pics[0].height, pics[0].bit_depth);
+}
+
+/// An AV1 conformance test vector (libaom test data), downloaded on first use with curl into
+/// the fixture directory. Returns None (after printing why) when it can't be fetched.
+pub fn test_vector(name: &str) -> Option<PathBuf> {
+    let dir = fixture_dir().join("aom-test-data");
+    std::fs::create_dir_all(&dir).ok()?;
+    let path = dir.join(name);
+    if path.exists() {
+        return Some(path);
+    }
+    let tmp = filmcraft_testkit::temp_path(&path);
+    let url = format!("https://storage.googleapis.com/aom-test-data/{name}");
+    let ok = Command::new("curl").args(["-sfL", "--max-time", "120", "-o"]).arg(&tmp).arg(&url).status().map(|s| s.success()).unwrap_or(false);
+    if !ok {
+        let _ = std::fs::remove_file(&tmp);
+        filmcraft_testkit::skip("av1 conformance", &format!("could not download {url}"));
+        return None;
+    }
+    std::fs::rename(&tmp, &path).ok()?;
+    Some(path)
 }

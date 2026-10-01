@@ -30,18 +30,23 @@ reference) is used only as an external test oracle.
 | Intra prediction: DC, V/H + directional with edge filter and upsampling, smooth (3), Paeth, recursive filter intra, CfL, palette | 7.11.2, 7.11.4, 7.11.5 | done, bit-exact |
 | Intra block copy | 7.11.3 | missing |
 | Inter prediction: MV prediction, motion field, scaling, filters, warp / global motion, OBMC, compound / masks, inter-intra | 7.9–7.11.3 | missing |
-| Loop filter | 7.14 | missing |
-| CDEF | 7.15 | missing |
-| Super-resolution upscaling | 7.16 | missing |
-| Loop restoration (Wiener, self-guided) | 7.17 | syntax done, filter missing |
+| Loop filter (all filter sizes, deltas, segment / ref / mode adjustments) | 7.14 | done, bit-exact |
+| CDEF | 7.15 | done, bit-exact |
+| Super-resolution upscaling | 7.16 | done, not yet oracle-tested (no fixture uses it yet) |
+| Loop restoration (Wiener, self-guided, switchable; stripes) | 7.17 | done, bit-exact |
 | Film grain synthesis | 7.18.3 | missing |
 | Large-scale tile / tile list OBUs | 7.3 | not planned |
 
 ## Accuracy
 
-`tests/oracle_intra.rs` encodes all-intra streams with ffmpeg's libsvtav1 (in-loop filters off)
-and compares every decoded frame with libdav1d: **bit-exact** on all fixtures (8- and 10-bit
-4:2:0; 128×128 to 1280×720 including odd sizes; testsrc2, mandelbrot and noise; presets 2–8).
+`tests/oracle_intra.rs` encodes all-intra streams with ffmpeg's libsvtav1 (with and without the
+in-loop filters; 64×64 and 128×128 superblocks; intra edge filter on and off) and compares every
+decoded frame with libdav1d: **bit-exact** on all 13 fixtures (8- and 10-bit 4:2:0; 128×128 to
+1280×720 including odd sizes; testsrc2, mandelbrot, gradients and noise; presets 1–8).
+
+`tests/conformance.rs` downloads libaom's conformance test vectors on first use
+(storage.googleapis.com/aom-test-data) and compares with libdav1d: `av1-1-b8-02-allintra`
+(39 frames, deblocking + CDEF + self-guided restoration) is **bit-exact**.
 
 ## API
 

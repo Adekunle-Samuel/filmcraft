@@ -7,6 +7,7 @@
 #![allow(dead_code)]
 
 mod bits;
+mod cdef;
 mod cdf;
 mod decoder;
 mod frame;
@@ -14,6 +15,7 @@ mod grain;
 pub mod header;
 mod intra;
 mod postfilter;
+mod restoration;
 mod spec_tables;
 mod state;
 mod symbol;

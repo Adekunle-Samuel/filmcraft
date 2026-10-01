@@ -523,6 +523,23 @@ mod tests {
         }
     }
 
+    /// ADST8/16 basis vectors follow sin(pi (2i+1)(2k+1) / 4N) (scaled like the DCT).
+    #[test]
+    fn adst_basis_matches_sine() {
+        for n in 3..=4u32 {
+            let len = 1usize << n;
+            for k in 0..len {
+                let mut t = [0i32; 64];
+                t[k] = 1 << 12;
+                inverse_adst(&mut t, n, 24);
+                for i in 0..len {
+                    let want = 4096.0 * ((std::f64::consts::PI * (2 * i + 1) as f64 * (2 * k + 1) as f64) / (4 * len) as f64).sin();
+                    assert!((t[i] as f64 - want).abs() < 8.0, "n={n} k={k} i={i}: {} vs {want:.1}", t[i]);
+                }
+            }
+        }
+    }
+
     #[test]
     fn adst_is_close_to_sine_transform() {
         for n in 3..=4u32 {

@@ -24,3 +24,26 @@ fn intra_no_filters() {
         check_bit_exact(&ff, &s);
     }
 }
+
+fn specs_filters() -> Vec<Spec> {
+    let p =
+        |preset: &'static str, crf: &'static str, params: &'static str| -> Vec<&'static str> { vec!["-preset", preset, "-crf", crf, "-svtav1-params", params] };
+    vec![
+        Spec::new("intra_dlf_mandel", "mandelbrot=s=352x288:r=25", 2, "yuv420p", &p("6", "40", "enable-cdef=0:enable-restoration=0:keyint=1")),
+        Spec::new("intra_cdef_testsrc", "testsrc2=s=352x288:r=25", 2, "yuv420p", &p("6", "40", "enable-restoration=0:keyint=1")),
+        Spec::new("intra_lr_mandel", "mandelbrot=s=352x288:r=25", 2, "yuv420p", &p("4", "40", "enable-cdef=0:keyint=1")),
+        Spec::new("intra_all_testsrc", "testsrc2=s=640x360:r=25", 2, "yuv420p", &p("4", "45", "keyint=1")),
+        Spec::new("intra_all_10bit", "mandelbrot=s=320x240:r=25", 2, "yuv420p10le", &p("4", "40", "keyint=1")),
+        Spec::new("intra_all_noise_odd", "testsrc2=s=250x150:r=25,noise=alls=20:allf=t", 2, "yuv420p", &p("3", "35", "keyint=1")),
+        // 128x128 superblocks, intra edge filter off, Wiener LR on all planes
+        Spec::new("intra_all_grad_noise_10bit", "gradients=s=640x360:r=25,noise=alls=25:allf=t", 1, "yuv420p10le", &p("1", "50", "keyint=1")),
+    ]
+}
+
+#[test]
+fn intra_with_filters() {
+    let Some(ff) = ffmpeg() else { return };
+    for s in specs_filters() {
+        check_bit_exact(&ff, &s);
+    }
+}

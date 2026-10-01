@@ -48,7 +48,7 @@ for f in files:
             continue
         cells = [c.strip().rstrip(".") for c in line.strip().strip("|").split("|")]
         for k in range(1, len(cells)):
-            if NAME.match(cells[k]) and "_" in cells[k] and re.match(r"^-?\d+$", cells[k - 1]):
+            if NAME.match(cells[k]) and len(cells[k]) >= 4 and re.match(r"^-?\d+$", cells[k - 1]):
                 if k + 1 < len(cells) and NAME.match(cells[k + 1]) and "_" in cells[k + 1]:
                     continue
                 pending.append((cells[k], cells[k - 1]))
