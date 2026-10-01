@@ -20,6 +20,11 @@ pub trait VideoDecoder: Send {
     /// Forget all state (called after seeking to a sync sample).
     fn reset(&mut self);
     fn name(&self) -> &str;
+    /// Every picture is coded independently (no reordering, no references), so frames can be
+    /// decoded in any order and in parallel by separate decoder instances.
+    fn intra_only(&self) -> bool {
+        false
+    }
 }
 
 /// A factory returns `None` when it does not handle the entry.
@@ -42,6 +47,9 @@ impl VideoDecoder for MjpegDecoder {
     fn reset(&mut self) {}
     fn name(&self) -> &str {
         "Motion JPEG"
+    }
+    fn intra_only(&self) -> bool {
+        true
     }
 }
 
@@ -251,6 +259,9 @@ impl VideoDecoder for ProResDecoder {
     fn reset(&mut self) {}
     fn name(&self) -> &str {
         "FilmCraft ProRes"
+    }
+    fn intra_only(&self) -> bool {
+        true
     }
 }
 

@@ -74,8 +74,15 @@ pub trait VideoSamples {
 
 struct State {
     decoder: Option<Box<dyn VideoDecoder>>,
-    /// Next sample (decode order) to feed.
+    /// The decoder only produces intra pictures: frames decode independently and in parallel.
+    intra: bool,
+    /// Idle decoders for parallel intra decoding.
+    spare: Vec<Box<dyn VideoDecoder>>,
+    /// Next sample (decode order) to feed, and the sync sample the current run started from.
     next: usize,
+    start: usize,
+    /// Highest pts the running decoder has output since it started (pictures leave in pts order).
+    out_max: i64,
     /// Decoded frames by presentation pts (bounded).
     frames: BTreeMap<i64, Arc<VideoFrame>>,
     bytes: usize,
@@ -89,9 +96,32 @@ pub struct GopCache {
     budget: usize,
 }
 
+/// The cache always has room for this many frames, whatever their size: a frame-threaded decoder
+/// runs up to ~2x its thread count ahead of the frame it returns, and playback prefetches ahead
+/// of the playhead, so a byte budget alone would evict 4K frames before they are shown and force
+/// a re-decode from the keyframe.
+const MIN_FRAMES: usize = 64;
+
+/// A running decoder up to this many samples before the wanted sample's sync sample keeps going
+/// rather than restarting at the sync sample.
+const CONTINUE_THROUGH: usize = 48;
+
 impl GopCache {
     pub fn new(explicit_color: Option<ColorInfo>) -> Self {
-        Self { state: Mutex::new(State { decoder: None, next: usize::MAX, frames: BTreeMap::new(), bytes: 0 }), explicit_color, budget: 384 << 20 }
+        Self {
+            state: Mutex::new(State {
+                decoder: None,
+                intra: false,
+                spare: Vec::new(),
+                next: usize::MAX,
+                start: 0,
+                out_max: i64::MIN,
+                frames: BTreeMap::new(),
+                bytes: 0,
+            }),
+            explicit_color,
+            budget: 384 << 20,
+        }
     }
 
     fn store(&self, st: &mut State, pts: i64, mut f: VideoFrame) {
@@ -100,10 +130,13 @@ impl GopCache {
         {
             f.color = c;
         }
+        let budget = self.budget.max(MIN_FRAMES * f.byte_size());
         st.bytes += f.byte_size();
-        st.frames.insert(pts, Arc::new(f));
+        if let Some(old) = st.frames.insert(pts, Arc::new(f)) {
+            st.bytes -= old.byte_size();
+        }
         // evict frames far from the most recent (keep a window around the working position)
-        while st.bytes > self.budget && st.frames.len() > 2 {
+        while st.bytes > budget && st.frames.len() > 2 {
             let first = *st.frames.keys().next().expect("non-empty");
             let last = *st.frames.keys().next_back().expect("non-empty");
             let victim = if pts - first > last - pts { first } else { last };
@@ -111,6 +144,14 @@ impl GopCache {
                 st.bytes -= v.byte_size();
                 EVICTED.fetch_add(1, Ordering::Relaxed);
             }
+        }
+    }
+
+    /// Store decoder output (in presentation order) and advance `out_max`.
+    fn store_output(&self, st: &mut State, out: Vec<crate::video::DecodedFrame>) {
+        for d in out {
+            st.out_max = st.out_max.max(d.pts);
+            self.store(st, d.pts, d.frame);
         }
     }
 
@@ -126,38 +167,48 @@ impl GopCache {
         }
         MISSES.fetch_add(1, Ordering::Relaxed);
         if st.decoder.is_none() {
-            st.decoder = Some(s.make_decoder()?);
+            let d = s.make_decoder()?;
+            st.intra = d.intra_only();
+            st.decoder = Some(d);
             st.next = usize::MAX;
         }
+        if st.intra {
+            return self.intra_frame(st, s, i, want_pts);
+        }
         let key = s.sync_before(i);
-        // Continue the running decoder when the wanted sample is ahead within this GOP run.
-        let continuing = st.next != usize::MAX && st.next > key && st.next <= i + 16 && st.next <= n;
+        // Continue the running decoder when it has passed the wanted sample's sync sample and
+        // either has not reached the sample yet or has been fed it without outputting it yet
+        // (a frame-threaded decoder holds many pictures in flight). Otherwise the frame was
+        // evicted or lies in another GOP: restart at the sync sample.
+        let running = st.next != usize::MAX && st.next <= n;
+        // Decoding on through a short stretch into the next GOP is cheaper than a restart, and
+        // playback wants those frames anyway.
+        let near = st.next <= key && key - st.next <= CONTINUE_THROUGH;
+        let continuing = running && (st.next > key || near) && (i >= st.next || (st.start <= i && want_pts > st.out_max));
         if !continuing {
             SEEKS.fetch_add(1, Ordering::Relaxed);
             if let Some(d) = st.decoder.as_mut() {
                 d.reset();
             }
             st.next = key;
+            st.start = key;
+            st.out_max = i64::MIN;
         }
-        let limit = (i + 64).min(n);
+        let limit = (i.max(st.next) + 64).min(n);
         while st.next < limit {
             let k = st.next;
             let data = s.read(k)?;
             let out = st.decoder.as_mut().expect("decoder").decode(&data, s.pts(k))?;
             st.next += 1;
             DECODED.fetch_add(1, Ordering::Relaxed);
-            for d in out {
-                self.store(&mut st, d.pts, d.frame);
-            }
+            self.store_output(&mut st, out);
             if st.frames.contains_key(&want_pts) {
                 break;
             }
         }
         if !st.frames.contains_key(&want_pts) {
             let out = st.decoder.as_mut().expect("decoder").flush();
-            for d in out {
-                self.store(&mut st, d.pts, d.frame);
-            }
+            self.store_output(&mut st, out);
             st.next = usize::MAX;
         }
         // nearest decoded frame at or before the wanted pts (robust to decoder pts quirks)
@@ -166,5 +217,172 @@ impl GopCache {
             .cloned()
             .or_else(|| st.frames.range(..=want_pts).next_back().map(|(_, f)| f.clone()))
             .ok_or_else(|| CodecError::Decode("frame not produced".into()))
+    }
+
+    /// Intra-only streams: decode the one sample outside the lock, so several frame workers
+    /// decode different frames of the same source at once.
+    fn intra_frame(&self, st: std::sync::MutexGuard<'_, State>, s: &dyn VideoSamples, i: usize, want_pts: i64) -> crate::Result<Arc<VideoFrame>> {
+        let mut st = st;
+        let spare = st.spare.pop();
+        drop(st);
+        let mut dec = match spare {
+            Some(d) => d,
+            None => s.make_decoder()?,
+        };
+        let res = s.read(i).and_then(|data| {
+            DECODED.fetch_add(1, Ordering::Relaxed);
+            dec.decode(&data, want_pts)
+        });
+        let mut st = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        if st.spare.len() < 16 {
+            st.spare.push(dec);
+        }
+        for d in res? {
+            self.store(&mut st, d.pts, d.frame);
+        }
+        st.frames
+            .get(&want_pts)
+            .cloned()
+            .or_else(|| st.frames.range(..=want_pts).next_back().map(|(_, f)| f.clone()))
+            .ok_or_else(|| CodecError::Decode("frame not produced".into()))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::video::DecodedFrame;
+    use std::collections::VecDeque;
+    use std::sync::atomic::AtomicUsize;
+
+    /// `n` samples, a sync sample every `gop`, pts = 1000 · index (no reordering).
+    struct Samples {
+        n: usize,
+        gop: usize,
+        delay: usize,
+        intra: bool,
+        resets: Arc<AtomicUsize>,
+        decodes: Arc<AtomicUsize>,
+    }
+
+    /// Outputs each picture `delay` samples late, like a frame-threaded decoder.
+    struct Dec {
+        delay: usize,
+        intra: bool,
+        held: VecDeque<i64>,
+        resets: Arc<AtomicUsize>,
+        decodes: Arc<AtomicUsize>,
+    }
+
+    fn picture(pts: i64) -> DecodedFrame {
+        let i = (pts / 1000) as u32;
+        DecodedFrame { pts, frame: VideoFrame::rgba8(1, 1, vec![i as u8, (i >> 8) as u8, 0, 255]) }
+    }
+
+    impl VideoDecoder for Dec {
+        fn decode(&mut self, _sample: &[u8], pts: i64) -> crate::Result<Vec<DecodedFrame>> {
+            self.decodes.fetch_add(1, Ordering::Relaxed);
+            self.held.push_back(pts);
+            let mut out = Vec::new();
+            while self.held.len() > self.delay {
+                out.push(picture(self.held.pop_front().expect("held")));
+            }
+            Ok(out)
+        }
+        fn flush(&mut self) -> Vec<DecodedFrame> {
+            self.held.drain(..).map(picture).collect()
+        }
+        fn reset(&mut self) {
+            self.resets.fetch_add(1, Ordering::Relaxed);
+            self.held.clear();
+        }
+        fn name(&self) -> &str {
+            "test"
+        }
+        fn intra_only(&self) -> bool {
+            self.intra
+        }
+    }
+
+    impl VideoSamples for Samples {
+        fn count(&self) -> usize {
+            self.n
+        }
+        fn pts(&self, i: usize) -> i64 {
+            i as i64 * 1000
+        }
+        fn sync_before(&self, i: usize) -> usize {
+            if self.intra { i } else { i / self.gop * self.gop }
+        }
+        fn sample_at(&self, t: i64) -> Option<usize> {
+            let i = (t / 1000) as usize;
+            (i < self.n).then_some(i)
+        }
+        fn read(&self, i: usize) -> crate::Result<Vec<u8>> {
+            Ok(vec![i as u8])
+        }
+        fn make_decoder(&self) -> crate::Result<Box<dyn VideoDecoder>> {
+            Ok(Box::new(Dec { delay: self.delay, intra: self.intra, held: VecDeque::new(), resets: self.resets.clone(), decodes: self.decodes.clone() }))
+        }
+    }
+
+    fn samples(n: usize, gop: usize, delay: usize, intra: bool) -> Samples {
+        Samples { n, gop, delay, intra, resets: Default::default(), decodes: Default::default() }
+    }
+
+    fn index_of(f: &VideoFrame) -> usize {
+        match &f.data {
+            filmcraft_frame::PixelData::Rgba8(d) => d[0] as usize | (d[1] as usize) << 8,
+            _ => unreachable!(),
+        }
+    }
+
+    #[test]
+    fn frames_held_by_a_threaded_decoder_do_not_restart_it() {
+        // 24 pictures in flight (more than any fixed look-ahead margin), one long GOP.
+        let s = samples(300, 250, 24, false);
+        let c = GopCache::new(None);
+        // Playback order with prefetch running ahead: a later frame first, then earlier ones the
+        // decoder has been fed but not output yet.
+        for i in [10usize, 11, 40, 12, 30, 13, 60, 14, 15] {
+            assert_eq!(index_of(&c.frame(&s, i as i64 * 1000).expect("frame")), i);
+        }
+        assert_eq!(s.resets.load(Ordering::Relaxed), 1, "only the first request seeks");
+        assert!(s.decodes.load(Ordering::Relaxed) <= 60 + 24 + 1);
+    }
+
+    #[test]
+    fn running_decoder_continues_through_a_nearby_sync_sample() {
+        let s = samples(200, 30, 0, false);
+        let c = GopCache::new(None);
+        assert_eq!(index_of(&c.frame(&s, 25_000).expect("frame")), 25);
+        // frame 40 lies in the next GOP (sync sample 30): decode 26..40 instead of restarting at 30
+        assert_eq!(index_of(&c.frame(&s, 40_000).expect("frame")), 40);
+        assert_eq!(index_of(&c.frame(&s, 28_000).expect("frame")), 28);
+        assert_eq!(s.resets.load(Ordering::Relaxed), 1);
+        // far ahead: restart at the sync sample rather than decode everything in between
+        assert_eq!(index_of(&c.frame(&s, 150_000).expect("frame")), 150);
+        assert_eq!(s.resets.load(Ordering::Relaxed), 2);
+        assert!(s.decodes.load(Ordering::Relaxed) <= 41 + 1);
+    }
+
+    #[test]
+    fn intra_frames_decode_in_parallel_once_each() {
+        let s = Arc::new(samples(64, 1, 0, true));
+        let c = Arc::new(GopCache::new(None));
+        std::thread::scope(|scope| {
+            for t in 0..4usize {
+                let (s, c) = (s.clone(), c.clone());
+                scope.spawn(move || {
+                    for k in 0..64usize {
+                        let i = (k * 7 + t * 16) % 64;
+                        assert_eq!(index_of(&c.frame(&*s, i as i64 * 1000).expect("frame")), i);
+                    }
+                });
+            }
+        });
+        // a frame two threads miss at the same moment may decode twice; nothing more
+        assert!(s.decodes.load(Ordering::Relaxed) <= 64 + 4 * 4);
+        assert_eq!(s.resets.load(Ordering::Relaxed), 0);
     }
 }
