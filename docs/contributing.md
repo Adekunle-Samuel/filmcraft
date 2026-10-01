@@ -1,0 +1,211 @@
+# Contributing
+
+Read [AGENTS.md](../AGENTS.md) first. Its rules on assets, clean-room code and licences are
+absolute and override everything here. Then read [architecture.md](architecture.md) and the README
+of the crate you will change.
+
+## 1. Setup
+
+| | All platforms |
+|---|---|
+| Rust | stable ≥ 1.90 (edition 2024), via [rustup](https://rustup.rs) |
+| wasm target | `rustup target add wasm32-unknown-unknown` (for `cargo xtask wasm`) |
+| Components | `rustup component add rustfmt clippy` |
+| ffmpeg + ffprobe (optional) | test oracle and fixture generator only; tests skip without it |
+
+| OS | Extra |
+|---|---|
+| macOS | Xcode Command Line Tools. ffmpeg: `brew install ffmpeg` (includes libx264/libx265). |
+| Linux | C toolchain and the system headers cpal and rfd need: ALSA (`libasound2-dev`) and GTK 3 (`libgtk-3-dev`), plus the usual X11/Wayland development packages for winit. ffmpeg from your distribution, built with libx264 and libx265. |
+| Windows | MSVC build tools. The oracle tests look for ffmpeg only in `/opt/homebrew/bin`, `/usr/local/bin` and `/usr/bin`, so most of them skip on Windows. |
+
+The oracle tests find ffmpeg at `/opt/homebrew/bin`, `/usr/local/bin` or `/usr/bin`. H.264 and
+HEVC fixtures need an ffmpeg built with libx264 and libx265. The VideoToolbox fixtures run only on
+macOS.
+
+## 2. Build and run
+
+```sh
+cargo run --release -p filmcraft                      # desktop app with the demo project
+cargo run --release -p filmcraft -- --empty           # start without the demo project
+cargo run --release -p filmcraft -- --control 9876    # plus the JSON-lines control server
+cargo run --release -p filmcraft -- a.mp4 b.wav       # import media (or open a .fcproj)
+cargo run --release -p filmcraft-cli -- commands      # list engine commands
+cargo run --release -p filmcraft-cli -- render --demo --seconds 3 --out frame.png
+cargo run --release -p filmcraft-cli -- mcp --demo    # headless MCP server on stdio
+```
+
+`FILMCRAFT_CONTROL_PORT=9876` works like `--control 9876`, and `FILMCRAFT_CPU_COMPOSITE=1`
+disables the GPU compositor.
+
+Dev builds compile dependencies at `opt-level = 2` and workspace crates at `opt-level = 1`. For
+playback and codec speed, use `--release`.
+
+## 3. Quality gates
+
+Every commit must pass all of these:
+
+| Gate | Command |
+|---|---|
+| Format | `cargo fmt --check` (`rustfmt.toml`: `max_width = 160`) |
+| Lints | `cargo clippy --workspace --all-targets -- -D warnings` |
+| Tests | `cargo test --workspace` |
+| Layering | `cargo xtask layers` |
+| Assets | `cargo xtask assets` |
+| wasm | `cargo xtask wasm` (checks every L0–L4 crate for `wasm32-unknown-unknown`) |
+| All of the above | `cargo xtask ci` (runs clippy and tests with `--release`) |
+
+`cargo xtask` is an alias in `.cargo/config.toml` for `cargo run -p xtask --`.
+
+## 4. Commits
+
+- One task per commit. The subject starts with the task id: `M3.2: trim mode engine — …`,
+  `M9.9: Matroska/WebM import`. Milestones (`M0`–`M16`) are listed in
+  [ROADMAP.md](../ROADMAP.md). If your change has no task id, use the area: `docs: …`,
+  `README: …`, `ROADMAP: …`.
+- Commit only green states (all gates pass).
+- When a milestone lands, update its row in `ROADMAP.md` (status, what's done, estimates).
+- AI agents end commit messages with the attribution line their environment requires.
+
+## 5. Parallel work (several agents or worktrees)
+
+```sh
+git worktree add ../filmcraft-hevc -b hevc-work
+cd ../filmcraft-hevc
+export CARGO_TARGET_DIR=target/agent-hevc     # separate build dir, no lock fights
+```
+
+- One owner per crate at a time.
+- The workspace includes `crates/*` and `apps/*` by glob, so one broken `Cargo.toml` breaks every
+  build. Keep every manifest valid at all times, including half-finished crates.
+- Test fixtures always go to `<repo>/target/fixtures/`, whatever `CARGO_TARGET_DIR` says.
+- `.mcp.json` points at `target/release/filmcraft-cli`. With a custom target dir, use your own path.
+
+## 6. How to add…
+
+### A command
+
+1. Add a `cmd!` (action) or `query!` (read-only) entry to `build()` in
+   `crates/engine/src/commands.rs`:
+   ```rust
+   cmd!("sequence.addEdit", "Add Edit", ["Sequence"], Some("Cmd+K"), r#"{"time":ticks?}"#, has_seq, |s, p| {
+       let t = time_p(s, p, "").unwrap_or(s.playhead());
+       let tg = s.targeting().targeted;
+       let n = s.edit_sequence("Add Edit", |q, ctx, _| Ok(edit::razor(q, &tg, t, ctx)))?;
+       Ok(json!({"cuts": n.len()}))
+   }),
+   ```
+   - Id: `area.camelCase`, following the menu it appears in.
+   - `enabled`: reuse a predicate (`always`, `has_seq`, `has_selection`, `has_in_out`, …) or write
+     one that returns `Err("human reason")`.
+   - Read time with `time_p` so `time`, `frame`, `seconds` and `timecode` all work.
+   - Mutate only through `s.edit(…)` or `s.edit_sequence(…)`, so the change is undoable and
+     validated.
+   - Put pure timeline logic in `filmcraft-edit` as a function on `&mut Sequence`, with unit or
+     property tests there.
+2. Add tests to `crates/engine/src/tests.rs`: execute, assert, undo, redo, and check the disabled
+   case.
+3. Frontend-only actions (tools, zoom, panels) go in `UI_COMMANDS` in
+   `crates/ui-egui/src/menus.rs` with a branch in `menus::invoke`.
+4. The command now appears in menus (from `menu`), shortcuts, `filmcraft-cli commands`,
+   `engine.commands` and MCP `command_list` without further work.
+
+### A video effect
+
+1. Define it in `build_effects()` in `crates/project/src/effect.rs` with the `video(id, name,
+   CATEGORY, params)` helper. Parameter helpers cover floats with slider ranges, choices, bools,
+   angles, points, colours, curves and wheels. The Effects panel, Effect Controls and agent
+   parameter docs are generated from this.
+2. Implement it as a match arm in `render::effects::apply` (`crates/render/src/effects.rs`). It
+   works on a linear-light premultiplied f32 `Image`. Scale pixel-size parameters by `cx.px_scale`
+   so reduced-resolution playback matches full resolution. Unknown ids are a no-op.
+3. Add a test in `crates/render/src/tests.rs`.
+4. The GPU path needs no change: `render::plan` pre-renders layers with standard effects on the CPU.
+
+Audio effects implement `AudioEffect` in `crates/audio-dsp` and register in its `effects()`
+registry. Then add an `audio(…)` definition in `effect.rs` and a `Mapping` from project parameters
+to DSP parameters in `crates/render/src/audio_fx.rs`. The DSP must give the same output however the
+stream is cut into blocks (there are tests for this).
+
+### A transition
+
+1. Define it with `vtrans(id, name, CATEGORY, params)` in `crates/project/src/effect.rs`. Audio
+   transitions use `EffectKind::AudioTransition`.
+2. Implement it in `render::transitions::apply(e, a, b, p)`: outgoing image `a`, incoming image `b`,
+   progress `p` in 0..1. Audio crossfade curves go in `transitions::audio_gains`.
+3. It can then be applied with `sequence.applyVideoTransition {"effect": "<id>"}`.
+
+### A codec or container crate
+
+1. **Spec first.** Work only from the public specification (ITU-T, ISO/IEC, IETF RFCs, SMPTE,
+   published container specs). Never copy GPL/LGPL code, and follow AGENTS.md §2 on reading other
+   implementations. Name the spec edition in the crate README.
+2. Create `crates/<name>` as an L0 crate that depends only on `filmcraft-bitstream` (plus
+   `thiserror` and optional `rayon` behind a `threads` feature). Add `[lints] workspace = true`, add
+   it to `[workspace.dependencies]`, and add it to `LAYERS` in `xtask/src/main.rs`. It must build
+   for wasm32.
+3. Test it against ffmpeg as an oracle (see [testing.md](testing.md)):
+   - generate fixtures with ffmpeg on first use into `target/fixtures/<crate>/`;
+   - skip with a message when ffmpeg is missing;
+   - never commit media.
+4. Wire it in:
+   - decoders: a `VideoDecoderFactory` in `crates/codecs` (`video.rs`, default list in `lib.rs`);
+   - containers: an `Opener` in `codecs::openers()`;
+   - encoders: an `export::VideoEncoder` / audio encoder plus a `Format` in `crates/export`.
+5. Write the README: features, API, test matrix, accuracy and speed numbers, limitations. Use
+   `crates/h264/README.md` as the model.
+
+### A panel or widget
+
+- Panels live in `crates/ui-egui/src/panels/` and are listed in `PanelKind`
+  (`crates/ui-egui/src/dock.rs`).
+- Every interactive element registers an automation id each frame:
+  ```rust
+  app.auto.add(&format!("effects.item.{}", d.id), rect, d.name);
+  ```
+  Ids are stable, dot-separated and start with the panel (`timeline.track.V1.lock`, `tools.Razor`).
+- UI state that should survive or be scriptable goes in `crates/ui-egui/src/state.rs` (serde), so
+  `ui.inspect` and `ui.set` can reach it.
+- Project changes go through `session.execute(…)`, never by mutating the project directly.
+- Icons are drawn in code in `crates/ui-egui/src/icons.rs`, from scratch (AGENTS.md §1).
+- Look at the result: run with `--control`, drive it, take `ui.screenshot`
+  ([agents.md](agents.md#3-verifying-ui-work)).
+
+### An asset
+
+The rules are in [AGENTS.md §1](../AGENTS.md#1-assets-no-adobe-artwork-every-asset-licensed-and-attributed).
+In short:
+
+- No Adobe iconography, images, fonts, LUTs, presets or other Adobe assets, in any form, including
+  traced or "inspired-by" copies.
+- Open licences only (MIT, Apache-2.0, BSD, ISC, zlib, OFL, CC0, CC BY, CC BY-SA, or your own
+  work under MIT OR Apache-2.0). No NC or ND licences. If the licence is unclear, leave the asset out.
+- Screenshots show only FilmCraft (or other open projects) with media we generated or that is
+  openly licensed.
+
+For each asset file `X`, commit a sidecar `X.attribution`. This is the real one for
+`assets/fonts/Inter-Regular.ttf`:
+
+```text
+asset:        Inter-Regular.ttf
+title:        Inter Regular (UI typeface)
+author:       The Inter Project Authors (Rasmus Andersson et al.)
+source:       https://github.com/rsms/inter
+license:      OFL-1.1
+license-file: assets/fonts/OFL-Inter.txt
+added:        2026-09-30 by Claude (agent) for Brandon Thomas
+notes:        Unmodified font file, embedded in the UI via include_bytes! (crates/ui-egui/src/theme.rs).
+```
+
+For your own work, use `source: original work` and the project licence (`MIT OR Apache-2.0`).
+
+Then add a row to [ATTRIBUTION.md](../ATTRIBUTION.md) with the path in backticks. `cargo xtask
+assets` checks every tracked file with a media extension (images, fonts, LUTs, audio, video, PDF,
+project files…):
+
+- the sidecar exists;
+- `asset`, `title`, `author`, `source`, `license` and `added` are filled in;
+- the licence is not NC, ND, Adobe or proprietary;
+- the path appears in `ATTRIBUTION.md`;
+- the path does not mention Adobe or Premiere;
+- no sidecar is orphaned.
