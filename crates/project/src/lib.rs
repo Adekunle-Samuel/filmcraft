@@ -12,7 +12,9 @@ pub mod effect;
 pub mod essential;
 pub mod graphic;
 pub mod keyframe;
+pub mod mask;
 pub mod mixer;
+pub mod multicam;
 
 use std::collections::BTreeMap;
 
@@ -25,7 +27,9 @@ pub use caption::{Caption, CaptionAlign, CaptionAnchor, CaptionFormat, CaptionSt
 pub use effect::{EffectDef, EffectInstance, EffectKind, ParamDef, ParamKind, effect_defs, find_effect};
 pub use essential::{AudioType, EssentialSound};
 pub use keyframe::{Interpolation, Keyframe, Param, ParamValue};
+pub use mask::{Mask, MaskMode, MaskPath, MaskVertex, TrackMethod};
 pub use mixer::{AutomationMode, InputMap, MixerStrip, TrackSend};
+pub use multicam::{Camera, MergedClip, MulticamAudio, MulticamSel, MulticamSource};
 
 macro_rules! id_type {
     ($name:ident) => {
@@ -318,6 +322,8 @@ impl ProjectItem {
                 filmcraft_media::MediaKind::ImageSequence => "Image Sequence",
                 filmcraft_media::MediaKind::Synthetic => "Synthetic",
             },
+            ItemKind::Sequence(s) if s.multicam.is_some() => "Multi-Camera Source Sequence",
+            ItemKind::Sequence(s) if s.merged.is_some() => "Merged Clip",
             ItemKind::Sequence(_) => "Sequence",
             ItemKind::Subclip { .. } => "Subclip",
             ItemKind::AdjustmentLayer { .. } => "Adjustment Layer",
@@ -468,6 +474,9 @@ pub struct TrackItem {
     /// Essential Sound audio type and settings (audio clips).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub essential: Option<EssentialSound>,
+    /// Multi-camera clip (a nested multi-camera source sequence): enabled flag and angle.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub multicam: Option<MulticamSel>,
 }
 
 impl TrackItem {
@@ -501,6 +510,10 @@ impl TrackItem {
         self.effects.iter_mut().find(|e| e.effect == id)
     }
     /// Standard (non-intrinsic) effects applied, for the fx badge.
+    /// The Opacity effect has masks (the layer is cut out before Motion).
+    pub fn has_opacity_masks(&self) -> bool {
+        self.effect("opacity").is_some_and(|e| e.enabled && e.masks.iter().any(|m| m.mode != mask::MaskMode::None))
+    }
     pub fn has_standard_effects(&self) -> bool {
         self.effects.iter().any(|e| e.def().is_some_and(|d| !d.intrinsic) && !graphic::is_layer(e))
     }
@@ -512,6 +525,7 @@ impl TrackItem {
         self.effects.iter().any(|e| {
             e.def().is_some_and(|d| d.intrinsic)
                 && (e.is_animated()
+                    || !e.masks.is_empty()
                     || e.def().is_some_and(|d| d.params.iter().any(|p| e.params.get(p.id).is_some_and(|v| !param_eq_default(&v.value, &p.default)))))
         })
     }
@@ -720,6 +734,12 @@ pub struct Sequence {
     /// Caption tracks (drawn above the video tracks; first = top). Older files have none (serde default).
     #[serde(default)]
     pub caption_tracks: Vec<CaptionTrack>,
+    /// Set on multi-camera source sequences (cameras, audio mode).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub multicam: Option<MulticamSource>,
+    /// Set on merged clips (the merged video and audio items).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub merged: Option<MergedClip>,
 }
 
 impl Sequence {
@@ -970,6 +990,8 @@ impl Project {
             master_mixer: MixerStrip::default(),
             submix_tracks: Vec::new(),
             caption_tracks: Vec::new(),
+            multicam: None,
+            merged: None,
         };
         for i in 0..v {
             let id = TrackId(self.alloc_id());
@@ -1034,6 +1056,9 @@ impl Project {
             TrackKind::Video => effect::intrinsic_video(),
             TrackKind::Audio => effect::intrinsic_audio(),
         };
+        // a multi-camera source sequence edits in as a multi-camera clip showing its first angle
+        let multicam =
+            it.as_sequence().and_then(|q| q.multicam.as_ref()).map(|m| MulticamSel { enabled: true, angle: m.first_video_angle().unwrap_or(0) as u32 });
         let id = ClipId(self.alloc_id());
         let dur = seq_rate.snap_nearest(source.duration).max(seq_rate.frame_duration());
         Some(TrackItem {
@@ -1055,6 +1080,7 @@ impl Project {
             frame_hold: None,
             scale_to_frame: false,
             essential: None,
+            multicam,
         })
     }
 

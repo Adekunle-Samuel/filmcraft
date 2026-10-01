@@ -17,10 +17,13 @@ pub mod graphic_clip;
 pub mod graphics;
 pub mod image;
 pub mod luts;
+pub mod mask;
 pub mod mixer;
+pub mod multicam;
 pub mod offline;
 pub mod plan;
 pub mod preview;
+pub mod track;
 pub mod transitions;
 
 use std::sync::Arc;
@@ -78,18 +81,24 @@ pub fn render_sequence(project: &Project, seq_id: ItemId, t: Tick, opts: RenderO
 }
 
 fn render_seq(project: &Project, seq: &Sequence, t: Tick, opts: RenderOptions, sources: &dyn SourceProvider) -> Image {
+    render_seq_tracks(project, seq, t, opts, sources, None)
+}
+
+/// Render a sequence, or only its video track `only` (a multi-camera angle; drawn even when the
+/// track's output is off).
+pub(crate) fn render_seq_tracks(project: &Project, seq: &Sequence, t: Tick, opts: RenderOptions, sources: &dyn SourceProvider, only: Option<usize>) -> Image {
     let (w, h) = output_size(seq, opts.scale);
     let mut canvas = Image::new(w, h);
     if opts.depth > 8 {
         return canvas;
     }
     let tc = format_time(t, seq.settings.frame_rate, seq.settings.drop_frame, TimeDisplay::Timecode, seq.settings.sample_rate as i64);
-    for track in &seq.video_tracks {
+    for (ti, track) in seq.video_tracks.iter().enumerate() {
         // A cancelled frame job (playback moved on) stops here; its result is discarded.
         if filmcraft_media::cancel::cancelled() {
             return canvas;
         }
-        if !track.enabled {
+        if only.is_some_and(|o| o != ti) || (!track.enabled && only.is_none()) {
             continue;
         }
         // transition covering t?
@@ -134,13 +143,19 @@ fn render_seq(project: &Project, seq: &Sequence, t: Tick, opts: RenderOptions, s
                 project: Some(project),
             };
             for e in item.effects.iter().filter(|e| e.def().is_some_and(|d| !d.intrinsic)) {
-                effects::apply(&mut adjusted, e, &cx);
+                mask::apply_effect(&mut adjusted, e, &cx);
             }
             let (op, bl) = opacity_blend(item, mt);
-            // Adjustment layer opacity mixes adjusted over original.
+            // Adjustment layer opacity (and opacity masks, in sequence pixels) mix adjusted over original.
             let mut out = canvas.clone();
             let mut adj = adjusted;
             adj.scale_alpha(op);
+            mask::apply_opacity_masks(&mut adj, item, mt, opts.scale);
+            // Motion moves / scales the adjustment layer's frame: it only applies inside it.
+            if let Some(region) = adjustment_region(seq, item, project, mt, opts.scale, w, h) {
+                let cov: Vec<f32> = region.px.chunks_exact(4).map(|p| p[3]).collect();
+                mask::scale_by(&mut adj, &cov);
+            }
             blend::composite(&mut out, &adj, 1.0, bl);
             canvas = out;
             continue;
@@ -158,6 +173,28 @@ fn render_seq(project: &Project, seq: &Sequence, t: Tick, opts: RenderOptions, s
         }
     }
     canvas
+}
+
+/// Coverage of an adjustment layer's (Motion-transformed) frame in output pixels, or `None` when
+/// it covers the whole output.
+fn adjustment_region(seq: &Sequence, item: &TrackItem, project: &Project, mt: Tick, scale: f32, w: usize, h: usize) -> Option<Image> {
+    let size = source_size(project, item.item).unwrap_or((seq.settings.width, seq.settings.height));
+    let motion = motion_matrix(seq, item, size, mt);
+    let s = scale as f64;
+    let (fw, fh) = (((size.0 as f64 * s).round() as usize).max(1), ((size.1 as f64 * s).round() as usize).max(1));
+    let m = Affine::scale(s, s).then_apply(&motion).then_apply(&Affine::scale(1.0 / s, 1.0 / s));
+    let full = fw == w
+        && fh == h
+        && (m.a - 1.0).abs() < 1e-9
+        && (m.d - 1.0).abs() < 1e-9
+        && m.b.abs() < 1e-12
+        && m.c.abs() < 1e-12
+        && m.e.abs() < 1e-9
+        && m.f.abs() < 1e-9;
+    if full {
+        return None;
+    }
+    Some(Image::filled(fw, fh, [1.0; 4]).transformed(w, h, &m))
 }
 
 /// Rendered captions of the visible caption tracks at `t` for a `w`×`h` output.
@@ -188,7 +225,7 @@ pub(crate) fn opacity_blend(item: &TrackItem, mt: Tick) -> (f32, Blend) {
 }
 
 /// Size of an item's source at full resolution.
-pub(crate) fn source_size(project: &Project, item: ItemId) -> Option<(u32, u32)> {
+pub fn source_size(project: &Project, item: ItemId) -> Option<(u32, u32)> {
     match &project.item(item)?.kind {
         ItemKind::Media(m) => m.info.video.as_ref().map(|v| (v.width, v.height)),
         ItemKind::Sequence(s) => Some((s.settings.width, s.settings.height)),
@@ -255,11 +292,21 @@ pub(crate) fn item_layer(
         }
         ItemKind::Sequence(nested) => {
             let sub = RenderOptions { scale: want, effects: opts.effects, depth: opts.depth + 1, captions: false, working_output: true };
-            render_seq(project, nested, mt, sub, sources)
+            match item.multicam_angle(nested) {
+                // a multi-camera clip shows its angle's track only (nothing for an audio-only angle)
+                Some(angle) => match nested.angle_video_track_index(angle) {
+                    Some(ti) => render_seq_tracks(project, nested, mt, sub, sources, Some(ti)),
+                    None => {
+                        let (nw, nh) = output_size(nested, want);
+                        Image::new(nw, nh)
+                    }
+                },
+                None => render_seq(project, nested, mt, sub, sources),
+            }
         }
         ItemKind::AdjustmentLayer { .. } => return None,
         ItemKind::Graphic { .. } => {
-            if !(opts.effects && item.has_standard_effects()) {
+            if !(item.has_opacity_masks() || opts.effects && item.has_standard_effects()) {
                 // vectors straight to the output: no resampling, crisp at any Motion scale
                 let m = Affine::scale(opts.scale as f64, opts.scale as f64).then_apply(&motion);
                 let mut canvas = Image::new(w, h);
@@ -281,9 +328,10 @@ pub(crate) fn item_layer(
             if filmcraft_media::cancel::cancelled() {
                 return None;
             }
-            effects::apply(&mut layer, e, &cx);
+            mask::apply_effect(&mut layer, e, &cx);
         }
     }
+    mask::apply_opacity_masks(&mut layer, item, mt, px_scale);
     // layer px → source px → sequence px → output px
     let m = Affine::scale(opts.scale as f64, opts.scale as f64).then_apply(&motion).then_apply(&Affine::scale(1.0 / px_scale as f64, 1.0 / px_scale as f64));
     let placed = if layer.w == w
@@ -360,6 +408,10 @@ pub fn arc_source(s: impl filmcraft_media::MediaSource + 'static) -> SharedSourc
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+#[path = "adjustment_tests.rs"]
+mod adjustment_tests;
 
 #[cfg(test)]
 #[path = "mixer_tests.rs"]

@@ -1557,6 +1557,7 @@ dependencies = [
  "filmcraft-frame",
  "filmcraft-geom",
  "filmcraft-media",
+ "filmcraft-project",
  "filmcraft-render",
  "filmcraft-time",
  "log",

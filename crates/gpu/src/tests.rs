@@ -183,3 +183,59 @@ fn gpu_lut_matches_cpu_tetrahedral() {
         assert!(worst < 1e-4, "size {size}: max |cpu - gpu| = {worst}");
     }
 }
+
+fn test_masks(scale: f32) -> Vec<filmcraft_render::mask::FlatMask> {
+    use filmcraft_project::{Mask, MaskMode, MaskPath, ParamValue};
+    let mut a = Mask::new("a", MaskPath::ellipse(Vec2::new(150.0, 90.0), Vec2::new(90.0, 55.0)));
+    a.feather.value = ParamValue::Float(24.0);
+    a.expansion.value = ParamValue::Float(6.0);
+    let mut b = Mask::new("b", MaskPath::polygon(&[Vec2::new(40.0, 20.0), Vec2::new(260.0, 50.0), Vec2::new(120.0, 170.0)]));
+    b.mode = MaskMode::Subtract;
+    b.feather.value = ParamValue::Float(0.0);
+    b.opacity.value = ParamValue::Float(70.0);
+    let mut c = Mask::new("c", MaskPath::rect(200.0, 100.0, 300.0, 175.0));
+    c.mode = MaskMode::Difference;
+    c.inverted = true;
+    c.feather.value = ParamValue::Float(3.5);
+    filmcraft_render::mask::prepare(&[a, b, c], filmcraft_time::Tick(0), scale)
+}
+
+#[test]
+fn gpu_mask_coverage_matches_cpu() {
+    let Some((dev, q)) = device() else {
+        eprintln!("no GPU adapter; skipping");
+        return;
+    };
+    let g = crate::GpuMask::new(&dev, &q);
+    for scale in [1.0f32, 0.5] {
+        let masks = test_masks(scale);
+        let (w, h) = ((320.0 * scale) as usize, (180.0 * scale) as usize);
+        let cpu = filmcraft_render::mask::coverage(&masks, w, h).unwrap();
+        let gpu = g.coverage(&masks, w, h).expect("gpu coverage");
+        let worst = cpu.iter().zip(&gpu).map(|(a, b)| (a - b).abs()).fold(0f32, f32::max);
+        eprintln!("mask coverage @{scale}: max |cpu − gpu| = {worst:e}");
+        assert!(worst < 2e-4, "scale {scale}: {worst}");
+        assert!(cpu.iter().any(|v| *v > 0.99) && cpu.iter().any(|v| *v < 0.01) && cpu.iter().any(|v| *v > 0.2 && *v < 0.8));
+    }
+}
+
+#[test]
+fn gpu_masked_mix_matches_cpu() {
+    let Some((dev, q)) = device() else {
+        eprintln!("no GPU adapter; skipping");
+        return;
+    };
+    let g = crate::GpuMask::new(&dev, &q);
+    let masks = test_masks(1.0);
+    let (w, h) = (320usize, 180usize);
+    let original = filmcraft_render::Image { w, h, px: (0..w * h * 4).map(|i| ((i * 37) % 101) as f32 / 100.0).collect() };
+    let mut effected = original.clone();
+    effected.px.iter_mut().for_each(|v| *v = 1.0 - *v * 0.5);
+    let gpu = g.mix(&masks, w, h, &original.px, &effected.px).expect("gpu mix");
+    let cov = filmcraft_render::mask::coverage(&masks, w, h).unwrap();
+    let mut cpu = effected.clone();
+    filmcraft_render::mask::mix(&mut cpu, &original, &cov);
+    let worst = cpu.px.iter().zip(&gpu).map(|(a, b)| (a - b).abs()).fold(0f32, f32::max);
+    eprintln!("masked mix: max |cpu − gpu| = {worst:e}");
+    assert!(worst < 2e-4, "{worst}");
+}

@@ -16,6 +16,7 @@
 //! Keyframes are stored in media time, so trims and splits never need to move them.
 
 pub mod captions;
+pub mod multicam;
 
 use std::collections::HashMap;
 

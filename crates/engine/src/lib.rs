@@ -16,14 +16,18 @@ pub mod demo;
 pub mod essential_sound;
 pub mod graphics;
 pub mod interchange;
+pub mod masks;
 pub mod media_pool;
 pub mod mixer;
+pub mod multicam;
+pub mod presets;
 pub mod previews;
 pub mod project_manager;
 pub mod proxies;
 pub mod relink;
 pub mod shortcut_presets;
 pub mod shortcuts;
+pub mod sync;
 pub mod trim;
 
 use std::sync::Arc;
@@ -168,6 +172,13 @@ pub struct EditorState {
     /// Selected layers (indices among the graphic layers, 0 = back) of the selected graphic clip.
     #[serde(default)]
     pub graphic_layers: Vec<usize>,
+    /// The mask being edited on the Program monitor (Effect Controls selection).
+    #[serde(default)]
+    pub selected_mask: Option<masks::MaskSel>,
+    /// Multi-Camera Audio Follows Video: switching a multi-camera clip's angle switches its linked
+    /// audio clips too.
+    #[serde(default)]
+    pub multicam_audio_follows_video: bool,
 }
 
 /// Events for frontends (drained each frame).
@@ -205,6 +216,8 @@ pub struct Session {
     pub previews: Arc<previews::PreviewStore>,
     /// Audio Track Mixer automation pass in progress.
     pub mixrec: mixer::Recorder,
+    /// Multi-camera live switching pass in progress.
+    pub mcrec: multicam::Recorder,
     /// Dynamic (J/K/L) trimming and trim-mode loop playback in progress.
     pub trim_play: trim::TrimPlayback,
     /// Keyboard shortcuts (active bindings, presets; `shortcuts.*` commands).
@@ -213,6 +226,10 @@ pub struct Session {
     pub offline: relink::OfflineState,
     /// Proxy / ingest / project-manager jobs whose results still have to be applied to the project.
     pub media_jobs: Vec<proxies::PendingJob>,
+    /// Mask tracking jobs whose keyframes are still being written.
+    pub mask_jobs: Vec<masks::PendingTrack>,
+    /// Effect presets (built-in + the user's, persisted in the data directory).
+    pub presets: presets::PresetLibrary,
     /// Nesting depth of [`Session::execute`] (commands that run other commands).
     exec_depth: u32,
 }
@@ -275,10 +292,13 @@ impl Session {
             loaded_schema: filmcraft_format::SCHEMA_VERSION,
             previews: Arc::new(previews::PreviewStore::temp()),
             mixrec: Default::default(),
+            mcrec: Default::default(),
             trim_play: Default::default(),
             shortcuts: shortcuts::Shortcuts::new(),
             offline: Default::default(),
             media_jobs: Vec::new(),
+            mask_jobs: Vec::new(),
+            presets: Default::default(),
             exec_depth: 0,
         }
     }
@@ -291,6 +311,7 @@ impl Session {
         self.prefs = autosave::Preferences::load(&prefs_path);
         self.media.set_use_proxies(self.prefs.media.enable_proxies);
         self.shortcuts.set_dir(&cfg.data_dir);
+        self.presets.set_dir(&cfg.data_dir);
         self.prefs_path = Some(prefs_path);
         self.persistence = Some(autosave::Persistence::start(&cfg, self.prefs.auto_save.clone())?);
         self.sync_persistence();
@@ -331,6 +352,7 @@ impl Session {
     /// results of finished proxy / ingest jobs.
     pub fn poll_persistence(&mut self) {
         proxies::poll(self);
+        masks::poll(self);
         let Some(p) = self.persistence.as_mut() else { return };
         for ev in p.drain_events() {
             match ev {
@@ -506,6 +528,13 @@ impl Session {
     /// Drop dangling references after undo/redo/delete.
     pub fn fix_state(&mut self) {
         let p = self.project.clone();
+        if let Some(m) = self.state.selected_mask {
+            let ok =
+                self.active_sequence().and_then(|q| q.find_item(m.clip)).and_then(|(_, it)| it.effects.get(m.effect)).is_some_and(|e| m.mask < e.masks.len());
+            if !ok {
+                self.state.selected_mask = None;
+            }
+        }
         if let Some(s) = self.state.active_sequence
             && p.sequence(s).is_none()
         {
@@ -621,9 +650,15 @@ mod essential_sound_tests;
 #[cfg(test)]
 mod file_tests;
 #[cfg(test)]
+mod masks_tests;
+#[cfg(test)]
 mod media_test_util;
 #[cfg(test)]
 mod mixer_tests;
+#[cfg(test)]
+mod multicam_tests;
+#[cfg(test)]
+mod presets_tests;
 #[cfg(test)]
 mod previews_tests;
 #[cfg(test)]

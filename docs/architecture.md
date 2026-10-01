@@ -127,7 +127,8 @@ TrackItem (a clip instance)
 ├─ link group, label, enabled
 └─ effects: Vec<EffectInstance>      intrinsic Motion/Opacity/Volume… first, then standard effects
 EffectInstance
-└─ effect id, enabled, params: id → constant value or keyframe track
+├─ effect id, enabled, params: id → constant value or keyframe track
+└─ masks: Vec<Mask>                  path (keyframable Bézier), feather, opacity, expansion, inverted, mode
 ```
 
 - **Graphic clips** ([graphics.md](graphics.md)) reference a `Graphic` canvas item; their text and
@@ -316,7 +317,36 @@ essentialSound.generateDucking   trigger clips' summed level (10 ms hops) → ac
   DeepFilterNet (MIT/Apache-2.0, Rust inference via tract) is the candidate for a future optional
   integration behind a trait.
 
-### 5.3 Colour management
+### 5.3 Masks
+
+Every video effect and the intrinsic Opacity carry `EffectInstance::masks` (`project::mask`).
+A mask is a closed cubic Bézier `MaskPath` in clip pixels (ellipse = four smooth vertices with
+circular tangents, 4-point polygon = corner vertices, the pen draws arbitrary vertices), stored as a
+`ParamValue::Path` so the ordinary keyframe engine animates it (vertex-wise interpolation; paths
+with different vertex counts hold). Feather, Opacity and Expansion are ordinary float parameters.
+
+- **Coverage** (`render::mask`): the path is flattened (≤ 0.05 working px chord error); the
+  signed distance to the polygon (nonzero winding) plus Expansion goes through a falloff of width
+  max(Feather, 1) centred on the edge (linear = exact box-filtered antialiasing at Feather 0,
+  blending into smoothstep as Feather grows). Masks combine top to bottom with Add / Subtract /
+  Intersect / Lighten / Darken / Difference; Inverted and Opacity apply per mask.
+- **Semantics.** A masked effect is `lerp(original, effected, coverage)` per premultiplied channel
+  (the effect only applies inside); Opacity masks scale the clip's layer before Motion, so they
+  follow the clip's transform. Adjustment-layer masks are in sequence pixels.
+- **GPU.** `filmcraft-gpu::GpuMask` evaluates the same coverage and mix in WGSL (compute), tested
+  to agree with the CPU within 3·10⁻⁶. Layers with masks are CPU-rendered images in frame plans.
+- **Editing.** `masks.*` commands (add / remove / set / moveVertex / translate / addVertex /
+  removeVertex / toggleVertexSmooth / select / list); keyframe commands take `"mask": n`. The
+  Program monitor overlay drags vertices, Bézier handles, the whole mask and the feather /
+  expansion handles; drags merge into one undo step.
+- **Tracking** (`render::track`, `masks.track`): Shi–Tomasi features inside the mask, pyramidal
+  Lucas–Kanade (4 levels, 15×15 window) with a forward–backward check, then RANSAC + least squares
+  for Position / Position & Rotation / Position, Scale & Rotation (2D Procrustes). Each frame's
+  transform moves the path, written as Mask Path keyframes while the background job runs (one undo
+  step per run; `jobs.cancel` stops and keeps what was tracked). Frames are tracked at ≤ 960 px
+  wide. On synthetic footage with known similarity motion the path stays within 0.3 px over 20 frames.
+
+### 5.4 Colour management
 
 ```text
 frame (Y'CbCr/RGB + metadata) ─► source colour space: Interpret Footage override, else VUI/colr/MKV Colour
@@ -355,6 +385,47 @@ frame (Y'CbCr/RGB + metadata) ─► source colour space: Interpret Footage over
   `Project::luts`, embedded `.cube`/`.3dl` text) or `builtin:<id>` (code-generated camera
   conversions and looks). `filmcraft-gpu::GpuLut` is the WGSL tetrahedral counterpart, tested for
   parity.
+
+### 5.4 Multi-camera and synchronisation
+
+```text
+clips ──sync (in | out | timecode[±hours] | marker | audio)──► anchors (media time ↔ common instant)
+  ├─ clip.synchronize        moves selected timeline clips (link groups together) onto the reference
+  ├─ clip.mergeClips         video + ≤16 audio clips → a merged-clip sequence
+  └─ clip.createMulticam     cameras → a multi-camera source sequence (one video track per angle)
+multi-camera clip = nested source + TrackItem::multicam {enabled, angle}
+  render: only the angle's video track · audio: camera 1 | all | the angle (Switch Audio)
+```
+
+- **Model** (`project::multicam`). `Sequence::multicam` (`MulticamSource`: cameras with their video
+  track, audio tracks, name, shown flag and source item; audio mode) marks a multi-camera source;
+  `Sequence::merged` a merged clip. `TrackItem::multicam` (`MulticamSel`) makes a nested clip a
+  multi-camera clip; any nest can be one (its video tracks are then the angles,
+  `Sequence::cameras()`). Editing a multi-camera source into a sequence gives an enabled clip on the
+  first angle (`Project::make_track_item`). Project schema v7.
+- **Sync** (`engine::sync`). Each method reduces a clip to an *anchor* (the media time that lines up
+  with the common instant). Audio uses `audio_dsp::sync::find_offset`: DC removal, windowed-sinc
+  decimation to ≤ 8 kHz, GCC-PHAT-β (β = 0.75) via one packed complex FFT for the coarse lag, then
+  the same at the full rate on the loudest common window (≤ 2.7 s) and parabolic interpolation.
+  Recordings with different gains, microphones (filtered), 0 dB SNR noise or a strong echo are
+  aligned to the sample; two 10-minute recordings take ~2.4 s (release). Clips are placed on frame
+  boundaries with the sub-frame remainder taken from their source In, so video stays on frames
+  while audio keeps sample accuracy.
+- **Render.** `render::item_layer` renders a multi-camera clip's angle track only
+  (`render_seq_tracks`); `render::audio` mixes the nested source with only the audible tracks
+  (`Sequence::with_angle_audio`). Nested audio now plays at all (it was skipped when the nest had
+  no media source) and is limited to the clip's range. `render::multicam::render_grid` renders the
+  shown angles at the cell scale in parallel (rayon) and tiles them: the Multi-Camera view is one
+  frame job (`frames::Target::MulticamGrid`), prefetched while playing like the program.
+- **Editing** (`edit::multicam`, `engine::multicam`). `multicam.switchAngle` (click an angle,
+  Ctrl/⌘-click for video only), `multicam.selectCamera1…9` (keys 1–9) and `cutToCamera1…9`
+  (Ctrl+1–9), Enable/Flatten, Edit Cameras, Audio Follows Video (`EditorState`). Live switching:
+  playback in the Multi-Camera view runs `multicam.recordStart`; each key/click is a
+  `multicam.cut` that is applied at once (the program shows it) by re-applying the whole pass to
+  the project from before the pass (`edit_merged`), so a pass is one undo step; Stop runs
+  `multicam.recordStop`, which ends the last angle at the stop point. Through edits inside the
+  recorded range are healed, so pressing the angle already showing adds no edit. Flatten replaces
+  a clip by the clip(s) its angle shows (outer effects carried over; linked pairs stay linked).
 
 ## 6. Export jobs (`filmcraft-export`)
 

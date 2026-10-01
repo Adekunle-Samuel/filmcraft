@@ -8,7 +8,7 @@ writing them is `crates/format` (`filmcraft-format`); the engine's `file.*` comm
 ```json
 {
   "format": "filmcraft.project",
-  "schema_version": 6,
+  "schema_version": 8,
   "generator": "FilmCraft 0.1.0",
   "project": { "name": "…", "settings": { … }, "root": { … }, "items": { … }, "next_id": 48 }
 }
@@ -30,6 +30,8 @@ writing them is `crates/format` (`filmcraft-format`); the engine's `file.*` comm
 | 4 | M7.4 | Essential Sound: clip audio types and settings; no-op step |
 | 5 | M8.8 | colour management: working space, Interpret Footage colour space, LUT library; no-op step |
 | 6 | M11.7/M11.9 | media identity fingerprints, ingest settings; no-op step |
+| 7 | M5.5 | effect masks: `masks` on effect instances with keyframable Bézier `Path` values; no-op step |
+| 8 | M12 | multi-camera source sequences and clips, merged clips; no-op step |
 
 ### Migrations
 
@@ -57,8 +59,8 @@ on disk is unchanged until you save. The **first save over it** keeps the origin
 
 A file with a `schema_version` newer than the build supports is **refused**, not half-read:
 
-> this project was saved by a newer version of FilmCraft (project schema v7); this build reads up to
-> v6. Update FilmCraft to open it.
+> this project was saved by a newer version of FilmCraft (project schema v9); this build reads up to
+> v8. Update FilmCraft to open it.
 
 Reading it partially and saving it back would silently drop whatever the newer version added.
 
@@ -321,3 +323,27 @@ new paths and fingerprints, so it opens with no missing media.
 Dialog ids: `pm.seq.<id>`, `pm.mode.<collect|consolidate>`, `pm.preset.<id>`, `pm.excludeUnused`,
 `pm.handles`, `pm.includeProxies`, `pm.includePreviews`, `pm.destination`, `pm.browse`,
 `pm.calculate`, `pm.sizes`, `pm.ok`, `pm.cancel`.
+
+## Effect presets
+
+Effect presets (Effects panel ▸ Presets; Effect Controls ▸ right-click an effect ▸ Save Preset…) are
+not part of the project. Built-in presets are defined in code (`filmcraft_engine::presets`); user
+presets live in `<data dir>/effect-presets.json`, and `presets.export` / `presets.import` read and
+write the same JSON format:
+
+```json
+{"format": "filmcraft.effect-presets", "version": 1, "presets": [
+  {"name": "My Vignette", "description": "", "keyframes": "AnchorToIn",
+   "source_duration": 2540160000000, "source_size": [1920, 1080],
+   "effects": [ /* EffectInstance, exactly as in .fcproj: effect, enabled, params, masks */ ]}
+]}
+```
+
+Keyframe times are relative to the in point of the clip the preset was saved from
+(`source_duration` is that clip's media length in ticks). Applying re-times them: `Scale` stretches
+them over the target clip, `AnchorToIn` / `AnchorToOut` keep their distance from the target's in /
+out point. Point parameters, mask paths, feather and expansion are scaled by the target / source
+frame-size ratio. Intrinsic effects (Motion, Opacity…) replace the clip's own instance; other
+effects are added. Applying is one undo step; saving, renaming, deleting and importing change the
+library, not the project, and are not undoable. Files with another `format`, a newer `version` or
+unknown effect ids are refused.

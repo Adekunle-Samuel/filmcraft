@@ -75,7 +75,7 @@ fn has_recovery(s: &Session) -> std::result::Result<(), String> {
 pub(crate) fn has_seq(s: &Session) -> std::result::Result<(), String> {
     s.active_sequence().map(|_| ()).ok_or_else(|| "no sequence is open".into())
 }
-fn has_selection(s: &Session) -> std::result::Result<(), String> {
+pub(crate) fn has_selection(s: &Session) -> std::result::Result<(), String> {
     has_seq(s)?;
     if s.state.selection.is_empty() { Err("no clips selected".into()) } else { Ok(()) }
 }
@@ -102,7 +102,7 @@ fn has_previews(s: &Session) -> std::result::Result<(), String> {
     has_seq(s)?;
     if s.previews.count() == 0 { Err("there are no render files".into()) } else { Ok(()) }
 }
-fn has_project_selection(s: &Session) -> std::result::Result<(), String> {
+pub(crate) fn has_project_selection(s: &Session) -> std::result::Result<(), String> {
     if s.state.project_selection.is_empty() { Err("select an item in the Project panel".into()) } else { Ok(()) }
 }
 fn has_clipboard(s: &Session) -> std::result::Result<(), String> {
@@ -152,13 +152,13 @@ pub(crate) fn time_p(s: &Session, p: &Value, prefix: &str) -> Option<Tick> {
 pub(crate) fn clip_p(p: &Value, k: &str) -> Option<ClipId> {
     u64_p(p, k).map(ClipId)
 }
-fn clips_p(s: &Session, p: &Value) -> Vec<ClipId> {
+pub(crate) fn clips_p(s: &Session, p: &Value) -> Vec<ClipId> {
     match p.get("clips").and_then(Value::as_array) {
         Some(a) => a.iter().filter_map(|v| v.as_u64().map(ClipId)).collect(),
         None => clip_p(p, "clip").map(|c| vec![c]).unwrap_or_else(|| s.state.selection.clone()),
     }
 }
-fn track_p(s: &Session, p: &Value, k: &str) -> Option<TrackId> {
+pub(crate) fn track_p(s: &Session, p: &Value, k: &str) -> Option<TrackId> {
     let v = p.get(k)?;
     if let Some(id) = v.as_u64() {
         return Some(TrackId(id));
@@ -192,7 +192,7 @@ pub fn with_links(s: &Session, clips: &[ClipId]) -> Vec<ClipId> {
     out
 }
 
-fn default_seq_settings_for(info: &filmcraft_media::MediaInfo) -> SequenceSettings {
+pub(crate) fn default_seq_settings_for(info: &filmcraft_media::MediaInfo) -> SequenceSettings {
     let mut st = SequenceSettings::default();
     if let Some(v) = &info.video {
         st.width = v.width;
@@ -1673,7 +1673,7 @@ fn build() -> Vec<CommandSpec> {
             "Set Effect Parameter",
             [],
             None,
-            r##"{"clip":id,"effect":"motion"|index,"param":str,"value":num|[x,y]|"#rrggbb"|bool,"time":ticks?}"##,
+            r##"{"clip":id,"effect":"motion"|index,"param":str,"mask":n?,"value":num|[x,y]|"#rrggbb"|bool|path,"time":ticks?}"##,
             has_seq,
             |s, p| {
                 let c = clip_p(p, "clip").ok_or_else(|| bad("effects.setParam", "need `clip`"))?;
@@ -1682,6 +1682,7 @@ fn build() -> Vec<CommandSpec> {
                 let eff = p.get("effect").cloned().unwrap_or(json!("motion"));
                 let ph = s.playhead();
                 let tl = time_p(s, p, "").unwrap_or(ph);
+                let pq = p.clone();
                 s.edit_sequence("Change Effect Parameter", |q, _, _| {
                     let (_, it) = q.find_item_mut(c).ok_or(filmcraft_edit::EditError::NoItem(c))?;
                     let mt = it.source_time_at(tl.clamp(it.start, it.end() - Tick(1)));
@@ -1700,7 +1701,7 @@ fn build() -> Vec<CommandSpec> {
                     {
                         e.params.insert(pid.clone(), filmcraft_project::Param::new(d.default.clone()));
                     }
-                    let prm = e.params.get_mut(&pid).ok_or_else(|| bad("effects.setParam", format!("no param `{pid}`")))?;
+                    let prm = crate::masks::target_param(e, &pq, &pid).ok_or_else(|| bad("effects.setParam", format!("no param `{pid}`")))?;
                     let v = json_to_param(&prm.value, &val).ok_or_else(|| bad("effects.setParam", "value has the wrong type"))?;
                     prm.set_at(mt, v);
                     Ok(())
@@ -1708,7 +1709,7 @@ fn build() -> Vec<CommandSpec> {
                 Ok(Value::Null)
             }
         ),
-        cmd!("effects.toggleAnimation", "Toggle Animation", [], None, r#"{"clip":id,"effect":str|index,"param":str}"#, has_seq, |s, p| {
+        cmd!("effects.toggleAnimation", "Toggle Animation", [], None, r#"{"clip":id,"effect":str|index,"param":str,"mask":n?}"#, has_seq, |s, p| {
             let c = clip_p(p, "clip").ok_or_else(|| bad("effects.toggleAnimation", "need `clip`"))?;
             let pid = str_p(p, "param").ok_or_else(|| bad("effects.toggleAnimation", "need `param`"))?.to_string();
             let eff = p.get("effect").cloned().unwrap_or(json!("motion"));
@@ -1722,7 +1723,7 @@ fn build() -> Vec<CommandSpec> {
                     _ => None,
                 }
                 .ok_or_else(|| bad("effects.toggleAnimation", "no such effect"))?;
-                e.params.get_mut(&pid).ok_or_else(|| bad("effects.toggleAnimation", "no such param"))?.toggle_animation(mt);
+                crate::masks::target_param(e, p, &pid).ok_or_else(|| bad("effects.toggleAnimation", "no such param"))?.toggle_animation(mt);
                 Ok(())
             })?;
             Ok(Value::Null)
@@ -1756,9 +1757,15 @@ fn build() -> Vec<CommandSpec> {
             })?;
             Ok(Value::Null)
         }),
-        cmd!("effects.addKeyframe", "Add/Remove Keyframe", [], None, r#"{"clip":id,"effect":str|index,"param":str,"time":ticks?}"#, has_seq, |s, p| {
-            keyframe_op(s, p, "add")
-        }),
+        cmd!(
+            "effects.addKeyframe",
+            "Add/Remove Keyframe",
+            [],
+            None,
+            r#"{"clip":id,"effect":str|index,"param":str,"mask":n?,"time":ticks?}"#,
+            has_seq,
+            |s, p| { keyframe_op(s, p, "add") }
+        ),
         cmd!("effects.deleteKeyframe", "Delete Keyframe", [], None, r#"{"clip":id,"effect":str|index,"param":str,"mediaTime":ticks}"#, has_seq, |s, p| {
             keyframe_op(s, p, "delete")
         }),
@@ -1882,6 +1889,7 @@ fn build() -> Vec<CommandSpec> {
     ];
     v.extend(crate::captions::commands());
     v.extend(crate::mixer::commands());
+    v.extend(crate::multicam::commands());
     v.extend(crate::essential_sound::commands());
     v.extend(crate::color::commands());
     v.extend(crate::graphics::commands());
@@ -1889,6 +1897,8 @@ fn build() -> Vec<CommandSpec> {
     v.extend(crate::relink::commands());
     v.extend(crate::proxies::commands());
     v.extend(crate::project_manager::commands());
+    v.extend(crate::masks::commands());
+    v.extend(crate::presets::commands());
     // Labels as individual commands (Edit ▸ Label ▸ <name>)
     for l in Label::ALL {
         let _ = l;
@@ -1970,7 +1980,7 @@ fn keyframe_op(s: &mut Session, p: &Value, op: &str) -> Result<Value> {
             _ => None,
         }
         .ok_or_else(|| bad("keyframe", "no such effect"))?;
-        let prm = e.params.get_mut(&pid).ok_or_else(|| bad("keyframe", "no such param"))?;
+        let prm = crate::masks::target_param(e, p, &pid).ok_or_else(|| bad("keyframe", "no such param"))?;
         match op {
             "add" => {
                 // toggle: remove if a keyframe sits at the playhead, else add
@@ -2082,6 +2092,7 @@ pub(crate) fn json_to_param(template: &ParamValue, v: &Value) -> Option<ParamVal
         ParamValue::Bool(_) => ParamValue::Bool(v.as_bool()?),
         ParamValue::Choice(_) => ParamValue::Choice(v.as_u64()? as u32),
         ParamValue::Text(_) => ParamValue::Text(v.as_str()?.to_string()),
+        ParamValue::Path(_) => ParamValue::Path(crate::masks::path_from_json(v)?),
         ParamValue::Curve(_) => {
             ParamValue::Curve(v.as_array()?.iter().filter_map(|p| Some([p.get(0)?.as_f64()? as f32, p.get(1)?.as_f64()? as f32])).collect())
         }
@@ -2287,7 +2298,7 @@ pub fn inspect_sequence(s: &Session, id: ItemId, q: &filmcraft_project::Sequence
                 "clip": i.id.0, "item": i.item.0, "name": i.name, "start": i.start.0, "duration": i.duration.0,
                 "startFrame": rate.frame_at(i.start), "durationFrames": rate.frame_at(i.duration), "sourceIn": i.source_in.0, "speed": i.speed,
                 "enabled": i.enabled, "link": i.link, "label": i.label.name(),
-                "effects": i.effects.iter().map(|e| json!({"effect": e.effect, "enabled": e.enabled, "params": e.params.iter().map(|(k, p)| (k.clone(), json!({"value": format!("{:?}", p.value), "keyframes": p.keyframes.len()}))).collect::<serde_json::Map<_, _>>()})).collect::<Vec<_>>(),
+                "effects": i.effects.iter().map(|e| json!({"effect": e.effect, "enabled": e.enabled, "masks": e.masks.len(), "params": e.params.iter().map(|(k, p)| (k.clone(), json!({"value": format!("{:?}", p.value), "keyframes": p.keyframes.len()}))).collect::<serde_json::Map<_, _>>()})).collect::<Vec<_>>(),
             })).collect::<Vec<_>>(),
             "transitions": t.transitions.iter().map(|x| json!({"id": x.id.0, "effect": x.effect.effect, "start": x.start.0, "duration": x.duration.0, "from": x.from.map(|c| c.0), "to": x.to.map(|c| c.0)})).collect::<Vec<_>>(),
         })

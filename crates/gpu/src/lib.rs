@@ -23,7 +23,9 @@ use filmcraft_frame::{Chroma, PixelData, VideoFrame};
 use filmcraft_render::plan::{FramePlan, PlanLayer};
 
 pub mod lut;
+pub mod mask;
 pub use lut::GpuLut;
+pub use mask::GpuMask;
 
 /// Output texture format: gamma-encoded RGBA8 (what egui expects of native textures); the resolve
 /// shader applies the sRGB encoding.

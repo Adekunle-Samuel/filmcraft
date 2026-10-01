@@ -89,6 +89,22 @@ Pure functions for Essential Sound auto-ducking:
   merge; clamped to the clip (a ramp cut by an edge gets the ramp's value at the edge); strictly
   increasing times.
 
+## Audio synchronisation (`sync`)
+
+`find_offset(a, b, sample_rate, &SyncOptions)` returns the lag `L` with `b[n] ≈ g·a[n + L]`, a
+sub-sample estimate, and two trust figures (`confidence` = peak / RMS of the correlation,
+`distinct` = peak / next peak > 50 ms away; `reliable()` = ≥ 8 and ≥ 1.5).
+
+- Coarse: DC removal + normalisation, Blackman-windowed-sinc decimation to ≤ 8 kHz (further for
+  long recordings, so the transform stays ≤ 4 M points), GCC-PHAT-β (`R = A·B*/|A·B*|^0.75`,
+  40 Hz – 0.4·rate band) with both signals packed into one complex FFT.
+- Refine: the same correlation at the full rate on the loudest common window (≤ 2¹⁷ samples), ±2
+  coarse steps around the coarse peak, parabolic interpolation.
+- Tested within one sample on speech-like multi-microphone signals (gains −20…+10 dB, SNR down to
+  3 dB, coloured microphones, fractional delays: worst 0.4 samples integer / 0.11 samples
+  sub-sample), a 0 dB SNR room with a strong echo, inverted polarity, unrelated signals
+  (unreliable) and `max_lag`. Two 10-minute recordings: 2.4 s (release, one core).
+
 ## Known limits
 
 - Effects assume ≤ the channel count they were built with; extra channels pass through

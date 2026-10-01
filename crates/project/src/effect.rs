@@ -11,6 +11,7 @@ use filmcraft_geom::Vec2;
 use serde::{Deserialize, Serialize};
 
 use crate::keyframe::{Param, ParamValue};
+use crate::mask::Mask;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum EffectKind {
@@ -43,6 +44,8 @@ pub enum ParamKind {
     },
     /// Colour wheel offset (x, y in −1..1).
     Wheel,
+    /// A mask path (edited on the Program monitor).
+    Path,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -91,23 +94,6 @@ impl EffectDef {
     }
 }
 
-/// A mask on an effect (ellipse / 4-point polygon / bezier), in clip pixel space.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct Mask {
-    pub name: String,
-    pub shape: MaskShape,
-    pub feather: Param,
-    pub opacity: Param,
-    pub expansion: Param,
-    pub inverted: bool,
-}
-
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub enum MaskShape {
-    Ellipse { center: Vec2, radius: Vec2 },
-    Polygon(Vec<Vec2>),
-}
-
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct EffectInstance {
     pub effect: String,
@@ -140,7 +126,7 @@ impl EffectInstance {
         self.params.get(id).map(|p| p.vec2_at(t)).unwrap_or_default()
     }
     pub fn is_animated(&self) -> bool {
-        self.params.values().any(Param::is_animated)
+        self.params.values().any(Param::is_animated) || self.masks.iter().any(Mask::is_animated)
     }
 }
 

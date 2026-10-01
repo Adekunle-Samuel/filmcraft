@@ -121,24 +121,38 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                     app.ui.collapsed_fx.retain(|k| *k != key);
                 }
             }
+            let mut save_preset = false;
+            let fx_id = e.effect.clone();
             resp.context_menu(|ui| {
+                let sp = ui.button("Save Preset…");
+                app.auto.add(&format!("effectControls.effect.{fx_id}.savePreset"), sp.rect, "Save Preset…");
+                if sp.clicked() {
+                    save_preset = true;
+                    ui.close();
+                }
                 if !def.intrinsic && ui.button("Clear").clicked() {
                     actions.push(("effects.remove".into(), json!({"clip": clip.0, "index": idx})));
                     ui.close();
                 }
             });
+            if save_preset {
+                crate::panels::presets::open_save(app, clip.0, vec![idx], def.name);
+            }
             if !open {
                 continue;
             }
             for pd in &def.params {
-                param_row(app, bui, body, clip, idx, e, pd, mt_now, &mut actions, &lane, &lx, &it);
+                param_row(app, bui, body, clip, idx, e, None, pd, mt_now, &mut actions, &lane, &lx, &it);
                 if app.ui.expanded_fx.contains(&graph_key(clip, idx, pd.id))
                     && let Some(param) = e.params.get(pd.id)
                     && param.is_animated()
                     && matches!(param.value, ParamValue::Float(_))
                 {
-                    graph_rows(app, bui, body, clip, idx, pd, param, &lane, &it, &mut actions);
+                    graph_rows(app, bui, body, clip, idx, None, pd, param, &lane, &it, &mut actions);
                 }
+            }
+            if crate::panels::masks::maskable(e) {
+                crate::panels::masks::effect_rows(app, bui, body, clip, idx, e, mt_now, &mut actions, &lane, &lx, &it);
             }
         }
     });
@@ -161,13 +175,14 @@ fn seq_name(app: &FilmcraftApp) -> String {
 }
 
 #[allow(clippy::too_many_arguments)]
-fn param_row(
+pub(crate) fn param_row(
     app: &mut FilmcraftApp,
     ui: &mut egui::Ui,
     body: Rect,
     clip: ClipId,
     idx: usize,
     e: &EffectInstance,
+    mask: Option<usize>,
     pd: &filmcraft_project::ParamDef,
     mt: Tick,
     actions: &mut Vec<(String, Value)>,
@@ -177,17 +192,33 @@ fn param_row(
 ) {
     let _ = lx;
     let t = app.tokens;
-    let Some(param) = e.params.get(pd.id) else { return };
+    let param = match mask {
+        Some(k) => e.masks.get(k).and_then(|m| m.param(pd.id)),
+        None => e.params.get(pd.id),
+    };
+    let Some(param) = param else { return };
+    // mask parameters: automation ids / widget ids get a `m<k>.` prefix, commands a `mask` field
+    let pkey: String = match mask {
+        Some(k) => format!("mask{k}.{}", pd.id),
+        None => pd.id.to_string(),
+    };
+    let pkey = pkey.as_str();
+    let with_mask = |mut v: Value| -> Value {
+        if let Some(k) = mask {
+            v["mask"] = json!(k);
+        }
+        v
+    };
     let (r, _) = ui.allocate_exact_size(vec2(body.width(), ROW_H), Sense::hover());
     let mut x = r.min.x + 26.0;
     // twirl-down for the value/velocity graphs (animated scalar params)
     if param.is_animated() && matches!(param.value, ParamValue::Float(_)) {
-        let key = graph_key(clip, idx, pd.id);
+        let key = graph_key(clip, idx, pkey);
         let open = app.ui.expanded_fx.contains(&key);
         let tw = Rect::from_center_size(pos2(r.min.x + 12.0, r.center().y), vec2(12.0, 12.0));
-        let tresp = ui.interact(tw.expand(2.0), egui::Id::new(("twirl", clip.0, idx, pd.id)), Sense::click()).on_hover_text("Show graphs");
+        let tresp = ui.interact(tw.expand(2.0), egui::Id::new(("twirl", clip.0, idx, pkey)), Sense::click()).on_hover_text("Show graphs");
         icons::paint(ui.painter(), tw, if open { Icon::ChevronDown } else { Icon::ChevronRight }, t.text_dim);
-        app.auto.add(&format!("effectControls.{}.{}.graphs", e.effect, pd.id), tw, "Show graphs");
+        app.auto.add(&format!("effectControls.{}.{}.graphs", e.effect, pkey), tw, "Show graphs");
         if tresp.clicked() {
             if open {
                 app.ui.expanded_fx.retain(|k| *k != key);
@@ -198,12 +229,12 @@ fn param_row(
     }
     if pd.animatable {
         let sw = Rect::from_center_size(pos2(x, r.center().y), vec2(14.0, 14.0));
-        let resp = ui.interact(sw, egui::Id::new(("sw", clip.0, idx, pd.id)), Sense::click()).on_hover_text("Toggle animation");
+        let resp = ui.interact(sw, egui::Id::new(("sw", clip.0, idx, pkey)), Sense::click()).on_hover_text("Toggle animation");
         icons::paint(ui.painter(), sw, Icon::Stopwatch, if param.is_animated() { t.accent } else { t.text_dim });
         if resp.clicked() {
-            actions.push(("effects.toggleAnimation".into(), json!({"clip": clip.0, "effect": idx, "param": pd.id})));
+            actions.push(("effects.toggleAnimation".into(), with_mask(json!({"clip": clip.0, "effect": idx, "param": pd.id}))));
         }
-        app.auto.add(&format!("effectControls.{}.{}.stopwatch", e.effect, pd.id), sw, "Toggle animation");
+        app.auto.add(&format!("effectControls.{}.{}.stopwatch", e.effect, pkey), sw, "Toggle animation");
     }
     x += 14.0;
     ui.painter().text(pos2(x, r.center().y), Align2::LEFT_CENTER, pd.label, Tokens::ui(12.0), t.text);
@@ -214,7 +245,7 @@ fn param_row(
             .max_rect(Rect::from_min_max(pos2(vx, r.min.y + 1.0), pos2(r.max.x - 26.0, r.max.y - 1.0)))
             .layout(egui::Layout::left_to_right(egui::Align::Center)),
     );
-    let id = egui::Id::new(("pv", clip.0, idx, pd.id));
+    let id = egui::Id::new(("pv", clip.0, idx, pkey));
     let mut set: Option<Value> = None;
     match (&pd.kind, &value) {
         (ParamKind::Float { min, max, soft_min, soft_max, unit, decimals }, ParamValue::Float(v)) => {
@@ -259,12 +290,15 @@ fn param_row(
                 set = Some(json!([rgba.r(), rgba.g(), rgba.b(), rgba.a()]));
             }
         }
+        (ParamKind::Path, _) => {
+            crate::panels::masks::path_value(app, &mut vui, clip, idx, mask, actions);
+        }
         _ => {
             vui.label(param_text(&app.session.project, pd.id, &value));
         }
     }
     if let Some(v) = set {
-        actions.push(("effects.setParam".into(), json!({"clip": clip.0, "effect": idx, "param": pd.id, "value": v})));
+        actions.push(("effects.setParam".into(), with_mask(json!({"clip": clip.0, "effect": idx, "param": pd.id, "value": v}))));
     }
     // keyframe navigator ◀ ◆ ▶ (when animated)
     let eff_json = json!(idx);
@@ -290,20 +324,20 @@ fn param_row(
         arrow(ui.painter(), pr, true, prev.is_some());
         arrow(ui.painter(), nr, false, next.is_some());
         icons::paint(ui.painter(), kr, Icon::Keyframe, if at_key { t.hot_text } else { t.text_dim });
-        if ui.interact(pr, egui::Id::new(("kprev", clip.0, idx, pd.id)), Sense::click()).clicked()
+        if ui.interact(pr, egui::Id::new(("kprev", clip.0, idx, pkey)), Sense::click()).clicked()
             && let Some(k) = prev
         {
             actions.push(("playhead.set".into(), json!({"time": to_tl(k).0})));
         }
-        if ui.interact(nr, egui::Id::new(("knext", clip.0, idx, pd.id)), Sense::click()).clicked()
+        if ui.interact(nr, egui::Id::new(("knext", clip.0, idx, pkey)), Sense::click()).clicked()
             && let Some(k) = next
         {
             actions.push(("playhead.set".into(), json!({"time": to_tl(k).0})));
         }
-        if ui.interact(kr, egui::Id::new(("kadd", clip.0, idx, pd.id)), Sense::click()).on_hover_text("Add/Remove Keyframe").clicked() {
-            actions.push(("effects.addKeyframe".into(), json!({"clip": clip.0, "effect": eff_json, "param": pd.id})));
+        if ui.interact(kr, egui::Id::new(("kadd", clip.0, idx, pkey)), Sense::click()).on_hover_text("Add/Remove Keyframe").clicked() {
+            actions.push(("effects.addKeyframe".into(), with_mask(json!({"clip": clip.0, "effect": eff_json, "param": pd.id}))));
         }
-        app.auto.add(&format!("effectControls.{}.{}.addKeyframe", e.effect, pd.id), kr, "Add/Remove Keyframe");
+        app.auto.add(&format!("effectControls.{}.{}.addKeyframe", e.effect, pkey), kr, "Add/Remove Keyframe");
     }
     // keyframes in the lane: draggable diamonds; right-click for interpolation
     if param.is_animated() {
@@ -316,12 +350,12 @@ fn param_row(
             if !(-0.01..=1.01).contains(&f) {
                 continue;
             }
-            let id = egui::Id::new(("kf", clip.0, idx, pd.id, k.time.0));
+            let id = egui::Id::new(("kf", clip.0, idx, pkey, k.time.0));
             let drag_off: Option<f32> = ui.data(|d| d.get_temp(id));
             let kx = lane.min.x + f * lane.width() + drag_off.unwrap_or(0.0);
             let kr = Rect::from_center_size(pos2(kx, y), vec2(11.0, 11.0));
             let resp = ui.interact(kr.expand(2.0), id, Sense::click_and_drag());
-            app.auto.add(&format!("effectControls.{}.{}.keyframe.{}", e.effect, pd.id, k.time.0), kr, "keyframe");
+            app.auto.add(&format!("effectControls.{}.{}.keyframe.{}", e.effect, pkey, k.time.0), kr, "keyframe");
             let sel = k.time == mt || resp.dragged();
             let col = if sel { t.hot_text } else { Color32::from_rgb(0xb0, 0xb0, 0xb0) };
             match k.interp {
@@ -346,7 +380,7 @@ fn param_row(
                 if new_media != k.time {
                     actions.push((
                         "effects.moveKeyframe".into(),
-                        json!({"clip": clip.0, "effect": eff_json, "param": pd.id, "mediaTime": k.time.0, "to": new_media.0}),
+                        with_mask(json!({"clip": clip.0, "effect": eff_json, "param": pd.id, "mediaTime": k.time.0, "to": new_media.0})),
                     ));
                 }
             }
@@ -367,14 +401,15 @@ fn param_row(
                     if ui.button(label).clicked() {
                         actions.push((
                             "effects.setInterpolation".into(),
-                            json!({"clip": clip.0, "effect": eff_json, "param": pd.id, "mediaTime": k.time.0, "interpolation": key}),
+                            with_mask(json!({"clip": clip.0, "effect": eff_json, "param": pd.id, "mediaTime": k.time.0, "interpolation": key})),
                         ));
                         ui.close();
                     }
                 }
                 ui.separator();
                 if ui.button("Clear").clicked() {
-                    actions.push(("effects.deleteKeyframe".into(), json!({"clip": clip.0, "effect": eff_json, "param": pd.id, "mediaTime": k.time.0})));
+                    actions
+                        .push(("effects.deleteKeyframe".into(), with_mask(json!({"clip": clip.0, "effect": eff_json, "param": pd.id, "mediaTime": k.time.0}))));
                     ui.close();
                 }
             });
@@ -644,25 +679,32 @@ pub fn properties_panel(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     }
 }
 
-fn graph_key(clip: ClipId, idx: usize, pid: &str) -> String {
+pub(crate) fn graph_key(clip: ClipId, idx: usize, pid: &str) -> String {
     format!("graph:{}:{}:{}", clip.0, idx, pid)
 }
 
 /// Value and velocity graphs of an animated scalar parameter, drawn across the keyframe lane.
 /// Keyframes drag vertically (value); Bezier influence handles drag horizontally.
 #[allow(clippy::too_many_arguments)]
-fn graph_rows(
+pub(crate) fn graph_rows(
     app: &mut FilmcraftApp,
     ui: &mut egui::Ui,
     body: Rect,
     clip: ClipId,
     idx: usize,
+    mask: Option<usize>,
     pd: &filmcraft_project::ParamDef,
     param: &filmcraft_project::Param,
     lane: &Rect,
     it: &TrackItem,
     actions: &mut Vec<(String, Value)>,
 ) {
+    let with_mask = |mut v: Value| -> Value {
+        if let Some(k) = mask {
+            v["mask"] = json!(k);
+        }
+        v
+    };
     let t = app.tokens;
     let (vr, _) = ui.allocate_exact_size(vec2(body.width(), 110.0), Sense::hover());
     let (velr, _) = ui.allocate_exact_size(vec2(body.width(), 64.0), Sense::hover());
@@ -728,7 +770,7 @@ fn graph_rows(
         if !(-0.01..=1.01).contains(&f) {
             continue;
         }
-        let id = egui::Id::new(("kfg", clip.0, idx, pd.id, k.time.0));
+        let id = egui::Id::new(("kfg", clip.0, idx, mask, pd.id, k.time.0));
         let dy: f32 = ui.data(|d| d.get_temp(id)).unwrap_or(0.0);
         let c = pos2(x_of(f), y_of(v) + dy);
         let r = Rect::from_center_size(c, vec2(10.0, 10.0));
@@ -758,7 +800,7 @@ fn graph_rows(
                 ui.data_mut(|d| d.remove::<f32>(hid));
                 let ni = ((infl * seg + hdx * side) / seg.max(1.0)).clamp(0.01, 1.0);
                 let key = if side > 0.0 { "outInfluence" } else { "inInfluence" };
-                actions.push(("effects.setKeyframe".into(), json!({"clip": clip.0, "effect": idx, "param": pd.id, "mediaTime": k.time.0, key: ni})));
+                actions.push(("effects.setKeyframe".into(), with_mask(json!({"clip": clip.0, "effect": idx, "param": pd.id, "mediaTime": k.time.0, key: ni}))));
             }
         }
         p.circle_filled(c, 4.5, if resp.dragged() { t.hot_text } else { Color32::from_rgb(0xe0, 0xe0, 0xe0) });
@@ -771,7 +813,7 @@ fn graph_rows(
             ui.data_mut(|d| d.remove::<f32>(id));
             let nv = v_of(c.y);
             let nv = if let ParamKind::Float { min, max, .. } = pd.kind { nv.clamp(min, max) } else { nv };
-            actions.push(("effects.setKeyframe".into(), json!({"clip": clip.0, "effect": idx, "param": pd.id, "mediaTime": k.time.0, "value": nv})));
+            actions.push(("effects.setKeyframe".into(), with_mask(json!({"clip": clip.0, "effect": idx, "param": pd.id, "mediaTime": k.time.0, "value": nv}))));
         }
     }
 }

@@ -438,7 +438,18 @@ fn draw_clip(
         if let Some(aspect) = aspect {
             let tw = (th.height() * aspect).min(th.width());
             let mt = rate.snap(it.source_in);
-            if let Some((tex, _)) = app.thumbnail(ctx, it.item, mt, 160) {
+            // a multi-camera clip shows its angle's clip
+            let (thumb_item, mt) = app
+                .session
+                .project
+                .sequence(it.item)
+                .and_then(|q| {
+                    let ti = q.angle_video_track_index(it.multicam_angle(q)?)?;
+                    let inner = q.video_tracks[ti].item_at(mt)?;
+                    Some((inner.item, inner.source_time_at(mt)))
+                })
+                .unwrap_or((it.item, mt));
+            if let Some((tex, _)) = app.thumbnail(ctx, thumb_item, mt, 160) {
                 let r = Rect::from_min_size(th.min, vec2(tw, th.height()));
                 let cp = p.with_clip_rect(th.intersect(p.clip_rect()));
                 cp.image(tex, r, Rect::from_min_max(pos2(0.0, 0.0), pos2((tw / (th.height() * aspect)).min(1.0), 1.0)), Color32::WHITE);
@@ -453,6 +464,10 @@ fn draw_clip(
     // name band
     if w > 24.0 {
         let mut label = it.name.clone();
+        if let Some(m) = it.multicam.filter(|m| m.enabled) {
+            let cam = app.session.project.sequence(it.item).and_then(|q| q.cameras().cameras.get(m.angle as usize).map(|c| c.name.clone()));
+            label = format!("[MC{}] {}", m.angle + 1, cam.unwrap_or(label));
+        }
         if (it.speed - 1.0).abs() > 1e-6 || it.reverse {
             label = format!("{label} [{}%]", ((if it.reverse { -1.0 } else { 1.0 }) * it.speed * 100.0).round());
         }
@@ -1603,7 +1618,9 @@ fn interact(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, layout: &
             if ctx.input(|i| i.pointer.any_released()) {
                 let is_transition = filmcraft_project::find_effect(&effect)
                     .is_some_and(|d| matches!(d.kind, filmcraft_project::EffectKind::VideoTransition | filmcraft_project::EffectKind::AudioTransition));
-                let r = if is_transition {
+                let r = if let Some(name) = effect.strip_prefix("preset:") {
+                    app.session.execute("presets.apply", json!({"preset": name, "clips": [clip.0]}))
+                } else if is_transition {
                     let edge = if p.x - layout.x_of(it.start) < layout.x_of(it.end()) - p.x { "in" } else { "out" };
                     app.session.execute("effects.apply", json!({"effect": effect, "clip": clip.0, "edge": edge}))
                 } else {
