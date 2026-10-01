@@ -1,8 +1,10 @@
 //! Per-frame decoding state shared by the tiles and the post-filters.
 
+use crate::decoder::RefFrame;
 use crate::frame::{FrameBuf, MiInfo};
-use crate::header::{FrameHeader, SequenceHeader};
+use crate::header::{FrameHeader, RefInfo, SequenceHeader};
 use crate::spec_tables::*;
+use std::sync::Arc;
 
 pub(crate) struct FrameState {
     pub seq: SequenceHeader,
@@ -32,6 +34,13 @@ pub(crate) struct FrameState {
     pub lr_sgr_xqd: [Vec<[i8; 2]>; 3],
     /// TileIntraFrameYModeCdf (reset per tile).
     pub intra_frame_y_mode_cdf: [[[u16; 14]; 5]; 5],
+    /// Reference slots (FrameStore and saved state) at the start of this frame.
+    pub refs: [Option<Arc<RefFrame>>; NUM_REF_FRAMES],
+    pub ref_info: [RefInfo; NUM_REF_FRAMES],
+    /// MotionFieldMvs[ ref ][ y8 * w8 + x8 ] (7.9); empty when unused.
+    pub motion_field: [Vec<[i32; 2]>; 8],
+    /// PrevSegmentIds (mi units).
+    pub prev_segment_ids: Vec<u8>,
 }
 
 fn count_units_in_frame(unit_size: usize, frame_size: usize) -> usize {
@@ -93,6 +102,10 @@ impl FrameState {
             lr_sgr_set,
             lr_sgr_xqd,
             intra_frame_y_mode_cdf: DEFAULT_INTRA_FRAME_Y_MODE_CDF,
+            refs: Default::default(),
+            ref_info: Default::default(),
+            motion_field: Default::default(),
+            prev_segment_ids: vec![0; mi_cols * mi_rows],
         }
     }
 

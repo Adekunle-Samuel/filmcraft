@@ -105,6 +105,8 @@ pub struct MiInfo {
     pub motion_mode: Vec<u8>,
     /// TxTypes[ row ][ col ] (luma 4x4 units).
     pub tx_type: Vec<u8>,
+    /// RefFrames[ row ][ col ] has been written for this frame.
+    pub written: Vec<bool>,
 }
 
 impl MiInfo {
@@ -132,6 +134,7 @@ impl MiInfo {
             interp_filter: vec![[0; 2]; n],
             motion_mode: vec![0; n],
             tx_type: vec![0; n],
+            written: vec![false; n],
         }
     }
 

@@ -1,6 +1,7 @@
 //! Tile decoding: partitions, mode info, residual coefficients, prediction and reconstruction
 //! (spec 5.11 syntax with the 8.3 CDF selection and 7.11 / 7.12 / 7.13 processes).
 
+use crate::Result;
 use crate::cdf::Cdfs;
 use crate::frame::{MiInfo, Mv};
 use crate::header::{FrameHeader, NONE, SequenceHeader};
@@ -9,7 +10,6 @@ use crate::spec_tables::*;
 use crate::state::FrameState;
 use crate::symbol::SymbolDecoder;
 use crate::transform::inverse_transform_2d;
-use crate::{Error, Result};
 
 /// Per-block state (the block-level variables of the syntax).
 #[derive(Clone, Default)]
@@ -52,6 +52,19 @@ pub(crate) struct Block {
     pub compound_idx: u8,
     pub max_luma_w: usize,
     pub max_luma_h: usize,
+    /// Mv[ ] / PredMv[ ] (row, col) for the two reference lists.
+    pub mv_i: [[i32; 2]; 2],
+    pub pred_mv: [[i32; 2]; 2],
+    pub ref_mv_idx: usize,
+    pub interintra: bool,
+    pub interintra_mode: usize,
+    pub wedge_interintra: bool,
+    pub wedge_index: usize,
+    pub wedge_sign: usize,
+    pub mask_type: usize,
+    pub compound_type: usize,
+    pub local_valid: bool,
+    pub local_warp_params: [i32; 6],
 }
 
 /// Decoder for one tile.
@@ -71,6 +84,8 @@ pub(crate) struct TileDecoder<'a, 'f> {
     /// BlockDecoded[ plane ][ y + 1 ][ x + 1 ] for y, x in -1..=32.
     pub block_decoded: [[[bool; 35]; 35]; 3],
     pub b: Block,
+    pub mvs: crate::mvpred::MvStack,
+    pub nb: crate::inter_info::Neighbours,
     /// Quant[] for the current transform block (raster order, stride per Adjusted size).
     quant: Vec<i32>,
     dequant: Vec<i32>,
@@ -78,6 +93,8 @@ pub(crate) struct TileDecoder<'a, 'f> {
     color_map_y: Vec<u8>,
     color_map_uv: Vec<u8>,
     plane_tx_type: usize,
+    pub pred_buf: [Vec<i32>; 2],
+    pub mask: Vec<i32>,
 }
 
 const SB_MAX: usize = 32; // superblock size in 4x4 units (128 / 4)
@@ -111,12 +128,16 @@ impl<'a, 'f> TileDecoder<'a, 'f> {
             ref_lr_wiener: [[[0; 3]; 2]; 3],
             block_decoded: [[[false; 35]; 35]; 3],
             b: Block::default(),
+            mvs: Default::default(),
+            nb: Default::default(),
             quant: vec![0; 1024],
             dequant: vec![0; 64 * 64],
             residual: vec![0; 64 * 64],
             color_map_y: vec![0; 64 * 64],
             color_map_uv: vec![0; 64 * 64],
             plane_tx_type: 0,
+            pred_buf: [vec![0; 128 * 128], vec![0; 128 * 128]],
+            mask: vec![0; 128 * 128],
         }
     }
 
@@ -203,7 +224,7 @@ impl<'a, 'f> TileDecoder<'a, 'f> {
     }
 
     #[inline]
-    fn block_decoded_at(&self, plane: usize, y: isize, x: isize) -> bool {
+    pub(crate) fn block_decoded_at(&self, plane: usize, y: isize, x: isize) -> bool {
         let (yy, xx) = (y + 1, x + 1);
         if yy < 0 || xx < 0 || yy > SB_MAX as isize + 1 || xx > SB_MAX as isize + 1 {
             return false;
@@ -410,15 +431,16 @@ impl<'a, 'f> TileDecoder<'a, 'f> {
                         mi.uv_mode[i] = b.uv_mode as u8;
                     }
                     mi.ref_frame[i] = b.ref_frame;
+                    mi.written[i] = true;
                     if b.is_inter {
                         if !b.use_intrabc {
                             mi.comp_group_idx[i] = b.comp_group_idx;
                             mi.compound_idx[i] = b.compound_idx;
                         }
                         mi.interp_filter[i] = b.interp_filter;
-                        mi.mv[i][0] = b.mv[0];
+                        mi.mv[i][0] = Mv::new(b.mv_i[0][0], b.mv_i[0][1]);
                         if is_compound {
-                            mi.mv[i][1] = b.mv[1];
+                            mi.mv[i][1] = Mv::new(b.mv_i[1][0], b.mv_i[1][1]);
                         }
                     }
                 }
@@ -486,7 +508,17 @@ impl<'a, 'f> TileDecoder<'a, 'f> {
         self.b.ref_frame = [INTRA_FRAME as i8, NONE];
         self.b.use_intrabc = if self.fs.fh.allow_intrabc { self.sd.read_symbol(&mut self.cdf.intrabc) == 1 } else { false };
         if self.b.use_intrabc {
-            return Err(Error::Unsupported("intra block copy"));
+            self.b.is_inter = true;
+            self.b.y_mode = DC_PRED;
+            self.b.uv_mode = DC_PRED;
+            self.b.motion_mode = SIMPLE as u8;
+            self.b.compound_type = COMPOUND_AVERAGE;
+            self.b.palette_size_y = 0;
+            self.b.palette_size_uv = 0;
+            self.b.interp_filter = [crate::header::BILINEAR; 2];
+            self.find_mv_stack(false);
+            self.assign_mv(false)?;
+            return Ok(());
         }
         self.b.is_inter = false;
         let mi = &self.fs.mi;
@@ -516,7 +548,7 @@ impl<'a, 'f> TileDecoder<'a, 'f> {
         Ok(())
     }
 
-    fn read_uv_mode(&mut self) {
+    pub(crate) fn read_uv_mode(&mut self) {
         let ms = self.b.mi_size;
         let cfl_allowed = if self.b.lossless && self.fs.plane_residual_size(ms, 1) == BLOCK_4X4 {
             true
@@ -528,7 +560,7 @@ impl<'a, 'f> TileDecoder<'a, 'f> {
             if cfl_allowed { self.sd.read_symbol(&mut self.cdf.uv_mode_cfl_allowed[y]) } else { self.sd.read_symbol(&mut self.cdf.uv_mode_cfl_not_allowed[y]) };
     }
 
-    fn intra_angle_info_y(&mut self) {
+    pub(crate) fn intra_angle_info_y(&mut self) {
         self.b.angle_delta_y = 0;
         if self.b.mi_size >= BLOCK_8X8 && is_directional_mode(self.b.y_mode) {
             let v = self.sd.read_symbol(&mut self.cdf.angle_delta[self.b.y_mode - V_PRED]);
@@ -536,7 +568,7 @@ impl<'a, 'f> TileDecoder<'a, 'f> {
         }
     }
 
-    fn intra_angle_info_uv(&mut self) {
+    pub(crate) fn intra_angle_info_uv(&mut self) {
         self.b.angle_delta_uv = 0;
         if self.b.mi_size >= BLOCK_8X8 && is_directional_mode(self.b.uv_mode) {
             let v = self.sd.read_symbol(&mut self.cdf.angle_delta[self.b.uv_mode - V_PRED]);
@@ -544,7 +576,7 @@ impl<'a, 'f> TileDecoder<'a, 'f> {
         }
     }
 
-    fn read_cfl_alphas(&mut self) {
+    pub(crate) fn read_cfl_alphas(&mut self) {
         let signs = self.sd.read_symbol(&mut self.cdf.cfl_sign);
         let sign_u = (signs + 1) / 3;
         let sign_v = (signs + 1) % 3;
@@ -573,7 +605,7 @@ impl<'a, 'f> TileDecoder<'a, 'f> {
         self.b.lossless = self.fs.fh.lossless_array[self.b.segment_id];
     }
 
-    fn read_segment_id(&mut self) {
+    pub(crate) fn read_segment_id(&mut self) {
         let (r, c) = (self.b.mi_row, self.b.mi_col);
         let mi = &self.fs.mi;
         let prev_ul = if self.b.avail_u && self.b.avail_l { mi.segment_id[mi.idx(r - 1, c - 1)] as i32 } else { -1 };
@@ -608,7 +640,7 @@ impl<'a, 'f> TileDecoder<'a, 'f> {
         self.fs.fh.seg.enabled && self.fs.fh.seg.features.enabled[self.b.segment_id][feature]
     }
 
-    fn read_skip(&mut self) {
+    pub(crate) fn read_skip(&mut self) {
         if self.fs.fh.seg.seg_id_pre_skip && self.seg_feature_active(SEG_LVL_SKIP) {
             self.b.skip = true;
         } else {
@@ -625,7 +657,7 @@ impl<'a, 'f> TileDecoder<'a, 'f> {
         }
     }
 
-    fn read_cdef(&mut self) {
+    pub(crate) fn read_cdef(&mut self) {
         let fh = &self.fs.fh;
         if self.b.skip || fh.coded_lossless || !self.fs.seq.enable_cdef || fh.allow_intrabc {
             return;
@@ -651,7 +683,7 @@ impl<'a, 'f> TileDecoder<'a, 'f> {
         }
     }
 
-    fn read_delta_qindex(&mut self) {
+    pub(crate) fn read_delta_qindex(&mut self) {
         let sb_size = if self.fs.seq.use_128x128_superblock { BLOCK_128X128 } else { BLOCK_64X64 };
         if self.b.mi_size == sb_size && self.b.skip {
             return;
@@ -671,7 +703,7 @@ impl<'a, 'f> TileDecoder<'a, 'f> {
         }
     }
 
-    fn read_delta_lf(&mut self) {
+    pub(crate) fn read_delta_lf(&mut self) {
         let sb_size = if self.fs.seq.use_128x128_superblock { BLOCK_128X128 } else { BLOCK_64X64 };
         if self.b.mi_size == sb_size && self.b.skip {
             return;
@@ -697,7 +729,7 @@ impl<'a, 'f> TileDecoder<'a, 'f> {
         }
     }
 
-    fn filter_intra_mode_info(&mut self) {
+    pub(crate) fn filter_intra_mode_info(&mut self) {
         self.b.use_filter_intra = false;
         let ms = self.b.mi_size;
         if self.fs.seq.enable_filter_intra && self.b.y_mode == DC_PRED && self.b.palette_size_y == 0 && block_width(ms).max(block_height(ms)) <= 32 {
@@ -710,7 +742,7 @@ impl<'a, 'f> TileDecoder<'a, 'f> {
 
     // ---- palette -------------------------------------------------------------------------
 
-    fn palette_mode_info(&mut self) {
+    pub(crate) fn palette_mode_info(&mut self) {
         let ms = self.b.mi_size;
         let bsize_ctx = MI_WIDTH_LOG2[ms] as usize + MI_HEIGHT_LOG2[ms] as usize - 2;
         let bd = self.fs.bit_depth;
@@ -1089,9 +1121,91 @@ impl<'a, 'f> TileDecoder<'a, 'f> {
 
     // ---- prediction and residual ----------------------------------------------------------
 
+    /// compute_prediction( ) (5.11.33)
     fn compute_prediction(&mut self) -> Result<()> {
-        if self.b.is_inter {
-            return Err(Error::Unsupported("inter prediction"));
+        if !self.b.is_inter {
+            return Ok(());
+        }
+        let sb_mask = if self.fs.seq.use_128x128_superblock { 31 } else { 15 };
+        let sub_row = self.b.mi_row & sb_mask;
+        let sub_col = self.b.mi_col & sb_mask;
+        let (ssx, ssy) = (self.fs.ssx, self.fs.ssy);
+        let is_inter_intra = self.b.ref_frame[1] == INTRA_FRAME as i8;
+        for plane in 0..(1 + 2 * self.b.has_chroma as usize) {
+            let plane_sz = self.fs.plane_residual_size(self.b.mi_size, plane);
+            let n4w = NUM_4X4_BLOCKS_WIDE[plane_sz] as usize;
+            let n4h = NUM_4X4_BLOCKS_HIGH[plane_sz] as usize;
+            let log2w = 2 + MI_WIDTH_LOG2[plane_sz] as u32;
+            let log2h = 2 + MI_HEIGHT_LOG2[plane_sz] as u32;
+            let sub_x = if plane > 0 { ssx } else { 0 };
+            let sub_y = if plane > 0 { ssy } else { 0 };
+            let base_x = (self.b.mi_col >> sub_x) * 4;
+            let base_y = (self.b.mi_row >> sub_y) * 4;
+            let mut cand_row = (self.b.mi_row >> sub_y) << sub_y;
+            let mut cand_col = (self.b.mi_col >> sub_x) << sub_x;
+            if is_inter_intra {
+                let mode = match self.b.interintra_mode {
+                    II_DC_PRED => DC_PRED,
+                    II_V_PRED => V_PRED,
+                    II_H_PRED => H_PRED,
+                    _ => SMOOTH_PRED,
+                };
+                let sbr = (sub_row >> sub_y) as isize;
+                let sbc = (sub_col >> sub_x) as isize;
+                let max_x = ((self.fs.fh.mi_cols as usize * 4) >> sub_x) as i32 - 1;
+                let max_y = ((self.fs.fh.mi_rows as usize * 4) >> sub_y) as i32 - 1;
+                let params = IntraParams {
+                    plane,
+                    x: base_x,
+                    y: base_y,
+                    have_left: if plane == 0 { self.b.avail_l } else { self.b.avail_l_chroma },
+                    have_above: if plane == 0 { self.b.avail_u } else { self.b.avail_u_chroma },
+                    have_above_right: self.block_decoded_at(plane, sbr - 1, sbc + n4w as isize),
+                    have_below_left: self.block_decoded_at(plane, sbr + n4h as isize, sbc - 1),
+                    mode,
+                    log2w,
+                    log2h,
+                    max_x,
+                    max_y,
+                    bit_depth: self.fs.bit_depth,
+                    angle_delta: 0,
+                    use_filter_intra: false,
+                    filter_intra_mode: 0,
+                    enable_intra_edge_filter: self.fs.seq.enable_intra_edge_filter,
+                    filter_type: if is_directional_mode(mode) && self.fs.seq.enable_intra_edge_filter { self.get_filter_type(plane) } else { false },
+                };
+                predict_intra(&mut self.fs.cur.planes[plane], &params);
+            }
+            let mut pred_w = block_width(self.b.mi_size) >> sub_x;
+            let mut pred_h = block_height(self.b.mi_size) >> sub_y;
+            let mut some_use_intra = false;
+            for r in 0..(n4h << sub_y) {
+                for c in 0..(n4w << sub_x) {
+                    let (rr, cc) = (cand_row + r, cand_col + c);
+                    if rr < self.fs.mi.rows && cc < self.fs.mi.cols && self.fs.mi.ref_frame[self.fs.mi.idx(rr, cc)][0] == INTRA_FRAME as i8 {
+                        some_use_intra = true;
+                    }
+                }
+            }
+            if some_use_intra {
+                pred_w = n4w * 4;
+                pred_h = n4h * 4;
+                cand_row = self.b.mi_row;
+                cand_col = self.b.mi_col;
+            }
+            let mut r = 0;
+            let mut y = 0;
+            while y < n4h * 4 {
+                let mut c = 0;
+                let mut x = 0;
+                while x < n4w * 4 {
+                    self.predict_inter(plane, base_x + x, base_y + y, pred_w, pred_h, cand_row + r, cand_col + c);
+                    x += pred_w;
+                    c += 1;
+                }
+                y += pred_h;
+                r += 1;
+            }
         }
         Ok(())
     }
@@ -1278,7 +1392,7 @@ impl<'a, 'f> TileDecoder<'a, 'f> {
         Ok(())
     }
 
-    fn get_filter_type(&self, plane: usize) -> bool {
+    pub(crate) fn get_filter_type(&self, plane: usize) -> bool {
         let (ssx, ssy) = (self.fs.ssx, self.fs.ssy);
         let b = &self.b;
         let mi = &self.fs.mi;
@@ -1978,7 +2092,7 @@ impl<'a, 'f> TileDecoder<'a, 'f> {
     }
 
     fn inter_frame_mode_info(&mut self) -> Result<()> {
-        Err(Error::Unsupported("inter frames"))
+        self.inter_frame_mode_info_impl()
     }
 }
 

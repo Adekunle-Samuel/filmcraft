@@ -28,8 +28,12 @@ reference) is used only as an external test oracle.
 | Dequantisation incl. quantiser matrices | 7.12 | done (qmatrix not yet oracle-tested) |
 | Inverse transforms: DCT 4–64, ADST 4/8/16, flip ADST, identity 4–32, WHT (lossless), rectangular | 7.13 | done, bit-exact |
 | Intra prediction: DC, V/H + directional with edge filter and upsampling, smooth (3), Paeth, recursive filter intra, CfL, palette | 7.11.2, 7.11.4, 7.11.5 | done, bit-exact |
-| Intra block copy | 7.11.3 | missing |
-| Inter prediction: MV prediction, motion field, scaling, filters, warp / global motion, OBMC, compound / masks, inter-intra | 7.9–7.11.3 | missing |
+| Inter mode info: segment id prediction, skip mode, reference frames (single / compound, uni / bi), modes, DRL, MV coding, inter-intra, motion mode, compound type, interpolation filters | 5.11.18–5.11.32 | done, bit-exact |
+| MV prediction: spatial / temporal candidate stacks, global MV, extra search, clamping, warp samples | 7.10 | done, bit-exact |
+| Motion field estimation (projection) and motion vector storage | 7.9, 7.19 | done, bit-exact |
+| Inter prediction: MV scaling (scaled references), 8-tap sub-pixel filters, global and local warp (warp estimation, shear), OBMC, wedge / difference-weighted / inter-intra masks, distance weights, averaging | 7.11.3 | done, bit-exact |
+| Intra block copy | 7.11.3 | done, bit-exact |
+| Output policy with scalability (highest spatial layer per temporal unit) | 7.18.1 | done, bit-exact |
 | Loop filter (all filter sizes, deltas, segment / ref / mode adjustments) | 7.14 | done, bit-exact |
 | CDEF | 7.15 | done, bit-exact |
 | Super-resolution upscaling | 7.16 | done, not yet oracle-tested (no fixture uses it yet) |
@@ -46,7 +50,17 @@ decoded frame with libdav1d: **bit-exact** on all 13 fixtures (8- and 10-bit 4:2
 
 `tests/conformance.rs` downloads libaom's conformance test vectors on first use
 (storage.googleapis.com/aom-test-data) and compares with libdav1d: `av1-1-b8-02-allintra`
-(39 frames, deblocking + CDEF + self-guided restoration) is **bit-exact**.
+(39 frames, deblocking + CDEF + self-guided restoration), `05-mv`, `06-mfmv` and
+`24-monochrome` are **bit-exact** in the default run. The ignored
+`conformance_vectors_extended` test covers the wider set; bit-exact today: `01-size-16x16`,
+`-66x66`, `-196x196`, `-226x226`, `00-quantizer-00/31/63` (8-bit) and `-00/40` (10-bit),
+`04-cdfupdate`, `05-mv`, `06-mfmv`, `22-svc-L1T2`, `22-svc-L2T1`, `22-svc-L2T2` (spatial layers
+with scaled inter-layer prediction), `24-monochrome` (8 and 10-bit) and
+`16-intra_only-intrabc-extreme-dv` (1080p intra block copy).
+
+`tests/oracle_inter.rs` encodes SVT-AV1 GOPs (hierarchical references, compound prediction,
+OBMC / warped motion, motion-field projection, all loop filters; presets 3–8, 8- and 10-bit, odd
+sizes) and compares every frame with libdav1d: **bit-exact** on all 4 fixtures.
 
 ## API
 

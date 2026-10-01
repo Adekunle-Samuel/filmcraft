@@ -33,6 +33,9 @@ pub(crate) struct RefFrame {
     pub mi_rows: usize,
     pub film_grain_present: bool,
     pub color: (u8, u8, u8, bool),
+    /// SavedRefFrames / SavedMvs (MfRefFrames / MfMvs of 7.19), mi units.
+    pub saved_ref_frames: Vec<i8>,
+    pub saved_mvs: Vec<[i32; 2]>,
 }
 
 /// An AV1 decoder. Feed it temporal units (one MP4 / Matroska sample each, or any run of
@@ -87,7 +90,9 @@ impl Decoder {
 
     /// Decode a chunk of OBUs; returns the frames shown by it.
     pub fn decode(&mut self, data: &[u8]) -> Result<Vec<Picture>> {
-        let mut out = Vec::new();
+        // (picture, temporal unit, spatial_id)
+        let mut out: Vec<(Picture, usize, u32)> = Vec::new();
+        let mut tu = 0usize;
         let mut pos = 0;
         while pos < data.len() {
             let h = data[pos];
@@ -133,7 +138,10 @@ impl Decoder {
                     let s = SequenceHeader::parse(payload)?;
                     self.seq = Some(s);
                 }
-                OBU_TEMPORAL_DELIMITER_T => self.seen_frame_header = false,
+                OBU_TEMPORAL_DELIMITER_T => {
+                    self.seen_frame_header = false;
+                    tu += 1;
+                }
                 OBU_FRAME_HEADER_T | OBU_REDUNDANT_FRAME_HEADER_T | OBU_FRAME_T => {
                     if self.seen_frame_header {
                         // frame_header_copy(): identical to the active header
@@ -144,27 +152,49 @@ impl Decoder {
                     let mut r = BitReader::new(payload);
                     let shown = self.frame_header(&mut r, temporal_id, spatial_id)?;
                     if let Some(pic) = shown {
-                        out.push(pic);
+                        out.push((pic, tu, spatial_id));
                         continue;
                     }
                     if obu_type == OBU_FRAME_T {
                         r.byte_align();
                         let rest = &payload[r.byte_pos()..];
                         if let Some(pic) = self.tile_group(rest)? {
-                            out.push(pic);
+                            out.push((pic, tu, spatial_id));
                         }
                     }
                 }
                 OBU_TILE_GROUP_T => {
                     if let Some(pic) = self.tile_group(payload)? {
-                        out.push(pic);
+                        out.push((pic, tu, spatial_id));
                     }
                 }
                 OBU_METADATA_T | OBU_TILE_LIST_T => {}
                 _ => {}
             }
         }
-        Ok(out)
+        // Output policy (7.18.1 note): with scalability, show one frame per temporal unit, the
+        // highest spatial layer present.
+        let scalable = self.seq.as_ref().is_some_and(|s| s.op_idc != 0);
+        if !scalable {
+            return Ok(out.into_iter().map(|(p, _, _)| p).collect());
+        }
+        let mut pics: Vec<Picture> = Vec::new();
+        let mut last: Option<(usize, u32)> = None;
+        for (p, t, sid) in out {
+            match last {
+                Some((lt, lsid)) if lt == t => {
+                    if sid >= lsid {
+                        *pics.last_mut().expect("picture") = p;
+                        last = Some((t, sid));
+                    }
+                }
+                _ => {
+                    pics.push(p);
+                    last = Some((t, sid));
+                }
+            }
+        }
+        Ok(pics)
     }
 
     /// frame_header_obu( ): returns a picture for show_existing_frame.
@@ -206,7 +236,29 @@ impl Decoder {
         if fh.upscaled_width > 65536 || fh.frame_height > 65536 {
             return Err(Error::Invalid("frame size"));
         }
-        let fs = FrameState::new(&seq, &fh);
+        let mut fs = FrameState::new(&seq, &fh);
+        fs.refs = self.ref_frames.clone();
+        fs.ref_info = self.refs.clone();
+        if !fh.frame_is_intra {
+            for i in 0..REFS_PER_FRAME {
+                if fs.refs[fh.ref_frame_idx[i]].is_none() {
+                    return Err(Error::Invalid("missing reference frame"));
+                }
+            }
+        }
+        if fh.primary_ref_frame != PRIMARY_REF_NONE {
+            // load_previous_segment_ids( )
+            if let Some(rf) = &self.ref_frames[fh.ref_frame_idx[fh.primary_ref_frame]]
+                && fh.seg.enabled
+                && rf.mi_cols == fs.mi.cols
+                && rf.mi_rows == fs.mi.rows
+            {
+                fs.prev_segment_ids.copy_from_slice(&rf.segment_ids);
+            }
+        }
+        if fh.use_ref_frame_mvs {
+            motion_field_estimation(&mut fs);
+        }
         let cdfs = if fh.primary_ref_frame == PRIMARY_REF_NONE {
             Cdfs::new(fh.quant.base_q_idx)
         } else {
@@ -285,15 +337,10 @@ impl Decoder {
         let seq = fs.seq.clone();
         let fh = fs.fh.clone();
         if fh.seg.enabled && !fh.seg.update_map {
-            // SegmentIds = PrevSegmentIds (load_previous_segment_ids)
-            if fh.primary_ref_frame != PRIMARY_REF_NONE
-                && let Some(rf) = &self.ref_frames[fh.ref_frame_idx[fh.primary_ref_frame]]
-                && rf.mi_cols == fs.mi.cols
-                && rf.mi_rows == fs.mi.rows
-            {
-                fs.mi.segment_id.copy_from_slice(&rf.segment_ids);
-            }
+            let prev = std::mem::take(&mut fs.prev_segment_ids);
+            fs.mi.segment_id.copy_from_slice(&prev);
         }
+        let (mf_refs, mf_mvs) = motion_vector_storage(&fs);
         let rf = Arc::new(RefFrame {
             buf: std::mem::take(&mut fs.cur),
             cdfs,
@@ -305,6 +352,8 @@ impl Decoder {
             mi_rows: fs.mi.rows,
             film_grain_present: seq.film_grain_params_present,
             color: (seq.color.color_primaries, seq.color.transfer_characteristics, seq.color.matrix_coefficients, seq.color.color_range),
+            saved_ref_frames: mf_refs,
+            saved_mvs: mf_mvs,
         });
         // reference frame update process (7.20)
         for i in 0..NUM_REF_FRAMES {
@@ -364,4 +413,122 @@ impl Decoder {
         }
         pic
     }
+}
+
+/// Motion field motion vector storage process (7.19): (MfRefFrames, MfMvs).
+fn motion_vector_storage(fs: &FrameState) -> (Vec<i8>, Vec<[i32; 2]>) {
+    let mi = &fs.mi;
+    let n = mi.rows * mi.cols;
+    let mut refs = vec![-1i8; n];
+    let mut mvs = vec![[0i32; 2]; n];
+    let fh = &fs.fh;
+    for i in 0..n {
+        for list in 0..2 {
+            let r = mi.ref_frame[i][list];
+            if r > INTRA_FRAME as i8 {
+                let ref_idx = fh.ref_frame_idx[r as usize - LAST_FRAME];
+                let dist = crate::header::relative_dist(&fs.seq, fs.ref_info[ref_idx].order_hint, fh.order_hint);
+                if dist < 0 {
+                    let m = mi.mv[i][list];
+                    let (row, col) = (m.row as i32, m.col as i32);
+                    if row.abs() <= REFMVS_LIMIT as i32 && col.abs() <= REFMVS_LIMIT as i32 {
+                        refs[i] = r;
+                        mvs[i] = [row, col];
+                    }
+                }
+            }
+        }
+    }
+    (refs, mvs)
+}
+
+/// Motion field estimation process (7.9).
+fn motion_field_estimation(fs: &mut FrameState) {
+    let w8 = fs.fh.mi_cols as usize >> 1;
+    let h8 = fs.fh.mi_rows as usize >> 1;
+    for r in LAST_FRAME..=ALTREF_FRAME {
+        fs.motion_field[r] = vec![[crate::mvpred::INVALID_MV, crate::mvpred::INVALID_MV]; w8 * h8];
+    }
+    let fh = fs.fh.clone();
+    let seq = fs.seq.clone();
+    let rd = |a: u32, b: u32| crate::header::relative_dist(&seq, a, b);
+    let last_idx = fh.ref_frame_idx[0];
+    let cur_gold = fh.order_hints[GOLDEN_FRAME];
+    let last_alt = fs.ref_info[last_idx].saved_order_hints[ALTREF_FRAME];
+    if last_alt != cur_gold {
+        project(fs, LAST_FRAME, -1);
+    }
+    let mut ref_stamp = MFMV_STACK_SIZE as i32 - 2;
+    if rd(fh.order_hints[BWDREF_FRAME], fh.order_hint) > 0 && project(fs, BWDREF_FRAME, 1) {
+        ref_stamp -= 1;
+    }
+    if rd(fh.order_hints[ALTREF2_FRAME], fh.order_hint) > 0 && project(fs, ALTREF2_FRAME, 1) {
+        ref_stamp -= 1;
+    }
+    if rd(fh.order_hints[ALTREF_FRAME], fh.order_hint) > 0 && ref_stamp >= 0 && project(fs, ALTREF_FRAME, 1) {
+        ref_stamp -= 1;
+    }
+    if ref_stamp >= 0 {
+        project(fs, LAST2_FRAME, -1);
+    }
+}
+
+fn get_mv_projection(mv: [i32; 2], numerator: i32, denominator: i32) -> [i32; 2] {
+    let den = denominator.min(MAX_FRAME_DISTANCE as i32);
+    let num = numerator.clamp(-(MAX_FRAME_DISTANCE as i32), MAX_FRAME_DISTANCE as i32);
+    let mut out = [0i32; 2];
+    for i in 0..2 {
+        let scaled = crate::mvpred::round2_signed64(mv[i] as i64 * num as i64 * DIV_MULT[den as usize] as i64, 14);
+        out[i] = (scaled as i32).clamp(-(1 << 14) + 1, (1 << 14) - 1);
+    }
+    out
+}
+
+fn project_pos(v8: i32, delta: i32, dst_sign: i32, max8: i32, max_off8: i32) -> Option<i32> {
+    let base8 = (v8 >> 3) << 3;
+    let offset8 = if delta >= 0 { delta >> (3 + 1 + 2) } else { -((-delta) >> (3 + 1 + 2)) };
+    let v = v8 + dst_sign * offset8;
+    if v < 0 || v >= max8 || v < base8 - max_off8 || v >= base8 + 8 + max_off8 { None } else { Some(v) }
+}
+
+/// Projection process (7.9.2).
+fn project(fs: &mut FrameState, src: usize, dst_sign: i32) -> bool {
+    let fh = fs.fh.clone();
+    let seq = fs.seq.clone();
+    let src_idx = fh.ref_frame_idx[src - LAST_FRAME];
+    let w8 = fh.mi_cols as i32 >> 1;
+    let h8 = fh.mi_rows as i32 >> 1;
+    let ri = fs.ref_info[src_idx].clone();
+    if ri.mi_rows != fh.mi_rows || ri.mi_cols != fh.mi_cols || ri.frame_type == INTRA_ONLY_FRAME as u8 || ri.frame_type == KEY_FRAME as u8 {
+        return false;
+    }
+    let Some(rf) = fs.refs[src_idx].clone() else { return false };
+    let rd = |a: u32, b: u32| crate::header::relative_dist(&seq, a, b);
+    let mi_cols = fh.mi_cols as usize;
+    for y8 in 0..h8 {
+        for x8 in 0..w8 {
+            let row = (2 * y8 + 1) as usize;
+            let col = (2 * x8 + 1) as usize;
+            let src_ref = rf.saved_ref_frames[row * mi_cols + col];
+            if src_ref > INTRA_FRAME as i8 {
+                let ref_to_cur = rd(fh.order_hints[src], fh.order_hint);
+                let ref_offset = rd(fh.order_hints[src], ri.saved_order_hints[src_ref as usize]);
+                let pos_valid = ref_to_cur.abs() <= MAX_FRAME_DISTANCE as i32 && ref_offset.abs() <= MAX_FRAME_DISTANCE as i32 && ref_offset > 0;
+                if pos_valid {
+                    let mv = rf.saved_mvs[row * mi_cols + col];
+                    let proj = get_mv_projection(mv, ref_to_cur * dst_sign, ref_offset);
+                    let py = project_pos(y8, proj[0], dst_sign, h8, MAX_OFFSET_HEIGHT as i32);
+                    let px = project_pos(x8, proj[1], dst_sign, w8, MAX_OFFSET_WIDTH as i32);
+                    if let (Some(py), Some(px)) = (py, px) {
+                        for dst in LAST_FRAME..=ALTREF_FRAME {
+                            let ref_to_dst = rd(fh.order_hint, fh.order_hints[dst]);
+                            let pm = get_mv_projection(mv, ref_to_dst, ref_offset);
+                            fs.motion_field[dst][(py * w8 + px) as usize] = pm;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    true
 }
