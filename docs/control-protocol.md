@@ -28,7 +28,12 @@ Methods (handlers in `crates/ui-egui/src/control.rs`):
 | `ui.timeline.hit` / `ui.timeline.locate` | `{x,y}` / `{clip, edge?}` | timeline hit-testing |
 | `ui.playback` | `{action: play|stop|toggle, speed?}` | |
 | `ui.screenshot` | `{path?, panel?}` | PNG of the window or one panel; fails after 10 s when no frame is presented (window hidden, display asleep) |
-| `ui.resize`, `ui.focus`, `app.quit` | | |
+| `ui.resize`, `ui.focus`, `app.quit` | | `ui.focus` is the only request that activates the app and takes keyboard focus |
+
+**Focus.** Driving the app never steals the user's keyboard. Started with `--control`, the app opens
+without activating itself. UI requests and screenshots that need a rendered frame bring the window
+forward without making it key (macOS `orderFrontRegardless`), so the user's typing keeps going to
+the app they are in. Only an explicit `ui.focus` activates FilmCraft.
 
 Element ids are stable, e.g. `timeline.clip.<id>`, `timeline.track.V1.lock`, `tools.Razor`,
 `project.item.<id>`, `effects.item.gaussian_blur`, `panel.tab.Timeline`, `program.transport.playback.toggle`.

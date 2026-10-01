@@ -271,8 +271,8 @@ pub fn handle(app: &mut FilmcraftApp, ctx: &egui::Context, req: &ControlRequest)
         "ui.screenshot" => {
             let crop = s("panel").and_then(PanelKind::from_name).and_then(|pk| app.auto.find(&format!("panel.{}", pk.id())).map(|e| e.rect));
             let crop = crop.or_else(|| s("id").and_then(|id| app.auto.find(id).map(|e| e.rect)));
-            ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
-            ctx.request_repaint();
+            // Bring the window on screen so a frame is presented, without taking keyboard focus.
+            app.raise_for_control(ctx);
             Outcome::Screenshot { path: s("path").map(str::to_string), crop }
         }
         "ui.resize" => {
@@ -282,6 +282,7 @@ pub fn handle(app: &mut FilmcraftApp, ctx: &egui::Context, req: &ControlRequest)
             ok(Value::Null)
         }
         "ui.focus" => {
+            // Explicit request: activate the app and take keyboard focus.
             ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
             ok(Value::Null)
         }
