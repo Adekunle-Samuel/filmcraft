@@ -1,28 +1,67 @@
+<p align="center">
+  <a href="https://getartcraft.com/">
+    <picture>
+      <source media="(prefers-color-scheme: dark)" srcset="docs/brand/artcraft-logo-white.svg">
+      <img alt="ArtCraft" src="docs/brand/artcraft-logo.svg" width="200">
+    </picture>
+  </a>
+</p>
+
 <h1 align="center">FilmCraft</h1>
 
 <p align="center">
-  <b>Professional video editing, rebuilt from scratch in pure Rust.</b><br>
-  An open-source, clean-room take on the Adobe Premiere Pro workflow: native on macOS, Windows and Linux, and in the browser via WebAssembly.<br>
-  <i>By the artcraft team.</i>
+  <b>Professional video editing, rebuilt from scratch in pure Rust.</b>
 </p>
+
+<p align="center">
+  An open-source, clean-room take on the Adobe Premiere Pro workflow: native on macOS, Windows and Linux, and in the browser via WebAssembly.<br>
+  By the ArtCraft team.
+</p>
+
+<p align="center">
+  <a href="#license"><img alt="License: MIT or Apache-2.0" src="https://img.shields.io/badge/license-MIT%20%7C%20Apache--2.0-8b5cf6"></a>
+  <img alt="Written in pure Rust" src="https://img.shields.io/badge/pure-Rust-6a3fd6?logo=rust&logoColor=white">
+  <img alt="Runs on macOS, Windows and Linux" src="https://img.shields.io/badge/runs%20on-macOS%20%7C%20Windows%20%7C%20Linux-8b5cf6">
+  <a href="#status"><img alt="Status: young and moving fast" src="https://img.shields.io/badge/status-young%20and%20moving%20fast-6a3fd6"></a>
+</p>
+
+<p align="center">
+  <a href="https://discord.gg/artcraft"><img alt="Join the ArtCraft community on Discord" src="https://img.shields.io/badge/Join%20us%20on%20Discord-5865F2?style=for-the-badge&logo=discord&logoColor=white" height="40"></a>
+</p>
+
+<p align="center">
+  <a href="https://getartcraft.com/apps/filmcraft"><b>FilmCraft on getartcraft.com</b></a> ·
+  <a href="https://getartcraft.com/">ArtCraft</a> ·
+  <a href="https://getartcraft.com/apps">All Crafting Apps</a>
+</p>
+
+<br>
+
+<p align="center">
+  <img src="docs/images/filmcraft-hero.png" alt="FilmCraft in the Color workspace, mid-way through an Apollo 11 documentary cut from NASA footage: the Program monitor on the Saturn V clearing the launch tower with a Launch Complex 39A lower third and an air-to-ground subtitle, Effect Controls with Lumetri and Scale keyframes on the shot, the Lumetri Color panel, bins of NASA selects, and a timeline with 49 picture cuts, B-roll, titles, a caption track, mission audio, a ducked music bed, named markers, a rendered section and live loudness meters" width="100%">
+</p>
+
+<p align="center"><sub><i>Apollo 11 - Tranquility</i>: a three-minute documentary edit of NASA's 1969 launch, landing and moonwalk film, with subtitles from the mission transcript. Every frame in these screenshots comes from public-domain footage, decoded, composited and graded by FilmCraft's own code.</sub></p>
+
+> [!NOTE]
+> **ArtCraft is a community of artists from all walks of life.** Painters, photographers,
+> filmmakers, illustrators, designers, animators, hobbyists, and people who picked up a pencil
+> last week. If you make things, you're one of us. **[Come say hi on Discord](https://discord.gg/artcraft).**
 
 <p align="center">
   <a href="#edit">Edit</a> ·
   <a href="#color">Color</a> ·
   <a href="#effects-and-motion">Effects</a> ·
   <a href="#audio">Audio</a> ·
+  <a href="#titles-and-captions">Titles</a> ·
   <a href="#formats-and-codecs">Formats</a> ·
   <a href="#export">Export</a> ·
   <a href="#interchange">Interchange</a> ·
   <a href="#built-for-agents">Agents</a> ·
-  <a href="#get-started">Get started</a>
+  <a href="#get-started">Get started</a> ·
+  <a href="#documentation">Docs</a> ·
+  <a href="#status">Status</a>
 </p>
-
-<p align="center">
-  <img src="docs/images/filmcraft-hero.png" alt="FilmCraft in the Color workspace, mid-way through an Apollo 11 documentary cut from NASA footage: the Program monitor on the Saturn V clearing the launch tower with a Launch Complex 39A lower third and an air-to-ground subtitle, Effect Controls with Lumetri and Scale keyframes on the shot, the Lumetri Color panel, bins of NASA selects, and a timeline with 49 picture cuts, B-roll, titles, a caption track, mission audio, a ducked music bed, named markers, a rendered section and live loudness meters" width="100%">
-</p>
-
-<p align="center"><sub><i>Apollo 11 &mdash; Tranquility</i>: a three-minute documentary edit of NASA's 1969 launch, landing and moonwalk film, with subtitles from the mission transcript. Every frame in these screenshots comes from public-domain footage, decoded, composited and graded by FilmCraft's own code.</sub></p>
 
 <br>
 
@@ -33,8 +72,10 @@ FilmCraft is a non-linear editor for people who know Premiere: the same panels, 
 ## Edit
 
 <p align="center">
-  <img src="docs/images/filmcraft-assembly.png" alt="Assembly workspace: Carnival of Souls in the Source monitor with In and Out marks, Night of the Living Dead in the Program monitor, the trailer in the timeline" width="100%">
+  <img src="docs/images/filmcraft-assembly.png" alt="Assembly workspace: bins of film thumbnails, Carnival of Souls in the Source monitor, a Night of the Living Dead cemetery shot in the Program monitor, and the trailer on a three-track timeline with a Chopin score on A2 and loudness meters" width="100%">
 </p>
+
+<p align="center"><sub>The Assembly workspace, cutting a trailer for <i>Night of the Living Dead</i> (1968) with an insert from <i>Carnival of Souls</i> (1962).</sub></p>
 
 **A timeline you already know.** Source and Program monitors, bins with thumbnails, a multi-track timeline with patch and target buttons, sync locks and linked selection. The Editing, Assembly, Color, Effects and Audio workspaces are all there, and every panel docks wherever you want it.
 
@@ -46,16 +87,20 @@ FilmCraft is a non-linear editor for people who know Premiere: the same panels, 
 - **Never lose work.** Saves are atomic, auto-save keeps a rolling set of versions, and a crash-recovery journal written about a second after each edit brings back unsaved changes after a crash or power cut.
 
 <p align="center">
-  <img src="docs/images/filmcraft-timeline.png" alt="Timeline detail: Night of the Living Dead shots with dissolves, a Carnival of Souls insert on V2, the Chopin score as a waveform on A2, markers and loudness meters" width="100%">
+  <img src="docs/images/filmcraft-timeline.png" alt="Timeline close-up: Night of the Living Dead shots with dissolves on V1, a Carnival of Souls insert on V2, the Chopin nocturne as a green waveform on A2, coloured markers along the ruler, and the loudness meter reading momentary, short-term, integrated and true-peak values" width="100%">
 </p>
+
+<p align="center"><sub>Up close: dissolves, an insert on V2, the score on A2, coloured markers, and the loudness meters on the right.</sub></p>
 
 <br>
 
 ## Color
 
 <p align="center">
-  <img src="docs/images/filmcraft-color.png" alt="Color workspace: a Lumetri grade on Charade (1963) with curves, colour sliders, waveform and vectorscope" width="100%">
+  <img src="docs/images/filmcraft-color.png" alt="Color workspace on Charade (1963): Cary Grant and Audrey Hepburn in the Program monitor, the waveform and vectorscope on the left, and the trailer bins and timeline below" width="100%">
 </p>
+
+<p align="center"><sub>The Color workspace on <i>Charade</i> (1963), with live scopes beside the Program monitor.</sub></p>
 
 **A complete Lumetri-style grading panel**, in the order a colourist works:
 
@@ -68,8 +113,14 @@ FilmCraft is a non-linear editor for people who know Premiere: the same panels, 
 
 <table>
   <tr>
-    <td width="34%" valign="top"><img src="docs/images/filmcraft-lumetri.png" alt="The Lumetri Color panel: basic correction sliders with temperature and tint gradients, and three colour wheels"></td>
-    <td width="66%" valign="top"><img src="docs/images/filmcraft-scopes.png" alt="Lumetri Scopes: waveform and vectorscope of a Charade frame"><br><br><sub><b>Scopes that tell the truth.</b> The waveform and vectorscope are computed from the graded frame. All grading happens in linear light, in 32-bit float.</sub></td>
+    <td width="34%" valign="top" align="center">
+      <img src="docs/images/filmcraft-lumetri.png" alt="The Lumetri Color panel on Charade (1963): Basic Correction sliders with coloured temperature and tint tracks, collapsed Creative and Curves sections, shadow, midtone and highlight colour wheels, and HSL Secondary and Vignette toggles"><br>
+      <sub><b>The Lumetri Color panel.</b> Basic Correction, Color Wheels and every other section, each with its own on/off switch.</sub>
+    </td>
+    <td width="66%" valign="top" align="center">
+      <img src="docs/images/filmcraft-scopes.png" alt="Lumetri Scopes: a green luma waveform and a vectorscope of a Charade (1963) frame"><br>
+      <sub><b>Scopes that tell the truth.</b> The waveform and vectorscope are computed from the graded frame. All grading happens in linear light, in 32-bit float.</sub>
+    </td>
   </tr>
 </table>
 
@@ -78,8 +129,10 @@ FilmCraft is a non-linear editor for people who know Premiere: the same panels, 
 ## Effects and motion
 
 <p align="center">
-  <img src="docs/images/filmcraft-effects.png" alt="Effects workspace: Effect Controls, NASA Earth Views from the ISS with a Golden Hour look, and the Effects browser" width="100%">
+  <img src="docs/images/filmcraft-effects.png" alt="Effects workspace: Effect Controls with Motion, Opacity, Time Remapping and Lumetri Color, NASA's Earth Views from the ISS in the Program monitor, and the Effects browser open on the Dissolve transitions" width="100%">
 </p>
+
+<p align="center"><sub>NASA's <i>Earth Views from the ISS</i> with a look applied, and the Effects browser open on the dissolves.</sub></p>
 
 - **Around 55 video effects and 30 transitions.** Blurs, keys, distortions, stylize and colour effects. Cross dissolve, dip to black or white, film dissolve, wipes, irises, pushes, slides, zooms, page peel, cube spin and more.
 - **Motion and opacity on every clip:** position, scale, rotation, anchor point and anti-flicker, plus 26 blend modes.
@@ -87,7 +140,7 @@ FilmCraft is a non-linear editor for people who know Premiere: the same panels, 
 - **A GPU compositor** built on wgpu (Metal, Vulkan, DirectX 12, WebGPU). It samples YUV straight from the decoder with footprint supersampling and blends in linear light. A CPU path renders the same frames, and the two are tested against each other.
 
 <p align="center">
-  <img src="docs/images/filmcraft-keyframes.png" alt="Effect Controls with the value and velocity graphs of an eased Scale push-in on the Night of the Living Dead title" width="100%">
+  <img src="docs/images/filmcraft-keyframes.png" alt="Effect Controls with the value and velocity graphs of an eased Scale push-in on the Night of the Living Dead title card, the Program monitor showing the title over a country road, and the Properties panel with Transform and Crop" width="100%">
 </p>
 
 <p align="center"><sub>An eased push-in on the title card: the value graph, the velocity graph and the Bezier influence handle.</sub></p>
@@ -102,6 +155,13 @@ FilmCraft is a non-linear editor for people who know Premiere: the same panels, 
 - **Automation like a console:** Read, Latch, Touch and Write modes recorded live from the mixer during playback, shown and edited as track keyframes on the timeline. Plus the Audio Gain dialog (set, adjust, normalize) and constant-power crossfades.
 - **Audio-clock playback.** The sound card is the master clock, so picture follows sound and never the other way round.
 
+<br>
+
+## Titles and captions
+
+- **A real text engine:** OpenType shaping with kerning and ligatures, bidirectional text, line breaking, tracking and leading, drawn in linear light and sharp at any scale or rotation.
+- **Type, Shape and Pen tools** on the Program monitor: click to type, edit with a caret and selection, drag out rectangles, ellipses and paths. Graphic clips hold text and shape layers with fill, strokes, background and shadow, all keyframable, and edited in the Properties panel.
+- **Captions:** caption tracks in Subtitle, CEA-608, CEA-708 and Teletext formats; import and export SRT, WebVTT and SCC with frame-exact timing; edit captions in the Text panel and burn them into exports.
 <br>
 
 ## Formats and codecs
@@ -128,19 +188,13 @@ MXF and hardware decode are next ([roadmap](ROADMAP.md)).
 
 <br>
 
-## Titles and captions
-
-- **A real text engine:** OpenType shaping with kerning and ligatures, bidirectional text, line breaking, tracking and leading, drawn in linear light and sharp at any scale or rotation.
-- **Type, Shape and Pen tools** on the Program monitor: click to type, edit with a caret and selection, drag out rectangles, ellipses and paths. Graphic clips hold text and shape layers with fill, strokes, background and shadow, all keyframable, and edited in the Properties panel.
-- **Captions:** caption tracks in Subtitle, CEA-608, CEA-708 and Teletext formats; import and export SRT, WebVTT and SCC with frame-exact timing; edit captions in the Text panel and burn them into exports.
-
-<br>
-
 ## Export
 
 <p align="center">
-  <img src="docs/images/filmcraft-export.png" alt="Export mode with H.264 MP4 settings" width="100%">
+  <img src="docs/images/filmcraft-export.png" alt="Export mode: destinations for Media File, YouTube, Vimeo, TikTok, Instagram and FTP on the left, a Night of the Living Dead frame in the preview, and H.264 settings on the right (1440x1080 at 23.976 fps, 48000 Hz stereo, entire sequence)" width="100%">
 </p>
+
+<p align="center"><sub>Export mode, set to write the trailer as H.264 MP4.</sub></p>
 
 - **H.264 MP4 with AAC, using our own encoders.** A 6-second 960×540 render takes 1.3 seconds and decodes cleanly in ffmpeg with error concealment switched off.
 - **Also:** Apple ProRes 422 HQ and Motion JPEG in QuickTime, PNG sequences, animated GIF and WAV.
@@ -196,7 +250,7 @@ cargo run --release -p filmcraft-cli -- commands           # list every engine c
 cargo run --release -p filmcraft-cli -- mcp                # MCP server (headless)
 ```
 
-The control protocol is documented in [docs/control-protocol.md](docs/control-protocol.md).
+The control protocol is documented in [docs/control-protocol.md](docs/control-protocol.md). Stuck, or want to show what you made? Ask in [Discord](https://discord.gg/artcraft).
 
 ## Documentation
 
@@ -232,32 +286,47 @@ A layered Cargo workspace:
 
 Nothing below the front ends depends on a UI toolkit or OS API. `cargo xtask ci` checks formatting, lints, tests, the layering rules, asset attribution and the wasm build.
 
-## Crafting Apps
+## The Crafting Apps
 
-Open-source, clean-room, pure-Rust creative tools. Each runs natively on macOS, Windows and Linux, and on the web.
+FilmCraft is one of the **Crafting Apps**: free, open-source creative tools from the
+[ArtCraft](https://getartcraft.com/) team, each written from scratch in Rust and each able to
+stand on its own.
 
-<table>
-  <tr>
-    <td width="20%" align="center"><a href="https://github.com/storytold/photocraft"><b>PhotoCraft</b></a></td>
-    <td>Image editing and compositing, Photoshop-class: layers, masks, adjustments and byte-exact PSD/PSB round trips.</td>
-  </tr>
-  <tr>
-    <td align="center"><a href="https://github.com/storytold/drawcraft"><b>DrawCraft</b></a></td>
-    <td>Vector illustration, Illustrator-class: paths, shapes, type and artboards.</td>
-  </tr>
-  <tr>
-    <td align="center"><a href="https://github.com/storytold/filmcraft"><b>FilmCraft</b></a></td>
-    <td>Non-linear video editing, Premiere Pro-class: timeline editing, own codecs, GPU compositing, colour and export. <i>You are here.</i></td>
-  </tr>
-  <tr>
-    <td align="center"><a href="https://github.com/storytold/lightcraft"><b>LightCraft</b></a></td>
-    <td>Photo library and non-destructive raw developer, Lightroom-class: catalog, culling, develop and export.</td>
-  </tr>
-  <tr>
-    <td align="center"><a href="https://github.com/storytold/printcraft"><b>PrintCraft</b></a></td>
-    <td>PDF viewing and editing, Acrobat-class: pages, annotations, forms and document tools.</td>
-  </tr>
-</table>
+| App | What it's for | Code | Learn more |
+|---|---|---|---|
+| <img src="https://img.shields.io/badge/PhotoCraft-2f7bf5?style=for-the-badge" alt="PhotoCraft" height="24"> | Image editing: layers, masks, type and real PSD files | [GitHub](https://github.com/storytold/photocraft) | [getartcraft.com](https://getartcraft.com/apps/photocraft) |
+| <img src="https://img.shields.io/badge/VectorCraft-e8573f?style=for-the-badge" alt="VectorCraft" height="24"> | Vector illustration (formerly DrawCraft) | [GitHub](https://github.com/storytold/vectorcraft) | [getartcraft.com](https://getartcraft.com/apps/drawcraft) |
+| <img src="https://img.shields.io/badge/FilmCraft-8b5cf6?style=for-the-badge" alt="FilmCraft" height="24"> | **Video editing, color and sound · you are here** | [GitHub](https://github.com/storytold/filmcraft) | [getartcraft.com](https://getartcraft.com/apps/filmcraft) |
+| <img src="https://img.shields.io/badge/LightCraft-f2a516?style=for-the-badge" alt="LightCraft" height="24"> | Photo library and raw development | [GitHub](https://github.com/storytold/lightcraft) | [getartcraft.com](https://getartcraft.com/apps/lightcraft) |
+| <img src="https://img.shields.io/badge/PrintCraft-12a58a?style=for-the-badge" alt="PrintCraft" height="24"> | Reading, organizing and protecting PDFs | [GitHub](https://github.com/storytold/printcraft) | [getartcraft.com](https://getartcraft.com/apps/printcraft) |
+| <img src="https://img.shields.io/badge/EffectCraft-e0368f?style=for-the-badge" alt="EffectCraft" height="24"> | Motion graphics and visual effects | [GitHub](https://github.com/storytold/effectcraft) | [getartcraft.com](https://getartcraft.com/apps/effectcraft) |
+| <img src="https://img.shields.io/badge/DesignCraft-7bb51c?style=for-the-badge" alt="DesignCraft" height="24"> | Page layout and publishing | [GitHub](https://github.com/storytold/designcraft) | [getartcraft.com](https://getartcraft.com/apps/designcraft) |
+
+And [**ArtCraft**](https://getartcraft.com/) itself, our AI image and video studio for artists who want real control.
+
+<br>
+
+<p align="center">
+  <a href="https://discord.gg/artcraft"><img alt="Join the ArtCraft community on Discord" src="https://img.shields.io/badge/Join%20us%20on%20Discord-5865F2?style=for-the-badge&logo=discord&logoColor=white" height="40"></a>
+</p>
+
+<h3 align="center">Come make things with us</h3>
+
+<p align="center">
+  Our Discord is where artists of every kind hang out: people who paint, shoot, draw, cut film,
+  set type, and people still figuring out what they like to make. Share what you're working on,
+  ask for help, tell us what's broken, or tell us what you wish these tools could do.
+  Whatever your medium and however long you've been at it, you're welcome here.
+</p>
+
+<p align="center">
+  <a href="https://discord.gg/artcraft"><b>discord.gg/artcraft</b></a> ·
+  <a href="https://getartcraft.com/">getartcraft.com</a> ·
+  <a href="https://getartcraft.com/apps">The Crafting Apps</a> ·
+  <a href="https://getartcraft.com/apps/filmcraft">FilmCraft</a>
+</p>
+
+<br>
 
 ## Credits and clean room
 
@@ -268,3 +337,10 @@ FilmCraft is an independent implementation. It contains no Adobe code, icons, im
 ## License
 
 FilmCraft is dual-licensed under [MIT](LICENSE-MIT) or [Apache-2.0](LICENSE-APACHE), at your option. Bundled assets keep their own open licences, listed in [ATTRIBUTION.md](ATTRIBUTION.md).
+
+<br>
+
+<p align="center">
+  <a href="https://getartcraft.com/"><img alt="ArtCraft" src="docs/brand/artcraft-mark.svg" width="28"></a><br>
+  <sub>Made by the <a href="https://getartcraft.com/">ArtCraft</a> team and community.</sub>
+</p>

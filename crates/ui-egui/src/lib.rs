@@ -10,6 +10,7 @@ pub mod dock;
 pub mod frames;
 pub mod header;
 pub mod icons;
+pub mod links;
 pub mod menus;
 pub mod panels;
 pub mod state;

@@ -68,6 +68,11 @@ pub const UI_COMMANDS: &[UiCommand] = &[
     uic!("mode.import", "Import", [], None),
     uic!("mode.edit", "Edit", [], None),
     uic!("mode.export", "Export", ["File", "Export"], Some("Cmd+M")),
+    uic!("help.discord", "Join the ArtCraft Discord…", ["Help"], None),
+    uic!("help.website", "ArtCraft Website", ["Help"], None),
+    uic!("help.appPage", "FilmCraft on getartcraft.com", ["Help"], None),
+    uic!("help.github", "FilmCraft on GitHub", ["Help"], None),
+    uic!("help.reportIssue", "Report an Issue…", ["Help"], None),
     uic!("app.about", "About FilmCraft", ["Help"], None),
     uic!("app.keyboardShortcuts", "Keyboard Shortcuts…", ["Edit"], Some("Cmd+Alt+K")),
     uic!("app.preferences.autoSave", "Auto Save…", ["Edit", "Preferences"], Some("Cmd+,")),
@@ -177,6 +182,12 @@ pub fn invoke(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, params: Val
         "app.about" => {
             app.dialog = Some(crate::Dialog::About);
             return Ok(Value::Null);
+        }
+        id if crate::links::url_for(id).is_some() => {
+            let url = crate::links::url_for(id).unwrap_or_default();
+            crate::links::open(ctx, url);
+            app.ui.status = format!("Opened {url}");
+            return Ok(json!({"url": url}));
         }
         "help.shortcuts" | "app.keyboardShortcuts" => {
             crate::panels::shortcuts_dialog::open(app);

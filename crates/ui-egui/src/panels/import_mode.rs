@@ -43,5 +43,29 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
             app.ui.mode = crate::state::Mode::Edit;
         }
     }
-    let _ = pos2(0.0, 0.0);
+    // Community and project links.
+    let y = 90.0 + 150.0 + 36.0;
+    ui.painter().text(rect.min + vec2(24.0, y), Align2::LEFT_CENTER, "Community", Tokens::semibold(15.0), t.text);
+    let mut x = rect.min.x + 24.0;
+    for (i, (id, label, url)) in crate::links::ALL.iter().take(4).enumerate() {
+        let primary = i == 0;
+        let label = if primary { "Join us on Discord" } else { *label };
+        let g = ui.painter().layout_no_wrap(label.to_string(), Tokens::ui(13.0), t.text);
+        let r = Rect::from_min_size(pos2(x, rect.min.y + y + 18.0), vec2(g.size().x + 44.0, 34.0));
+        let resp = ui.interact(r, egui::Id::new(("imp-link", *id)), Sense::click()).on_hover_text(*url);
+        app.auto.add(&format!("import.link.{}", id.trim_start_matches("help.")), r, label);
+        let (bg, fg) = if primary {
+            (if resp.hovered() { t.accent_hover } else { t.accent }, Color32::WHITE)
+        } else {
+            (if resp.hovered() { t.hover } else { t.tl_header_bg }, t.text)
+        };
+        ui.painter().rect_filled(r, 8.0, bg);
+        let icon = [crate::icons::Icon::Chat, crate::icons::Icon::Globe, crate::icons::Icon::Globe, crate::icons::Icon::Code][i];
+        crate::icons::paint(ui.painter(), Rect::from_center_size(pos2(r.min.x + 20.0, r.center().y), vec2(16.0, 16.0)), icon, fg);
+        ui.painter().galley(pos2(r.min.x + 34.0, r.center().y - g.size().y / 2.0), g, fg);
+        if resp.clicked() {
+            crate::links::open(&ctx, url);
+        }
+        x = r.max.x + 12.0;
+    }
 }
