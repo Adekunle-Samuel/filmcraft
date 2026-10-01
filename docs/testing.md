@@ -90,7 +90,10 @@ Each codec README has the full fixture matrix and the measured results.
   projects (demo-generator footage, bars, no media files) at 320×180 and renders one frame of each
   through the CPU compositor: Motion transform + opacity, four blend modes (Multiply, Screen,
   Overlay, Difference), Gaussian Blur, Lumetri basic correction, Crop, Cross Dissolve at 50 %, Dip
-  to Black at 25 %, Wipe at 50 %, and Timecode / Clip Name burn-in text. Each frame is compared
+  to Black at 25 %, Wipe at 50 %, Timecode / Clip Name burn-in text, graphic clips, and colour
+  management: S-Log3/S-Gamut3.Cine footage interpreted into Rec. 709 (`log_to_rec709`) and
+  Rec. 2100 PQ footage tone mapped into Rec. 709 (`hdr_tone_map`; the footage is demo frames
+  re-encoded by the test's `Encoded` source). Each frame is compared
   with `crates/golden/goldens/<scene>.png` by `filmcraft_testkit::golden`:
   **PSNR ≥ 45 dB, max abs ≤ 12, 99th-percentile per-pixel max channel difference ≤ 2** (8-bit
   sRGB levels; `Tolerance::RENDER`). On failure the actual frame and a ×8 difference image go to
@@ -145,6 +148,18 @@ metric through the render path (hum −39 dB, rumble −22 dB, noise floor −13
 reverb tail −10 dB); the mix is bit-identical however requests are cut and the WAV export equals it.
 `perf_full_dialogue_chain_realtime_factor` (ignored; run with `--release`) prints the realtime factor of
 all nine Dialogue effects on one clip (22× on one core).
+
+`crates/ui-egui/tests/color_ui.rs` drives colour features the same way (`color-*.png` snapshots):
+Lumetri Input/Look LUT menus and section switches, the Interpret Footage ▸ Color Management and
+Sequence Color Management dialogs, and the HDR scopes of a PQ sequence.
+
+Colour science tests: `filmcraft-color` (curve round trips and published reference values per
+camera log curve, BT.709/BT.2087 matrices, BT.2390 EETF, gamut mapping, LUT tetrahedral vs a
+brute-force barycentric reference, `.cube`/`.3dl` round trips), `filmcraft-gpu`
+(`gpu_lut_matches_cpu_tetrahedral`: WGSL vs CPU, max |Δ| ≈ 2e-7), `render::colorman`,
+`render::color_match`, engine `color_tests.rs`, and `export::tests::hdr_exports_signal_pq_and_hlg`
+(PQ/HLG exports read back by our demuxer and by ffprobe: `color_transfer`, `color_primaries`,
+`color_space`, mastering display and content light side data).
 
 Not covered headless: `ui.screenshot` (needs a real viewport), the wgpu monitor path (the harness
 runs the CPU texture path), audio output, and wall-clock playback advance (kittest frames do not

@@ -1457,6 +1457,7 @@ version = "0.1.0"
 dependencies = [
  "filmcraft-aac",
  "filmcraft-codecs",
+ "filmcraft-color",
  "filmcraft-frame",
  "filmcraft-h264enc",
  "filmcraft-isobmff",
@@ -1507,6 +1508,8 @@ dependencies = [
 name = "filmcraft-golden"
 version = "0.1.0"
 dependencies = [
+ "filmcraft-color",
+ "filmcraft-frame",
  "filmcraft-geom",
  "filmcraft-gpu",
  "filmcraft-media",
@@ -1658,6 +1661,7 @@ dependencies = [
  "filmcraft-time",
  "image",
  "rayon",
+ "rustix 1.1.5",
  "serde",
  "serde_json",
 ]

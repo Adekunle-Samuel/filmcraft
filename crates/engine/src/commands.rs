@@ -149,7 +149,7 @@ pub(crate) fn time_p(s: &Session, p: &Value, prefix: &str) -> Option<Tick> {
     None
 }
 
-fn clip_p(p: &Value, k: &str) -> Option<ClipId> {
+pub(crate) fn clip_p(p: &Value, k: &str) -> Option<ClipId> {
     u64_p(p, k).map(ClipId)
 }
 fn clips_p(s: &Session, p: &Value) -> Vec<ClipId> {
@@ -171,7 +171,7 @@ fn track_p(s: &Session, p: &Value, k: &str) -> Option<TrackId> {
     let tracks = if kind.eq_ignore_ascii_case("v") { &seq.video_tracks } else { &seq.audio_tracks };
     tracks.get(i.checked_sub(1)?).map(|t| t.id)
 }
-fn item_p(p: &Value, k: &str) -> Option<ItemId> {
+pub(crate) fn item_p(p: &Value, k: &str) -> Option<ItemId> {
     u64_p(p, k).map(ItemId)
 }
 
@@ -1679,6 +1679,12 @@ fn build() -> Vec<CommandSpec> {
                     if eff == json!("opacity") || eff == json!("motion") {
                         e.enabled = true;
                     }
+                    // instances saved before a parameter existed get it from the definition
+                    if !e.params.contains_key(&pid)
+                        && let Some(d) = e.def().and_then(|d| d.param(&pid))
+                    {
+                        e.params.insert(pid.clone(), filmcraft_project::Param::new(d.default.clone()));
+                    }
                     let prm = e.params.get_mut(&pid).ok_or_else(|| bad("effects.setParam", format!("no param `{pid}`")))?;
                     let v = json_to_param(&prm.value, &val).ok_or_else(|| bad("effects.setParam", "value has the wrong type"))?;
                     prm.set_at(mt, v);
@@ -1850,6 +1856,7 @@ fn build() -> Vec<CommandSpec> {
     v.extend(crate::captions::commands());
     v.extend(crate::mixer::commands());
     v.extend(crate::essential_sound::commands());
+    v.extend(crate::color::commands());
     v.extend(crate::graphics::commands());
     v.extend(crate::shortcuts::commands());
     // Labels as individual commands (Edit ▸ Label ▸ <name>)
@@ -1877,6 +1884,8 @@ fn export_media(s: &mut Session, p: &Value) -> Result<Value> {
         bitrate_kbps: u64_p(p, "bitrateKbps").unwrap_or(20_000) as u32,
         burn_captions: bool_p(p, "burnCaptions").unwrap_or(false),
         part_of_batch: false,
+        sdr: bool_p(p, "sdr").unwrap_or(false),
+        ..Default::default()
     };
     let id = s.jobs.len() as u64 + 1;
     let job = crate::Job {

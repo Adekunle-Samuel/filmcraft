@@ -181,6 +181,25 @@ pub fn sei_user_data_rbsp(text: &str) -> Vec<u8> {
     w.finish()
 }
 
+/// SEI with HDR static metadata: mastering_display_colour_volume (payloadType 137, the 24-byte
+/// ST 2086 payload) and/or content_light_level_info (payloadType 144), H.264 Annex D.
+pub fn sei_hdr_rbsp(mastering: Option<&[u8; 24]>, cll: Option<(u16, u16)>) -> Vec<u8> {
+    let mut w = BitWriter::new();
+    if let Some(m) = mastering {
+        w.write_bits(137, 8);
+        w.write_bits(24, 8);
+        w.write_bytes(m);
+    }
+    if let Some((a, b)) = cll {
+        w.write_bits(144, 8);
+        w.write_bits(4, 8);
+        w.write_bits(a as u32, 16);
+        w.write_bits(b as u32, 16);
+    }
+    w.rbsp_trailing();
+    w.finish()
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum SliceType {
     P = 0,

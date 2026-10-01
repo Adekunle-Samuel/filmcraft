@@ -295,6 +295,18 @@ pub struct UiState {
     /// Pen tool: path points placed so far (sequence pixels).
     #[serde(default)]
     pub pen_points: Vec<[f64; 2]>,
+    /// Open colour dialog (Interpret Footage ▸ Color Management, Sequence ▸ Color Management).
+    #[serde(default)]
+    pub color_dialog: Option<ColorDialog>,
+}
+
+/// Colour dialogs: drafts are applied with one engine command on OK.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub enum ColorDialog {
+    /// `clip.interpretFootage`: the media items and the chosen colour space id ("auto" = metadata).
+    Interpret { items: Vec<u64>, color_space: String },
+    /// `sequence.colorSettings`.
+    Sequence { working_space: String, wide_gamut: bool, auto_tone_map: bool },
 }
 
 /// The Audio Gain dialog (Clip ▸ Audio Gain…, G).
@@ -360,6 +372,7 @@ impl Default for UiState {
             audio_gain: AudioGainDraft::default(),
             gfx_edit: None,
             pen_points: vec![],
+            color_dialog: None,
         }
     }
 }

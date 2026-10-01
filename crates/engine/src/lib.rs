@@ -10,6 +10,7 @@
 
 pub mod autosave;
 pub mod captions;
+pub mod color;
 pub mod commands;
 pub mod demo;
 pub mod essential_sound;
@@ -530,6 +531,15 @@ impl Session {
         self.media.source_for(&self.project, item, &*self.services)
     }
 
+    /// Render the active sequence at the playhead in its working colour space (HDR values kept;
+    /// for scopes and analysis).
+    pub fn render_program_working(&self, scale: f32) -> Option<filmcraft_render::Image> {
+        let seq = self.state.active_sequence?;
+        let provider = self.media.provider(self.project.clone(), self.services.clone());
+        let opts = filmcraft_render::RenderOptions { scale, working_output: true, ..Default::default() };
+        Some(filmcraft_render::render_sequence(&self.project, seq, self.playhead(), opts, &provider))
+    }
+
     /// Render the active sequence at the playhead (CPU reference path).
     pub fn render_program(&self, scale: f32) -> Option<filmcraft_render::Image> {
         let seq = self.state.active_sequence?;
@@ -555,6 +565,8 @@ pub fn media_duration(p: &Project, _pool: &MediaPool, id: ItemId) -> Option<Tick
 
 #[cfg(test)]
 mod autosave_tests;
+#[cfg(test)]
+mod color_tests;
 #[cfg(test)]
 mod essential_sound_tests;
 #[cfg(test)]

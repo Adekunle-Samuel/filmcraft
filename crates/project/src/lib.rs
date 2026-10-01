@@ -155,6 +155,9 @@ pub struct Interpretation {
     pub par: Option<(u32, u32)>,
     pub ignore_alpha: bool,
     pub invert_alpha: bool,
+    /// Color Management ▸ override the colour space detected from the file's metadata.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub color_space: Option<filmcraft_color::ColorSpace>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -628,8 +631,16 @@ pub struct SequenceSettings {
     pub preview_codec: String,
     pub max_bit_depth: bool,
     pub max_render_quality: bool,
-    /// Working colour space.
+    /// Working colour space (display label; [`SequenceSettings::color`] is authoritative).
     pub working_space: String,
+    /// Colour pipeline: working space (Rec. 709 / Rec. 2100 PQ / HLG), wide-gamut compositing,
+    /// Auto Tone Map Media.
+    #[serde(default = "default_color_pipeline")]
+    pub color: filmcraft_color::ColorPipeline,
+}
+
+fn default_color_pipeline() -> filmcraft_color::ColorPipeline {
+    filmcraft_color::ColorPipeline::REC709
 }
 
 impl Default for SequenceSettings {
@@ -647,6 +658,7 @@ impl Default for SequenceSettings {
             max_bit_depth: false,
             max_render_quality: false,
             working_space: "Rec. 709".into(),
+            color: filmcraft_color::ColorPipeline::REC709,
         }
     }
 }
@@ -783,6 +795,24 @@ pub struct Project {
     pub items: BTreeMap<ItemId, ProjectItem>,
     /// Monotonic id source for all id types.
     pub next_id: u64,
+    /// The project's LUT library (Lumetri Input LUT / Creative Look "Browse…"). LUT files are
+    /// embedded, so projects render without the original files.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub luts: Vec<ProjectLut>,
+}
+
+/// A LUT imported into the project (`lut.import`). Lumetri refers to it as `lib:<id>`.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ProjectLut {
+    pub id: String,
+    pub name: String,
+    /// Where it was imported from (informational).
+    #[serde(default)]
+    pub source_path: Option<String>,
+    /// `cube` or `3dl`.
+    pub format: String,
+    /// The file's text.
+    pub text: std::sync::Arc<str>,
 }
 
 impl Default for Project {
@@ -799,6 +829,7 @@ impl Project {
             root: Bin { id: BinId(0), name: name.into(), children: Vec::new() },
             items: BTreeMap::new(),
             next_id: 1,
+            luts: Vec::new(),
         }
     }
 

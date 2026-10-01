@@ -306,6 +306,46 @@ essentialSound.generateDucking   trigger clips' summed level (10 ms hops) → ac
   DeepFilterNet (MIT/Apache-2.0, Rust inference via tract) is the candidate for a future optional
   integration behind a trait.
 
+### 5.3 Colour management
+
+```text
+frame (Y'CbCr/RGB + metadata) ─► source colour space: Interpret Footage override, else VUI/colr/MKV Colour
+  ─► decode table (sRGB/BT.709, PQ, HLG scene light, camera log) ─► HLG OOTF ─► 3×3 to working gamut
+  ─► BT.2390 tone map (HDR/log into an SDR sequence, Auto Tone Map Media) ─► gamut compression
+  ─► effects + compositing in working linear (1.0 = reference white = SDR white = 203 cd/m²)
+  ─► monitors: working → SDR BT.709 (tone map from HDR, gamut map from BT.2020)
+  ─► HDR export: working → PQ/HLG BT.2020 R'G'B' → Y'CbCr (BT.2020 NCL) + VUI/colr/mdcv/clli/SEI
+```
+
+- **Model.** `SequenceSettings::color` (`ColorPipeline`: working space Rec. 709 / Rec. 2100 PQ /
+  Rec. 2100 HLG, wide gamut, auto tone map) and `Interpretation::color_space` (per media item;
+  `None` = from metadata). Commands: `sequence.colorSettings`, `clip.interpretFootage`,
+  `color.spaces`, `media.colorInfo`.
+- **Maths** in `filmcraft-color` (`transform`, `log`, `spaces`; formulas and sources in
+  [crates/color/README.md](../crates/color/README.md)); the renderer side is `render::colorman`.
+- **Fast path.** A Rec. 709 sequence without wide gamut and media whose metadata says Rec. 709 /
+  sRGB decodes exactly as before, and its layers stay on the GPU. Log, HDR or wide-gamut media,
+  and every layer of an HDR/wide-gamut sequence, are converted on the CPU (the GPU path draws them
+  as pre-rendered images, like layers with effects).
+- **Outputs.** `RenderOptions::working_output` returns working-space pixels (HDR exports,
+  scopes); otherwise the top-level render is converted for an SDR monitor. Lumetri and the other
+  colour effects work on display-encoded values clamped to 0..1, so in an HDR sequence they clip
+  highlights above reference white (HDR-aware grading is future work).
+- **HDR export.** H.264 and ProRes exports of a PQ/HLG sequence encode BT.2020 PQ/HLG (ProRes
+  10-bit; our H.264 encoder is 8-bit, so H.264 HDR is 8-bit) and signal it in the VUI / ProRes
+  frame header, `colr`, and for PQ `mdcv` (BT.2020 / D65, 1000 / 0.0001 cd/m²) and `clli`
+  (MaxCLL/MaxFALL 0 = unknown, they are not measured) plus the matching H.264 SEI. `sdr: true`
+  exports the tone-mapped SDR picture instead; render previews always do.
+- **Monitors / display colour management.** The monitors are SDR (sRGB-encoded RGBA8 textures):
+  HDR sequences are shown tone mapped. macOS EDR (extended-range `CAMetalLayer` output) is not
+  wired up: there is no `platform` crate yet and eframe/wgpu do not expose an EDR surface, so HDR
+  values above SDR white are never sent to the display. The scopes of an HDR sequence show the
+  working-space values (waveform in cd/m² on a PQ scale, BT.2020 vectorscope).
+- **LUTs.** Lumetri Input LUT and Creative Look reference `lib:<id>` (the project's LUT library,
+  `Project::luts`, embedded `.cube`/`.3dl` text) or `builtin:<id>` (code-generated camera
+  conversions and looks). `filmcraft-gpu::GpuLut` is the WGSL tetrahedral counterpart, tested for
+  parity.
+
 ## 6. Export jobs (`filmcraft-export`)
 
 ```text

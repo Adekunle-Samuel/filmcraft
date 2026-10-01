@@ -143,3 +143,43 @@ fn upload_cache_keeps_buffers_alive() {
     drop(plan);
     assert!(Arc::strong_count(&px) > 1, "cached upload must own its pixel buffer");
 }
+
+/// The WGSL tetrahedral LUT matches `Lut3d::apply` on the CPU.
+#[test]
+fn gpu_lut_matches_cpu_tetrahedral() {
+    let Some((dev, q)) = device() else {
+        eprintln!("no GPU adapter; skipping");
+        return;
+    };
+    let g = GpuLut::new(&dev, &q);
+    for size in [2usize, 17, 33, 65] {
+        let mut lut = filmcraft_color::Lut3d::from_fn(size, |c| {
+            [(c[0] * c[1] + c[2] * c[2]).sin(), c[1].powf(0.45) * (1.0 - 0.3 * c[0]), (c[0] - c[2]).abs() + 0.1 * c[1]]
+        });
+        if size == 17 {
+            lut.domain_min = [-0.1, 0.0, 0.0];
+            lut.domain_max = [1.2, 1.0, 2.0];
+        }
+        let mut s = 99u64;
+        let mut px = Vec::new();
+        for _ in 0..70_000 {
+            for k in 0..4 {
+                s ^= s << 13;
+                s ^= s >> 7;
+                s ^= s << 17;
+                px.push(if k == 3 { 0.5 } else { (s % 10_001) as f32 / 10_000.0 * 1.2 - 0.1 });
+            }
+        }
+        let gpu = g.apply(&lut, &px).expect("gpu lut");
+        let mut worst = 0f32;
+        for (i, p) in px.chunks_exact(4).enumerate() {
+            let c = lut.apply([p[0], p[1], p[2]]);
+            for k in 0..3 {
+                worst = worst.max((c[k] - gpu[i * 4 + k]).abs());
+            }
+            assert_eq!(gpu[i * 4 + 3], 0.5);
+        }
+        eprintln!("LUT {size}³: max |cpu − gpu| = {worst:e}");
+        assert!(worst < 1e-4, "size {size}: max |cpu - gpu| = {worst}");
+    }
+}

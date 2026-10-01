@@ -22,6 +22,9 @@ use filmcraft_color::{Matrix, Range, Transfer};
 use filmcraft_frame::{Chroma, PixelData, VideoFrame};
 use filmcraft_render::plan::{FramePlan, PlanLayer};
 
+pub mod lut;
+pub use lut::GpuLut;
+
 /// Output texture format: gamma-encoded RGBA8 (what egui expects of native textures); the resolve
 /// shader applies the sRGB encoding.
 pub const OUTPUT_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
