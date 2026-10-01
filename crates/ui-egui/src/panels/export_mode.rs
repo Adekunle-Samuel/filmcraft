@@ -40,10 +40,9 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         }
         // settings
         let seq_name = app.session.project.item(seq_id).map(|i| i.name.clone()).unwrap_or_default();
-        let fmt = filmcraft_engine::export::Format::from_name(&app.ui.export_format).unwrap_or(filmcraft_engine::export::Format::Mjpeg);
+        let fmt = filmcraft_engine::export::Format::from_name(&app.ui.export_format).unwrap_or(filmcraft_engine::export::Format::H264);
         if app.ui.export_path.is_empty() || !app.ui.export_path.ends_with(fmt.extension()) {
-            let dir = std::env::var("HOME").map(|h| format!("{h}/Movies")).unwrap_or_else(|_| ".".into());
-            app.ui.export_path = format!("{dir}/{}.{}", seq_name.replace(' ', "_"), fmt.extension());
+            app.ui.export_path = format!("~/Movies/{}.{}", seq_name.replace(' ', "_"), fmt.extension());
         }
         let mut sui = ui.new_child(egui::UiBuilder::new().max_rect(right.shrink(16.0)).id_salt("export-settings"));
         sui.label(egui::RichText::new("Settings").strong().size(14.0));
@@ -98,12 +97,20 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         ui.painter().text(b.center(), Align2::CENTER_CENTER, "Export", Tokens::semibold(13.0), Color32::WHITE);
         app.auto.add("export.button", b, "Export");
         if resp.clicked() {
-            let r = app.session.execute("file.exportMedia", serde_json::json!({"path": app.ui.export_path, "format": app.ui.export_format}));
+            let r = app.session.execute("file.exportMedia", serde_json::json!({"path": expand_home(&app.ui.export_path), "format": app.ui.export_format}));
             if let Err(e) = r {
                 app.ui.status = e.to_string();
             }
         }
     } else {
         crate::dock::placeholder(ui, mid, &t, "Open a sequence to export");
+    }
+}
+
+/// `~/…` → the user's home directory (the path field shows the short form).
+fn expand_home(p: &str) -> String {
+    match (p.strip_prefix("~/"), std::env::var("HOME")) {
+        (Some(rest), Ok(h)) => format!("{h}/{rest}"),
+        _ => p.to_string(),
     }
 }
