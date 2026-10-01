@@ -337,6 +337,12 @@ with different vertex counts hold). Feather, Opacity and Expansion are ordinary 
   removeVertex / toggleVertexSmooth / select / list); keyframe commands take `"mask": n`. The
   Program monitor overlay drags vertices, Bézier handles, the whole mask and the feather /
   expansion handles; drags merge into one undo step.
+- **Tracking** (`render::track`, `masks.track`): Shi–Tomasi features inside the mask, pyramidal
+  Lucas–Kanade (4 levels, 15×15 window) with a forward–backward check, then RANSAC + least squares
+  for Position / Position & Rotation / Position, Scale & Rotation (2D Procrustes). Each frame's
+  transform moves the path, written as Mask Path keyframes while the background job runs (one undo
+  step per run; `jobs.cancel` stops and keeps what was tracked). Frames are tracked at ≤ 960 px
+  wide. On synthetic footage with known similarity motion the path stays within 0.3 px over 20 frames.
 
 ### 5.4 Colour management
 

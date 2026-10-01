@@ -14,6 +14,7 @@ use filmcraft_project::{ClipId, EffectInstance, Mask, MaskMode, MaskPath, MaskVe
 use filmcraft_time::Tick;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use std::sync::{Arc, Mutex};
 
 use crate::commands::{CommandSpec, bad, bool_p, clip_p, f64_p, has_seq, str_p, time_p, u64_p};
 use crate::{EngineError, Result, Session};
@@ -56,6 +57,12 @@ pub(crate) fn commands() -> Vec<CommandSpec> {
         spec("masks.translate", "Move Mask", r#"{"clip":id?,"effect":index|id?,"mask":n?,"delta":[dx,dy],"merge":key?}"#, translate),
         spec("masks.addVertex", "Add Mask Vertex", r#"{"clip":id?,"effect":index|id?,"mask":n?,"after":n,"at":[x,y]}"#, add_vertex),
         spec("masks.removeVertex", "Delete Mask Vertex", r#"{"clip":id?,"effect":index|id?,"mask":n?,"vertex":n}"#, remove_vertex),
+        spec(
+            "masks.track",
+            "Track Selected Mask",
+            r#"{"clip":id?,"effect":index|id?,"mask":n?,"direction":"forward"|"backward"?,"frames":n?,"method":"position|positionRotation|positionScaleRotation"?,"wait":bool?}"#,
+            track,
+        ),
         spec("masks.toggleVertexSmooth", "Convert Mask Vertex", r#"{"clip":id?,"effect":index|id?,"mask":n?,"vertex":n}"#, toggle_smooth),
         CommandSpec {
             id: "masks.select",
@@ -495,5 +502,190 @@ pub(crate) fn target_param<'a>(e: &'a mut EffectInstance, p: &Value, pid: &str) 
     match u64_p(p, "mask") {
         Some(mi) => e.masks.get_mut(mi as usize)?.param_mut(pid),
         None => e.params.get_mut(pid),
+    }
+}
+
+// ---------------------------------------------------------------- tracking
+
+/// A running mask-tracking job: tracked paths are written as Mask Path keyframes as they arrive
+/// (one undo step for the whole track), see [`poll`].
+pub struct PendingTrack {
+    pub job: u64,
+    pub target: MaskSel,
+    /// Sequence the clip lives in.
+    pub seq: filmcraft_project::ItemId,
+    /// (media time, path) in tracking order.
+    pub keys: Arc<Mutex<Vec<(Tick, MaskPath)>>>,
+    applied: usize,
+}
+
+/// Longest side of the frames the tracker works on (speed; the result is in clip pixels).
+const TRACK_MAX_WIDTH: f64 = 960.0;
+
+fn track(s: &mut Session, p: &Value) -> Result<Value> {
+    let clip = target_clip(s, p)?;
+    let sel = s.state.selected_mask;
+    let seq_id = s.state.active_sequence.ok_or(EngineError::NoSequence)?;
+    let seq = s.active_sequence().ok_or(EngineError::NoSequence)?;
+    let (_, it) = seq.find_item(clip).ok_or_else(|| bad("masks.track", "no such clip"))?;
+    let it = it.clone();
+    let ei = effect_index(&it.effects, p.get("effect"), sel, clip).ok_or_else(|| bad("masks.track", "no such effect on clip"))?;
+    let mi = u64_p(p, "mask")
+        .map(|m| m as usize)
+        .or(sel.filter(|x| x.clip == clip && x.effect == ei).map(|x| x.mask))
+        .ok_or_else(|| bad("masks.track", "need `mask`"))?;
+    let mask = it.effects[ei].masks.get(mi).cloned().ok_or_else(|| bad("masks.track", format!("no mask {mi}")))?;
+    if s.mask_jobs.iter().any(|j| j.target.clip == clip && j.target.effect == ei && j.target.mask == mi) {
+        return Err(bad("masks.track", "this mask is already being tracked"));
+    }
+    let method = match str_p(p, "method") {
+        Some(m) => TrackMethod::from_name(m).ok_or_else(|| bad("masks.track", format!("unknown method `{m}`")))?,
+        None => mask.track_method,
+    };
+    let backward = match str_p(p, "direction").unwrap_or("forward") {
+        "forward" => false,
+        "backward" => true,
+        d => return Err(bad("masks.track", format!("direction `{d}`: forward or backward"))),
+    };
+    let rate = s.project.item(it.item).map(|i| i.frame_rate()).unwrap_or(seq.settings.frame_rate);
+    let fd = rate.frame_duration();
+    let ph = time_p(s, p, "").unwrap_or(s.playhead());
+    let mt0 = it.source_time_at(ph.clamp(it.start, it.end() - Tick(1)));
+    let (a, b) = (it.source_time_at(it.start), it.source_time_at(it.end() - Tick(1)));
+    let (lo, hi) = (a.min(b), a.max(b));
+    let room = if backward { (mt0 - lo).0 / fd.0.max(1) } else { (hi - mt0).0 / fd.0.max(1) };
+    let steps = match u64_p(p, "frames") {
+        Some(n) => (n as i64).min(room),
+        None => room,
+    }
+    .max(0) as usize;
+    if steps == 0 {
+        return Err(bad("masks.track", if backward { "already at the clip's first frame" } else { "already at the clip's last frame" }));
+    }
+    let src = s.source(it.item).ok_or_else(|| EngineError::Other("the clip has no media to track".into()))?;
+    let size = filmcraft_render::source_size(&s.project, it.item).ok_or_else(|| bad("masks.track", "the clip has no picture"))?;
+    let scale = (TRACK_MAX_WIDTH / size.0.max(1) as f64).min(1.0) as f32;
+    let id = s.jobs.iter().map(|j| j.id).max().unwrap_or(0) + 1;
+    let label = format!("Track {} ({})", mask.name, if backward { "backward" } else { "forward" });
+    let job = crate::Job { id, label: label.clone(), progress: Default::default(), result: Default::default() };
+    job.progress.total.store(steps as u64, std::sync::atomic::Ordering::Relaxed);
+    let keys: Arc<Mutex<Vec<(Tick, MaskPath)>>> = Arc::default();
+    let (prog, res, out) = (job.progress.clone(), job.result.clone(), keys.clone());
+    let start_path = mask.path_at(mt0);
+    let run = move || {
+        use std::sync::atomic::Ordering;
+        let t0 = std::time::Instant::now();
+        let gray = |t: Tick| -> Option<(filmcraft_render::track::Prepared, f64)> {
+            let f = src.video_frame(filmcraft_media::FrameRequest { time: t, scale }).ok()?;
+            let g = filmcraft_render::track::Gray::from_rgba8(f.width as usize, f.height as usize, &f.to_rgba8());
+            Some((filmcraft_render::track::Prepared::new(g), f.width as f64 / size.0.max(1) as f64))
+        };
+        let mut path = start_path;
+        let mut err: Option<String> = None;
+        let mut done = 0u64;
+        match gray(mt0) {
+            None => err = Some("can't decode the clip".into()),
+            Some((mut prev, mut k_prev)) => {
+                lock(&out).push((mt0, path.clone()));
+                for step in 1..=steps {
+                    if prog.cancel.load(Ordering::Relaxed) {
+                        err = Some("stopped".into());
+                        break;
+                    }
+                    let t = if backward { mt0 - Tick(fd.0 * step as i64) } else { mt0 + Tick(fd.0 * step as i64) };
+                    let Some((next, k)) = gray(t) else {
+                        err = Some(format!("can't decode frame {step}"));
+                        break;
+                    };
+                    let region: Vec<Vec2> = path.flatten(0.5).into_iter().map(|q| q * k_prev).collect();
+                    let Some(st) = filmcraft_render::track::track_step(&prev, &next, &region, method) else {
+                        err = Some(format!("lost track after {} frame(s): not enough detail inside the mask", step - 1));
+                        break;
+                    };
+                    // frame pixels → clip pixels
+                    let m = Affine::scale(1.0 / k, 1.0 / k).then_apply(&st.transform).then_apply(&Affine::scale(k_prev, k_prev));
+                    path = path.transformed(&m);
+                    lock(&out).push((t, path.clone()));
+                    done += 1;
+                    prog.done.store(done, Ordering::Relaxed);
+                    *lock(&prog.status) = format!("Frame {step} of {steps} · {} features", st.inliers);
+                    prev = next;
+                    k_prev = k;
+                }
+            }
+        }
+        let secs = t0.elapsed().as_secs_f64();
+        let r = match &err {
+            // stopping keeps what was tracked
+            Some(e) if e != "stopped" => Err(e.clone()),
+            _ => Ok(filmcraft_export::Report { path: String::new(), frames: done, seconds: secs, bytes: 0, render_fps: done as f64 / secs.max(1e-6) }),
+        };
+        *lock(&prog.status) = match &err {
+            Some(e) => format!("{e} ({done} frame(s) tracked)"),
+            None => format!("Tracked {done} frame(s) in {secs:.1}s"),
+        };
+        prog.finished.store(true, Ordering::Relaxed);
+        *lock(&res) = Some(r);
+    };
+    s.jobs.push(job);
+    s.mask_jobs.push(PendingTrack { job: id, target: MaskSel { clip, effect: ei, mask: mi }, seq: seq_id, keys, applied: 0 });
+    let wait = crate::commands::bool_p(p, "wait").unwrap_or(false);
+    if wait || cfg!(target_arch = "wasm32") {
+        run();
+        poll(s);
+    } else {
+        std::thread::Builder::new().name("filmcraft-mask-track".into()).spawn(run).map_err(|e| EngineError::Other(e.to_string()))?;
+    }
+    let st = s.jobs.iter().find(|j| j.id == id).map(crate::Job::to_json).unwrap_or(Value::Null);
+    Ok(json!({"job": id, "frames": steps, "status": st}))
+}
+
+fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// Write newly tracked paths as Mask Path keyframes (one merged undo step per tracking job) and
+/// drop finished jobs. Called from [`Session::poll_persistence`] (once per UI frame) and after
+/// synchronous runs.
+pub fn poll(s: &mut Session) {
+    use std::sync::atomic::Ordering;
+    let mut i = 0;
+    while i < s.mask_jobs.len() {
+        let finished = s.jobs.iter().find(|j| j.id == s.mask_jobs[i].job).is_none_or(|j| j.progress.finished.load(Ordering::Relaxed));
+        let new: Vec<(Tick, MaskPath)> = {
+            let pj = &s.mask_jobs[i];
+            lock(&pj.keys)[pj.applied..].to_vec()
+        };
+        if !new.is_empty() {
+            let n_new = new.len();
+            let pj = &s.mask_jobs[i];
+            let (target, seq_id, key) = (pj.target, pj.seq, format!("mask-track-{}", pj.job));
+            let r = s.edit_merged("Track Mask", &key, move |pr, _| {
+                let q = pr.sequence_mut(seq_id).ok_or(EngineError::NoSequence)?;
+                let (_, it) = q.find_item_mut(target.clip).ok_or(filmcraft_edit::EditError::NoItem(target.clip))?;
+                let m = it.effects.get_mut(target.effect).and_then(|e| e.masks.get_mut(target.mask)).ok_or_else(|| bad("masks.track", "the mask is gone"))?;
+                for (t, path) in new {
+                    m.path.put_keyframe(t, ParamValue::Path(path));
+                }
+                Ok(())
+            });
+            match r {
+                Ok(()) => s.mask_jobs[i].applied += n_new,
+                Err(e) => {
+                    s.events.push(crate::Event::Toast { message: e.to_string(), error: true });
+                    if let Some(j) = s.jobs.iter().find(|j| j.id == s.mask_jobs[i].job) {
+                        j.progress.cancel.store(true, Ordering::Relaxed);
+                    }
+                    s.mask_jobs.remove(i);
+                    continue;
+                }
+            }
+        }
+        let total = lock(&s.mask_jobs[i].keys).len();
+        if finished && s.mask_jobs[i].applied >= total {
+            s.mask_jobs.remove(i);
+            continue;
+        }
+        i += 1;
     }
 }

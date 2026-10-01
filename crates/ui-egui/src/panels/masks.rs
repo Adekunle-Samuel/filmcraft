@@ -530,7 +530,61 @@ fn open_polyline(path: &MaskPath, to_screen: &Affine) -> Vec<Pos2> {
     out
 }
 
-/// The Mask Path row's value area (mask tracking controls arrive with the tracker).
+/// The Mask Path row's value area: mask tracking (backward continuously / one frame, forward one
+/// frame / continuously; clicking while a track runs stops it) and the tracking-method menu.
 pub fn path_value(app: &mut FilmcraftApp, ui: &mut egui::Ui, clip: ClipId, effect: usize, mask: Option<usize>, actions: &mut Vec<(String, Value)>) {
-    let _ = (app, ui, clip, effect, mask, actions);
+    let Some(k) = mask else { return };
+    let t = app.tokens;
+    let Some(it) = app.session.active_sequence().and_then(|q| q.find_item(clip)).map(|(_, i)| i.clone()) else { return };
+    let Some(e) = it.effects.get(effect) else { return };
+    let Some(m) = e.masks.get(k) else { return };
+    let base = format!("effectControls.{}.mask{k}", e.effect);
+    let target = filmcraft_engine::masks::MaskSel { clip, effect, mask: k };
+    let running = app.session.mask_jobs.iter().find(|j| j.target == target).map(|j| j.job);
+    for (icon, dir, frames, id, tip) in [
+        (Icon::TrackMaskBack, "backward", None, "back", "Track selected mask backward"),
+        (Icon::TrackMaskBackFrame, "backward", Some(1), "backFrame", "Track selected mask backward 1 frame"),
+        (Icon::TrackMaskFwdFrame, "forward", Some(1), "fwdFrame", "Track selected mask forward 1 frame"),
+        (Icon::TrackMaskFwd, "forward", None, "fwd", "Track selected mask forward"),
+    ] {
+        let (r, resp) = ui.allocate_exact_size(vec2(20.0, 18.0), Sense::click());
+        let resp = resp.on_hover_text(if running.is_some() { "Stop tracking" } else { tip });
+        if resp.hovered() {
+            ui.painter().rect_filled(r, 3.0, t.hover);
+        }
+        icons::paint(ui.painter(), r.shrink(3.0), icon, if running.is_some() { t.accent } else { t.icon });
+        app.auto.add(&format!("{base}.track.{id}"), r, tip);
+        if resp.clicked() {
+            match running {
+                Some(job) => actions.push(("jobs.cancel".into(), json!({"job": job}))),
+                None => {
+                    let mut p = json!({"clip": clip.0, "effect": effect, "mask": k, "direction": dir});
+                    if let Some(n) = frames {
+                        p["frames"] = json!(n);
+                    }
+                    actions.push(("masks.select".into(), json!({"clip": clip.0, "effect": effect, "mask": k})));
+                    actions.push(("masks.track".into(), p));
+                }
+            }
+        }
+    }
+    let (r, resp) = ui.allocate_exact_size(vec2(20.0, 18.0), Sense::click());
+    icons::paint(ui.painter(), r.shrink(3.0), Icon::Wrench, if resp.hovered() { t.tab_text_active } else { t.icon });
+    app.auto.add(&format!("{base}.trackMethod"), r, "Tracking method");
+    let resp = resp.on_hover_text(format!("Tracking method: {}", m.track_method.label()));
+    egui::Popup::menu(&resp).show(|ui| {
+        for tm in filmcraft_project::TrackMethod::ALL {
+            if ui.selectable_label(tm == m.track_method, tm.label()).clicked() {
+                actions.push(("masks.set".into(), json!({"clip": clip.0, "effect": effect, "mask": k, "trackMethod": tm.label()})));
+            }
+        }
+    });
+    if let Some(job) = running
+        && let Some(j) = app.session.jobs.iter().find(|j| j.id == job)
+    {
+        let d = j.progress.done.load(std::sync::atomic::Ordering::Relaxed);
+        let n = j.progress.total.load(std::sync::atomic::Ordering::Relaxed);
+        ui.label(egui::RichText::new(format!("{d}/{n}")).size(10.5).color(t.text_dim));
+        ui.ctx().request_repaint();
+    }
 }

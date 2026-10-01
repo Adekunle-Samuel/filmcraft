@@ -22,6 +22,7 @@ pub mod mixer;
 pub mod offline;
 pub mod plan;
 pub mod preview;
+pub mod track;
 pub mod transitions;
 
 use std::sync::Arc;

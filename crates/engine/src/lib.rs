@@ -217,6 +217,8 @@ pub struct Session {
     pub offline: relink::OfflineState,
     /// Proxy / ingest / project-manager jobs whose results still have to be applied to the project.
     pub media_jobs: Vec<proxies::PendingJob>,
+    /// Mask tracking jobs whose keyframes are still being written.
+    pub mask_jobs: Vec<masks::PendingTrack>,
     /// Nesting depth of [`Session::execute`] (commands that run other commands).
     exec_depth: u32,
 }
@@ -283,6 +285,7 @@ impl Session {
             shortcuts: shortcuts::Shortcuts::new(),
             offline: Default::default(),
             media_jobs: Vec::new(),
+            mask_jobs: Vec::new(),
             exec_depth: 0,
         }
     }
@@ -335,6 +338,7 @@ impl Session {
     /// results of finished proxy / ingest jobs.
     pub fn poll_persistence(&mut self) {
         proxies::poll(self);
+        masks::poll(self);
         let Some(p) = self.persistence.as_mut() else { return };
         for ev in p.drain_events() {
             match ev {

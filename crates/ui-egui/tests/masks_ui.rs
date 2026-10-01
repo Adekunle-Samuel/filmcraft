@@ -193,4 +193,25 @@ fn create_and_edit_masks_on_the_monitor() {
     assert_eq!(pen["path"]["vertices"].as_array().unwrap().len(), 4);
     assert_eq!(pen["selected"], true);
     d.shot("mask-pen-opacity");
+
+    // mask tracking buttons on the Mask Path row: forward one frame runs a job
+    d.rect("effectControls.opacity.mask0.track.fwd");
+    d.rect("effectControls.opacity.mask0.trackMethod");
+    d.ok("ui.click", json!({"id": "effectControls.opacity.mask0.track.fwdFrame"}));
+    let mut finished = false;
+    for _ in 0..400 {
+        d.frames(1);
+        let jobs = d.exec("jobs.list", json!({}));
+        if jobs.as_array().unwrap().iter().any(|j| j["label"].as_str().unwrap_or("").starts_with("Track") && j["finished"] == true) {
+            finished = true;
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    assert!(finished, "tracking job ran");
+    d.frames(3);
+    let m = d.masks();
+    let pen = m.iter().find(|x| x["effectId"] == "opacity").unwrap();
+    assert_eq!(pen["pathKeyframes"].as_array().unwrap().len(), 2, "{pen}");
+    d.shot("mask-tracked");
 }
