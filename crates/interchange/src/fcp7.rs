@@ -192,10 +192,10 @@ impl<'a, 'i> Imp<'a, 'i, '_> {
         match file {
             Some(f) => {
                 let id = self.file(f, child_text(n, "name"), bin);
-                if let Some(item) = id.and_then(|i| self.b.p.item_mut(i)) {
-                    if let Some(l) = path_text(n, &["labels", "label2"]).and_then(label_from) {
-                        item.label = l;
-                    }
+                if let Some(item) = id.and_then(|i| self.b.p.item_mut(i))
+                    && let Some(l) = path_text(n, &["labels", "label2"]).and_then(label_from)
+                {
+                    item.label = l;
                 }
                 if let (Some(item), Some(rate)) = (id, read_rate(n)) {
                     let markers = read_markers(n, rate, &mut self.b);
