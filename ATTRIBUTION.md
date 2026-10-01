@@ -25,6 +25,7 @@ iconography, images or other Adobe assets; open licences only; every asset attri
 | `docs/images/filmcraft-scopes.png` | FilmCraft contributors | Original work: FilmCraft UI crop (scopes of a Charade (1963) frame, public domain) | MIT OR Apache-2.0 |
 | `docs/images/filmcraft-effects.png` | FilmCraft contributors | Original work: FilmCraft screenshot crop; NASA Earth Views (US Government work, public domain) | MIT OR Apache-2.0; footage public domain |
 | `docs/images/filmcraft-timeline.png` | FilmCraft contributors | Original work: FilmCraft UI crop; thumbnails from Night of the Living Dead (1968) and Carnival of Souls (1962), CC0 Chopin waveform | MIT OR Apache-2.0; film frames public domain |
+| `apps/filmcraft-web/web/favicon.svg` | FilmCraft contributors | Original work: web app icon (disc, sprocket ring, play triangle) drawn from basic SVG shapes | MIT OR Apache-2.0 |
 
 ## Golden test images
 

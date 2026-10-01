@@ -2,7 +2,10 @@
 //!
 //! - `layers`: enforces the dependency layering of `docs/architecture.md` §1 (downward-only edges,
 //!   listed same-layer edges, L0 codec crates depend on `bitstream` only, no UI/OS crates below L5).
-//! - `wasm`: `cargo check --target wasm32-unknown-unknown` for every crate in L0–L4.
+//! - `wasm`: `cargo check --target wasm32-unknown-unknown` for every crate in L0–L4, the egui UI
+//!   and the web app.
+//! - `web [--dev] [--serve PORT]`: build the web app (`apps/filmcraft-web`) into
+//!   `<target>/web/dist` with `wasm-bindgen` (docs/web.md); `--serve` serves it on localhost.
 //! - `assets`: every asset file (image, icon, font, LUT, audio, video…) has a complete
 //!   `<file>.attribution` sidecar and an entry in `ATTRIBUTION.md` (AGENTS.md §1).
 //! - `fixtures [crate…]`: pre-generate the ffmpeg fixture matrix of the oracle tests (runs each
@@ -59,6 +62,7 @@ const LAYERS: &[(&str, u8)] = &[
     ("automation", 5),
     ("filmcraft", 6),
     ("cli", 6),
+    ("web", 6),
 ];
 
 /// L0 crates that are not codecs/containers (no `bitstream`-only restriction).
@@ -224,13 +228,16 @@ fn run(cmd: &mut Command) -> Result<(), String> {
     if st.success() { Ok(()) } else { Err(format!("failed: {cmd:?}")) }
 }
 
+/// Crates above L4 that must also build for the web.
+const WEB_CRATES: &[&str] = &["filmcraft-ui-egui", "filmcraft-web"];
+
 fn wasm() -> Result<(), String> {
     let md = metadata()?;
     let mut cmd = Command::new(env!("CARGO"));
     cmd.args(["check", "--target", "wasm32-unknown-unknown"]);
     let mut n = 0;
     for (name, _) in workspace_crates(&md) {
-        if layer_of(&name).is_some_and(|l| l <= 4) {
+        if layer_of(&name).is_some_and(|l| l <= 4) || WEB_CRATES.contains(&name.as_str()) {
             cmd.args(["-p", &name]);
             n += 1;
         }
@@ -240,6 +247,116 @@ fn wasm() -> Result<(), String> {
     }
     run(&mut cmd)?;
     println!("wasm: ok ({n} crates)");
+    Ok(())
+}
+
+/// The wasm-bindgen CLI must match the `wasm-bindgen` crate version exactly.
+const WASM_BINDGEN: &str = "0.2.129";
+
+fn target_dir() -> std::path::PathBuf {
+    std::env::var_os("CARGO_TARGET_DIR").map(std::path::PathBuf::from).unwrap_or_else(|| std::path::PathBuf::from("target"))
+}
+
+/// Build the web app into `<target>/web/dist` (see docs/web.md).
+fn web(args: &[String]) -> Result<(), String> {
+    let dev = args.iter().any(|a| a == "--dev");
+    let serve = args.iter().position(|a| a == "--serve").map(|i| args.get(i + 1).and_then(|p| p.parse::<u16>().ok()).unwrap_or(8765));
+    let profile = if dev { "dev" } else { "release" };
+    let mut build = Command::new(env!("CARGO"));
+    build.args(["build", "--target", "wasm32-unknown-unknown", "-p", "filmcraft-web", "--profile", profile]);
+    run(&mut build)?;
+    let out = Command::new("wasm-bindgen")
+        .arg("--version")
+        .output()
+        .map_err(|_| format!("wasm-bindgen CLI not found: cargo install wasm-bindgen-cli --version {WASM_BINDGEN} --locked"))?;
+    let v = String::from_utf8_lossy(&out.stdout);
+    if !v.contains(WASM_BINDGEN) {
+        return Err(format!(
+            "wasm-bindgen CLI is {} but the crate is {WASM_BINDGEN}: cargo install wasm-bindgen-cli --version {WASM_BINDGEN} --locked",
+            v.trim()
+        ));
+    }
+    let dir = if dev { "debug" } else { "release" };
+    let wasm = target_dir().join("wasm32-unknown-unknown").join(dir).join("filmcraft_web.wasm");
+    let dist = target_dir().join("web").join("dist");
+    let _ = std::fs::remove_dir_all(&dist);
+    std::fs::create_dir_all(&dist).map_err(|e| e.to_string())?;
+    run(Command::new("wasm-bindgen").args(["--target", "web", "--no-typescript", "--out-dir"]).arg(&dist).arg(&wasm))?;
+    let bg = dist.join("filmcraft_web_bg.wasm");
+    if !dev && Command::new("wasm-opt").arg("--version").output().is_ok() {
+        // optional: smaller and faster (binaryen); skipped when not installed
+        let opt = dist.join("filmcraft_web_opt.wasm");
+        run(Command::new("wasm-opt")
+            .args(["-O2", "--enable-bulk-memory", "--enable-nontrapping-float-to-int", "--enable-sign-ext", "--enable-mutable-globals"])
+            .arg(&bg)
+            .arg("-o")
+            .arg(&opt))?;
+        std::fs::rename(&opt, &bg).map_err(|e| e.to_string())?;
+    }
+    let web = std::path::Path::new("apps/filmcraft-web/web");
+    for e in std::fs::read_dir(web).map_err(|e| e.to_string())?.flatten() {
+        let name = e.file_name().to_string_lossy().to_string();
+        if !name.ends_with(".attribution") {
+            std::fs::copy(e.path(), dist.join(&name)).map_err(|e| format!("{name}: {e}"))?;
+        }
+    }
+    let size = |p: &std::path::Path| std::fs::metadata(p).map(|m| m.len()).unwrap_or(0);
+    let total: u64 = std::fs::read_dir(&dist).map_err(|e| e.to_string())?.flatten().map(|e| size(&e.path())).sum();
+    println!("web: {} ({:.1} MB wasm, {:.1} MB total)", dist.display(), size(&bg) as f64 / 1e6, total as f64 / 1e6);
+    if let Some(port) = serve {
+        serve_dir(&dist, port)?;
+    }
+    Ok(())
+}
+
+/// A tiny static file server for the web build (localhost only). Sends the cross-origin
+/// isolation headers so `crossOriginIsolated` is true, like a production deployment would.
+fn serve_dir(dir: &std::path::Path, port: u16) -> Result<(), String> {
+    use std::io::{BufRead, BufReader, Write};
+    let listener = std::net::TcpListener::bind(("127.0.0.1", port)).map_err(|e| format!("127.0.0.1:{port}: {e}"))?;
+    println!("serving {} on http://127.0.0.1:{port}/", dir.display());
+    for stream in listener.incoming().flatten() {
+        let dir = dir.to_path_buf();
+        std::thread::spawn(move || {
+            let mut stream = stream;
+            let mut line = String::new();
+            let mut reader = BufReader::new(match stream.try_clone() {
+                Ok(s) => s,
+                Err(_) => return,
+            });
+            if reader.read_line(&mut line).is_err() {
+                return;
+            }
+            loop {
+                let mut h = String::new();
+                if reader.read_line(&mut h).map(|n| n == 0).unwrap_or(true) || h.trim().is_empty() {
+                    break;
+                }
+            }
+            let path = line.split_whitespace().nth(1).unwrap_or("/").split(['?', '#']).next().unwrap_or("/").to_string();
+            let rel = if path == "/" { "index.html".to_string() } else { path.trim_start_matches('/').replace("..", "") };
+            let file = dir.join(&rel);
+            let (status, body) = match std::fs::read(&file) {
+                Ok(b) => ("200 OK", b),
+                Err(_) => ("404 Not Found", b"not found".to_vec()),
+            };
+            let mime = match file.extension().and_then(|e| e.to_str()).unwrap_or("") {
+                "html" => "text/html; charset=utf-8",
+                "js" => "text/javascript",
+                "wasm" => "application/wasm",
+                "svg" => "image/svg+xml",
+                "json" => "application/json",
+                "mp4" => "video/mp4",
+                "webm" => "video/webm",
+                _ => "application/octet-stream",
+            };
+            let head = format!(
+                "HTTP/1.1 {status}\r\nContent-Type: {mime}\r\nContent-Length: {}\r\nCross-Origin-Opener-Policy: same-origin\r\nCross-Origin-Embedder-Policy: require-corp\r\nCache-Control: no-cache\r\nConnection: close\r\n\r\n",
+                body.len()
+            );
+            let _ = stream.write_all(head.as_bytes()).and_then(|_| stream.write_all(&body));
+        });
+    }
     Ok(())
 }
 
@@ -316,7 +433,8 @@ fn main() -> ExitCode {
         "fixtures" => fixtures(&std::env::args().skip(2).collect::<Vec<_>>()),
         "ci" => ci(),
         "bench-playback" => bench_playback(),
-        _ => Err("usage: cargo xtask <layers|assets|wasm|fixtures [crate…]|ci|bench-playback [args]>".into()),
+        "web" => web(&std::env::args().skip(2).collect::<Vec<_>>()),
+        _ => Err("usage: cargo xtask <layers|assets|wasm|web [--dev] [--serve PORT]|fixtures [crate…]|ci|bench-playback [args]>".into()),
     };
     match r {
         Ok(()) => ExitCode::SUCCESS,

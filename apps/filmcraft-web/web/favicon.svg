@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <!-- FilmCraft web icon: original work (a film reel ring with a play triangle). -->
+  <circle cx="32" cy="32" r="30" fill="#14343a"/>
+  <circle cx="32" cy="32" r="22" fill="none" stroke="#f0a24a" stroke-width="5"/>
+  <g fill="#14343a">
+    <circle cx="32" cy="10" r="2.2"/>
+    <circle cx="32" cy="54" r="2.2"/>
+    <circle cx="10" cy="32" r="2.2"/>
+    <circle cx="54" cy="32" r="2.2"/>
+    <circle cx="16.4" cy="16.4" r="2.2"/>
+    <circle cx="47.6" cy="47.6" r="2.2"/>
+    <circle cx="16.4" cy="47.6" r="2.2"/>
+    <circle cx="47.6" cy="16.4" r="2.2"/>
+  </g>
+  <path d="M26 21.5 L44 32 L26 42.5 Z" fill="#f4f1ea"/>
+</svg>

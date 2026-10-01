@@ -1,0 +1,9 @@
+asset:        favicon.svg
+title:        FilmCraft web app icon (favicon / install icon)
+author:       FilmCraft contributors
+source:       original work
+license:      MIT OR Apache-2.0
+added:        2026-10-01 by FilmCraft contributors (Claude agent, M13 web app)
+notes:        Hand-written SVG: a dark teal disc, an orange ring with eight sprocket dots and a play
+              triangle, drawn from scratch from basic shapes. Not derived from any other product's
+              icon.
