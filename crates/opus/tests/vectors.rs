@@ -125,3 +125,38 @@ fn quality_metric_calibration() {
         assert!(q > lo && q < hi, "{snr} dB -> {q}");
     }
 }
+
+/// Diagnostic (`VEC=n cargo test ... -- --ignored`): per-second SNR/quality with packet modes.
+#[test]
+#[ignore]
+fn vector_diag() {
+    let Some(dir) = vectors_dir() else {
+        return;
+    };
+    let v: usize = std::env::var("VEC").ok().and_then(|s| s.parse().ok()).unwrap_or(2);
+    let name = format!("testvector{v:02}");
+    let packets = read_bit(&dir.join(format!("{name}.bit")));
+    let mut dec = StreamDecoder::new(48000, 2).unwrap();
+    let mut out = Vec::new();
+    let mut lines = Vec::new();
+    for (pkt, _) in &packets {
+        let start = out.len() / 2;
+        if pkt.is_empty() {
+            dec.decode_interleaved(None, &mut out).unwrap();
+            lines.push((start, "LOST".to_string()));
+        } else {
+            let p = filmcraft_opus::Packet::parse(pkt).unwrap();
+            dec.decode_interleaved(Some(pkt), &mut out).unwrap();
+            lines.push((start, format!("{:?} {:?} st{} n{}", p.toc.mode, p.toc.bandwidth, p.toc.stereo as u8, p.frames.len())));
+        }
+    }
+    let reference = read_pcm(&dir.join(format!("{name}.dec")));
+    let sec = 48000 * 2;
+    for s in 0..reference.len() / sec {
+        let r = &reference[s * sec..(s + 1) * sec];
+        let o = &out[s * sec..(s + 1) * sec];
+        let mut kinds: Vec<&String> = lines.iter().filter(|(st, _)| *st >= s * 48000 && *st < (s + 1) * 48000).map(|(_, c)| c).collect();
+        kinds.dedup();
+        eprintln!("{s:3}s snr {:6.1} q {:6.1} {:?}", common::snr_db(r, o), common::opus_quality(r, o, 2, 48000), kinds);
+    }
+}

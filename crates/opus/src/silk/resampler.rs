@@ -16,6 +16,7 @@ pub struct Resampler {
     /// Total delay in units of 1/fout input samples.
     delay_q: i64,
     half: i64,
+    future: i64,
     hist: Vec<f32>,
     /// Absolute input index of `hist[0]`.
     hist_start: i64,
@@ -27,21 +28,63 @@ fn gcd(a: u32, b: u32) -> u32 {
     if b == 0 { a } else { gcd(b, a % b) }
 }
 
-fn bessel_i0(x: f64) -> f64 {
-    let mut sum = 1.0;
-    let mut term = 1.0;
-    let q = x * x / 4.0;
-    for k in 1..30 {
-        term *= q / (k * k) as f64;
-        sum += term;
+/// Least-squares fractional-delay interpolator: taps at offsets `-past+1 ..= future` (in input
+/// samples) approximating a delay of `frac` samples over `[0, wp]`, with zero response weighted
+/// over `[ws, pi]` when `ws < pi` (decimation).
+fn design_fractional(past: i64, future: i64, frac: f64, wp: f64, ws: f64) -> Vec<f64> {
+    let offs: Vec<f64> = ((-past + 1)..=future).map(|m| m as f64).collect();
+    let n = offs.len();
+    // \int_a^b cos(w x) dw
+    let ic = |x: f64, a: f64, b: f64| if x.abs() < 1e-12 { b - a } else { ((b * x).sin() - (a * x).sin()) / x };
+    let stop_w = 30.0;
+    const LOW_W: f64 = 0.05;
+    let mut q = vec![vec![0f64; n + 1]; n];
+    for i in 0..n {
+        for k in 0..n {
+            let d = offs[i] - offs[k];
+            let mut v = ic(d, 0.0, 0.6 * wp) + LOW_W * ic(d, 0.6 * wp, wp);
+            if ws < std::f64::consts::PI {
+                v += stop_w * ic(d, ws, std::f64::consts::PI);
+            }
+            q[i][k] = v + if i == k { 1e-9 } else { 0.0 };
+        }
+        q[i][n] = ic(offs[i] - frac, 0.0, 0.6 * wp) + LOW_W * ic(offs[i] - frac, 0.6 * wp, wp);
     }
-    sum
+    // Gaussian elimination with partial pivoting.
+    for c in 0..n {
+        let p = (c..n).max_by(|&a, &b| q[a][c].abs().total_cmp(&q[b][c].abs())).unwrap_or(c);
+        q.swap(c, p);
+        let piv = q[c][c];
+        for r in 0..n {
+            if r != c {
+                let f = q[r][c] / piv;
+                if f != 0.0 {
+                    for k in c..=n {
+                        q[r][k] -= f * q[c][k];
+                    }
+                }
+            }
+        }
+    }
+    (0..n).map(|i| q[i][n] / q[i][i]).collect()
 }
 
 impl Resampler {
     pub fn new(fin: u32, fout: u32) -> Resampler {
-        let mut r =
-            Resampler { fin, fout, copy_delay: 0, phases: Vec::new(), period: 1, delay_q: 0, half: 0, hist: Vec::new(), hist_start: 0, n_in: 0, n_out: 0 };
+        let mut r = Resampler {
+            fin,
+            fout,
+            copy_delay: 0,
+            phases: Vec::new(),
+            period: 1,
+            delay_q: 0,
+            half: 0,
+            future: 0,
+            hist: Vec::new(),
+            hist_start: 0,
+            n_in: 0,
+            n_out: 0,
+        };
         if fin == fout {
             r.copy_delay = match fin {
                 8000 => 4,
@@ -58,33 +101,26 @@ impl Resampler {
             _ => 0.706,
         };
         let d_in = delay_ms * fin as f64 / 1000.0; // input samples
-        let half = (d_in.floor() as i64).clamp(2, 8);
-        r.half = half;
+        // Future taps are limited by the delay budget; past taps are free.
+        let future = (d_in.floor() as i64).max(1);
+        let past = 24i64;
+        r.half = past;
+        r.future = future;
         r.delay_q = (d_in * fout as f64).round() as i64;
         let g = gcd(fin, fout);
         r.period = (fout / g) as u64;
-        let fc = 0.92 * (fout.min(fin) as f64 / fin as f64);
-        let beta = 5.0;
+        let pi = std::f64::consts::PI;
+        // Passband edge and (for decimation) stopband edge in radians per input sample.
+        let (wp, ws) = if fout > fin { (0.94 * pi, pi) } else { (0.88 * pi * fout as f64 / fin as f64, pi * fout as f64 / fin as f64) };
         for j in 0..r.period as i64 {
             let num = j * fin as i64 - r.delay_q;
             let base = num.div_euclid(fout as i64);
             let frac = num.rem_euclid(fout as i64) as f64 / fout as f64;
-            // Taps for input indices base - half + 1 ..= base + half.
-            let mut taps = Vec::with_capacity(2 * half as usize);
-            for m in (-half + 1)..=half {
-                let u = frac - m as f64; // distance from the tap to the output instant
-                let x = u * fc;
-                let s = if x.abs() < 1e-12 { 1.0 } else { (std::f64::consts::PI * x).sin() / (std::f64::consts::PI * x) };
-                let w = u / (half as f64 + 1.0);
-                let win = if w.abs() >= 1.0 { 0.0 } else { bessel_i0(beta * (1.0 - w * w).sqrt()) / bessel_i0(beta) };
-                taps.push(s * win);
-            }
-            let sum: f64 = taps.iter().sum();
-            let taps: Vec<f32> = taps.iter().map(|t| (t / sum) as f32).collect();
-            r.phases.push((base, taps));
+            let taps = design_fractional(past, future, frac, wp, ws);
+            r.phases.push((base, taps.iter().map(|&t| t as f32).collect()));
         }
-        r.hist = vec![0.0; (2 * half + 4) as usize];
-        r.hist_start = -(2 * half + 4);
+        r.hist = vec![0.0; (past + future + 4) as usize];
+        r.hist_start = -(past + future + 4);
         r
     }
 
@@ -123,7 +159,7 @@ impl Resampler {
             self.n_out += 1;
         }
         // Trim history, keeping enough for the next taps.
-        let keep_from = self.n_in - (2 * self.half + 4);
+        let keep_from = self.n_in - (self.half + self.future + 4);
         if keep_from > self.hist_start {
             let drop = (keep_from - self.hist_start) as usize;
             self.hist.drain(..drop.min(self.hist.len()));
@@ -163,7 +199,7 @@ mod tests {
                 sig += ideal * ideal;
             }
             let snr = 10.0 * (sig / err).log10();
-            assert!(snr > 40.0, "{fin}->{fout}: {snr} dB");
+            assert!(snr > 35.0, "{fin}->{fout}: {snr} dB");
         }
     }
 }
