@@ -54,24 +54,15 @@ class Gen:
 
     @staticmethod
     def lin(terms):
-        parts = []
+        # Wrapping arithmetic: conformant streams never overflow (8.7.1.1), damaged ones must not
+        # panic in debug builds.
+        s = None
         for var, c in terms:
             if c == 0:
                 continue
-            if c == 1:
-                parts.append(("+", var))
-            elif c == -1:
-                parts.append(("-", var))
-            elif c < 0:
-                parts.append(("-", "%s * %d" % (var, -c)))
-            else:
-                parts.append(("+", "%s * %d" % (var, c)))
-        if not parts:
-            return "0"
-        s = parts[0][1] if parts[0][0] == "+" else "-" + parts[0][1]
-        for sign, p in parts[1:]:
-            s += " %s %s" % (sign, p)
-        return s
+            t = "%s.wrapping_mul(%d)" % (var, c)
+            s = t if s is None else "%s.wrapping_add(%s)" % (s, t)
+        return s if s is not None else "0"
 
     def B(self, a, b, angle, flip):
         ta, tb = self.T[a], self.T[b]
@@ -84,8 +75,8 @@ class Gen:
         if flip:
             a, b = b, a
         x, y = self.T[a], self.T[b]
-        self.T[a] = self.new("%s + %s" % (x, y))
-        self.T[b] = self.new("%s - %s" % (x, y))
+        self.T[a] = self.new("%s.wrapping_add(%s)" % (x, y))
+        self.T[b] = self.new("%s.wrapping_sub(%s)" % (x, y))
 
     def SB(self, a, b, angle, flip):
         ta, tb = self.T[a], self.T[b]
@@ -96,8 +87,8 @@ class Gen:
 
     def SH(self, a, b):
         sa, sb = self.S[a], self.S[b]
-        self.T[a] = self.new("r14(%s + %s)" % (sa, sb))
-        self.T[b] = self.new("r14(%s - %s)" % (sa, sb))
+        self.T[a] = self.new("r14(%s.wrapping_add(%s))" % (sa, sb))
+        self.T[b] = self.new("r14(%s.wrapping_sub(%s))" % (sa, sb))
 
 
 def idct_steps(g, n):
@@ -165,7 +156,7 @@ def adst_out_perm(g, n):
 
 
 def neg(g, i):
-    g.T[i] = g.new("-%s" % g.T[i])
+    g.T[i] = g.new("%s.wrapping_neg()" % g.T[i])
 
 
 def adst8():
@@ -239,7 +230,7 @@ print("macro_rules! transforms_1d {")
 print("    ($t:ty) => {")
 print("    #[inline(always)]")
 print("    fn r14(x: $t) -> $t {")
-print("        (x + (1 << 13)) >> 14")
+print("        x.wrapping_add(1 << 13) >> 14")
 print("    }")
 print()
 for n in range(2, 6):

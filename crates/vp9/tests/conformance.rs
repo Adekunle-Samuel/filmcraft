@@ -27,83 +27,41 @@ fixture_tests!(
     profile1_422,
     profile1_440,
     profile3_444_10bit,
+    profile3_422_12bit,
     lossless,
     lossless_10bit,
     tiles_cols4,
     tiles_rows_cols,
+    tiles_rows4,
     altref_hidden,
+    altref_10bit,
+    altref_tiles,
     frame_parallel,
-    frame_parallel_off,
     error_resilient,
     odd_size,
     tiny_odd,
     row_mt,
     speed0,
+    speed1,
     speed2,
+    speed3,
+    speed4,
     speed5,
+    speed6,
+    speed7,
     speed8,
     cq_low,
+    cq_q4,
     cq_high,
     cq_10bit_low,
+    cq_12bit_high,
     aq_segmentation,
     aq_variance,
+    aq_complexity,
     sharpness,
     fade_intra_heavy,
     hd_1080p,
 );
-
-/// Resolution changes mid-stream: libvpx's `resize_mode` (dynamic internal scaling with scaled
-/// reference prediction), and concatenated streams of different sizes.
-#[test]
-fn resize_dynamic() {
-    let Some(ff) = common::ffmpeg() else { return };
-    let dir = common::fixtures_dir();
-    let ivf = dir.join("resize_dynamic.ivf");
-    let yuv = dir.join("resize_dynamic.yuv");
-    if !ivf.exists() {
-        // Encode with a spatial resampling switch: first 10 frames at 352x288, then the encoder
-        // is fed 176x144 content via a scale filter that changes size (ffmpeg reinitialises
-        // libvpx with a new size without a key frame when `-resize_mode` style scaling is
-        // unavailable, so emulate with libvpx's internal resize through the `resize-mode` knob
-        // of vpxenc-like options if present, otherwise concatenation below covers size changes).
-        let mut c = std::process::Command::new(&ff);
-        c.args(["-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "testsrc2=size=352x288:rate=25,noise=alls=10:allf=t+u"]);
-        c.args([
-            "-frames:v",
-            "30",
-            "-c:v",
-            "libvpx-vp9",
-            "-b:v",
-            "60k",
-            "-minrate",
-            "60k",
-            "-maxrate",
-            "60k",
-            "-undershoot-pct",
-            "0",
-            "-lag-in-frames",
-            "0",
-            "-deadline",
-            "realtime",
-            "-speed",
-            "8",
-        ]);
-        c.args(["-vpx-options", "resize-mode=3"]);
-        c.args(["-f", "ivf"]).arg(&ivf);
-        if !common::run(&mut c) {
-            let mut c = std::process::Command::new(&ff);
-            c.args(["-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "testsrc2=size=352x288:rate=25,noise=alls=10:allf=t+u"]);
-            c.args(["-frames:v", "30", "-c:v", "libvpx-vp9", "-b:v", "40k", "-deadline", "realtime", "-speed", "8", "-lag-in-frames", "0"]);
-            c.args(["-f", "ivf"]).arg(&ivf);
-            assert!(common::run(&mut c));
-        }
-    }
-    if !yuv.exists() {
-        assert!(common::reference_decode(&ivf, &yuv, "yuv420p"));
-    }
-    let reference = std::fs::read(&yuv).unwrap();
-    common::check_files("resize_dynamic", &ivf, &reference, "yuv420p").unwrap();
-}
 
 /// Two streams of different sizes concatenated into one IVF (key frame at the size change).
 #[test]

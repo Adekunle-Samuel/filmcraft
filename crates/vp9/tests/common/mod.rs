@@ -35,38 +35,103 @@ const P420_10: &str = "yuv420p10le";
 
 pub const FIXTURES: &[Fixture] = &[
     fx!("intra_only_keyframes", "testsrc2", 352, 288, 3, NOISE, P420, ["-g", "1", "-b:v", "1M"]),
-    fx!("default_good", "testsrc2", 352, 288, 20, NOISE, P420, ["-b:v", "800k"]),
-    fx!("profile2_10bit", "testsrc2", 352, 288, 12, NOISE, P420_10, ["-b:v", "800k", "-profile:v", "2"]),
-    fx!("profile2_12bit", "mandelbrot", 176, 144, 8, NOISE, "yuv420p12le", ["-b:v", "500k", "-profile:v", "2"]),
-    fx!("profile1_444", "testsrc2", 176, 144, 8, NOISE, "yuv444p", ["-b:v", "500k", "-profile:v", "1"]),
-    fx!("profile1_422", "testsrc2", 176, 144, 8, NOISE, "yuv422p", ["-b:v", "500k", "-profile:v", "1"]),
-    fx!("profile1_440", "testsrc2", 176, 144, 8, NOISE, "yuv440p", ["-b:v", "500k", "-profile:v", "1"]),
-    fx!("profile3_444_10bit", "testsrc2", 176, 144, 6, NOISE, "yuv444p10le", ["-b:v", "500k", "-profile:v", "3"]),
-    fx!("lossless", "testsrc2", 176, 144, 5, NOISE, P420, ["-lossless", "1"]),
-    fx!("lossless_10bit", "mandelbrot", 176, 144, 4, NOISE, P420_10, ["-lossless", "1", "-profile:v", "2"]),
-    fx!("tiles_cols4", "testsrc2", 1280, 720, 6, NOISE, P420, ["-b:v", "2M", "-tile-columns", "2", "-speed", "4"]),
-    fx!("tiles_rows_cols", "testsrc2", 1280, 720, 6, NOISE, P420, ["-b:v", "2M", "-tile-columns", "2", "-tile-rows", "2", "-speed", "4"]),
-    fx!("altref_hidden", "testsrc2", 352, 288, 30, NOISE, P420, ["-b:v", "600k", "-auto-alt-ref", "1", "-lag-in-frames", "25"]),
+    fx!("default_good", "testsrc2", 352, 288, 20, NOISE, P420, ["-b:v", "800k", "-frame-parallel", "0"]),
+    fx!("profile2_10bit", "testsrc2", 352, 288, 12, NOISE, P420_10, ["-b:v", "800k", "-profile:v", "2", "-frame-parallel", "0"]),
+    fx!("profile2_12bit", "mandelbrot", 176, 144, 8, NOISE, "yuv420p12le", ["-b:v", "500k", "-profile:v", "2", "-frame-parallel", "0"]),
+    fx!("profile1_444", "testsrc2", 176, 144, 8, NOISE, "yuv444p", ["-b:v", "500k", "-profile:v", "1", "-frame-parallel", "0"]),
+    fx!("profile1_422", "testsrc2", 176, 144, 8, NOISE, "yuv422p", ["-b:v", "500k", "-profile:v", "1", "-frame-parallel", "0"]),
+    fx!("profile1_440", "testsrc2", 176, 144, 8, NOISE, "yuv440p", ["-b:v", "500k", "-profile:v", "1", "-frame-parallel", "0"]),
+    fx!("profile3_444_10bit", "testsrc2", 176, 144, 6, NOISE, "yuv444p10le", ["-b:v", "500k", "-profile:v", "3", "-frame-parallel", "0"]),
+    fx!("profile3_422_12bit", "mandelbrot", 176, 144, 6, NOISE, "yuv422p12le", ["-b:v", "500k", "-profile:v", "3", "-frame-parallel", "0"]),
+    fx!("lossless", "testsrc2", 176, 144, 5, NOISE, P420, ["-lossless", "1", "-frame-parallel", "0"]),
+    fx!("lossless_10bit", "mandelbrot", 176, 144, 4, NOISE, P420_10, ["-lossless", "1", "-profile:v", "2", "-frame-parallel", "0"]),
+    fx!("tiles_cols4", "testsrc2", 1280, 720, 6, NOISE, P420, ["-b:v", "2M", "-tile-columns", "2", "-speed", "4", "-frame-parallel", "0"]),
+    fx!(
+        "tiles_rows_cols",
+        "testsrc2",
+        1280,
+        720,
+        6,
+        NOISE,
+        P420,
+        ["-b:v", "2M", "-tile-columns", "1", "-tile-rows", "2", "-speed", "4", "-frame-parallel", "0"]
+    ),
+    fx!("tiles_rows4", "testsrc2", 640, 480, 5, NOISE, P420, ["-b:v", "1M", "-tile-columns", "0", "-tile-rows", "2", "-frame-parallel", "0"]),
+    fx!(
+        "altref_hidden",
+        "testsrc2",
+        352,
+        288,
+        30,
+        NOISE,
+        P420,
+        ["2pass", "-b:v", "600k", "-auto-alt-ref", "1", "-lag-in-frames", "25", "-frame-parallel", "0"]
+    ),
+    fx!(
+        "altref_10bit",
+        "mandelbrot",
+        352,
+        288,
+        24,
+        NOISE,
+        P420_10,
+        ["2pass", "-b:v", "600k", "-profile:v", "2", "-auto-alt-ref", "1", "-lag-in-frames", "16", "-frame-parallel", "0"]
+    ),
+    fx!(
+        "altref_tiles",
+        "testsrc2",
+        1280,
+        720,
+        12,
+        NOISE,
+        P420,
+        ["2pass", "-b:v", "2M", "-auto-alt-ref", "1", "-lag-in-frames", "10", "-tile-columns", "2", "-speed", "2", "-frame-parallel", "0"]
+    ),
     fx!("frame_parallel", "testsrc2", 352, 288, 16, NOISE, P420, ["-b:v", "600k", "-frame-parallel", "1"]),
-    fx!("frame_parallel_off", "testsrc2", 352, 288, 16, NOISE, P420, ["-b:v", "600k", "-frame-parallel", "0"]),
     fx!("error_resilient", "testsrc2", 352, 288, 16, NOISE, P420, ["-b:v", "600k", "-error-resilient", "1"]),
-    fx!("odd_size", "testsrc2", 347, 251, 10, NOISE, P420, ["-b:v", "600k"]),
-    fx!("tiny_odd", "testsrc2", 33, 17, 8, NOISE, P420, ["-b:v", "200k"]),
-    fx!("row_mt", "testsrc2", 640, 360, 10, NOISE, P420, ["-b:v", "1M", "-row-mt", "1", "-tile-columns", "1"]),
-    fx!("speed0", "mandelbrot", 176, 144, 8, NOISE, P420, ["-b:v", "300k", "-speed", "0"]),
-    fx!("speed2", "testsrc2", 352, 288, 10, NOISE, P420, ["-b:v", "600k", "-speed", "2"]),
-    fx!("speed5", "testsrc2", 352, 288, 10, NOISE, P420, ["-b:v", "600k", "-speed", "5", "-deadline", "realtime"]),
-    fx!("speed8", "testsrc2", 352, 288, 10, NOISE, P420, ["-b:v", "600k", "-speed", "8", "-deadline", "realtime"]),
-    fx!("cq_low", "testsrc2", 352, 288, 8, NOISE, P420, ["-crf", "0", "-b:v", "0"]),
-    fx!("cq_high", "testsrc2", 352, 288, 12, NOISE, P420, ["-crf", "63", "-b:v", "0"]),
-    fx!("cq_10bit_low", "testsrc2", 176, 144, 6, NOISE, P420_10, ["-crf", "2", "-b:v", "0", "-profile:v", "2"]),
-    fx!("aq_segmentation", "testsrc2", 352, 288, 12, NOISE, P420, ["-b:v", "600k", "-aq-mode", "3"]),
-    fx!("aq_variance", "mandelbrot", 352, 288, 12, NOISE, P420, ["-b:v", "600k", "-aq-mode", "1"]),
-    fx!("sharpness", "testsrc2", 352, 288, 8, NOISE, P420, ["-b:v", "400k", "-sharpness", "5"]),
-    fx!("fade_intra_heavy", "testsrc2", 352, 288, 20, "fade=in:0:15", P420, ["-b:v", "400k", "-g", "8"]),
+    fx!("odd_size", "testsrc2", 347, 251, 10, NOISE, P420, ["-b:v", "600k", "-frame-parallel", "0"]),
+    fx!("tiny_odd", "testsrc2", 33, 17, 8, NOISE, P420, ["-b:v", "200k", "-frame-parallel", "0"]),
+    fx!("row_mt", "testsrc2", 640, 360, 10, NOISE, P420, ["-b:v", "1M", "-row-mt", "1", "-tile-columns", "1", "-frame-parallel", "0"]),
+    fx!("speed0", "mandelbrot", 176, 144, 8, NOISE, P420, ["2pass", "-b:v", "300k", "-speed", "0", "-frame-parallel", "0"]),
+    fx!("speed1", "testsrc2", 352, 288, 10, NOISE, P420, ["-b:v", "600k", "-speed", "1", "-frame-parallel", "0"]),
+    fx!("speed2", "testsrc2", 352, 288, 10, NOISE, P420, ["-b:v", "600k", "-speed", "2", "-frame-parallel", "0"]),
+    fx!("speed3", "testsrc2", 352, 288, 10, NOISE, P420, ["-b:v", "600k", "-speed", "3", "-frame-parallel", "0"]),
+    fx!("speed4", "testsrc2", 352, 288, 10, NOISE, P420, ["-b:v", "600k", "-speed", "4", "-frame-parallel", "0"]),
+    fx!("speed5", "testsrc2", 352, 288, 10, NOISE, P420, ["-b:v", "600k", "-speed", "5", "-deadline", "realtime", "-frame-parallel", "0"]),
+    fx!("speed6", "testsrc2", 352, 288, 10, NOISE, P420, ["-b:v", "600k", "-speed", "6", "-deadline", "realtime", "-frame-parallel", "0"]),
+    fx!("speed7", "testsrc2", 352, 288, 10, NOISE, P420, ["-b:v", "600k", "-speed", "7", "-deadline", "realtime", "-frame-parallel", "0"]),
+    fx!("speed8", "testsrc2", 352, 288, 10, NOISE, P420, ["-b:v", "600k", "-speed", "8", "-deadline", "realtime", "-frame-parallel", "0"]),
+    fx!("cq_low", "testsrc2", 352, 288, 8, NOISE, P420, ["-crf", "0", "-b:v", "0", "-frame-parallel", "0"]),
+    fx!("cq_q4", "testsrc2", 352, 288, 8, NOISE, P420, ["-crf", "4", "-b:v", "0", "-frame-parallel", "0"]),
+    fx!("cq_high", "testsrc2", 352, 288, 12, NOISE, P420, ["-crf", "63", "-b:v", "0", "-frame-parallel", "0"]),
+    fx!("cq_10bit_low", "testsrc2", 176, 144, 6, NOISE, P420_10, ["-crf", "2", "-b:v", "0", "-profile:v", "2", "-frame-parallel", "0"]),
+    fx!("cq_12bit_high", "testsrc2", 176, 144, 6, NOISE, "yuv420p12le", ["-crf", "60", "-b:v", "0", "-profile:v", "2", "-frame-parallel", "0"]),
+    fx!("aq_segmentation", "testsrc2", 352, 288, 12, NOISE, P420, ["-b:v", "600k", "-aq-mode", "3", "-frame-parallel", "0"]),
+    fx!("aq_variance", "mandelbrot", 352, 288, 12, NOISE, P420, ["-b:v", "600k", "-aq-mode", "1", "-frame-parallel", "0"]),
+    fx!("aq_complexity", "testsrc2", 352, 288, 12, NOISE, P420, ["2pass", "-b:v", "600k", "-aq-mode", "2", "-frame-parallel", "0"]),
+    fx!("sharpness", "testsrc2", 352, 288, 8, NOISE, P420, ["-b:v", "400k", "-sharpness", "5", "-frame-parallel", "0"]),
+    fx!("fade_intra_heavy", "testsrc2", 352, 288, 20, "fade=in:0:15", P420, ["-b:v", "400k", "-g", "8", "-frame-parallel", "0"]),
     fx!("hd_1080p", "testsrc2", 1920, 1080, 3, NOISE, P420, ["-b:v", "4M", "-speed", "5", "-deadline", "realtime"]),
-    fx!("bench_1080p", "testsrc2", 1920, 1080, 60, "noise=alls=3:allf=t", P420, ["-b:v", "4M", "-speed", "4", "-tile-columns", "2", "-row-mt", "1"]),
-    fx!("bench_4k", "testsrc2", 3840, 2160, 20, "noise=alls=3:allf=t", P420, ["-b:v", "12M", "-speed", "6", "-tile-columns", "3", "-row-mt", "1"]),
+    fx!(
+        "bench_1080p",
+        "testsrc2",
+        1920,
+        1080,
+        60,
+        "noise=alls=3:allf=t",
+        P420,
+        ["-b:v", "4M", "-speed", "4", "-tile-columns", "2", "-row-mt", "1", "-frame-parallel", "0"]
+    ),
+    fx!(
+        "bench_4k",
+        "testsrc2",
+        3840,
+        2160,
+        20,
+        "noise=alls=3:allf=t",
+        P420,
+        ["-b:v", "12M", "-speed", "6", "-tile-columns", "3", "-row-mt", "1", "-frame-parallel", "0"]
+    ),
 ];
 
 pub fn fixture(name: &str) -> &'static Fixture {
@@ -123,7 +188,7 @@ pub fn reference_decode(ivf: &Path, yuv: &Path, pix_fmt: &str) -> bool {
     let tmp = yuv.with_extension(format!("tmp.{}.yuv", std::process::id()));
     let mut c = Command::new(&ff);
     c.args(["-hide_banner", "-loglevel", "error", "-y", "-c:v", "vp9", "-i"]).arg(ivf);
-    c.args(["-fps_mode", "passthrough", "-f", "rawvideo", "-pix_fmt", pix_fmt]).arg(&tmp);
+    c.args(["-fps_mode", "passthrough", "-noautoscale", "-f", "rawvideo", "-pix_fmt", pix_fmt]).arg(&tmp);
     if !run(&mut c) {
         return false;
     }
@@ -146,16 +211,35 @@ pub fn ensure(f: &Fixture) -> Option<(PathBuf, PathBuf)> {
             vf.push(',');
             vf.push_str(f.filter);
         }
-        let mut c = Command::new(&ff);
-        c.args(["-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", &vf]);
-        c.args(["-frames:v", &f.frames.to_string(), "-c:v", "libvpx-vp9", "-pix_fmt", f.pix_fmt]);
-        c.args(f.args);
-        c.args(["-f", "ivf"]).arg(&tmp);
+        let two_pass = f.args.first() == Some(&"2pass");
+        let args: Vec<&str> = f.args.iter().copied().filter(|a| *a != "2pass").collect();
+        let log = dir.join(format!("{}.{}.passlog", f.name, std::process::id()));
+        let enc = |pass: Option<u32>, out: &Path| {
+            let mut c = Command::new(&ff);
+            c.args(["-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", &vf]);
+            c.args(["-frames:v", &f.frames.to_string(), "-c:v", "libvpx-vp9", "-pix_fmt", f.pix_fmt]);
+            c.args(&args);
+            if let Some(p) = pass {
+                c.args(["-pass", &p.to_string(), "-passlogfile"]).arg(&log);
+            }
+            if pass == Some(1) {
+                c.args(["-f", "null", "-"]);
+            } else {
+                c.args(["-f", "ivf"]).arg(out);
+            }
+            c
+        };
+        if two_pass && !run(&mut enc(Some(1), &tmp)) {
+            eprintln!("SKIP {}: first pass failed", f.name);
+            return None;
+        }
+        let mut c = enc(if two_pass { Some(2) } else { None }, &tmp);
         if !run(&mut c) {
             let _ = std::fs::remove_file(&tmp);
             eprintln!("SKIP {}: libvpx-vp9 encode failed", f.name);
             return None;
         }
+        let _ = std::fs::remove_file(format!("{}-0.log", log.display()));
         std::fs::rename(&tmp, &ivf).unwrap();
     }
     if !yuv.exists() {

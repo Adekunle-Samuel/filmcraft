@@ -1,0 +1,38 @@
+//! Decode an IVF file: `cargo run --release -p filmcraft-vp9 --example vp9dec -- in.ivf [out.yuv]`.
+//! Writes raw planar output (8-bit or 16-bit little endian) and prints decoder statistics.
+
+use std::io::Write;
+
+fn main() {
+    let args: Vec<String> = std::env::args().collect();
+    let data = std::fs::read(&args[1]).expect("read input");
+    let mut out = args.get(2).map(|p| std::io::BufWriter::new(std::fs::File::create(p).expect("create output")));
+    let mut dec = filmcraft_vp9::Decoder::new();
+    let hl = u16::from_le_bytes([data[6], data[7]]) as usize;
+    let mut p = hl;
+    let mut i = 0i64;
+    let t0 = std::time::Instant::now();
+    let mut n = 0;
+    while p + 12 <= data.len() {
+        let sz = u32::from_le_bytes(data[p..p + 4].try_into().unwrap()) as usize;
+        p += 12;
+        let Some(frame) = data.get(p..p + sz) else { break };
+        p += sz;
+        match dec.decode(frame, i) {
+            Ok(pics) => {
+                for pic in pics {
+                    n += 1;
+                    if let Some(o) = out.as_mut() {
+                        for pl in [&pic.y, &pic.u, &pic.v] {
+                            o.write_all(&pl.to_le_bytes()).unwrap();
+                        }
+                    }
+                }
+            }
+            Err(e) => eprintln!("chunk {i}: {e}"),
+        }
+        i += 1;
+    }
+    eprintln!("{n} pictures in {:.3}s", t0.elapsed().as_secs_f64());
+    eprintln!("{:#?}", dec.stats());
+}

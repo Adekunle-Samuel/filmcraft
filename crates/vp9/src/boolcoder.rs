@@ -13,15 +13,13 @@ pub struct BoolDecoder<'a> {
     value: u64,
     count: i32,
     range: u32,
-    /// Number of zero bytes appended after the end of the data (detects runaway reads).
-    overrun: u32,
 }
 
 impl<'a> BoolDecoder<'a> {
     /// init_bool (9.2.1): the marker bit is read and returned in `Err` position when non-zero is
     /// not treated as fatal (libvpx ignores it too), so this only returns the decoder.
     pub fn new(data: &'a [u8]) -> Self {
-        let mut d = BoolDecoder { data, pos: 0, value: 0, count: -8, range: 255, overrun: 0 };
+        let mut d = BoolDecoder { data, pos: 0, value: 0, count: -8, range: 255 };
         d.fill();
         d.read_bool(128);
         d
@@ -49,7 +47,6 @@ impl<'a> BoolDecoder<'a> {
                 self.pos += 1;
                 b
             } else {
-                self.overrun = self.overrun.saturating_add(1);
                 0
             };
             self.value |= (b as u64) << shift;
@@ -100,11 +97,6 @@ impl<'a> BoolDecoder<'a> {
                 return (-n) as u8;
             }
         }
-    }
-
-    /// True when the decoder has consumed far more bits than the data holds (a damaged stream).
-    pub fn overrun(&self) -> bool {
-        self.overrun > 16
     }
 }
 

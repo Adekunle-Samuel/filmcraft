@@ -197,9 +197,6 @@ impl<'a> TileDecoder<'a> {
             for c in (cs..ce).step_by(8) {
                 self.decode_partition(&mut bd, r, c, BLOCK_64X64);
             }
-            if bd.overrun() {
-                return false;
-            }
         }
         true
     }

@@ -15,21 +15,21 @@ macro_rules! adst4 {
         #[inline(always)]
         fn $name(x: [$t; 4]) -> [$t; 4] {
             let (s1_9, s2_9, s3_9, s4_9) = (SINPI_1_9 as $t, SINPI_2_9 as $t, SINPI_3_9 as $t, SINPI_4_9 as $t);
-            let s0 = s1_9 * x[0];
-            let s1 = s2_9 * x[0];
-            let s2 = s3_9 * x[1];
-            let s3 = s4_9 * x[2];
-            let s4 = s1_9 * x[2];
-            let s5 = s2_9 * x[3];
-            let s6 = s4_9 * x[3];
-            let v = x[0] - x[2] + x[3];
-            let s7 = s3_9 * v;
-            let x0 = s0 + s3 + s5;
-            let x1 = s1 - s4 - s6;
+            let s0 = s1_9.wrapping_mul(x[0]);
+            let s1 = s2_9.wrapping_mul(x[0]);
+            let s2 = s3_9.wrapping_mul(x[1]);
+            let s3 = s4_9.wrapping_mul(x[2]);
+            let s4 = s1_9.wrapping_mul(x[2]);
+            let s5 = s2_9.wrapping_mul(x[3]);
+            let s6 = s4_9.wrapping_mul(x[3]);
+            let v = x[0].wrapping_sub(x[2]).wrapping_add(x[3]);
+            let s7 = s3_9.wrapping_mul(v);
+            let x0 = s0.wrapping_add(s3).wrapping_add(s5);
+            let x1 = s1.wrapping_sub(s4).wrapping_sub(s6);
             let x2 = s7;
             let x3 = s2;
-            let r = |v: $t| (v + (1 << 13)) >> 14;
-            [r(x0 + x3), r(x1 + x3), r(x2), r(x0 + x1 - x3)]
+            let r = |v: $t| v.wrapping_add(1 << 13) >> 14;
+            [r(x0.wrapping_add(x3)), r(x1.wrapping_add(x3)), r(x2), r(x0.wrapping_add(x1).wrapping_sub(x3))]
         }
     };
 }
@@ -42,13 +42,13 @@ fn iwht4(x: [i32; 4], shift: u32) -> [i32; 4] {
     let mut c = x[1] >> shift;
     let mut d = x[2] >> shift;
     let mut b = x[3] >> shift;
-    a += c;
-    d -= b;
-    let e = (a - d) >> 1;
-    b = e - b;
-    c = e - c;
-    a -= b;
-    d += c;
+    a = a.wrapping_add(c);
+    d = d.wrapping_sub(b);
+    let e = a.wrapping_sub(d) >> 1;
+    b = e.wrapping_sub(b);
+    c = e.wrapping_sub(c);
+    a = a.wrapping_sub(b);
+    d = d.wrapping_add(c);
     [a, b, c, d]
 }
 
@@ -144,7 +144,7 @@ pub fn inverse_transform_add(coefs: &[i32], tx_size: u8, tx_type: u8, lossless: 
             let r = iwht4([t[j], t[4 + j], t[8 + j], t[12 + j]], 0);
             for i in 0..4 {
                 let p = &mut dst[i * stride + j];
-                *p = (*p as i32 + r[i]).clamp(0, max) as u16;
+                *p = (*p as i32).saturating_add(r[i]).clamp(0, max) as u16;
             }
         }
         return;
@@ -188,7 +188,7 @@ pub fn inverse_transform_add(coefs: &[i32], tx_size: u8, tx_type: u8, lossless: 
             tx1d_narrow(&mut col[..n], n, col_adst);
             for i in 0..n {
                 let p = &mut dst[i * stride + j];
-                *p = (*p as i32 + ((col[i] + round) >> shift)).clamp(0, max) as u16;
+                *p = (*p as i32 + (col[i].wrapping_add(round) >> shift).clamp(-(1 << 20), 1 << 20)).clamp(0, max) as u16;
             }
         }
     } else {
