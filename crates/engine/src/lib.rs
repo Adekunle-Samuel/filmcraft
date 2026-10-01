@@ -12,6 +12,7 @@ pub mod autosave;
 pub mod captions;
 pub mod commands;
 pub mod demo;
+pub mod essential_sound;
 pub mod graphics;
 pub mod interchange;
 pub mod media_pool;
@@ -554,6 +555,8 @@ pub fn media_duration(p: &Project, _pool: &MediaPool, id: ItemId) -> Option<Tick
 
 #[cfg(test)]
 mod autosave_tests;
+#[cfg(test)]
+mod essential_sound_tests;
 #[cfg(test)]
 mod file_tests;
 #[cfg(test)]

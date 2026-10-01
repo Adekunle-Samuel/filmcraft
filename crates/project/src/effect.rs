@@ -86,6 +86,7 @@ impl EffectDef {
             params: self.params.iter().map(|p| (p.id.to_string(), Param::new(p.default.clone()))).collect(),
             masks: Vec::new(),
             post_fader: false,
+            essential: false,
         }
     }
 }
@@ -117,6 +118,9 @@ pub struct EffectInstance {
     /// Track/Mix inserts only: process after the fader instead of before it.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub post_fader: bool,
+    /// Managed by the Essential Sound panel (see [`crate::essential`]).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub essential: bool,
 }
 
 impl EffectInstance {
@@ -252,6 +256,7 @@ const A_FILTER: &[&str] = &["Audio Effects", "Filter and EQ"];
 const A_NOISE: &[&str] = &["Audio Effects", "Noise Reduction/Restoration"];
 const A_REVERB: &[&str] = &["Audio Effects", "Reverb"];
 const A_SPECIAL: &[&str] = &["Audio Effects", "Special"];
+const A_STEREO: &[&str] = &["Audio Effects", "Stereo Imagery"];
 const A_TIME: &[&str] = &["Audio Effects", "Time and Pitch"];
 const A_TRANS: &[&str] = &["Audio Transitions", "Crossfade"];
 
@@ -882,7 +887,24 @@ fn build_effects() -> Vec<EffectDef> {
         audio("denoise", "DeNoise", A_NOISE, vec![f("amount", "Amount", 40.0, 0.0, 100.0, "%")]),
         audio("dehummer", "DeHummer", A_NOISE, vec![ch("freq", "Frequency", &["50 Hz", "60 Hz"], 1), f("gain", "Gain", -40.0, -80.0, 0.0, "dB")]),
         audio("declicker", "Automatic Click Remover", A_NOISE, vec![]),
-        audio("dereverb", "DeReverb", A_NOISE, vec![]),
+        audio(
+            "dereverb",
+            "DeReverb",
+            A_NOISE,
+            vec![f("amount", "Amount", 50.0, 0.0, 100.0, "%"), fs("rt60", "Decay Time (RT60)", 0.8, (0.1, 5.0), (0.1, 3.0), "s", 2)],
+        ),
+        audio(
+            "deesser",
+            "DeEsser",
+            A_AMP,
+            vec![
+                fs("frequency", "Frequency", 6000.0, (2000.0, 12000.0), (2000.0, 12000.0), "Hz", 0),
+                fs("threshold", "Threshold", -12.0, (-40.0, 0.0), (-40.0, 0.0), "dB", 1),
+                fs("reduction", "Maximum Reduction", 8.0, (0.0, 24.0), (0.0, 24.0), "dB", 1),
+            ],
+        ),
+        audio("speech_enhance", "Enhance Speech", A_NOISE, vec![f("mix", "Mix", 100.0, 0.0, 100.0, "%"), ch("tone", "Voice", &["Low Tone", "High Tone"], 0)]),
+        audio("stereo_width", "Stereo Width", A_STEREO, vec![fs("width", "Width", 100.0, (0.0, 200.0), (0.0, 200.0), "%", 0)]),
         audio(
             "studio_reverb",
             "Studio Reverb",

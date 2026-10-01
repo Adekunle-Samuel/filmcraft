@@ -9,6 +9,7 @@
 
 pub mod caption;
 pub mod effect;
+pub mod essential;
 pub mod graphic;
 pub mod keyframe;
 pub mod mixer;
@@ -22,6 +23,7 @@ use serde::{Deserialize, Serialize};
 
 pub use caption::{Caption, CaptionAlign, CaptionAnchor, CaptionFormat, CaptionStyle, CaptionTrack, plain_text};
 pub use effect::{EffectDef, EffectInstance, EffectKind, ParamDef, ParamKind, effect_defs, find_effect};
+pub use essential::{AudioType, EssentialSound};
 pub use keyframe::{Interpolation, Keyframe, Param, ParamValue};
 pub use mixer::{AutomationMode, InputMap, MixerStrip, TrackSend};
 
@@ -431,6 +433,9 @@ pub struct TrackItem {
     /// Scale to frame size (Set to Frame Size / Scale to Frame Size).
     #[serde(default)]
     pub scale_to_frame: bool,
+    /// Essential Sound audio type and settings (audio clips).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub essential: Option<EssentialSound>,
 }
 
 impl TrackItem {
@@ -899,6 +904,7 @@ impl Project {
             gain_db: 0.0,
             frame_hold: None,
             scale_to_frame: false,
+            essential: None,
         })
     }
 
