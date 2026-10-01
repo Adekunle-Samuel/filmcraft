@@ -114,7 +114,7 @@ fn layers() -> Result<(), String> {
     let mut errors = Vec::new();
     for (name, deps) in workspace_crates(&md) {
         let Some(l) = layer_of(&name) else {
-            errors.push(format!("{name}: not assigned a layer (add it to xtask LAYERS and plan/architecture.md §3)"));
+            errors.push(format!("{name}: not assigned a layer (add it to xtask LAYERS and docs/architecture.md §1)"));
             continue;
         };
         for d in &deps {
