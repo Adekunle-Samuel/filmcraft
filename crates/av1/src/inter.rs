@@ -183,7 +183,8 @@ impl TileDecoder<'_, '_> {
         if ref_idx < 0 { &self.fs.cur.planes[plane] } else { &self.fs.refs[ref_idx as usize].as_ref().expect("reference frame").buf.planes[plane] }
     }
 
-    /// Block inter prediction process (7.11.3.4) into `pred` (stride PRED_STRIDE).
+    /// Block inter prediction process (7.11.3.4) into `pred` (stride PRED_STRIDE); `tmp` holds
+    /// the intermediate (horizontally filtered) rows.
     #[allow(clippy::too_many_arguments)]
     fn block_inter_prediction(
         &self,
@@ -198,10 +199,10 @@ impl TileDecoder<'_, '_> {
         filters: [u8; 2],
         rnd: (u32, u32, u32),
         pred: &mut [i32],
+        tmp: &mut [i32],
     ) {
         let refp = self.ref_plane(ref_idx, plane);
         let (last_x, last_y) = self.ref_plane_dims(ref_idx, plane);
-        let inter_h = ((((h as i32 - 1) * y_step + (1 << SCALE_SUBPEL_BITS) - 1) >> SCALE_SUBPEL_BITS) + 8) as usize;
         let mut fh = filters[1] as usize;
         if w <= 4 {
             if fh == EIGHTTAP || fh == EIGHTTAP_SHARP {
@@ -218,7 +219,25 @@ impl TileDecoder<'_, '_> {
                 fv = 5;
             }
         }
-        let mut inter = vec![0i32; inter_h * w];
+        let unit = 1 << SCALE_SUBPEL_BITS;
+        if x_step == unit && y_step == unit {
+            mc_unscaled(
+                refp,
+                last_x,
+                last_y,
+                x,
+                y,
+                w,
+                h,
+                &SUBPEL_FILTERS[fh][((x >> 6) & SUBPEL_MASK as i32) as usize],
+                &SUBPEL_FILTERS[fv][((y >> 6) & SUBPEL_MASK as i32) as usize],
+                rnd,
+                pred,
+                tmp,
+            );
+            return;
+        }
+        let inter_h = ((((h as i32 - 1) * y_step + (1 << SCALE_SUBPEL_BITS) - 1) >> SCALE_SUBPEL_BITS) + 8) as usize;
         for r in 0..inter_h {
             let ry = ((y >> 10) + r as i32 - 3).clamp(0, last_y) as usize;
             let row = refp.row(ry);
@@ -230,7 +249,7 @@ impl TileDecoder<'_, '_> {
                 for t in 0..8 {
                     s += filt[t] as i32 * row[(bx + t as i32).clamp(0, last_x) as usize] as i32;
                 }
-                inter[r * w + c] = round2(s, rnd.0);
+                tmp[r * w + c] = round2(s, rnd.0);
             }
         }
         for r in 0..h {
@@ -240,7 +259,7 @@ impl TileDecoder<'_, '_> {
                 let base = (p >> 10) as usize;
                 let mut s = 0i32;
                 for t in 0..8 {
-                    s += filt[t] as i32 * inter[(base + t) * w + c];
+                    s += filt[t] as i32 * tmp[(base + t) * w + c];
                 }
                 pred[r * PRED_STRIDE + c] = round2(s, rnd.1);
             }
@@ -383,6 +402,7 @@ impl TileDecoder<'_, '_> {
             }
         }
         let mut preds = [std::mem::take(&mut self.pred_buf[0]), std::mem::take(&mut self.pred_buf[1])];
+        let mut tmp = std::mem::take(&mut self.mc_tmp);
         let fh = &self.fs.fh;
         for ref_list in 0..1 + is_compound as usize {
             let ref_frame = cand_refs[ref_list];
@@ -409,7 +429,7 @@ impl TileDecoder<'_, '_> {
                 }
             } else {
                 let (sx, sy, stx, sty) = self.mv_scaling(plane, ref_idx, x as i32, y as i32, mv);
-                self.block_inter_prediction(plane, ref_idx, sx, sy, stx, sty, w, h, filters, rnd, &mut preds[ref_list]);
+                self.block_inter_prediction(plane, ref_idx, sx, sy, stx, sty, w, h, filters, rnd, &mut preds[ref_list], &mut tmp);
             }
         }
         let ct = self.b.compound_type;
@@ -480,6 +500,7 @@ impl TileDecoder<'_, '_> {
             self.mask_blend(&preds, plane, x, y, w, h, rnd.2, max);
         }
         self.pred_buf = preds;
+        self.mc_tmp = tmp;
         if self.b.motion_mode as usize == OBMC {
             self.overlapped_motion_compensation(plane, w, h);
         }
@@ -561,6 +582,7 @@ impl TileDecoder<'_, '_> {
         let bd = self.fs.bit_depth;
         let max = (1i32 << bd) - 1;
         let mut obmc = std::mem::take(&mut self.pred_buf[0]);
+        let mut tmp = std::mem::take(&mut self.mc_tmp);
         let get_mask = |len: usize| -> &'static [u8] {
             match len {
                 2 => &OBMC_MASK_2,
@@ -624,7 +646,7 @@ impl TileDecoder<'_, '_> {
             let (stx, sty, sxs, sys) = self.mv_scaling(plane, ref_idx, px as i32, py as i32, mv);
             let filters = self.fs.mi.interp_filter[ci];
             let rnd = rounding(false, bd);
-            self.block_inter_prediction(plane, ref_idx, stx, sty, sxs, sys, pw, ph, filters, rnd, &mut obmc);
+            self.block_inter_prediction(plane, ref_idx, stx, sty, sxs, sys, pw, ph, filters, rnd, &mut obmc, &mut tmp);
             let mask = get_mask(if pass == 0 { ph } else { pw });
             let pl = &mut self.fs.cur.planes[plane];
             for i in 0..ph {
@@ -637,5 +659,89 @@ impl TileDecoder<'_, '_> {
             }
         }
         self.pred_buf[0] = obmc;
+        self.mc_tmp = tmp;
+    }
+}
+
+const IDENTITY_TAPS: [i16; 8] = [0, 0, 0, 128, 0, 0, 0, 0];
+
+/// Block inter prediction without reference scaling: every column / row uses the same filter
+/// phase, so the filters run over whole rows (bit-identical to the per-sample process).
+#[allow(clippy::too_many_arguments)]
+fn mc_unscaled(
+    refp: &Plane,
+    last_x: i32,
+    last_y: i32,
+    x: i32,
+    y: i32,
+    w: usize,
+    h: usize,
+    hf: &[i16; 8],
+    vf: &[i16; 8],
+    rnd: (u32, u32, u32),
+    pred: &mut [i32],
+    tmp: &mut [i32],
+) {
+    let x0 = (x >> 10) - 3;
+    let y0 = (y >> 10) - 3;
+    let h_copy = *hf == IDENTITY_TAPS;
+    let v_copy = *vf == IDENTITY_TAPS;
+    // With the identity vertical phase only intermediate rows 3 .. 3 + h have a non-zero tap.
+    let (r_lo, r_hi) = if v_copy { (3, 3 + h) } else { (0, h + 7) };
+    let inside = x0 >= 0 && x0 + w as i32 + 7 <= last_x + 1;
+    let mut edge = [0u16; 128 + 8];
+    let mut acc = [0i32; 128];
+    let (r0, r1) = (rnd.0, rnd.1);
+    let (half0, half1) = (1i32 << (r0 - 1), 1i32 << (r1 - 1));
+    for r in r_lo..r_hi {
+        let ry = (y0 + r as i32).clamp(0, last_y) as usize;
+        let row = refp.row(ry);
+        let src: &[u16] = if inside {
+            &row[x0 as usize..x0 as usize + w + 7]
+        } else {
+            for (k, e) in edge[..w + 7].iter_mut().enumerate() {
+                *e = row[(x0 + k as i32).clamp(0, last_x) as usize];
+            }
+            &edge[..w + 7]
+        };
+        let out = &mut tmp[r * w..r * w + w];
+        if h_copy {
+            // Round2(128 * v, InterRound0) is exact.
+            for (o, &v) in out.iter_mut().zip(&src[3..3 + w]) {
+                *o = (v as i32) << (7 - r0);
+            }
+        } else {
+            let acc = &mut acc[..w];
+            acc.fill(0);
+            for t in 0..8 {
+                let f = hf[t] as i32;
+                for (a, &v) in acc.iter_mut().zip(&src[t..t + w]) {
+                    *a += f * v as i32;
+                }
+            }
+            for (o, &a) in out.iter_mut().zip(acc.iter()) {
+                *o = (a + half0) >> r0;
+            }
+        }
+    }
+    for r in 0..h {
+        let out = &mut pred[r * PRED_STRIDE..r * PRED_STRIDE + w];
+        if v_copy {
+            for (o, &v) in out.iter_mut().zip(&tmp[(r + 3) * w..(r + 4) * w]) {
+                *o = (128 * v + half1) >> r1;
+            }
+        } else {
+            let acc = &mut acc[..w];
+            acc.fill(0);
+            for t in 0..8 {
+                let f = vf[t] as i32;
+                for (a, &v) in acc.iter_mut().zip(&tmp[(r + t) * w..(r + t + 1) * w]) {
+                    *a += f * v;
+                }
+            }
+            for (o, &a) in out.iter_mut().zip(acc.iter()) {
+                *o = (a + half1) >> r1;
+            }
+        }
     }
 }

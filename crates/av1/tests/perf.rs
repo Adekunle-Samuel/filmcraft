@@ -51,6 +51,10 @@ fn run(frames: &[Vec<u8>], threads: usize) -> Run {
 }
 
 fn bench(spec: &Spec) {
+    // AV1_PERF_ONLY=<substring> limits the run to matching fixtures.
+    if std::env::var("AV1_PERF_ONLY").is_ok_and(|f| !spec.name.contains(f.as_str())) {
+        return;
+    }
     let Some(ff) = ffmpeg() else { return };
     let path = make(&ff, spec);
     let frames = ivf_frames(&path);
