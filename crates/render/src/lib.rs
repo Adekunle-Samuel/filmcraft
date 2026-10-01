@@ -11,6 +11,7 @@ pub mod audio;
 pub mod audio_fx;
 pub mod blend;
 pub mod effects;
+pub mod graphics;
 pub mod image;
 pub mod plan;
 pub mod preview;

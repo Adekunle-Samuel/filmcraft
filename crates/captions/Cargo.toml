@@ -13,9 +13,8 @@ workspace = true
 filmcraft-time = { workspace = true }
 filmcraft-color = { workspace = true }
 filmcraft-project = { workspace = true }
+filmcraft-text = { workspace = true }
 thiserror = { workspace = true }
-# Font tables, glyph outlines and metrics (MIT OR Apache-2.0). Rasterisation is our own.
-skrifa = { version = "0.44", default-features = false, features = ["std"] }
 
 [dev-dependencies]
 proptest = { workspace = true }

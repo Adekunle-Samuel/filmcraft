@@ -24,8 +24,8 @@ Design principles:
  L5  ui-egui · automation
  L4  engine
  L3  render · gpu · export · golden (test-only)
- L2  edit · codecs · interchange
- L1  frame · media · project · audio-dsp
+ L2  edit · codecs · interchange · captions
+ L1  frame · media · project · audio-dsp · text
  L0  foundation: time · geom · color · bitstream · testkit (dev-dependency only)
      codecs/containers: isobmff · matroska · h264 · h264enc · hevc · prores · aac
 ```
@@ -50,6 +50,7 @@ and `filmcraft-cli`.
 | `media` | L1 | `MediaSource` trait, probing/openers, frame cache, generators, stills, WAV |
 | `project` | L1 | document model, effect definitions, keyframes |
 | `audio-dsp` | L1 | loudness metering (BS.1770 / R128) and audio effects; no dependencies |
+| `text` | L1 | text engine: font database (bundled OFL fonts + system fonts), shaping (harfrust), bidi, line breaking, paragraph layout, glyph/path rasteriser, strokes ([crates/text/README.md](../crates/text/README.md)) |
 | `edit` | L2 | pure edit algebra (insert, overwrite, razor, ripple, roll, slip, slide, rate stretch…) |
 | `codecs` | L2 | container + codec hub: MP4/MOV and MKV sources, GOP-aware seeking, decoder registry, audio decoding |
 | `interchange` | L2 | EDL, FCP7 XML, FCPXML and OTIO import/export (no file I/O) |
@@ -257,7 +258,7 @@ Protocol reference: [control-protocol.md](control-protocol.md). Agent guide: [ag
 ## 8. Not built yet
 
 The layer table reserves names for crates that don't exist yet: `riff`, `mjpeg`, `dnx`,
-`keyframe`, `effects`, `text`, `audio`, `captions`, `scopes`, `playback`, `format` and `platform`.
+`keyframe`, `effects`, `audio`, `scopes`, `playback`, `format` and `platform`.
 Until they exist, that work lives elsewhere: keyframes and effect definitions in `project`, effects
 and the audio mix in `render`, scopes and playback in `ui-egui`, and OS integration (cpal, rfd,
 native menus) in `apps/filmcraft`. [ROADMAP.md](../ROADMAP.md) has the milestone status.

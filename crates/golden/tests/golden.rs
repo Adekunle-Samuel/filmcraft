@@ -223,7 +223,7 @@ fn transition(effect: &str, frame: i64) -> Scene {
     b.at(frame)
 }
 
-/// Timecode and Clip Name burn-ins (FilmCraft's built-in bitmap text).
+/// Timecode and Clip Name burn-ins (text engine: JetBrains Mono / Inter).
 fn text_burnin() -> Scene {
     let mut b = Builder::new(1);
     let bg = b.demo(DemoScene::CityNight);

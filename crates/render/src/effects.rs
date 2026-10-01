@@ -716,38 +716,14 @@ pub fn apply(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
             });
         }
         "timecode" | "clip_name" => {
-            let text = if e.effect == "timecode" {
-                cx.timecode.to_string()
-            } else {
-                cx.clip_name.chars().filter(|c| c.is_ascii_digit() || *c == ':' || *c == '-').collect()
-            };
+            let (text, family) = if e.effect == "timecode" { (cx.timecode.to_string(), "JetBrains Mono") } else { (cx.clip_name.to_string(), "Inter") };
             let pos = point(e, "position", cx, img);
-            let size = (f(e, "size", cx) / 100.0 * img.h as f32 * 0.5).max(6.0) as i32;
-            burn_text(img, &text, pos, size);
+            let px = (f(e, "size", cx) / 100.0 * img.h as f32 * 0.5).max(6.0);
+            let box_alpha = if e.effect == "timecode" { (f(e, "opacity", cx) / 100.0).clamp(0.0, 1.0) * 0.8 } else { 0.8 };
+            crate::graphics::burn_text(img, &text, family, pos, px, box_alpha);
         }
         _ => {}
     }
-}
-
-fn burn_text(img: &mut Image, text: &str, pos: Vec2, size: i32) {
-    let tw = filmcraft_media::digits::text_width(size, text);
-    let (w, h) = (img.w, img.h);
-    let mut buf = vec![0u8; w * h * 4];
-    let x = pos.x as i32 - tw / 2;
-    let y = pos.y as i32 - size / 2;
-    filmcraft_media::digits::fill_rect(&mut buf, w, h, x - size / 4, y - size / 4, tw + size / 2, size + size / 2, [0, 0, 0, 200]);
-    filmcraft_media::digits::draw_text(&mut buf, w, h, x, y, size, text, [255, 255, 255, 255]);
-    img.px.par_chunks_mut(w * 4).zip(buf.par_chunks(w * 4)).for_each(|(d, s)| {
-        for (d, s) in d.chunks_exact_mut(4).zip(s.chunks_exact(4)) {
-            let a = s[3] as f32 / 255.0;
-            if a > 0.0 {
-                for k in 0..3 {
-                    d[k] = srgb_to_linear(s[k] as f32 / 255.0) * a + d[k] * (1.0 - a);
-                }
-                d[3] = a + d[3] * (1.0 - a);
-            }
-        }
-    });
 }
 
 /// Fill an opaque generated colour over the image at `op` opacity (Generate category).

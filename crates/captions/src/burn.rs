@@ -10,7 +10,7 @@ use filmcraft_color::srgb_to_linear;
 use filmcraft_project::{Caption, CaptionAlign, CaptionAnchor, CaptionStyle, CaptionTrack, Sequence};
 use filmcraft_time::Tick;
 
-use crate::font;
+use filmcraft_text::{ParagraphStyle, TextStyle, layout, render};
 
 /// A rendered caption: premultiplied linear-light RGBA f32 pixels at `(x, y)` in the frame.
 #[derive(Clone, Debug, PartialEq)]
@@ -49,6 +49,15 @@ impl Overlay {
     }
 }
 
+/// The caption face: Inter SemiBold at `px`.
+fn caption_style(px: f32) -> TextStyle {
+    TextStyle { style: "SemiBold".into(), size: px, ..Default::default() }
+}
+
+fn measure(text: &str, px: f32) -> f32 {
+    filmcraft_text::measure(text, &caption_style(px))
+}
+
 fn lin(c: [u8; 4]) -> [f32; 4] {
     let a = c[3] as f32 / 255.0;
     [srgb_to_linear(c[0] as f32 / 255.0) * a, srgb_to_linear(c[1] as f32 / 255.0) * a, srgb_to_linear(c[2] as f32 / 255.0) * a, a]
@@ -60,7 +69,7 @@ fn wrap(line: &str, px: f32, max_w: f32) -> Vec<String> {
     let mut cur = String::new();
     for word in line.split(' ') {
         let cand = if cur.is_empty() { word.to_string() } else { format!("{cur} {word}") };
-        if !cur.is_empty() && font::measure(&cand, px) > max_w {
+        if !cur.is_empty() && measure(&cand, px) > max_w {
             out.push(std::mem::take(&mut cur));
             cur = word.to_string();
         } else {
@@ -115,7 +124,8 @@ pub fn render_caption(c: &Caption, style: &CaptionStyle, w: usize, h: usize) -> 
     if lines.is_empty() {
         return None;
     }
-    let (asc, desc) = font::metrics(px);
+    let vm = filmcraft_text::fonts::face(filmcraft_text::resolve("Inter", "SemiBold").face).metrics(px);
+    let (asc, desc) = (vm.ascent, vm.descent);
     let lh = px * style.line_spacing.max(0.8);
     let pad_x = (px * 0.3).round();
     let block_h = lh * lines.len() as f32;
@@ -131,7 +141,7 @@ pub fn render_caption(c: &Caption, style: &CaptionStyle, w: usize, h: usize) -> 
     .max(0.0)
     .round();
     let side = w as f32 * 0.05;
-    let widths: Vec<f32> = lines.iter().map(|l| font::measure(l, px)).collect();
+    let widths: Vec<f32> = lines.iter().map(|l| measure(l, px)).collect();
     let xs: Vec<f32> = widths
         .iter()
         .map(|&lw| match align {
@@ -166,28 +176,10 @@ pub fn render_caption(c: &Caption, style: &CaptionStyle, w: usize, h: usize) -> 
             }
         }
         let baseline = lt + (lh - (asc + desc)) / 2.0 + asc;
-        let mut pen = xs[i];
-        for ch in line.chars() {
-            if let Some(g) = font::glyph(ch, px, pen.fract()) {
-                let gx = pen.floor() as i32 + g.left - ox;
-                let gy = baseline.round() as i32 + g.top - oy;
-                for y in 0..g.mask.h {
-                    let ty = gy + y as i32;
-                    if ty < 0 || ty >= oh as i32 {
-                        continue;
-                    }
-                    for x in 0..g.mask.w {
-                        let tx = gx + x as i32;
-                        if tx < 0 || tx >= ow as i32 {
-                            continue;
-                        }
-                        let j = ty as usize * ow + tx as usize;
-                        cover[j] = (cover[j] + g.mask.get(x, y)).min(1.0);
-                    }
-                }
-            }
-            pen += font::advance(ch, px);
-        }
+        let l = layout(line, &caption_style(px), &ParagraphStyle::default());
+        let mut m = filmcraft_text::Mask { w: ow, h: oh, a: std::mem::take(&mut cover) };
+        render::draw(&l, &render::at(xs[i], baseline.round()), &mut m, (ox, oy));
+        cover = m.a;
     }
     let stroke = if outline > 0.0 { dilate(&cover, ow, oh, outline) } else { Vec::new() };
     let (tc, bc, oc) = (lin(style.color), lin(style.background_color), lin(style.outline_color));
