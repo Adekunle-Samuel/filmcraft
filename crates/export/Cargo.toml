@@ -26,4 +26,5 @@ rayon = { workspace = true }
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif"] }
 
 [dev-dependencies]
+filmcraft-testkit = { workspace = true }
 filmcraft-codecs = { workspace = true }

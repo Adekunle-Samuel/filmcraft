@@ -27,10 +27,22 @@ Commit `*.proptest-regressions` files so failing cases are re-run.
 ffmpeg and ffprobe are **external processes** used to generate fixtures and to check results. They
 are never linked or shipped ([AGENTS.md](../AGENTS.md) §2).
 
-- Each crate's `tests/common/mod.rs` finds the tools in `/opt/homebrew/bin`, `/usr/local/bin` or
-  `/usr/bin`. If they are missing, the test prints a message and returns (it passes).
-- Fixtures are generated on first use into `<repo>/target/fixtures/<crate>/` and reused afterwards.
-  Delete that directory to regenerate them. Never commit media.
+- The tools are found by `filmcraft-testkit` (a dev-dependency-only crate, `crates/testkit`), in
+  this order: `FILMCRAFT_FFMPEG` / `FILMCRAFT_FFPROBE` (explicit paths; a wrong path is an error),
+  then every directory on `PATH` (`ffmpeg` and `ffmpeg.exe`), then well-known install directories
+  (`/opt/homebrew/bin`, `/usr/local/bin`, `/usr/bin`, `C:\ffmpeg\bin`, …).
+- If a tool is missing the test prints `SKIPPED (<test>): ffmpeg not found …` and passes. Set
+  **`FILMCRAFT_REQUIRE_ORACLES=1`** (CI) to make every such skip a failure. In new tests use
+  `let ff = filmcraft_testkit::require_ffmpeg!();` (also `require_ffprobe!`, `require_oracles!`).
+- Fixtures are generated on first use into `<workspace>/target/fixtures/<crate>/`
+  (`filmcraft_testkit::fixtures_dir`; independent of `CARGO_TARGET_DIR`, so agents with private
+  target dirs share them; `FILMCRAFT_FIXTURES_DIR` overrides the root) and reused afterwards.
+  Generators write to a per-process/thread temporary name (`testkit::temp_path`) and rename it into
+  place, so concurrent tests never see half-written files. Delete the directory to regenerate.
+  Never commit media.
+- Every crate's `tests/common/mod.rs` delegates discovery and fixture paths to testkit, except
+  `crates/codecs/src/tests.rs`, which still has its own lookup (the crate was being edited
+  concurrently; migrate it when convenient).
 - Fixture sources are synthetic: `testsrc2`, `mandelbrot`, SMPTE bars, noise and fades, sine tones.
   H.264 and HEVC fixtures need ffmpeg built with libx264 and libx265. VideoToolbox fixtures are
   generated only on macOS.

@@ -437,17 +437,12 @@ type Planes3 = (Vec<u8>, Vec<u8>, Vec<u8>);
 
 /// Validate the hand-built stream and its expected output with ffmpeg when available.
 fn cross_check_ffmpeg(stream: &[u8], expected: &[Planes3], name: &str) {
-    let ff = std::path::Path::new("/opt/homebrew/bin/ffmpeg");
-    if !ff.exists() {
-        eprintln!("ffmpeg not found; skipping oracle check of {name}");
-        return;
-    }
-    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/fixtures/h264");
-    std::fs::create_dir_all(&dir).unwrap();
-    let src = dir.join(format!("{name}.{}.h264", std::process::id()));
-    let dst = dir.join(format!("{name}.{}.yuv", std::process::id()));
+    let Some(ff) = filmcraft_testkit::ffmpeg_or_skip(name) else { return };
+    let dir = filmcraft_testkit::fixtures_dir("h264");
+    let src = filmcraft_testkit::temp_path(&dir.join(format!("{name}.h264")));
+    let dst = filmcraft_testkit::temp_path(&dir.join(format!("{name}.yuv")));
     std::fs::write(&src, stream).unwrap();
-    let ok = std::process::Command::new(ff)
+    let ok = std::process::Command::new(&ff)
         .args(["-hide_banner", "-loglevel", "error", "-y", "-i"])
         .arg(&src)
         .args(["-fps_mode", "passthrough", "-f", "rawvideo", "-pix_fmt", "yuv420p"])

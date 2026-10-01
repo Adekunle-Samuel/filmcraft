@@ -307,19 +307,13 @@ pub fn fixture(name: &str) -> &'static Fixture {
     FIXTURES.iter().find(|f| f.name == name).unwrap_or_else(|| panic!("unknown fixture {name}"))
 }
 
+/// ffmpeg (see `filmcraft_testkit::oracle`).
 pub fn ffmpeg() -> Option<PathBuf> {
-    for p in ["/opt/homebrew/bin/ffmpeg", "/usr/local/bin/ffmpeg", "/usr/bin/ffmpeg"] {
-        if Path::new(p).exists() {
-            return Some(PathBuf::from(p));
-        }
-    }
-    None
+    filmcraft_testkit::ffmpeg()
 }
 
 pub fn fixtures_dir() -> PathBuf {
-    let d = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/fixtures/h264");
-    std::fs::create_dir_all(&d).expect("create fixtures dir");
-    d
+    filmcraft_testkit::fixtures_dir("h264")
 }
 
 fn run(cmd: &mut Command) -> bool {
@@ -339,15 +333,12 @@ fn run(cmd: &mut Command) -> bool {
 /// Generate (if needed) the fixture stream and its ffmpeg reference decode.
 /// Returns None (with a message) when ffmpeg is unavailable.
 pub fn ensure(f: &Fixture) -> Option<(PathBuf, PathBuf)> {
-    let Some(ff) = ffmpeg() else {
-        eprintln!("SKIP {}: ffmpeg not found", f.name);
-        return None;
-    };
+    let ff = filmcraft_testkit::ffmpeg_or_skip(f.name)?;
     let dir = fixtures_dir();
     let h264 = dir.join(format!("{}.h264", f.name));
     let yuv = dir.join(format!("{}.yuv", f.name));
     if !h264.exists() {
-        let tmp = dir.join(format!("{}.tmp.{}.h264", f.name, std::process::id()));
+        let tmp = filmcraft_testkit::temp_path(&h264);
         let mut vf = format!("{}=size={}x{}:rate=25,format=yuv420p", f.source, f.width, f.height);
         if !f.filter.is_empty() {
             vf.push(',');
@@ -364,13 +355,13 @@ pub fn ensure(f: &Fixture) -> Option<(PathBuf, PathBuf)> {
         if !run(&mut c) {
             // Platform encoders (VideoToolbox) are optional; libx264 fixtures must generate.
             assert!(f.args.contains(&"-c:v"), "fixture generation failed for {}", f.name);
-            eprintln!("SKIP {}: encoder unavailable", f.name);
+            eprintln!("SKIPPED ({}): encoder unavailable", f.name);
             return None;
         }
         std::fs::rename(&tmp, &h264).unwrap();
     }
     if !yuv.exists() {
-        let tmp = dir.join(format!("{}.tmp.{}.yuv", f.name, std::process::id()));
+        let tmp = filmcraft_testkit::temp_path(&yuv);
         let mut c = Command::new(&ff);
         c.args(["-hide_banner", "-loglevel", "error", "-y", "-i"]).arg(&h264);
         c.args(["-fps_mode", "passthrough", "-f", "rawvideo", "-pix_fmt", "yuv420p"]).arg(&tmp);

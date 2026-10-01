@@ -6,24 +6,13 @@ use filmcraft_prores::{ChromaFormat, Frame};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+/// ffmpeg, or `None` after printing `SKIPPED` (see `filmcraft_testkit::oracle`).
 pub fn ffmpeg() -> Option<PathBuf> {
-    for dir in ["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin"] {
-        let p = Path::new(dir).join("ffmpeg");
-        if p.exists() {
-            return Some(p);
-        }
-    }
-    let ok = Command::new("ffmpeg").arg("-version").output().map(|o| o.status.success()).unwrap_or(false);
-    if !ok {
-        eprintln!("ffmpeg not found; skipping oracle test");
-    }
-    ok.then(|| PathBuf::from("ffmpeg"))
+    filmcraft_testkit::ffmpeg_or_skip("prores oracle")
 }
 
 pub fn fixture_dir() -> PathBuf {
-    let d = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/fixtures/prores");
-    std::fs::create_dir_all(&d).unwrap();
-    d
+    filmcraft_testkit::fixtures_dir("prores")
 }
 
 fn run(ff: &Path, args: &[&str]) {
@@ -51,7 +40,7 @@ impl Spec {
 pub fn make(ff: &Path, spec: &Spec) -> PathBuf {
     let path = fixture_dir().join(format!("{}.mov", spec.name));
     if !path.exists() {
-        let tmp = fixture_dir().join(format!("{}.tmp.mov", spec.name));
+        let tmp = filmcraft_testkit::temp_path(&path);
         let frames = spec.frames.to_string();
         let mut args = vec!["-f", "lavfi", "-i", spec.lavfi.as_str(), "-frames:v", frames.as_str()];
         args.extend(spec.enc.iter().copied());

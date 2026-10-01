@@ -1,6 +1,6 @@
 #![allow(dead_code)]
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 /// Plain SNR (dB) of `test` against `reference` over the common length.
 pub fn snr_db(reference: &[f32], test: &[f32]) -> f64 {
@@ -138,19 +138,13 @@ pub fn opus_quality(reference: &[f32], test: &[f32], channels: usize, rate: u32)
     100.0 * (1.0 - 0.5 * (1.0 + err).ln() / 1.13f64.ln())
 }
 
+/// ffmpeg (see `filmcraft_testkit::oracle`); `None` after printing `SKIPPED`.
 pub fn ffmpeg() -> Option<PathBuf> {
-    for p in ["/opt/homebrew/bin/ffmpeg", "/usr/local/bin/ffmpeg", "/usr/bin/ffmpeg"] {
-        if Path::new(p).exists() {
-            return Some(PathBuf::from(p));
-        }
-    }
-    None
+    filmcraft_testkit::ffmpeg_or_skip("opus oracle")
 }
 
 pub fn fixtures() -> PathBuf {
-    let d = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/fixtures/opus/oracle");
-    std::fs::create_dir_all(&d).unwrap();
-    d
+    filmcraft_testkit::fixtures_dir("opus/oracle")
 }
 
 /// Minimal Ogg demuxer: returns (packets, last granule position).

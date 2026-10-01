@@ -1304,6 +1304,7 @@ name = "filmcraft-aac"
 version = "0.1.0"
 dependencies = [
  "filmcraft-bitstream",
+ "filmcraft-testkit",
  "rayon",
  "thiserror 2.0.21",
 ]
@@ -1423,6 +1424,7 @@ dependencies = [
  "filmcraft-project",
  "filmcraft-prores",
  "filmcraft-render",
+ "filmcraft-testkit",
  "filmcraft-time",
  "image",
  "rayon",
@@ -1469,6 +1471,7 @@ name = "filmcraft-h264"
 version = "0.1.0"
 dependencies = [
  "filmcraft-bitstream",
+ "filmcraft-testkit",
  "rayon",
  "thiserror 2.0.21",
 ]
@@ -1478,6 +1481,7 @@ name = "filmcraft-h264enc"
 version = "0.1.0"
 dependencies = [
  "filmcraft-bitstream",
+ "filmcraft-testkit",
  "rayon",
  "thiserror 2.0.21",
 ]
@@ -1487,6 +1491,7 @@ name = "filmcraft-hevc"
 version = "0.1.0"
 dependencies = [
  "filmcraft-bitstream",
+ "filmcraft-testkit",
  "rayon",
  "thiserror 2.0.21",
 ]
@@ -1512,6 +1517,7 @@ name = "filmcraft-isobmff"
 version = "0.1.0"
 dependencies = [
  "filmcraft-bitstream",
+ "filmcraft-testkit",
  "proptest",
  "serde_json",
  "thiserror 2.0.21",
@@ -1521,6 +1527,7 @@ dependencies = [
 name = "filmcraft-matroska"
 version = "0.1.0"
 dependencies = [
+ "filmcraft-testkit",
  "serde_json",
 ]
 
@@ -1540,6 +1547,9 @@ dependencies = [
 [[package]]
 name = "filmcraft-opus"
 version = "0.1.0"
+dependencies = [
+ "filmcraft-testkit",
+]
 
 [[package]]
 name = "filmcraft-project"
@@ -1560,6 +1570,7 @@ name = "filmcraft-prores"
 version = "0.1.0"
 dependencies = [
  "filmcraft-bitstream",
+ "filmcraft-testkit",
  "rayon",
  "thiserror 2.0.21",
 ]
@@ -1577,6 +1588,13 @@ dependencies = [
  "filmcraft-time",
  "image",
  "rayon",
+]
+
+[[package]]
+name = "filmcraft-testkit"
+version = "0.1.0"
+dependencies = [
+ "png",
 ]
 
 [[package]]
