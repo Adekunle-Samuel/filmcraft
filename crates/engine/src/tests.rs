@@ -226,3 +226,31 @@ fn interchange_roundtrip_through_files() {
     }
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn move_items_to_bin_and_back_with_undo() {
+    let mut s = demo();
+    let bin = s.execute("file.newBin", json!({"name": "Selects"})).unwrap()["bin"].as_u64().unwrap();
+    let mut items = Vec::new();
+    s.project.root.all_items(&mut items);
+    let item = items[0];
+    let home = s.project.root.parent_of(item);
+    let r = s.execute("project.moveToBin", json!({"items": [item.0], "bin": bin})).unwrap();
+    assert_eq!(r["moved"], 1);
+    assert_eq!(s.project.root.parent_of(item), Some(filmcraft_project::BinId(bin)));
+    // the item is in the tree exactly once
+    let mut all = Vec::new();
+    s.project.root.all_items(&mut all);
+    assert_eq!(all.iter().filter(|i| **i == item).count(), 1);
+    s.execute("edit.undo", json!({})).unwrap();
+    assert_eq!(s.project.root.parent_of(item), home);
+    s.execute("edit.redo", json!({})).unwrap();
+    assert_eq!(s.project.root.parent_of(item), Some(filmcraft_project::BinId(bin)));
+    // back to the root with `bin: null`
+    s.execute("project.moveToBin", json!({"items": [item.0], "bin": null})).unwrap();
+    assert_eq!(s.project.root.parent_of(item), Some(s.project.root.id));
+    // an unknown bin is an error, and so is no items and no selection
+    assert!(s.execute("project.moveToBin", json!({"items": [item.0], "bin": 999_999})).is_err());
+    s.state.project_selection.clear();
+    assert!(s.execute("project.moveToBin", json!({})).is_err());
+}

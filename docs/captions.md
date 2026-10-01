@@ -11,7 +11,8 @@ version 2; version 1 projects open with no caption tracks).
   burned in on export), lock, sync lock, and a **track style**:
   font size (pixels at 1080 lines, scaled to the frame), text colour, background box and its colour,
   outline width and colour, alignment (left/centre/right), position (top/middle/bottom) and
-  margin, line spacing.
+  margin (a fraction of the frame height, default 0.08; `captions.setStyle` clamps it to 0–0.45),
+  line spacing.
 - **Caption**: in/out in exact `Tick`s, text (lines separated by `\n`; `<i>`, `<b>`, `<u>` kept
   as written), optional speaker, and the WebVTT cue id and cue settings, kept for round trips.
   Captions on a track never overlap.

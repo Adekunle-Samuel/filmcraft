@@ -42,6 +42,16 @@ pub struct TlState {
     zoom_anchor: Option<(f64, f32)>,
 }
 
+impl TlState {
+    /// Forget cached waveform peaks: they are keyed by item id, and ids repeat across projects
+    /// (opening another project would otherwise show the old project's waveforms). Peak jobs
+    /// still running finish into the old maps and are dropped.
+    pub fn reset_media_caches(&mut self) {
+        self.peaks = Default::default();
+        self.peaks_pending = Default::default();
+    }
+}
+
 #[derive(Clone, Debug)]
 pub enum Drag {
     Scrub,
@@ -499,8 +509,8 @@ fn draw_waveform(app: &mut FilmcraftApp, p: &egui::Painter, body: Rect, it: &Tra
     if clip.width() <= 0.0 {
         return;
     }
-    let peak = peaks.iter().fold(0f32, |m, (a, b)| m.max(a.abs()).max(b.abs())).max(1e-4);
-    let gain = filmcraft_render::audio::db_to_gain(it.gain_db) / peak;
+    let peak = peaks.iter().fold(0f32, |m, (a, b)| m.max(a.abs()).max(b.abs()));
+    let gain = waveform_display_gain(peak, it.gain_db);
     let mut mesh = egui::Mesh::default();
     let dur_px = body.width().max(1.0);
     for x in (clip.min.x.floor() as i32)..(clip.max.x.ceil() as i32) {
@@ -540,10 +550,21 @@ fn draw_waveform(app: &mut FilmcraftApp, p: &egui::Painter, body: Rect, it: &Tra
     }
 }
 
+/// Display gain for a clip's waveform: clip gain, plus normalisation of the source to full scale
+/// so quiet recordings stay readable, but by at most +12 dB, so a near-silent track (room tone at
+/// −50 dBFS, a silent film's empty audio stream) does not look like a loud one.
+fn waveform_display_gain(source_peak: f32, clip_gain_db: f64) -> f32 {
+    const MAX_BOOST: f32 = 3.981_072; // +12 dB
+    let boost = (1.0 / source_peak.max(1e-9)).min(MAX_BOOST);
+    filmcraft_render::audio::db_to_gain(clip_gain_db) * boost
+}
+
 fn request_peaks(app: &mut FilmcraftApp, item: ItemId) -> Option<Arc<Vec<(f32, f32)>>> {
     if let Some(p) = app.tl.peaks.lock().unwrap_or_else(|e| e.into_inner()).get(&item) {
         return Some(p.clone());
     }
+    // No source: try again on a later frame instead of leaving the item pending forever.
+    let src = app.session.source(item)?;
     {
         let mut pend = app.tl.peaks_pending.lock().unwrap_or_else(|e| e.into_inner());
         if pend.contains(&item) {
@@ -551,7 +572,6 @@ fn request_peaks(app: &mut FilmcraftApp, item: ItemId) -> Option<Arc<Vec<(f32, f
         }
         pend.push(item);
     }
-    let src = app.session.source(item)?;
     let peaks = app.tl.peaks.clone();
     let pending = app.tl.peaks_pending.clone();
     let dur = src.info().duration;
@@ -1599,4 +1619,27 @@ fn interact(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, layout: &
         }
     }
     app.auto.add("timeline.tracks", layout.content, "tracks");
+}
+
+#[cfg(test)]
+mod waveform_tests {
+    use super::waveform_display_gain;
+
+    fn db(g: f32) -> f32 {
+        20.0 * g.log10()
+    }
+
+    #[test]
+    fn normalisation_is_capped_for_near_silent_sources() {
+        // a −14 dBFS recording is normalised to full scale (+12 dB cap reached: −2 dBFS)
+        assert!((db(0.2 * waveform_display_gain(0.2, 0.0)) - (-2.0)).abs() < 0.1);
+        // a −3 dBFS recording is normalised exactly
+        assert!((db(0.708 * waveform_display_gain(0.708, 0.0))).abs() < 0.1);
+        // a −52 dBFS "silent" stream stays near the floor of the −48 dB display range
+        assert!(db(0.0025 * waveform_display_gain(0.0025, 0.0)) < -39.0);
+        // digital silence does not blow up
+        assert!(waveform_display_gain(0.0, 0.0).is_finite());
+        // clip gain still applies
+        assert!((db(waveform_display_gain(1.0, -6.0)) - (-6.0)).abs() < 0.1);
+    }
 }

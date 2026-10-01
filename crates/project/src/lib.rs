@@ -922,6 +922,22 @@ impl Project {
         id
     }
 
+    /// Move items into a bin (the root when `bin` is None). Returns how many moved; unknown items
+    /// are skipped. Fails (returns None) when the bin does not exist.
+    pub fn move_to_bin(&mut self, items: &[ItemId], bin: Option<BinId>) -> Option<usize> {
+        let target = bin.unwrap_or(self.root.id);
+        self.root.find_bin(target)?;
+        let mut moved = 0;
+        for &id in items {
+            if !self.items.contains_key(&id) || !self.root.remove_item(id) {
+                continue;
+            }
+            self.root.find_bin_mut(target).expect("checked above").children.push(BinEntry::Item(id));
+            moved += 1;
+        }
+        Some(moved)
+    }
+
     pub fn item(&self, id: ItemId) -> Option<&ProjectItem> {
         self.items.get(&id)
     }

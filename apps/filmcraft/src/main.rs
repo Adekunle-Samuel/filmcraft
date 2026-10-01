@@ -17,6 +17,7 @@ mod audio;
 mod control_server;
 #[cfg(target_os = "macos")]
 mod native_menu;
+mod window_raise;
 
 use chrono::TimeZone;
 use filmcraft_engine::Session;
@@ -55,7 +56,10 @@ fn main() -> eframe::Result {
             .with_drag_and_drop(true)
             .with_fullsize_content_view(true)
             .with_titlebar_shown(false)
-            .with_title_shown(false),
+            .with_title_shown(false)
+            // Started for an agent (`--control`): open without taking the user's keyboard focus.
+            .with_active(control_port.is_none()),
+        event_loop_builder: agent_event_loop(control_port.is_some()),
         ..Default::default()
     };
     eframe::run_native(
@@ -112,6 +116,9 @@ fn main() -> eframe::Result {
                 rfd::FileDialog::new().add_filter(filter, exts).set_file_name(name).save_file().map(|p| p.to_string_lossy().to_string())
             }));
             app.hooks.pick_folder = Some(Box::new(|| rfd::FileDialog::new().pick_folder().map(|p| p.to_string_lossy().to_string())));
+            app.hooks.raise_without_focus = Some(Box::new(|| {
+                window_raise::raise_without_focus();
+            }));
             app.hooks.pick_open_file = Some(Box::new(|filter: &str, exts: &[&str]| {
                 rfd::FileDialog::new().add_filter(filter, exts).pick_file().map(|p| p.to_string_lossy().to_string())
             }));
@@ -136,4 +143,18 @@ fn main() -> eframe::Result {
 /// Local UTC offset at a unix time (auto-save file names and recovery times use local time).
 fn local_offset(unix: i64) -> i32 {
     chrono::Local.timestamp_opt(unix, 0).single().map(|d| d.offset().local_minus_utc()).unwrap_or(0)
+}
+
+/// Driven by an agent (`--control`): don't activate the app on launch, so the user's keyboard
+/// focus stays where it is (macOS; winit activates ignoring other apps by default).
+fn agent_event_loop(agent: bool) -> Option<eframe::EventLoopBuilderHook> {
+    #[cfg(target_os = "macos")]
+    if agent {
+        return Some(Box::new(|b| {
+            use winit::platform::macos::EventLoopBuilderExtMacOS;
+            b.with_activate_ignoring_other_apps(false);
+        }));
+    }
+    let _ = agent;
+    None
 }

@@ -56,6 +56,10 @@ pub struct HostHooks {
     pub pick_open_file: Option<Box<dyn FnMut(&str, &[&str]) -> Option<String>>>,
     /// Folder picker (Link Media search, proxy and Project Manager destinations).
     pub pick_folder: Option<Box<dyn FnMut() -> Option<String>>>,
+    /// Bring the window on screen for control-channel UI requests *without* taking keyboard focus
+    /// (macOS: `orderFrontRegardless`). Without it the app only requests a repaint: it never
+    /// activates itself for an agent, because the user's keystrokes would land here.
+    pub raise_without_focus: Option<Box<dyn FnMut()>>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -252,6 +256,7 @@ impl FilmcraftApp {
                 FrameServer::default_workers(),
             ));
             self.textures.clear();
+            self.tl.reset_media_caches();
         }
     }
 
@@ -644,6 +649,14 @@ impl FilmcraftApp {
 
     // ---------------------------------------------------------------- control channel
 
+    /// Make the UI pass run for a control request without stealing the user's keyboard focus.
+    pub(crate) fn raise_for_control(&mut self, ctx: &egui::Context) {
+        if let Some(raise) = self.hooks.raise_without_focus.as_mut() {
+            raise();
+        }
+        ctx.request_repaint();
+    }
+
     fn drain_control(&mut self, ctx: &egui::Context) {
         let Some(rx) = self.control_rx.take() else { return };
         let now = ctx.input(|i| i.time);
@@ -652,7 +665,7 @@ impl FilmcraftApp {
             // UI requests need rendered frames: raise the window if `ui` hasn't run recently
             // (occluded macOS windows stop running `ui`).
             if req.method.starts_with("ui.") && now - self.last_ui_time > 0.25 {
-                ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+                self.raise_for_control(ctx);
             }
             reqs.push((req, now + 3.0));
         }
@@ -947,8 +960,9 @@ impl eframe::App for FilmcraftApp {
         let had_synthetic = !self.synthetic.is_empty();
         self.drain_control(ctx);
         if !self.synthetic.is_empty() && !had_synthetic {
-            // Occluded macOS windows stop running `ui`; raise the window so input is processed.
-            ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+            // Occluded macOS windows stop running `ui`; bring the window forward (without taking
+            // keyboard focus) so the input is processed.
+            self.raise_for_control(ctx);
         }
         if !self.synthetic.is_empty() {
             ctx.request_repaint();
