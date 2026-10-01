@@ -167,54 +167,77 @@ pub fn inverse_transform_add(coefs: &[i32], tx_size: u8, tx_type: u8, lossless: 
     }
     let row_adst = matches!(tx_type, DCT_ADST | ADST_ADST);
     let col_adst = matches!(tx_type, ADST_DCT | ADST_ADST);
-    if bit_depth == 8 {
-        let lim = 1 << 24;
-        let mut t = [0i32; 1024];
-        for i in 0..rows.min(n) {
-            let row = &mut t[i * n..i * n + n];
-            for (d, s) in row.iter_mut().zip(&coefs[i * n..i * n + n]) {
-                *d = sat(*s, lim);
-            }
-            tx1d_narrow(row, n, row_adst);
-            for v in row.iter_mut() {
-                *v = sat(*v, lim);
-            }
+    let p = TxParams { row_adst, col_adst, rows, shift, round, max };
+    match (tx_size, bit_depth == 8) {
+        (0, true) => itx_narrow::<4>(coefs, &p, dst, stride),
+        (1, true) => itx_narrow::<8>(coefs, &p, dst, stride),
+        (2, true) => itx_narrow::<16>(coefs, &p, dst, stride),
+        (_, true) => itx_narrow::<32>(coefs, &p, dst, stride),
+        (0, false) => itx_wide::<4>(coefs, &p, dst, stride),
+        (1, false) => itx_wide::<8>(coefs, &p, dst, stride),
+        (2, false) => itx_wide::<16>(coefs, &p, dst, stride),
+        (_, false) => itx_wide::<32>(coefs, &p, dst, stride),
+    }
+}
+
+struct TxParams {
+    row_adst: bool,
+    col_adst: bool,
+    rows: usize,
+    shift: u32,
+    round: i32,
+    max: i32,
+}
+
+/// 2D inverse transform of size N with 32-bit intermediates (8-bit streams).
+fn itx_narrow<const N: usize>(coefs: &[i32], p: &TxParams, dst: &mut [u16], stride: usize) {
+    let lim = 1 << 24;
+    let mut t = [[0i32; N]; N];
+    for (i, row) in t.iter_mut().enumerate().take(p.rows.min(N)) {
+        for (d, s) in row.iter_mut().zip(&coefs[i * N..i * N + N]) {
+            *d = sat(*s, lim);
         }
-        let mut col = [0i32; 32];
-        for j in 0..n {
-            for i in 0..n {
-                col[i] = t[i * n + j];
-            }
-            tx1d_narrow(&mut col[..n], n, col_adst);
-            for i in 0..n {
-                let p = &mut dst[i * stride + j];
-                *p = (*p as i32 + (col[i].wrapping_add(round) >> shift).clamp(-(1 << 20), 1 << 20)).clamp(0, max) as u16;
-            }
+        tx1d_narrow(row, N, p.row_adst);
+        for v in row.iter_mut() {
+            *v = sat(*v, lim);
         }
-    } else {
-        let lim = 1i64 << 40;
-        let mut t = [0i64; 1024];
-        for i in 0..rows.min(n) {
-            let row = &mut t[i * n..i * n + n];
-            for (d, s) in row.iter_mut().zip(&coefs[i * n..i * n + n]) {
-                *d = *s as i64;
-            }
-            tx1d_wide(row, n, row_adst);
-            for v in row.iter_mut() {
-                *v = (*v).clamp(-lim, lim);
-            }
+    }
+    let mut col = [0i32; N];
+    for j in 0..N {
+        for i in 0..N {
+            col[i] = t[i][j];
         }
-        let mut col = [0i64; 32];
-        for j in 0..n {
-            for i in 0..n {
-                col[i] = t[i * n + j];
-            }
-            tx1d_wide(&mut col[..n], n, col_adst);
-            for i in 0..n {
-                let p = &mut dst[i * stride + j];
-                let r = ((col[i].clamp(-lim, lim) + round as i64) >> shift).clamp(-(1 << 30), 1 << 30) as i32;
-                *p = (*p as i32 + r).clamp(0, max) as u16;
-            }
+        tx1d_narrow(&mut col, N, p.col_adst);
+        for i in 0..N {
+            let d = &mut dst[i * stride + j];
+            *d = (*d as i32 + (col[i].wrapping_add(p.round) >> p.shift).clamp(-(1 << 20), 1 << 20)).clamp(0, p.max) as u16;
+        }
+    }
+}
+
+/// 2D inverse transform of size N with 64-bit intermediates (high bit depth).
+fn itx_wide<const N: usize>(coefs: &[i32], p: &TxParams, dst: &mut [u16], stride: usize) {
+    let lim = 1i64 << 40;
+    let mut t = [[0i64; N]; N];
+    for (i, row) in t.iter_mut().enumerate().take(p.rows.min(N)) {
+        for (d, s) in row.iter_mut().zip(&coefs[i * N..i * N + N]) {
+            *d = *s as i64;
+        }
+        tx1d_wide(row, N, p.row_adst);
+        for v in row.iter_mut() {
+            *v = (*v).clamp(-lim, lim);
+        }
+    }
+    let mut col = [0i64; N];
+    for j in 0..N {
+        for i in 0..N {
+            col[i] = t[i][j];
+        }
+        tx1d_wide(&mut col, N, p.col_adst);
+        for i in 0..N {
+            let d = &mut dst[i * stride + j];
+            let r = ((col[i].clamp(-lim, lim) + p.round as i64) >> p.shift).clamp(-(1 << 30), 1 << 30) as i32;
+            *d = (*d as i32 + r).clamp(0, p.max) as u16;
         }
     }
 }

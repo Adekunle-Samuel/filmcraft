@@ -317,7 +317,7 @@ impl<'a> TileDecoder<'a> {
                 last_y: ((f.height as i32 + sy as i32) >> sy) - 1,
             };
             let out = if rl == 0 { &mut self.pred } else { &mut self.pred2 };
-            inter::predict(&rp, start_x, start_y, step_x, step_y, w, h, b.interp_filter, self.bit_depth, out, &mut self.mc_tmp);
+            inter::predict(&rp, start_x, start_y, step_x, step_y, w, h, b.interp_filter, self.bit_depth, out, &mut self.mc_tmp, &mut self.mc_win);
         }
         let (stride, x_off) = (self.strip.strides[plane], self.strip.x_off[plane]);
         let dst = &mut self.strip.planes[plane];

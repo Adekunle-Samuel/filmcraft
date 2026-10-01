@@ -34,6 +34,7 @@ pub struct FrameShared<'a> {
     pub seg_q: [[[i32; 2]; 2]; 8],
     /// Whether syntax elements need to be counted (backward adaptation enabled).
     pub counting: bool,
+    pub pools: &'a crate::frame::Pools,
 }
 
 /// Output of one tile column: samples, mode info and segment ids of its columns.
@@ -112,6 +113,7 @@ pub struct TileDecoder<'a> {
     pred: Vec<u16>,
     pred2: Vec<u16>,
     mc_tmp: Vec<u16>,
+    mc_win: Vec<u16>,
     /// First error met while decoding (e.g. a block referencing an unusable reference frame).
     pub error: Option<crate::error::Error>,
 }
@@ -126,12 +128,13 @@ impl<'a> TileDecoder<'a> {
         let strip_w = (mi_col_end - mi_col_start).div_ceil(8) * 64;
         let strip_h = sb_rows * 64;
         let x0 = mi_col_start * 8;
-        let planes = [vec![0u16; strip_w * strip_h], vec![0u16; (strip_w >> ss_x) * (strip_h >> ss_y)], vec![0u16; (strip_w >> ss_x) * (strip_h >> ss_y)]];
+        let uv_len = (strip_w >> ss_x) * (strip_h >> ss_y);
+        let planes = [s.pools.samples.take(strip_w * strip_h, 0), s.pools.samples.take(uv_len, 0), s.pools.samples.take(uv_len, 0)];
         let mi_w = mi_col_end - mi_col_start;
         let strip = Strip {
             mi_col_start,
             mi_col_end,
-            mi: vec![MiInfo::default(); mi_w * mi_rows],
+            mi: s.pools.mi.take(mi_w * mi_rows, MiInfo::default()),
             seg_ids: vec![0; mi_w * mi_rows],
             planes,
             strides: [strip_w, strip_w >> ss_x, strip_w >> ss_x],
@@ -170,7 +173,9 @@ impl<'a> TileDecoder<'a> {
             token_cache: vec![0; 1024],
             pred: vec![0; 64 * 64],
             pred2: vec![0; 64 * 64],
-            mc_tmp: vec![0; 64 * (64 * 5 + 16)],
+            // Scaled prediction reads up to 5x the block height (8.5.2.3), unscaled h + 7 rows.
+            mc_tmp: vec![0; if s.refs.iter().flatten().any(|r| r.x_scale != 1 << 14 || r.y_scale != 1 << 14) { 64 * (64 * 5 + 16) } else { 64 * 71 }],
+            mc_win: vec![0; 71 * 71],
             error: None,
         }
     }

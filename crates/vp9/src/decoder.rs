@@ -3,7 +3,7 @@
 //! adaptation and reference frame management.
 
 use crate::error::{Error, Result, ensure};
-use crate::frame::{Frame, MiGrid, MiInfo, Plane as FPlane, plane_geometry};
+use crate::frame::{Frame, MiGrid, MiInfo, Plane as FPlane, Pools, plane_geometry};
 use crate::header::{FrameHeader, HeaderState, KEY_FRAME, RefInfo, parse_compressed, parse_uncompressed, split_superframe};
 use crate::loopfilter::{LfFrame, PlaneView, filter_superblock};
 use crate::probs::{Counts, adapt_coef_probs, adapt_noncoef_probs};
@@ -52,6 +52,7 @@ pub struct Decoder {
     last_show_frame: bool,
     stats: DecodeStats,
     threads: usize,
+    bufs: Pools,
     #[cfg(feature = "threads")]
     pool: Option<rayon::ThreadPool>,
 }
@@ -102,6 +103,7 @@ impl Decoder {
             last_show_frame: false,
             stats: DecodeStats::default(),
             threads: threads.max(1),
+            bufs: Pools::default(),
             #[cfg(feature = "threads")]
             pool,
         }
@@ -125,7 +127,7 @@ impl Decoder {
                 continue;
             }
             if let Some(frame) = self.decode_frame(f)? {
-                out.push(make_picture(&frame, pts));
+                out.push(make_picture(&frame, pts, self.par()));
             }
         }
         Ok(out)
@@ -236,7 +238,8 @@ impl Decoder {
         }
         let counting = !h.error_resilient_mode && !h.frame_parallel_decoding_mode;
         let prev_mi = if use_prev { self.prev_mi.clone() } else { None };
-        let shared = FrameShared { h: &h, fc: &fc, seg: &seg, prev_seg_ids: &self.prev_seg_ids, prev_mi: prev_mi.as_deref(), refs, seg_q, counting };
+        let shared =
+            FrameShared { h: &h, fc: &fc, seg: &seg, prev_seg_ids: &self.prev_seg_ids, prev_mi: prev_mi.as_deref(), refs, seg_q, counting, pools: &self.bufs };
         let col_bounds: Vec<(usize, usize)> =
             (0..tile_cols).map(|i| (tile_offset(i, mi_cols, h.tile_cols_log2), tile_offset(i + 1, mi_cols, h.tile_cols_log2))).collect();
         let row_bounds: Vec<(usize, usize)> =
@@ -272,9 +275,13 @@ impl Decoder {
             self.stats.inter_blocks += s.inter_blocks;
             strips.push(s);
         }
+        // Release the references before the slots are refreshed, so that evicted frames can be
+        // recycled.
+        drop(ref_frames);
+        drop(prev_mi);
         // Assemble the frame and mode info.
         let geo = plane_geometry(h.width, h.height, h.color.subsampling_x, h.color.subsampling_y);
-        let (planes, mi, seg_ids) = assemble(strips, &geo, mi_rows, mi_cols);
+        let (planes, mi, seg_ids) = assemble(strips, &geo, mi_rows, mi_cols, &self.bufs, self.par());
         let mut frame = Frame {
             planes,
             width: h.width,
@@ -315,12 +322,25 @@ impl Decoder {
             self.prev_seg_ids = seg_ids;
         }
         let frame = Arc::new(frame);
+        let mut evicted = Vec::new();
         for i in 0..8 {
             if (h.refresh_frame_flags >> i) & 1 == 1 {
-                self.slots[i] = Some(frame.clone());
+                evicted.extend(self.slots[i].replace(frame.clone()));
             }
         }
-        self.prev_mi = Some(Arc::new(mi));
+        // Recycle the planes of frames no longer referenced anywhere.
+        for f in evicted {
+            if let Ok(f) = Arc::try_unwrap(f) {
+                for p in f.planes {
+                    self.bufs.samples.put(p.data);
+                }
+            }
+        }
+        if let Some(old) = self.prev_mi.replace(Arc::new(mi))
+            && let Ok(old) = Arc::try_unwrap(old)
+        {
+            self.bufs.mi.put(old.mi);
+        }
         if h.show_frame {
             self.stats.shown += 1;
             Ok(Some(frame))
@@ -352,6 +372,17 @@ impl Decoder {
         s.compound_frames += (!h.frame_is_intra && h.reference_mode != 0) as u64;
         s.bit_depths[((h.color.bit_depth - 8) >> 1) as usize] += 1;
         s.profiles[h.profile as usize] += 1;
+    }
+
+    fn par(&self) -> Par<'_> {
+        #[cfg(feature = "threads")]
+        {
+            Par(self.pool.as_ref())
+        }
+        #[cfg(not(feature = "threads"))]
+        {
+            Par(std::marker::PhantomData)
+        }
     }
 
     /// Run `f(0..n)`, in parallel when a pool is available.
@@ -392,20 +423,53 @@ impl Decoder {
 }
 
 /// Loop filter with a superblock wavefront: superblock (r, c) runs once (r - 1, c + 1) is done.
-/// Each superblock copies the samples it may touch (its area plus 8 samples above / left) out of
-/// the shared frame, filters them locally and writes them back.
+/// The planes are split into superblock-row bands, each behind its own lock. Each superblock
+/// copies the samples it may touch (its area plus 8 samples above / left, i.e. the bottom rows
+/// of band r - 1 and its own band) out, filters them locally and writes them back; the locks are
+/// only held while copying, and only neighbouring rows ever contend.
 #[cfg(feature = "threads")]
 fn lf_parallel(pool: &rayon::ThreadPool, threads: usize, frame: &mut Frame, mi: &MiGrid, lf: &LfFrame, sb_rows: usize, sb_cols: usize) {
     use rayon::prelude::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Condvar, Mutex};
     let strides = [frame.planes[0].stride, frame.planes[1].stride, frame.planes[2].stride];
-    let heights = [frame.planes[0].data.len() / strides[0], frame.planes[1].data.len() / strides[1], frame.planes[2].data.len() / strides[2]];
-    let planes = Mutex::new([std::mem::take(&mut frame.planes[0].data), std::mem::take(&mut frame.planes[1].data), std::mem::take(&mut frame.planes[2].data)]);
+    let sub = [(0usize, 0usize), (lf.ss_x, lf.ss_y), (lf.ss_x, lf.ss_y)];
+    let band_h = [64usize, 64 >> lf.ss_y, 64 >> lf.ss_y];
+    // bands[r][p]: rows [r * band_h[p], (r + 1) * band_h[p]) of plane p.
+    let bands: Vec<Mutex<[&mut [u16]; 3]>> = {
+        let [a, b, c] = &mut frame.planes;
+        let mut ia = a.data.chunks_mut(band_h[0] * strides[0]);
+        let mut ib = b.data.chunks_mut(band_h[1] * strides[1]);
+        let mut ic = c.data.chunks_mut(band_h[2] * strides[2]);
+        (0..sb_rows).map(|_| Mutex::new([ia.next().unwrap_or_default(), ib.next().unwrap_or_default(), ic.next().unwrap_or_default()])).collect()
+    };
     let progress = Mutex::new(vec![0usize; sb_rows]);
     let cv = Condvar::new();
     let next = AtomicUsize::new(0);
-    let sub = [(0usize, 0usize), (lf.ss_x, lf.ss_y), (lf.ss_x, lf.ss_y)];
+    // Copy rows [ry, ry + rh) x [rx, rx + rw) of plane p between the bands and `buf` (row-major,
+    // stride rw); `to_buf` selects the direction.
+    let xfer = |r: usize, p: usize, rx: usize, ry: usize, rw: usize, rh: usize, buf: &mut [u16], to_buf: bool| {
+        let bh = band_h[p];
+        let mut yy = 0;
+        while yy < rh {
+            let y = ry + yy;
+            let br = y / bh;
+            let n = ((br + 1) * bh - y).min(rh - yy);
+            debug_assert!(br + 1 >= r && br <= r);
+            let mut g = bands[br].lock().expect("lf band");
+            let band = &mut g[p];
+            for k in 0..n {
+                let s = (y + k - br * bh) * strides[p] + rx;
+                let b = (yy + k) * rw;
+                if to_buf {
+                    buf[b..b + rw].copy_from_slice(&band[s..s + rw]);
+                } else {
+                    band[s..s + rw].copy_from_slice(&buf[b..b + rw]);
+                }
+            }
+            yy += n;
+        }
+    };
     pool.install(|| {
         (0..threads.min(sb_rows)).into_par_iter().for_each(|_| {
             let mut bufs: [Vec<u16>; 3] = [vec![0; 72 * 72], vec![0; 72 * 72], vec![0; 72 * 72]];
@@ -424,20 +488,14 @@ fn lf_parallel(pool: &rayon::ThreadPool, threads: usize, frame: &mut Frame, mi: 
                     }
                     // Region of each plane: [x0 - 8, x0 + size) x [y0 - 8, y0 + size).
                     let mut regions = [(0usize, 0usize, 0usize, 0usize); 3];
-                    {
-                        let pl = planes.lock().expect("lf planes");
-                        for p in 0..3 {
-                            let (sx, sy) = sub[p];
-                            let (x0, y0) = ((c * 64) >> sx, (r * 64) >> sy);
-                            let (rx, ry) = (x0.saturating_sub(8), y0.saturating_sub(8));
-                            let rw = (x0 + (64 >> sx)).min(strides[p]) - rx;
-                            let rh = (y0 + (64 >> sy)).min(heights[p]) - ry;
-                            regions[p] = (rx, ry, rw, rh);
-                            for yy in 0..rh {
-                                let s = (ry + yy) * strides[p] + rx;
-                                bufs[p][yy * rw..yy * rw + rw].copy_from_slice(&pl[p][s..s + rw]);
-                            }
-                        }
+                    for p in 0..3 {
+                        let (sx, sy) = sub[p];
+                        let (x0, y0) = ((c * 64) >> sx, (r * 64) >> sy);
+                        let (rx, ry) = (x0.saturating_sub(8), y0.saturating_sub(8));
+                        let rw = (x0 + (64 >> sx)).min(strides[p]) - rx;
+                        let rh = (y0 + band_h[p]) - ry;
+                        regions[p] = (rx, ry, rw, rh);
+                        xfer(r, p, rx, ry, rw, rh, &mut bufs[p], true);
                     }
                     {
                         let [b0, b1, b2] = &mut bufs;
@@ -448,15 +506,9 @@ fn lf_parallel(pool: &rayon::ThreadPool, threads: usize, frame: &mut Frame, mi: 
                         ];
                         filter_superblock(&mut views, mi, lf, r * 8, c * 8);
                     }
-                    {
-                        let mut pl = planes.lock().expect("lf planes");
-                        for p in 0..3 {
-                            let (rx, ry, rw, rh) = regions[p];
-                            for yy in 0..rh {
-                                let s = (ry + yy) * strides[p] + rx;
-                                pl[p][s..s + rw].copy_from_slice(&bufs[p][yy * rw..yy * rw + rw]);
-                            }
-                        }
+                    for p in 0..3 {
+                        let (rx, ry, rw, rh) = regions[p];
+                        xfer(r, p, rx, ry, rw, rh, &mut bufs[p], false);
                     }
                     let mut p = progress.lock().expect("lf progress");
                     p[r] = c + 1;
@@ -465,56 +517,113 @@ fn lf_parallel(pool: &rayon::ThreadPool, threads: usize, frame: &mut Frame, mi: 
             }
         });
     });
-    let [a, b, c] = planes.into_inner().expect("lf planes");
-    frame.planes[0].data = a;
-    frame.planes[1].data = b;
-    frame.planes[2].data = c;
 }
 
+/// Optional thread pool for data-parallel copies.
+#[derive(Clone, Copy)]
+struct Par<'a>(#[cfg(feature = "threads")] Option<&'a rayon::ThreadPool>, #[cfg(not(feature = "threads"))] std::marker::PhantomData<&'a ()>);
+
+impl Par<'_> {
+    /// `f(i, chunk)` for the consecutive `chunk_len`-element chunks of `data`.
+    fn chunks<T: Send>(self, data: &mut [T], chunk_len: usize, f: impl Fn(usize, &mut [T]) + Sync) {
+        let chunk_len = chunk_len.max(1);
+        #[cfg(feature = "threads")]
+        if let Some(pool) = self.0
+            && data.len() > chunk_len
+        {
+            use rayon::prelude::*;
+            pool.install(|| data.par_chunks_mut(chunk_len).enumerate().for_each(|(i, c)| f(i, c)));
+            return;
+        }
+        for (i, c) in data.chunks_mut(chunk_len).enumerate() {
+            f(i, c);
+        }
+    }
+}
+
+/// Rows per chunk of the parallel frame copies.
+const COPY_ROWS: usize = 64;
+
 /// Build full-frame planes, mode info and segment ids from the tile column strips.
-fn assemble(mut strips: Vec<Strip>, geo: &[(usize, usize, usize, usize); 3], mi_rows: usize, mi_cols: usize) -> ([FPlane; 3], MiGrid, Vec<u8>) {
+fn assemble(
+    mut strips: Vec<Strip>,
+    geo: &[(usize, usize, usize, usize); 3],
+    mi_rows: usize,
+    mi_cols: usize,
+    pools: &Pools,
+    par: Par,
+) -> ([FPlane; 3], MiGrid, Vec<u8>) {
     if strips.len() == 1 {
         let s = strips.pop().expect("one strip");
         let [a, b, c] = s.planes;
         let mk = |d: Vec<u16>, g: (usize, usize, usize, usize)| FPlane { data: d, stride: g.0, width: g.2, height: g.3 };
         return ([mk(a, geo[0]), mk(b, geo[1]), mk(c, geo[2])], MiGrid { cols: mi_cols, rows: mi_rows, mi: s.mi }, s.seg_ids);
     }
-    let mut planes = [
-        FPlane::new(geo[0].0, geo[0].1, geo[0].2, geo[0].3),
-        FPlane::new(geo[1].0, geo[1].1, geo[1].2, geo[1].3),
-        FPlane::new(geo[2].0, geo[2].1, geo[2].2, geo[2].3),
-    ];
-    let mut mi = vec![MiInfo::default(); mi_rows * mi_cols];
+    let mk = |g: (usize, usize, usize, usize)| FPlane { data: pools.samples.take(g.0 * g.1, 0), stride: g.0, width: g.2, height: g.3 };
+    let mut planes = [mk(geo[0]), mk(geo[1]), mk(geo[2])];
+    let mut mi = pools.mi.take(mi_rows * mi_cols, MiInfo::default());
     let mut seg = vec![0u8; mi_rows * mi_cols];
-    for s in &strips {
-        for p in 0..3 {
-            let ss = s.strides[p];
-            let fs = planes[p].stride;
-            let x0 = s.x_off[p];
-            let w = ss.min(fs - x0);
-            let rows = s.planes[p].len() / ss;
-            for y in 0..rows {
-                planes[p].data[y * fs + x0..y * fs + x0 + w].copy_from_slice(&s.planes[p][y * ss..y * ss + w]);
+    for (p, plane) in planes.iter_mut().enumerate() {
+        let fs = plane.stride;
+        // Each chunk of destination rows gathers its part of every strip.
+        par.chunks(&mut plane.data, COPY_ROWS * fs, |ci, dst| {
+            let y0 = ci * COPY_ROWS;
+            for s in &strips {
+                let ss = s.strides[p];
+                let x0 = s.x_off[p];
+                let w = ss.min(fs - x0);
+                for (k, row) in dst.chunks_mut(fs).enumerate() {
+                    let y = y0 + k;
+                    if let Some(src) = s.planes[p].get(y * ss..y * ss + w) {
+                        row[x0..x0 + w].copy_from_slice(src);
+                    }
+                }
             }
-        }
+        });
+    }
+    for s in &strips {
         let mw = s.mi_col_end - s.mi_col_start;
         for r in 0..mi_rows {
             mi[r * mi_cols + s.mi_col_start..r * mi_cols + s.mi_col_end].copy_from_slice(&s.mi[r * mw..r * mw + mw]);
             seg[r * mi_cols + s.mi_col_start..r * mi_cols + s.mi_col_end].copy_from_slice(&s.seg_ids[r * mw..r * mw + mw]);
         }
     }
+    for s in strips {
+        for p in s.planes {
+            pools.samples.put(p);
+        }
+        pools.mi.put(s.mi);
+    }
     (planes, MiGrid { cols: mi_cols, rows: mi_rows, mi }, seg)
 }
 
-fn make_picture(f: &Frame, pts: i64) -> Picture {
-    let crop = |p: &FPlane| -> Vec<u16> {
-        let mut v = Vec::with_capacity(p.width * p.height);
-        for y in 0..p.height {
-            v.extend_from_slice(&p.row(y)[..p.width]);
+fn make_picture(f: &Frame, pts: i64, par: Par) -> Picture {
+    // Crop (and narrow 8-bit samples), in parallel chunks of rows.
+    let conv = |p: &FPlane| -> Plane {
+        let w = p.width;
+        if w == 0 || p.height == 0 {
+            return if f.bit_depth == 8 { Plane::U8(Vec::new()) } else { Plane::U16(Vec::new()) };
         }
-        v
+        if f.bit_depth == 8 {
+            let mut out = vec![0u8; w * p.height];
+            par.chunks(&mut out, COPY_ROWS * w, |ci, dst| {
+                for (k, row) in dst.chunks_mut(w).enumerate() {
+                    for (d, &s) in row.iter_mut().zip(&p.row(ci * COPY_ROWS + k)[..w]) {
+                        *d = s as u8;
+                    }
+                }
+            });
+            Plane::U8(out)
+        } else {
+            let mut out = vec![0u16; w * p.height];
+            par.chunks(&mut out, COPY_ROWS * w, |ci, dst| {
+                for (k, row) in dst.chunks_mut(w).enumerate() {
+                    row.copy_from_slice(&p.row(ci * COPY_ROWS + k)[..w]);
+                }
+            });
+            Plane::U16(out)
+        }
     };
-    let conv = |v: Vec<u16>| if f.bit_depth == 8 { Plane::U8(v.into_iter().map(|s| s as u8).collect()) } else { Plane::U16(v) };
     let [y, u, v] = &f.planes;
     Picture {
         width: f.width,
@@ -524,9 +633,9 @@ fn make_picture(f: &Frame, pts: i64) -> Picture {
         bit_depth: f.bit_depth as u32,
         subsampling_x: f.ss_x,
         subsampling_y: f.ss_y,
-        y: conv(crop(y)),
-        u: conv(crop(u)),
-        v: conv(crop(v)),
+        y: conv(y),
+        u: conv(u),
+        v: conv(v),
         y_stride: y.width,
         uv_stride: u.width,
         pts,

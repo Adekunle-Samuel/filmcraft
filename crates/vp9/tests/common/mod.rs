@@ -153,6 +153,14 @@ pub fn fixtures_dir() -> PathBuf {
     d
 }
 
+/// Unique suffix for temporary files: tests run on several threads of one process and may
+/// generate the same fixture concurrently.
+pub fn unique() -> String {
+    static N: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+    let n = N.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    format!("{}-{n}", std::process::id())
+}
+
 pub fn run(cmd: &mut Command) -> bool {
     match cmd.output() {
         Ok(o) if o.status.success() => true,
@@ -185,14 +193,14 @@ pub fn format_info(pix_fmt: &str) -> (usize, u32, u32) {
 /// Reference decode of `ivf` with ffmpeg (native vp9 decoder, every frame, no fps conversion).
 pub fn reference_decode(ivf: &Path, yuv: &Path, pix_fmt: &str) -> bool {
     let Some(ff) = ffmpeg() else { return false };
-    let tmp = yuv.with_extension(format!("tmp.{}.yuv", std::process::id()));
+    let tmp = yuv.with_extension(format!("tmp.{}.yuv", unique()));
     let mut c = Command::new(&ff);
     c.args(["-hide_banner", "-loglevel", "error", "-y", "-c:v", "vp9", "-i"]).arg(ivf);
     c.args(["-fps_mode", "passthrough", "-noautoscale", "-f", "rawvideo", "-pix_fmt", pix_fmt]).arg(&tmp);
     if !run(&mut c) {
         return false;
     }
-    std::fs::rename(&tmp, yuv).is_ok()
+    std::fs::rename(&tmp, yuv).is_ok() || yuv.exists()
 }
 
 /// Generate (if needed) the fixture stream and its ffmpeg reference decode.
@@ -205,7 +213,7 @@ pub fn ensure(f: &Fixture) -> Option<(PathBuf, PathBuf)> {
     let ivf = dir.join(format!("{}.ivf", f.name));
     let yuv = dir.join(format!("{}.yuv", f.name));
     if !ivf.exists() {
-        let tmp = dir.join(format!("{}.tmp.{}.ivf", f.name, std::process::id()));
+        let tmp = dir.join(format!("{}.tmp.{}.ivf", f.name, unique()));
         let mut vf = format!("{}=size={}x{}:rate=25,format={}", f.source, f.width, f.height, f.pix_fmt);
         if !f.filter.is_empty() {
             vf.push(',');
@@ -213,7 +221,7 @@ pub fn ensure(f: &Fixture) -> Option<(PathBuf, PathBuf)> {
         }
         let two_pass = f.args.first() == Some(&"2pass");
         let args: Vec<&str> = f.args.iter().copied().filter(|a| *a != "2pass").collect();
-        let log = dir.join(format!("{}.{}.passlog", f.name, std::process::id()));
+        let log = dir.join(format!("{}.{}.passlog", f.name, unique()));
         let enc = |pass: Option<u32>, out: &Path| {
             let mut c = Command::new(&ff);
             c.args(["-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", &vf]);
@@ -240,7 +248,9 @@ pub fn ensure(f: &Fixture) -> Option<(PathBuf, PathBuf)> {
             return None;
         }
         let _ = std::fs::remove_file(format!("{}-0.log", log.display()));
-        std::fs::rename(&tmp, &ivf).unwrap();
+        if std::fs::rename(&tmp, &ivf).is_err() && !ivf.exists() {
+            panic!("could not store fixture {}", ivf.display());
+        }
     }
     if !yuv.exists() {
         assert!(reference_decode(&ivf, &yuv, f.pix_fmt), "reference decode failed for {}", f.name);

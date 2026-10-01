@@ -120,25 +120,42 @@ Backward adaptation is on (`-frame-parallel 0`) unless noted.
 ## Performance
 
 `cargo test --release -p filmcraft-vp9 --test perf -- --ignored --nocapture` (bit-exactness is
-verified first). Apple M4 Pro (14 cores). The machine was heavily shared during measurement (load
-average 130-170), so wall-clock figures are far below what an idle machine gives; single-thread
-CPU time is the more meaningful number.
+verified first), or `VP9_THREADS=n VP9_LOOPS=k cargo run --release -p filmcraft-vp9 --example
+vp9dec -- in.ivf` (decodes the file k times and prints the statistics).
 
-| stream | 1 thread (CPU time) | 1 thread (wall, loaded) | 14 threads (wall, loaded) |
-|---|---|---|---|
-| 1080p 8-bit, libvpx speed 4, 4 MB/s, 4 tile columns, 60 frames | ~47 fps | ~11-17 fps | ~26-35 fps |
-| 2160p 8-bit, libvpx speed 6, 12 MB/s, 8 tile columns, 20 frames | ~13 fps | ~7-13 fps | ~15-21 fps |
+Apple M4 Pro (14 cores), 1080p 8-bit `bench_1080p` fixture (libvpx speed 4, 4 MB/s, 4 tile
+columns, 60 frames). The machine was shared with other builds during measurement (load average
+140-210), so wall-clock numbers are the best of several runs and still far below what an idle
+machine gives; single-thread CPU time is the stable figure.
 
-No SIMD-specific code yet; interpolation, transforms and loop filter are plain loops (the loop
-filter is still the largest cost). `cargo run --release -p filmcraft-vp9 --example vp9dec --
-in.ivf [out.yuv]` decodes an IVF file (`VP9_THREADS=n` selects the thread count) and prints the
-statistics.
+| | before (5e9d7d9) | now |
+|---|---|---|
+| 1 thread, CPU time | 55 fps | 98 fps |
+| 14 threads, wall clock (best of 4, loaded machine) | 45 fps | 115 fps |
+
+What made the difference:
+
+- Loop filter: each group of 8 samples along an edge is filtered as 8 lanes at once (16-bit lanes
+  for 8 / 10-bit, 32-bit for 12-bit); the mask / flat / flat2 decisions are lane-wise and every
+  filter result is selected per lane, so the arithmetic vectorizes. Per-group decisions use masks
+  instead of divisions and skip groups with no edge before looking up levels. The parallel loop
+  filter (superblock wavefront) locks per superblock-row band only while copying, instead of
+  holding one frame-wide lock.
+- Motion compensation: the 8-tap filters run tap-outer over fixed-width rows (4..64) and no longer
+  zero a 10 KB edge window per block; the 2D inverse transform buffers are sized per transform.
+- Memory: strip / frame planes and mode-info grids are recycled through a pool (no per-frame
+  multi-megabyte allocations and page faults); assembling tile strips into the frame and the
+  cropping / 8-bit narrowing of output pictures run in parallel chunks of rows.
+
+The loop filter is still the largest single cost (~30% single-threaded), followed by inter
+prediction and coefficient decoding.
 
 ## Known gaps
 
-- No frame-level threading: parallelism is tile columns + loop filter wavefront, so streams with
-  a single tile column (narrower than 512 pixels or encoded without tile columns) decode mostly on
-  one thread.
+- No frame-level threading: parallelism is tile columns + loop filter wavefront + row-parallel
+  copies, so streams with a single tile column (narrower than 512 pixels or encoded without tile
+  columns) decode mostly on one thread, and 1080p (at most 4 tile columns) uses 4 threads for
+  coefficient decoding and prediction.
 - Scaled references combined with compound prediction are not covered by a fixture (both are
   verified separately; libvpx through ffmpeg cannot change size mid-stream and the synthetic
   splice cannot keep the compound streams' probability contexts intact).

@@ -74,10 +74,6 @@ pub struct Plane {
 }
 
 impl Plane {
-    pub fn new(alloc_w: usize, alloc_h: usize, width: usize, height: usize) -> Plane {
-        Plane { data: vec![0; alloc_w * alloc_h], stride: alloc_w, width, height }
-    }
-
     #[inline]
     pub fn row(&self, y: usize) -> &[u16] {
         &self.data[y * self.stride..(y + 1) * self.stride]
@@ -110,4 +106,53 @@ pub fn plane_geometry(width: u32, height: u32, ss_x: bool, ss_y: bool) -> [(usiz
     let cw = (width as usize + sx) >> sx;
     let ch = (height as usize + sy) >> sy;
     [(aw, ah, width as usize, height as usize), (aw >> sx, ah >> sy, cw, ch), (aw >> sx, ah >> sy, cw, ch)]
+}
+
+/// Recycled buffers (strip / frame planes, mode info), so that steady-state decoding does not
+/// allocate (and page-fault) megabytes per frame.
+pub struct Pool<T> {
+    bufs: std::sync::Mutex<Vec<Vec<T>>>,
+}
+
+impl<T> Default for Pool<T> {
+    fn default() -> Self {
+        Pool { bufs: Default::default() }
+    }
+}
+
+impl<T: Clone> Pool<T> {
+    const MAX: usize = 32;
+
+    /// A buffer of `len` copies of `fill` (recycled memory when available).
+    pub fn take(&self, len: usize, fill: T) -> Vec<T> {
+        let found = {
+            let mut b = self.bufs.lock().expect("buffer pool");
+            b.iter().position(|v| v.capacity() >= len).map(|i| b.swap_remove(i))
+        };
+        match found {
+            Some(mut v) => {
+                v.resize(len, fill);
+                v
+            }
+            None => vec![fill; len],
+        }
+    }
+
+    pub fn put(&self, mut v: Vec<T>) {
+        if v.capacity() == 0 {
+            return;
+        }
+        v.clear();
+        let mut b = self.bufs.lock().expect("buffer pool");
+        if b.len() < Self::MAX {
+            b.push(v);
+        }
+    }
+}
+
+/// The decoder's buffer pools.
+#[derive(Default)]
+pub struct Pools {
+    pub samples: Pool<u16>,
+    pub mi: Pool<MiInfo>,
 }
