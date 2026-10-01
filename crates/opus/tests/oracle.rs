@@ -11,7 +11,7 @@ mod common;
 
 use std::process::Command;
 
-use filmcraft_opus::{Decoder, Mode, Packet};
+use filmcraft_opus::{Decoder, Mode, OpusHead, Packet};
 
 fn has_libopus(ff: &std::path::Path) -> bool {
     Command::new(ff).args(["-hide_banner", "-encoders"]).output().map(|o| String::from_utf8_lossy(&o.stdout).contains("libopus")).unwrap_or(false)
@@ -29,7 +29,7 @@ fn sweep_sig(n: usize, _: u64) -> Vec<f32> {
     common::sweep(n, 0.5)
 }
 
-fn run(case: &Case) -> (f64, f64, Vec<Mode>) {
+fn run(case: &Case, rate: u32) -> (f64, f64, Vec<Mode>) {
     let ff = common::ffmpeg().unwrap();
     let dir = common::fixtures();
     let secs = 3;
@@ -60,7 +60,7 @@ fn run(case: &Case) -> (f64, f64, Vec<Mode>) {
     let st = Command::new(&ff)
         .args(["-hide_banner", "-loglevel", "error", "-y", "-c:a", "libopus", "-i"])
         .arg(&opus)
-        .args(["-f", "f32le", "-ar", "48000"])
+        .args(["-f", "f32le", "-ar", &rate.to_string()])
         .arg(&dec)
         .status()
         .unwrap();
@@ -68,9 +68,8 @@ fn run(case: &Case) -> (f64, f64, Vec<Mode>) {
     let reference: Vec<f32> = std::fs::read(&dec).unwrap().chunks_exact(4).map(|c| f32::from_le_bytes(c.try_into().unwrap())).collect();
 
     let (packets, granule) = common::ogg_packets(&std::fs::read(&opus).unwrap());
-    let mut d = Decoder::new(&packets[0]).unwrap();
+    let mut d = Decoder::from_head(OpusHead::parse(&packets[0]).unwrap(), rate).unwrap();
     assert_eq!(d.channels(), case.channels);
-    let pre_skip = d.pre_skip();
     d.set_trim_pre_skip(true);
     let mut planar = vec![Vec::new(); case.channels];
     let mut modes = Vec::new();
@@ -86,7 +85,7 @@ fn run(case: &Case) -> (f64, f64, Vec<Mode>) {
         }
     }
     // End trimming from the final granule position.
-    let total = (granule as usize).saturating_sub(pre_skip);
+    let total = ((granule as usize).saturating_sub(d.head().pre_skip as usize)) * rate as usize / 48000;
     for p in &mut planar {
         assert!(p.len() >= total, "{}: decoded {} < granule length {}", case.name, p.len(), total);
         p.truncate(total);
@@ -104,7 +103,7 @@ fn run(case: &Case) -> (f64, f64, Vec<Mode>) {
     }
     assert_eq!(ours.len(), reference.len(), "{}: length mismatch vs libopus (samples/ch {} vs {})", case.name, total, reference.len() / case.channels);
     let snr = common::snr_db(&reference, &ours);
-    let q = if case.channels <= 2 { common::opus_quality(&reference, &ours, case.channels, 48000) } else { f64::NAN };
+    let q = if case.channels <= 2 { common::opus_quality(&reference, &ours, case.channels, rate) } else { f64::NAN };
     let _ = std::fs::remove_file(&raw);
     let _ = std::fs::remove_file(&dec);
     let _ = std::fs::remove_file(&opus);
@@ -175,12 +174,40 @@ fn libopus_oracle() {
     ];
     let mut failures = Vec::new();
     for case in &cases {
-        let (snr, q, modes) = run(case);
+        let (snr, q, modes) = run(case, 48000);
         let celt_only = modes.iter().all(|m| *m == Mode::CeltOnly);
         let ok = if celt_only { snr >= case.min_snr_celt.max(50.0) } else { snr >= 10.0 && (q.is_nan() || q >= 0.0) };
         eprintln!("{:36} modes {:?}: snr {snr:6.1} dB quality {q:6.1} {}", case.name, modes, if ok { "ok" } else { "FAIL" });
         if !ok {
             failures.push(case.name);
+        }
+    }
+    assert!(failures.is_empty(), "{failures:?}");
+}
+
+/// Decoding at 8/12/16/24 kHz against libopus at 48 kHz resampled by ffmpeg. The comparison
+/// includes ffmpeg's resampler, so only coarse agreement (quality metric >= 0) is required.
+#[test]
+fn libopus_oracle_output_rates() {
+    let Some(ff) = common::ffmpeg() else {
+        return;
+    };
+    if !has_libopus(&ff) {
+        return;
+    }
+    let cases = [
+        Case { name: "rates_music_stereo_64k", channels: 2, signal: common::music, args: &["-b:a", "64k"], min_snr_celt: 0.0 },
+        Case { name: "rates_speech_mono_16k", channels: 1, signal: common::speech, args: &["-b:a", "16k", "-application", "voip"], min_snr_celt: 0.0 },
+    ];
+    let mut failures = Vec::new();
+    for case in &cases {
+        for rate in [8000u32, 12000, 16000, 24000] {
+            let (snr, q, modes) = run(case, rate);
+            let ok = q >= 0.0;
+            eprintln!("{:28} @{rate:5} modes {:?}: snr {snr:6.1} dB quality {q:6.1} {}", case.name, modes, if ok { "ok" } else { "FAIL" });
+            if !ok {
+                failures.push(format!("{}@{rate}", case.name));
+            }
         }
     }
     assert!(failures.is_empty(), "{failures:?}");

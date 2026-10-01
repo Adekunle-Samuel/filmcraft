@@ -116,10 +116,14 @@ impl Decoder {
                 }
             }
             _ => {
+                let dur = match self.streams[0].last_packet_duration() {
+                    0 => self.rate as usize / 50,
+                    d => d,
+                };
                 for s in 0..n {
-                    let r = self.streams[s].decode_interleaved(None, &mut self.scratch[s])?;
-                    samples.get_or_insert(r);
+                    self.streams[s].conceal(dur, &mut self.scratch[s])?;
                 }
+                samples = Some(dur);
             }
         }
         let samples = samples.unwrap_or(0);
