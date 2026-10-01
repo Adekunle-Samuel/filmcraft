@@ -500,7 +500,8 @@ fn build() -> Vec<CommandSpec> {
                 Ok(json!({"items": ids.iter().map(|i| i.0).collect::<Vec<_>>()}))
             }
         ),
-        cmd!("file.import", "Import…", ["File"], Some("Cmd+I"), r#"{"paths":[str]}"#, always, |s, p| {
+        cmd!("file.import", "Import…", ["File"], Some("Cmd+I"), r#"{"paths":[str],"bin":binId?}"#, always, |s, p| {
+            let bin = u64_p(p, "bin").map(filmcraft_project::BinId);
             let paths: Vec<String> = match p.get("paths").and_then(Value::as_array) {
                 Some(a) => a.iter().filter_map(|v| v.as_str().map(str::to_string)).collect(),
                 None => str_p(p, "path").map(|x| vec![x.to_string()]).unwrap_or_default(),
@@ -531,7 +532,7 @@ fn build() -> Vec<CommandSpec> {
                             Err(e) => errors.push(format!("{path}: {e}")),
                         }
                     }
-                    Ok(b) => match import_bytes(s, &path, b.into(), None) {
+                    Ok(b) => match import_bytes(s, &path, b.into(), bin) {
                         Ok(id) => ids.push(id.0),
                         Err(e) => errors.push(format!("{path}: {e}")),
                     },
@@ -1809,6 +1810,18 @@ fn build() -> Vec<CommandSpec> {
             }
             s.fix_state();
             Ok(Value::Null)
+        }),
+        cmd!("project.moveToBin", "Move to Bin", [], None, r#"{"items":[id]?,"bin":binId|null}"#, always, |s, p| {
+            let items: Vec<ItemId> = match p.get("items").and_then(Value::as_array) {
+                Some(a) => a.iter().filter_map(|v| v.as_u64().map(ItemId)).collect(),
+                None => s.state.project_selection.clone(),
+            };
+            if items.is_empty() {
+                return Err(bad("project.moveToBin", "need `items` (or a Project panel selection)"));
+            }
+            let bin = u64_p(p, "bin").map(filmcraft_project::BinId);
+            let moved = s.edit("Move to Bin", |pr, _| pr.move_to_bin(&items, bin).ok_or_else(|| bad("project.moveToBin", "no such bin")))?;
+            Ok(json!({"moved": moved}))
         }),
         cmd!("project.setMarks", "Set Source In/Out", [], None, r#"{"item":id,"in":ticks?|null,"out":ticks?|null}"#, always, |s, p| {
             let id = item_p(p, "item").or(s.state.source_item).ok_or_else(|| bad("project.setMarks", "need `item`"))?;
