@@ -203,3 +203,31 @@ fn interpret_footage_and_sequence_color_dialogs_and_hdr_scopes() {
     let info = d.exec("media.colorInfo", json!({"item": item}));
     assert_eq!(info["override"], Value::Null, "{info}");
 }
+
+#[test]
+fn apply_match_from_the_color_wheels_section() {
+    let mut d = Driver::demo();
+    d.ok("ui.set", json!({"workspace": "Color"}));
+    d.frames(3);
+    let clip = select_first_clip(&mut d);
+    d.exec("effects.apply", json!({"clips": [clip], "effect": "lumetri"}));
+    d.frames(2);
+    d.click("lumetri.section.Color Wheels & Match");
+    for id in ["lumetri.match.reference", "lumetri.match.faceDetection", "lumetri.match.apply"] {
+        assert!(d.ids("lumetri.match").iter().any(|i| i == id), "{id} missing");
+    }
+    // reference: a frame of the last V1 clip (another shot), typed into the field
+    let seq = d.exec("sequence.inspect", json!({}));
+    let last = seq["video"][0]["items"].as_array().unwrap().last().unwrap().clone();
+    let frame = last["startFrame"].as_i64().unwrap() + last["durationFrames"].as_i64().unwrap() / 2;
+    let r = d.exec("lumetri.applyMatch", json!({"referenceFrame": frame}));
+    assert!(r["distanceAfter"].as_f64().unwrap() < r["distanceBefore"].as_f64().unwrap(), "{r}");
+    d.frames(4);
+    d.snapshot("color-apply-match", None);
+    let e = lumetri(&mut d, clip);
+    assert!(e["params"]["wheel_highlights"]["value"].as_str().unwrap() != "Vec2(Vec2 { x: 0.0, y: 0.0 })", "{e}");
+    // the button runs the same command (here with the default reference inside the clip: refused, reported in the status line)
+    d.click("lumetri.match.apply");
+    let ui = d.ok("ui.inspect", json!({}));
+    assert!(ui.to_string().contains("reference frame is inside"), "{ui}");
+}

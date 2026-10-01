@@ -10,6 +10,7 @@
 pub mod audio;
 pub mod audio_fx;
 pub mod blend;
+pub mod color_match;
 pub mod colorman;
 pub mod effects;
 pub mod graphic_clip;
@@ -292,6 +293,22 @@ pub(crate) fn item_layer(
     };
     let (op, bl) = opacity_blend(item, mt);
     Some((placed, op, bl))
+}
+
+/// The layer of one clip at timeline `t` with its effects applied, on a canvas the size of the
+/// sequence output (transparent elsewhere), before opacity and blending. Used by Apply Match.
+pub fn render_clip(
+    project: &Project,
+    seq_id: ItemId,
+    clip: filmcraft_project::ClipId,
+    t: Tick,
+    opts: RenderOptions,
+    sources: &dyn SourceProvider,
+) -> Option<Image> {
+    let seq = project.sequence(seq_id)?;
+    let (_, item) = seq.find_item(clip)?;
+    let tc = format_time(t, seq.settings.frame_rate, seq.settings.drop_frame, TimeDisplay::Timecode, seq.settings.sample_rate as i64);
+    item_layer(project, seq, item, t, opts, sources, &tc).map(|(img, _, _)| img)
 }
 
 /// Largest power-of-two box decimation that keeps at least `target_w` pixels of width.

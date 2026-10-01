@@ -9,7 +9,7 @@ use filmcraft_color::{ColorSpace, Lut, LutFormat, WorkingSpace};
 use filmcraft_project::{ClipId, ItemId, ItemKind, ParamValue, ProjectLut, TrackKind};
 use serde_json::{Value, json};
 
-use crate::commands::{CommandSpec, always, bad, bool_p, clip_p, has_seq, item_p, str_p};
+use crate::commands::{CommandSpec, always, bad, bool_p, clip_p, has_seq, item_p, str_p, time_p};
 use crate::{Result, Session};
 
 type Run = fn(&mut Session, &Value) -> Result<Value>;
@@ -52,6 +52,14 @@ pub(crate) fn commands() -> Vec<CommandSpec> {
         spec("lumetri.setLook", "Set Creative Look", &[], r#"{"clip":id?,"lut":"lib:<id>"|"builtin:<id>"|""?,"path":str?}"#, has_seq, |s, p| {
             set_lut(s, p, "look_lut")
         }),
+        spec(
+            "lumetri.applyMatch",
+            "Apply Match",
+            &[],
+            r#"{"clip":id?,"referenceTime":ticks?|"referenceFrame":n?|"referenceTimecode":str?,"faceDetection":bool=true}"#,
+            has_seq,
+            apply_match,
+        ),
         spec(
             "lumetri.setSection",
             "Toggle Lumetri Section",
@@ -315,5 +323,61 @@ fn color_info(s: &mut Session, p: &Value) -> Result<Value> {
         "effective": effective.map(|c| c.id()),
         "effectiveLabel": effective.map(|c| c.label()),
         "hdr": effective.is_some_and(|c| c.is_hdr()),
+    }))
+}
+
+/// Lumetri ▸ Color Wheels & Match ▸ Apply Match (see `filmcraft_render::color_match`): match the
+/// clip at the playhead to the sequence frame at the reference time. Sets the three wheels, their
+/// lightness and Basic saturation in one undo step.
+fn apply_match(s: &mut Session, p: &Value) -> Result<Value> {
+    let (clip, idx) = lumetri_clip(s, p, "lumetri.applyMatch")?;
+    let seq_id = s.state.active_sequence.ok_or_else(|| bad("lumetri.applyMatch", "no active sequence"))?;
+    let reference_t = time_p(s, p, "reference").ok_or_else(|| bad("lumetri.applyMatch", "need `referenceTime`, `referenceFrame` or `referenceTimecode`"))?;
+    let skin = bool_p(p, "faceDetection").unwrap_or(true);
+    let q = s.active_sequence().ok_or_else(|| bad("lumetri.applyMatch", "no active sequence"))?;
+    let (_, it) = q.find_item(clip).ok_or_else(|| bad("lumetri.applyMatch", "no such clip"))?;
+    let t = s.playhead().clamp(it.start, it.end() - filmcraft_time::Tick(1));
+    if it.range().contains(reference_t) {
+        return Err(bad("lumetri.applyMatch", "the reference frame is inside the clip being matched; pick a frame from another shot"));
+    }
+    let base = it.effects[idx].clone();
+    // the current shot as Lumetri sees it: the clip with its Lumetri switched off
+    let mut probe = (*s.project).clone();
+    if let Some((_, pi)) = probe.sequence_mut(seq_id).and_then(|q| q.find_item_mut(clip)) {
+        pi.effects[idx].enabled = false;
+    }
+    let provider = s.media.provider(s.project.clone(), s.services.clone());
+    let opts = filmcraft_render::RenderOptions { scale: 0.25, working_output: true, ..Default::default() };
+    let current =
+        filmcraft_render::render_clip(&probe, seq_id, clip, t, opts, &provider).ok_or_else(|| bad("lumetri.applyMatch", "the clip has no picture"))?;
+    let reference = filmcraft_render::render_sequence(&s.project, seq_id, reference_t, opts, &provider);
+    let m = filmcraft_render::color_match::solve(&current, &reference, &base, skin);
+    let v2 = |a: [f32; 2]| ParamValue::Vec2(filmcraft_geom::Vec2::new(a[0] as f64, a[1] as f64));
+    let values = [
+        ("wheel_shadows", v2(m.shadows)),
+        ("wheel_midtones", v2(m.midtones)),
+        ("wheel_highlights", v2(m.highlights)),
+        ("wheel_shadows_l", ParamValue::Float(m.lightness[0] as f64)),
+        ("wheel_midtones_l", ParamValue::Float(m.lightness[1] as f64)),
+        ("wheel_highlights_l", ParamValue::Float(m.lightness[2] as f64)),
+        ("saturation", ParamValue::Float(m.saturation as f64)),
+        ("wheels_on", ParamValue::Bool(true)),
+    ];
+    s.edit_sequence("Apply Match", |q, _, _| {
+        let (_, it) = q.find_item_mut(clip).ok_or(filmcraft_edit::EditError::NoItem(clip))?;
+        let e = it.effects.get_mut(idx).ok_or_else(|| bad("lumetri.applyMatch", "no Lumetri"))?;
+        for (k, v) in &values {
+            let prm = e.params.entry(k.to_string()).or_insert_with(|| filmcraft_project::Param::new(v.clone()));
+            prm.keyframes.clear();
+            prm.value = v.clone();
+        }
+        e.enabled = true;
+        Ok(())
+    })?;
+    Ok(json!({
+        "clip": clip.0,
+        "shadows": m.shadows, "midtones": m.midtones, "highlights": m.highlights,
+        "lightness": m.lightness, "saturation": m.saturation,
+        "distanceBefore": m.before, "distanceAfter": m.after,
     }))
 }

@@ -154,6 +154,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                     });
                 }
             });
+            match_controls(ui, app, &mut lut_actions);
         }
         if open_section(ui, app, &e, "HSL Secondary", "hsl_on", "hsl", &mut sections) {
             sub(ui, &t, "Key");
@@ -566,4 +567,31 @@ fn color_wheel(ui: &mut egui::Ui, e: &EffectInstance, mt: Tick, id: &str, lid: &
         actions.push(json!({"clip": clip.0, "effect": idx, "param": lid, "value": nv}));
     }
     let _ = StrokeKind::Inside;
+}
+
+/// Color Match: reference frame (sequence timecode), Face Detection (skin-tone protection),
+/// Apply Match (`lumetri.applyMatch`).
+fn match_controls(ui: &mut egui::Ui, app: &mut FilmcraftApp, out: &mut Vec<(&'static str, Value)>) {
+    let t = app.tokens;
+    sub(ui, &t, "Color Match");
+    let key = egui::Id::new("lumetri-match-ref");
+    let fd_key = egui::Id::new("lumetri-match-face");
+    let mut tc: String = ui.data(|d| d.get_temp(key)).unwrap_or_else(|| "00:00:00:00".to_string());
+    let mut face: bool = ui.data(|d| d.get_temp(fd_key)).unwrap_or(true);
+    ui.horizontal(|ui| {
+        ui.add_sized(vec2(110.0, 20.0), egui::Label::new(egui::RichText::new("Reference").color(t.text_dim)));
+        let r = ui.add(egui::TextEdit::singleline(&mut tc).desired_width(96.0));
+        app.auto.add("lumetri.match.reference", r.rect, "Reference timecode");
+    });
+    let r = ui.checkbox(&mut face, "Face Detection (protect skin tones)");
+    app.auto.add("lumetri.match.faceDetection", r.rect, "Face Detection");
+    let b = ui.button("Apply Match");
+    app.auto.add("lumetri.match.apply", b.rect, "Apply Match");
+    if b.clicked() {
+        out.push(("lumetri.applyMatch", json!({"referenceTimecode": tc, "faceDetection": face})));
+    }
+    ui.data_mut(|d| {
+        d.insert_temp(key, tc);
+        d.insert_temp(fd_key, face);
+    });
 }

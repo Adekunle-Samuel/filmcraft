@@ -132,6 +132,34 @@ fn set_param_fills_in_parameters_missing_from_old_instances() {
 }
 
 #[test]
+fn apply_match_grades_the_clip_towards_the_reference() {
+    let mut s = demo();
+    let clip = pick_clip(&mut s);
+    let q = s.active_sequence().unwrap();
+    // reference: the middle of the last clip on V1 (a different shot)
+    let other = q.video_tracks[0].items.iter().rfind(|i| i.id != clip).unwrap();
+    let reference = other.start + filmcraft_time::Tick(other.duration.0 / 2);
+    let r = s.execute("lumetri.applyMatch", json!({"referenceTime": reference.0, "faceDetection": true})).unwrap();
+    let (before, after) = (r["distanceBefore"].as_f64().unwrap(), r["distanceAfter"].as_f64().unwrap());
+    assert!(after < before * 0.8, "match improves the statistics distance: {r}");
+    let q = s.active_sequence().unwrap();
+    let e = q.find_item(clip).unwrap().1.effects.iter().find(|e| e.effect == "lumetri").unwrap().clone();
+    let moved = ["wheel_shadows", "wheel_midtones", "wheel_highlights"]
+        .iter()
+        .any(|w| e.param(w).and_then(|p| p.value.as_vec2()).is_some_and(|v| v.x.abs() + v.y.abs() > 1e-3));
+    assert!(moved, "{r}");
+    // one undo step
+    s.execute("edit.undo", json!({})).unwrap();
+    let q = s.active_sequence().unwrap();
+    let e = q.find_item(clip).unwrap().1.effects.iter().find(|e| e.effect == "lumetri").unwrap();
+    assert_eq!(e.param("wheel_midtones").and_then(|p| p.value.as_vec2()).map(|v| v.x), Some(0.0));
+    // a reference inside the clip itself is refused
+    let inside = s.playhead();
+    assert!(s.execute("lumetri.applyMatch", json!({"referenceTime": inside.0})).is_err());
+    assert!(s.execute("lumetri.applyMatch", json!({})).is_err());
+}
+
+#[test]
 fn interpret_footage_and_sequence_colour_settings() {
     let mut s = demo();
     let clip = pick_clip(&mut s);
