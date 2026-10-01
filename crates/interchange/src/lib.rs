@@ -23,9 +23,7 @@ pub mod fcp7;
 pub mod fcpxml;
 pub mod otio;
 
-#[allow(dead_code)] // helpers shared by importers still being written
 mod common;
-#[allow(dead_code)]
 mod xml;
 
 use std::collections::{BTreeMap, HashMap};
