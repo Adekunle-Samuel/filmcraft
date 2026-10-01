@@ -3,6 +3,7 @@
 pub mod channel;
 pub mod dynamics;
 pub mod eq;
+pub mod essential;
 pub mod pitch;
 pub mod restoration;
 mod stft;
@@ -11,6 +12,7 @@ pub mod time;
 pub use channel::{Amplify, Balance, ChannelVolume, Invert, Route, Routing};
 pub use dynamics::{Compressor, Gate, Limiter};
 pub use eq::{ParametricEq, SimpleEq};
+pub use essential::{DeEsser, DeReverb, SpeechEnhance, StereoWidth};
 pub use pitch::PitchShifter;
 pub use restoration::{DeHum, DeNoise};
 pub use time::{Delay, Reverb};
@@ -92,6 +94,10 @@ static REGISTRY: &[EffectInfo] = &[
     entry!("dehum", "DeHum", Restoration, DeHum),
     entry!("denoise", "DeNoise", Restoration, DeNoise),
     entry!("pitch_shifter", "Pitch Shifter", Pitch, PitchShifter),
+    entry!("deesser", "DeEsser", Restoration, DeEsser),
+    entry!("dereverb", "DeReverb", Restoration, DeReverb),
+    entry!("speech_enhance", "Enhance Speech", Filter, SpeechEnhance),
+    entry!("stereo_width", "Stereo Width", Channel, StereoWidth),
 ];
 
 /// All registered effects.
