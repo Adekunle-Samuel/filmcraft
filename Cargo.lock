@@ -1519,6 +1519,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "filmcraft-opus"
+version = "0.1.0"
+
+[[package]]
 name = "filmcraft-project"
 version = "0.1.0"
 dependencies = [
