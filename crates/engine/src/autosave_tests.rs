@@ -86,7 +86,7 @@ fn crash_recovery_end_to_end() {
     start(&mut c, &d);
     assert_eq!(c.recovery_candidates().len(), 1);
     let list = c.execute("file.recoveryList", json!({})).unwrap();
-    assert_eq!(list[0]["projectName"], "FilmCraft Demo");
+    assert_eq!(list[0]["projectName"], "film", "named after the file it was saved as");
     assert_eq!(list[0]["projectPath"], proj.as_str());
     assert_eq!(list[0]["cleanExit"], false);
     assert_eq!(list[0]["savedAt"].as_str().unwrap().len(), 19);

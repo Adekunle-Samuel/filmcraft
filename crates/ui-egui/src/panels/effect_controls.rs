@@ -294,7 +294,7 @@ pub(crate) fn param_row(
             crate::panels::masks::path_value(app, &mut vui, clip, idx, mask, actions);
         }
         _ => {
-            vui.label(format!("{value:?}"));
+            vui.label(param_text(&app.session.project, pd.id, &value));
         }
     }
     if let Some(v) = set {
@@ -815,5 +815,34 @@ pub(crate) fn graph_rows(
             let nv = if let ParamKind::Float { min, max, .. } = pd.kind { nv.clamp(min, max) } else { nv };
             actions.push(("effects.setKeyframe".into(), with_mask(json!({"clip": clip.0, "effect": idx, "param": pd.id, "mediaTime": k.time.0, "value": nv}))));
         }
+    }
+}
+
+/// Read-only text for parameters without an inline editor (LUT references, free text, curves).
+fn param_text(project: &filmcraft_project::Project, id: &str, value: &ParamValue) -> String {
+    match value {
+        ParamValue::Text(s) if id.ends_with("_lut") => filmcraft_render::luts::label(Some(project), s),
+        ParamValue::Text(s) if s.is_empty() => "None".into(),
+        ParamValue::Text(s) => s.clone(),
+        ParamValue::Curve(pts) if pts.is_empty() || *pts == [[0.0, 0.0], [1.0, 1.0]] => "Default".into(),
+        ParamValue::Curve(pts) => format!("Custom ({} points)", pts.len()),
+        other => format!("{other:?}"),
+    }
+}
+
+#[cfg(test)]
+mod param_text_tests {
+    use super::*;
+
+    #[test]
+    fn readable_values_for_text_lut_and_curve_params() {
+        let p = filmcraft_project::Project::default();
+        assert_eq!(param_text(&p, "input_lut", &ParamValue::Text(String::new())), "None");
+        assert_eq!(param_text(&p, "look_lut", &ParamValue::Text("builtin:look-teal-orange".into())), "Teal & Orange");
+        assert_eq!(param_text(&p, "label", &ParamValue::Text(String::new())), "None");
+        assert_eq!(param_text(&p, "label", &ParamValue::Text("Reel 3".into())), "Reel 3");
+        assert_eq!(param_text(&p, "curve_luma", &ParamValue::Curve(vec![[0.0, 0.0], [1.0, 1.0]])), "Default");
+        assert_eq!(param_text(&p, "hue_vs_sat", &ParamValue::Curve(vec![])), "Default");
+        assert_eq!(param_text(&p, "curve_luma", &ParamValue::Curve(vec![[0.0, 0.0], [0.5, 0.6], [1.0, 1.0]])), "Custom (3 points)");
     }
 }
