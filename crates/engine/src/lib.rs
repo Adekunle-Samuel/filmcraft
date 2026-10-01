@@ -10,6 +10,7 @@
 
 pub mod autosave;
 pub mod captions;
+pub mod color;
 pub mod commands;
 pub mod demo;
 pub mod graphics;
@@ -554,6 +555,8 @@ pub fn media_duration(p: &Project, _pool: &MediaPool, id: ItemId) -> Option<Tick
 
 #[cfg(test)]
 mod autosave_tests;
+#[cfg(test)]
+mod color_tests;
 #[cfg(test)]
 mod file_tests;
 #[cfg(test)]

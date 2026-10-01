@@ -212,6 +212,9 @@ fn curve(id: &'static str, label: &'static str, hue: bool) -> ParamDef {
 fn wheel(id: &'static str, label: &'static str) -> ParamDef {
     ParamDef { id, label, kind: ParamKind::Wheel, default: ParamValue::Vec2(Vec2::new(0.0, 0.0)), animatable: true, group: None }
 }
+fn txt(id: &'static str, label: &'static str) -> ParamDef {
+    ParamDef { id, label, kind: ParamKind::Text, default: ParamValue::Text(String::new()), animatable: false, group: None }
+}
 fn grp(mut p: ParamDef, g: &'static str) -> ParamDef {
     p.group = Some(g);
     p
@@ -399,6 +402,8 @@ fn build_effects() -> Vec<EffectDef> {
             "Lumetri Color",
             COLOR_CORR,
             vec![
+                grp(b("basic_on", "Basic Correction", true), "Basic Correction"),
+                grp(txt("input_lut", "Input LUT"), "Basic Correction"),
                 grp(f("temperature", "Temperature", 0.0, -100.0, 100.0, ""), "Basic Correction"),
                 grp(f("tint", "Tint", 0.0, -100.0, 100.0, ""), "Basic Correction"),
                 grp(fs("exposure", "Exposure", 0.0, (-5.0, 5.0), (-5.0, 5.0), "", 1), "Basic Correction"),
@@ -408,6 +413,7 @@ fn build_effects() -> Vec<EffectDef> {
                 grp(f("whites", "Whites", 0.0, -100.0, 100.0, ""), "Basic Correction"),
                 grp(f("blacks", "Blacks", 0.0, -100.0, 100.0, ""), "Basic Correction"),
                 grp(fs("saturation", "Saturation", 100.0, (0.0, 200.0), (0.0, 200.0), "", 1), "Basic Correction"),
+                grp(b("creative_on", "Creative", true), "Creative"),
                 grp(
                     ch(
                         "look",
@@ -417,6 +423,7 @@ fn build_effects() -> Vec<EffectDef> {
                     ),
                     "Creative",
                 ),
+                grp(txt("look_lut", "Look LUT"), "Creative"),
                 grp(fs("look_intensity", "Intensity", 100.0, (0.0, 200.0), (0.0, 200.0), "", 1), "Creative"),
                 grp(f("faded_film", "Faded Film", 0.0, 0.0, 100.0, ""), "Creative"),
                 grp(f("sharpen", "Sharpen", 0.0, -100.0, 100.0, ""), "Creative"),
@@ -424,6 +431,7 @@ fn build_effects() -> Vec<EffectDef> {
                 grp(fs("creative_sat", "Saturation", 100.0, (0.0, 200.0), (0.0, 200.0), "", 1), "Creative"),
                 grp(col("shadow_tint", "Shadow Tint", [0.5, 0.5, 0.5, 1.0]), "Creative"),
                 grp(col("highlight_tint", "Highlight Tint", [0.5, 0.5, 0.5, 1.0]), "Creative"),
+                grp(b("curves_on", "Curves", true), "Curves"),
                 grp(curve("curve_luma", "Luma Curve", false), "Curves"),
                 grp(curve("curve_red", "Red Curve", false), "Curves"),
                 grp(curve("curve_green", "Green Curve", false), "Curves"),
@@ -433,6 +441,7 @@ fn build_effects() -> Vec<EffectDef> {
                 grp(curve("hue_vs_luma", "Hue vs Luma", true), "Curves"),
                 grp(curve("luma_vs_sat", "Luma vs Sat", true), "Curves"),
                 grp(curve("sat_vs_sat", "Sat vs Sat", true), "Curves"),
+                grp(b("wheels_on", "Color Wheels & Match", true), "Color Wheels & Match"),
                 grp(wheel("wheel_shadows", "Shadows"), "Color Wheels & Match"),
                 grp(f("wheel_shadows_l", "Shadows Lightness", 0.0, -100.0, 100.0, ""), "Color Wheels & Match"),
                 grp(wheel("wheel_midtones", "Midtones"), "Color Wheels & Match"),
@@ -451,6 +460,7 @@ fn build_effects() -> Vec<EffectDef> {
                 grp(f("hsl_tint", "Tint", 0.0, -100.0, 100.0, ""), "HSL Secondary"),
                 grp(fs("hsl_sat", "Saturation", 100.0, (0.0, 200.0), (0.0, 200.0), "", 1), "HSL Secondary"),
                 grp(f("hsl_hue_shift", "Hue Shift", 0.0, -180.0, 180.0, "°"), "HSL Secondary"),
+                grp(b("vignette_on", "Vignette", true), "Vignette"),
                 grp(f("vignette_amount", "Amount", 0.0, -5.0, 5.0, ""), "Vignette"),
                 grp(f("vignette_midpoint", "Midpoint", 50.0, 0.0, 100.0, ""), "Vignette"),
                 grp(f("vignette_roundness", "Roundness", 0.0, -100.0, 100.0, ""), "Vignette"),

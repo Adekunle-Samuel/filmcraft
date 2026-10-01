@@ -149,7 +149,7 @@ pub(crate) fn time_p(s: &Session, p: &Value, prefix: &str) -> Option<Tick> {
     None
 }
 
-fn clip_p(p: &Value, k: &str) -> Option<ClipId> {
+pub(crate) fn clip_p(p: &Value, k: &str) -> Option<ClipId> {
     u64_p(p, k).map(ClipId)
 }
 fn clips_p(s: &Session, p: &Value) -> Vec<ClipId> {
@@ -1679,6 +1679,12 @@ fn build() -> Vec<CommandSpec> {
                     if eff == json!("opacity") || eff == json!("motion") {
                         e.enabled = true;
                     }
+                    // instances saved before a parameter existed get it from the definition
+                    if !e.params.contains_key(&pid)
+                        && let Some(d) = e.def().and_then(|d| d.param(&pid))
+                    {
+                        e.params.insert(pid.clone(), filmcraft_project::Param::new(d.default.clone()));
+                    }
                     let prm = e.params.get_mut(&pid).ok_or_else(|| bad("effects.setParam", format!("no param `{pid}`")))?;
                     let v = json_to_param(&prm.value, &val).ok_or_else(|| bad("effects.setParam", "value has the wrong type"))?;
                     prm.set_at(mt, v);
@@ -1849,6 +1855,7 @@ fn build() -> Vec<CommandSpec> {
     ];
     v.extend(crate::captions::commands());
     v.extend(crate::mixer::commands());
+    v.extend(crate::color::commands());
     v.extend(crate::graphics::commands());
     v.extend(crate::shortcuts::commands());
     // Labels as individual commands (Edit ▸ Label ▸ <name>)

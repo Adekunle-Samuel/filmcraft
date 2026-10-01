@@ -14,6 +14,7 @@ pub mod effects;
 pub mod graphic_clip;
 pub mod graphics;
 pub mod image;
+pub mod luts;
 pub mod mixer;
 pub mod plan;
 pub mod preview;
@@ -114,7 +115,14 @@ fn render_seq(project: &Project, seq: &Sequence, t: Tick, opts: RenderOptions, s
             }
             let mt = item.source_time_at(t);
             let mut adjusted = canvas.clone();
-            let cx = effects::FxCtx { t: mt, px_scale: opts.scale, seconds: (t - item.start).seconds(), timecode: &tc, clip_name: &item.name };
+            let cx = effects::FxCtx {
+                t: mt,
+                px_scale: opts.scale,
+                seconds: (t - item.start).seconds(),
+                timecode: &tc,
+                clip_name: &item.name,
+                project: Some(project),
+            };
             for e in item.effects.iter().filter(|e| e.def().is_some_and(|d| !d.intrinsic)) {
                 effects::apply(&mut adjusted, e, &cx);
             }
@@ -256,7 +264,7 @@ pub(crate) fn item_layer(
     };
     let px_scale = layer.w as f32 / src_size.0.max(1) as f32;
     if opts.effects {
-        let cx = effects::FxCtx { t: mt, px_scale, seconds: (t - item.start).seconds(), timecode: tc, clip_name: &item.name };
+        let cx = effects::FxCtx { t: mt, px_scale, seconds: (t - item.start).seconds(), timecode: tc, clip_name: &item.name, project: Some(project) };
         for e in item.effects.iter().filter(|e| e.def().is_some_and(|d| !d.intrinsic) && !filmcraft_project::graphic::is_layer(e)) {
             effects::apply(&mut layer, e, &cx);
         }
