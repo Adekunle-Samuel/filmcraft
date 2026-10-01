@@ -13,6 +13,7 @@
 pub mod fixtures;
 pub mod golden;
 pub mod oracle;
+pub mod wav;
 
 pub use fixtures::{fixtures_dir, temp_path, workspace_root};
 pub use oracle::{ffmpeg, ffmpeg_or_skip, ffprobe, ffprobe_or_skip, oracles_required, skip};
