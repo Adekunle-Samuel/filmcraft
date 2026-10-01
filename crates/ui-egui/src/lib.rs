@@ -48,6 +48,8 @@ pub struct HostHooks {
     pub pick_files: Option<Box<dyn FnMut(&[&str]) -> Vec<String>>>,
     pub pick_save: Option<Box<dyn FnMut(&str) -> Option<String>>>,
     pub pick_open_project: Option<Box<dyn FnMut() -> Option<String>>>,
+    /// Save dialog with a filter: (filter name, extensions, suggested file name) → path.
+    pub pick_save_as: Option<Box<dyn FnMut(&str, &[&str], &str) -> Option<String>>>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -117,6 +119,8 @@ pub struct FilmcraftApp {
     pub command_inbox: Option<Receiver<String>>,
     /// GPU compositor (when running on wgpu): device state + compositor + the egui texture it feeds.
     pub gpu: Option<GpuState>,
+    /// Preview render job being watched (job id, where to start playing when it completes).
+    watched_render: Option<(u64, Tick)>,
 }
 
 pub struct GpuState {
@@ -169,6 +173,7 @@ impl FilmcraftApp {
         let frames = Arc::new(FrameServer::new(
             session.media.clone(),
             session.services.clone(),
+            session.previews.clone(),
             std::thread::available_parallelism().map(|n| n.get().clamp(2, 6)).unwrap_or(3),
         ));
         Self {
@@ -205,6 +210,7 @@ impl FilmcraftApp {
             tl: Default::default(),
             command_inbox: None,
             gpu: None,
+            watched_render: None,
         }
     }
 
@@ -219,10 +225,11 @@ impl FilmcraftApp {
 
     /// Rebuild the frame server if the session's media pool was replaced (e.g. project opened).
     fn sync_pool(&mut self) {
-        if !Arc::ptr_eq(&self.frames.pool, &self.session.media) {
+        if !Arc::ptr_eq(&self.frames.pool, &self.session.media) || !Arc::ptr_eq(&self.frames.previews, &self.session.previews) {
             self.frames = Arc::new(FrameServer::new(
                 self.session.media.clone(),
                 self.session.services.clone(),
+                self.session.previews.clone(),
                 std::thread::available_parallelism().map(|n| n.get().clamp(2, 6)).unwrap_or(3),
             ));
             self.textures.clear();
@@ -313,6 +320,7 @@ impl FilmcraftApp {
         let Some(seq_id) = self.session.state.active_sequence else { return };
         let project = self.session.project.clone();
         let provider = self.session.media.provider(project.clone(), self.session.services.clone());
+        let previews = self.session.previews.clone();
         let start_tick = self.session.playhead();
         let Some(a) = self.audio.as_mut() else { return };
         let sr = a.sample_rate();
@@ -323,11 +331,11 @@ impl FilmcraftApp {
             // Mix at the sequence rate; convert when the device rate differs (nearest sample).
             let seq_sr = seq.settings.sample_rate;
             let mix = if seq_sr == sr {
-                filmcraft_render::audio::mix_sequence(&project, seq, cursor, n, &provider)
+                previews.mix(&project, seq_id, cursor, n, &provider)
             } else {
                 let s0 = (cursor as i128 * seq_sr as i128 / sr as i128) as i64;
                 let m = n * seq_sr as usize / sr as usize + 2;
-                let b = filmcraft_render::audio::mix_sequence(&project, seq, s0, m, &provider);
+                let b = previews.mix(&project, seq_id, s0, m, &provider);
                 let mut out = filmcraft_frame::AudioBuffer::silence(sr, 2, n);
                 for c in 0..2 {
                     for i in 0..n {
@@ -442,13 +450,14 @@ impl FilmcraftApp {
 
     // ---------------------------------------------------------------- files
 
-    pub fn file_dialog(&mut self, id: &str) -> Result<Value, String> {
+    pub fn file_dialog(&mut self, id: &str, params: &Value) -> Result<Value, String> {
         match id {
             "file.import" => {
                 let exts: Vec<&str> = filmcraft_media::VIDEO_EXTENSIONS
                     .iter()
                     .chain(filmcraft_media::AUDIO_EXTENSIONS)
                     .chain(filmcraft_media::STILL_EXTENSIONS)
+                    .chain(&["srt", "vtt", "scc", "edl", "xml", "fcpxml", "otio"])
                     .copied()
                     .collect();
                 let paths = self.hooks.pick_files.as_mut().map(|f| f(&exts)).unwrap_or_default();
@@ -474,6 +483,21 @@ impl FilmcraftApp {
             "file.open" => {
                 let Some(path) = self.hooks.pick_open_project.as_mut().and_then(|f| f()) else { return Ok(Value::Null) };
                 self.session.execute("file.open", json!({"path": path})).map_err(|e| e.to_string())
+            }
+            "captions.import" => {
+                let paths = self.hooks.pick_files.as_mut().map(|f| f(&["srt", "vtt", "scc"])).unwrap_or_default();
+                let Some(path) = paths.into_iter().next() else { return Ok(Value::Null) };
+                self.session.execute("captions.import", json!({"path": path})).map_err(|e| e.to_string())
+            }
+            "captions.export" => {
+                let name = self.session.state.active_sequence.and_then(|s| self.session.project.item(s)).map(|i| i.name.clone()).unwrap_or_default();
+                let suggested = format!("{}.srt", name.replace(' ', "_"));
+                let Some(path) = self.hooks.pick_save_as.as_mut().and_then(|f| f("Captions (SRT, WebVTT, SCC)", &["srt", "vtt", "scc"], &suggested)) else {
+                    return Ok(Value::Null);
+                };
+                let mut p = params.clone();
+                p["path"] = json!(path);
+                self.session.execute("captions.export", p).map_err(|e| e.to_string())
             }
             _ => Err(format!("no dialog for {id}")),
         }
@@ -675,27 +699,51 @@ impl FilmcraftApp {
         if resp.clicked() {
             self.ui.status.clear();
         }
-        let jobs_running = self
-            .session
-            .jobs
-            .iter()
-            .filter(|j| !j.progress.finished.load(std::sync::atomic::Ordering::Relaxed) && j.progress.error.lock().map(|e| e.is_none()).unwrap_or(true))
-            .count();
-        let right = if jobs_running > 0 {
-            let f = self
-                .session
-                .jobs
-                .iter()
-                .rev()
-                .find(|j| !j.progress.finished.load(std::sync::atomic::Ordering::Relaxed))
-                .map(|j| j.progress.fraction())
-                .unwrap_or(0.0);
-            ctx.request_repaint_after(std::time::Duration::from_millis(200));
-            format!("Exporting… {:.0}%", f * 100.0)
-        } else {
-            String::new()
-        };
-        ui.painter().text(egui::pos2(sb.max.x - 10.0, sb.center().y), egui::Align2::RIGHT_CENTER, right, Tokens::ui(11.0), t.text_dim);
+        self.job_status(ui, sb, &t);
+    }
+
+    /// Right side of the status bar: the running job (export / render previews) with a progress
+    /// bar and a cancel button; plays the rendered range when a preview render completes.
+    fn job_status(&mut self, ui: &mut egui::Ui, sb: egui::Rect, t: &Tokens) {
+        use std::sync::atomic::Ordering;
+        let running = self.session.jobs.iter().rev().find(|j| !j.progress.finished.load(Ordering::Relaxed)).cloned();
+        // Play after rendering previews.
+        if let Some((id, from)) = self.watched_render
+            && let Some(j) = self.session.jobs.iter().find(|j| j.id == id)
+            && j.progress.finished.load(Ordering::Relaxed)
+        {
+            self.watched_render = None;
+            let ok = j.progress.error.lock().map(|e| e.is_none()).unwrap_or(false);
+            if ok && self.ui.play_after_render && !self.playback.playing {
+                self.session.set_playhead(from);
+                self.play(1.0);
+            }
+        }
+        let Some(job) = running else { return };
+        if job.label.starts_with("Rendering ") && !job.label.contains("audio") && self.watched_render.is_none_or(|w| w.0 != job.id) {
+            let from = self.session.active_sequence().and_then(|q| q.mark_in).unwrap_or(Tick::ZERO);
+            self.watched_render = Some((job.id, from));
+        }
+        ui.ctx().request_repaint_after(std::time::Duration::from_millis(150));
+        let f = job.progress.fraction().clamp(0.0, 1.0);
+        let cancel = egui::Rect::from_center_size(egui::pos2(sb.max.x - 14.0, sb.center().y), egui::vec2(14.0, 14.0));
+        let bar = egui::Rect::from_min_size(egui::pos2(cancel.min.x - 128.0, sb.center().y - 3.0), egui::vec2(120.0, 6.0));
+        let p = ui.painter();
+        p.rect_filled(bar, 3.0, t.separator);
+        p.rect_filled(egui::Rect::from_min_size(bar.min, egui::vec2(bar.width() * f, bar.height())), 3.0, t.accent);
+        let verb = if job.label.starts_with("Rendering") { job.label.clone() } else { "Exporting".to_string() };
+        p.text(egui::pos2(bar.min.x - 8.0, sb.center().y), egui::Align2::RIGHT_CENTER, format!("{verb}… {:.0}%", f * 100.0), Tokens::ui(11.0), t.text_dim);
+        let resp = ui.interact(cancel, egui::Id::new(("job-cancel", job.id)), egui::Sense::click());
+        let c = if resp.hovered() { t.hot_text } else { t.text_dim };
+        let k = 3.5;
+        p.line_segment([cancel.center() - egui::vec2(k, k), cancel.center() + egui::vec2(k, k)], egui::Stroke::new(1.4, c));
+        p.line_segment([cancel.center() + egui::vec2(-k, k), cancel.center() + egui::vec2(k, -k)], egui::Stroke::new(1.4, c));
+        self.auto.add("status.job.cancel", cancel, &format!("Cancel {}", job.label));
+        self.auto.add("status.job.progress", bar, &format!("{:.0}%", f * 100.0));
+        if resp.on_hover_text("Cancel").clicked() {
+            job.progress.cancel.store(true, Ordering::Relaxed);
+            self.watched_render = None;
+        }
     }
 
     /// Contextual hint for the status bar (Premiere shows tool/gesture hints here).

@@ -9,10 +9,12 @@
 //! thanks to structural sharing of untouched items).
 
 pub mod autosave;
+pub mod captions;
 pub mod commands;
 pub mod demo;
 pub mod interchange;
 pub mod media_pool;
+pub mod previews;
 pub mod trim;
 
 use std::sync::Arc;
@@ -122,6 +124,9 @@ pub struct EditorState {
     /// Selected edit points (trim mode).
     #[serde(default)]
     pub edit_points: Vec<trim::EditPoint>,
+    /// Selected captions (caption tracks / Captions panel).
+    #[serde(default)]
+    pub caption_selection: Vec<ClipId>,
 }
 
 /// Events for frontends (drained each frame).
@@ -145,7 +150,7 @@ pub struct Session {
     pub events: Vec<Event>,
     /// Commands executed (for macros/debugging): (id, params).
     pub journal: Vec<(String, Value)>,
-    /// Background jobs (exports, …).
+    /// Background jobs (exports, render previews…).
     pub jobs: Vec<Job>,
     /// User preferences (`prefs.*` commands) and where they persist (None = not persisted).
     pub prefs: autosave::Preferences,
@@ -155,6 +160,8 @@ pub struct Session {
     /// Schema version of the file at `path` as found on disk (older = upgraded on load; the first
     /// save over it keeps a backup of the original).
     pub loaded_schema: u32,
+    /// Render preview files + render-bar segments (shared with the frontend's frame workers).
+    pub previews: Arc<previews::PreviewStore>,
 }
 
 /// A background job with shared progress.
@@ -213,6 +220,7 @@ impl Session {
             prefs_path: None,
             persistence: None,
             loaded_schema: filmcraft_format::SCHEMA_VERSION,
+            previews: Arc::new(previews::PreviewStore::temp()),
         }
     }
 
@@ -284,6 +292,15 @@ impl Session {
         match &self.prefs_path {
             Some(path) => self.prefs.save(path),
             None => Ok(()),
+        }
+    }
+
+    /// Keep render previews next to the saved project (moves an unsaved project's previews).
+    pub fn previews_follow_path(&mut self) {
+        if let Some(p) = &self.path
+            && !cfg!(target_arch = "wasm32")
+        {
+            self.previews.move_to(previews::dir_for_project(p));
         }
     }
 
@@ -382,8 +399,10 @@ impl Session {
         }
         if let Some(seq) = self.state.active_sequence.and_then(|s| p.sequence(s)) {
             self.state.selection.retain(|c| seq.find_item(*c).is_some());
+            self.state.caption_selection.retain(|c| seq.find_caption(*c).is_some());
         } else {
             self.state.selection.clear();
+            self.state.caption_selection.clear();
         }
         self.state.project_selection.retain(|i| p.item(*i).is_some());
     }
@@ -445,7 +464,8 @@ impl Session {
     pub fn render_program(&self, scale: f32) -> Option<filmcraft_render::Image> {
         let seq = self.state.active_sequence?;
         let provider = self.media.provider(self.project.clone(), self.services.clone());
-        Some(filmcraft_render::render_sequence(&self.project, seq, self.playhead(), filmcraft_render::RenderOptions { scale, ..Default::default() }, &provider))
+        let opts = filmcraft_render::RenderOptions { scale, captions: true, ..Default::default() };
+        Some(filmcraft_render::render_sequence(&self.project, seq, self.playhead(), opts, &provider))
     }
 }
 
@@ -467,5 +487,7 @@ pub fn media_duration(p: &Project, _pool: &MediaPool, id: ItemId) -> Option<Tick
 mod autosave_tests;
 #[cfg(test)]
 mod file_tests;
+#[cfg(test)]
+mod previews_tests;
 #[cfg(test)]
 mod tests;

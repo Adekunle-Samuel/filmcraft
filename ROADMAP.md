@@ -37,19 +37,19 @@ Status: ✅ done · 🟡 in progress · ⬜ not started. Estimates are remaining
 | M6 | Export | ✅ | Own H.264 encoder (High/Main/Baseline, B-frames, VBR/CBR/2-pass) → MP4 + own AAC; ProRes, MJPEG, PNG, GIF, WAV; background jobs | Preset library, queue UI, smart render | 6–8 |
 | M7 | Audio | 🟡 | Mixer basics, peak meters, BS.1770 loudness meters (M/S/I LUFS, true peak; matches ffmpeg), DSP crate, 12 clip audio effects running on it (EQ, filters, dynamics, limiter, delay, reverb, DeNoise, DeHum, pitch) with keyframes | Effects UI polish (EQ curve), remaining effects (multiband, convolution reverb), track effects/mixers with automation, Essential Sound, audio transitions, 5.1 | 6–10 |
 | M8 | Colour | 🟡 | Lumetri: basic, creative + looks, RGB & hue curves, wheels, HSL secondary, vignette; basic scopes | LUT import UI, colour match, colour management + HDR (PQ/HLG, log, tone mapping) | 8–12 |
-| M9 | More codecs | 🟡 | ProRes decode+encode, AAC decode+encode, HEVC Main/Main 10 decoder (bit-exact on 41 fixtures, ~225 fps 1080p), Matroska/WebM import (H.264/HEVC/ProRes/MJPEG + AAC/FLAC/MP3/Vorbis/PCM) | VP9 and Opus (in progress), AV1 (rav1d), DNxHR, MXF, hardware decode | 12–20 |
-| M10 | Graphics & captions | ⬜ | — | Text engine, Type tool, Essential Graphics, captions (SRT/VTT/SCC), speech-to-text | 20–30 |
+| M9 | More codecs | 🟡 | ProRes decode+encode, AAC decode+encode, HEVC Main/Main 10 decoder (bit-exact on 41 fixtures, ~225 fps 1080p), Matroska/WebM import (H.264/HEVC/ProRes/MJPEG + AAC/Opus/FLAC/MP3/Vorbis/PCM), Opus decoder (SILK/CELT/hybrid, 5.1/7.1 multistream; all RFC 8251 vectors range-exact; WebM/MKV/MP4) | VP9 (in progress), Ogg Opus files, AV1 (rav1d), DNxHR, MXF, hardware decode | 12–20 |
+| M10 | Graphics & captions | 🟡 | Caption tracks (Subtitle/CEA-608/708/Teletext formats, track style), SRT/WebVTT/SCC import+export (frame-exact, property-tested), caption editing (add/split/merge/trim/move, sync-locked insert/extract), Text panel Captions tab, burn-in in Program monitor and export | Text engine with shaping, Type tool, Essential Graphics, rolls/crawls, MCC/STL/TTML, 608/708 embedding, speech-to-text | 18–27 |
 | M11 | Interchange & project management | 🟡 | `.fcproj` schema versions + migrations, atomic saves, Save a Copy/Revert, auto-save ring + crash-recovery journal (Preferences ▸ Auto Save, recovery prompt), FCP7 XML, FCPXML, EDL, OTIO | Relink/offline, project manager, proxies | 8 |
 | M12–M16 | Web (WASM), platform, long tail | 🟡 | L0–L4 crates compile to wasm32 | Web app shell (file access, WebCodecs, audio), ~850 remaining commands and dialogs, performance hardening | 40–65 |
 
 ## Running now
 
 - VP9 decoder (`crates/vp9`), from the public VP9 bitstream spec
-- Opus decoder (`crates/opus`), from RFC 6716/8251
 - Interchange (`crates/interchange`): CMX 3600 EDL, FCP7 XML, FCPXML, OTIO import and export
 
 ## Log
 
+- **2026-09-30 (evening):** Opus decoder (RFC 6716/8251, range-exact on every conformance vector, ~80–110× realtime 48 kHz stereo) wired into WebM/MKV and MP4 import.
 - **2026-09-30 (afternoon):** Matroska/WebM import; LUFS meters; clip audio effects on the DSP crate.
 - **2026-09-30 (midday):** HEVC decoder, Matroska/WebM demuxer and audio DSP merged; HEVC import wired; asset rules (AGENTS.md, ATTRIBUTION.md, `cargo xtask assets`); README with hero screenshot and the Craft family.
 - **2026-09-30 (late morning):** keyframe value/velocity graphs; xtask gates; H.264 MP4 export; Lumetri curves, wheels, looks, HSL secondary.

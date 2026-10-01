@@ -1,6 +1,6 @@
 //! Workspace automation: `cargo xtask <layers|wasm|ci>`.
 //!
-//! - `layers`: enforces the dependency layering of `plan/architecture.md` §3 (downward-only edges,
+//! - `layers`: enforces the dependency layering of `docs/architecture.md` §1 (downward-only edges,
 //!   listed same-layer edges, L0 codec crates depend on `bitstream` only, no UI/OS crates below L5).
 //! - `wasm`: `cargo check --target wasm32-unknown-unknown` for every crate in L0–L4.
 //! - `assets`: every asset file (image, icon, font, LUT, audio, video…) has a complete
@@ -27,6 +27,7 @@ const LAYERS: &[(&str, u8)] = &[
     ("mjpeg", 0),
     ("dnx", 0),
     ("aac", 0),
+    ("opus", 0),
     ("frame", 1),
     ("media", 1),
     ("project", 1),
@@ -114,7 +115,7 @@ fn layers() -> Result<(), String> {
     let mut errors = Vec::new();
     for (name, deps) in workspace_crates(&md) {
         let Some(l) = layer_of(&name) else {
-            errors.push(format!("{name}: not assigned a layer (add it to xtask LAYERS and plan/architecture.md §3)"));
+            errors.push(format!("{name}: not assigned a layer (add it to xtask LAYERS and docs/architecture.md §1)"));
             continue;
         };
         for d in &deps {

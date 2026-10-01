@@ -18,6 +18,17 @@ fn v1_minimal_loads() {
     assert_eq!(l.project.next_id, 1);
 }
 
+/// Main briefly wrote bare projects with `"version": 2` (caption tracks) before the envelope landed.
+#[test]
+fn bare_version_2_loads_as_schema_v1() {
+    let mut v: serde_json::Value = serde_json::from_slice(&fixture("v1-edit.fcproj")).unwrap();
+    v["version"] = 2.into();
+    let l = decode(&serde_json::to_vec(&v).unwrap()).unwrap();
+    assert_eq!(l.schema_version, 1);
+    assert!(l.migrated());
+    assert_eq!(l.project.name, decode(&fixture("v1-edit.fcproj")).unwrap().project.name);
+}
+
 #[test]
 fn v1_edit_loads_with_defaults_for_later_fields() {
     let l = decode(&fixture("v1-edit.fcproj")).unwrap();

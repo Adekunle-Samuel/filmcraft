@@ -1337,6 +1337,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "filmcraft-captions"
+version = "0.1.0"
+dependencies = [
+ "filmcraft-color",
+ "filmcraft-project",
+ "filmcraft-time",
+ "proptest",
+ "skrifa",
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "filmcraft-cli"
 version = "0.1.0"
 dependencies = [
@@ -1362,6 +1374,7 @@ dependencies = [
  "filmcraft-isobmff",
  "filmcraft-matroska",
  "filmcraft-media",
+ "filmcraft-opus",
  "filmcraft-prores",
  "filmcraft-time",
  "image",
@@ -1393,6 +1406,7 @@ dependencies = [
 name = "filmcraft-engine"
 version = "0.1.0"
 dependencies = [
+ "filmcraft-captions",
  "filmcraft-codecs",
  "filmcraft-color",
  "filmcraft-edit",
@@ -1551,6 +1565,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "filmcraft-opus"
+version = "0.1.0"
+
+[[package]]
 name = "filmcraft-project"
 version = "0.1.0"
 dependencies = [
@@ -1578,6 +1596,7 @@ name = "filmcraft-render"
 version = "0.1.0"
 dependencies = [
  "filmcraft-audio-dsp",
+ "filmcraft-captions",
  "filmcraft-color",
  "filmcraft-frame",
  "filmcraft-geom",
@@ -1586,6 +1605,8 @@ dependencies = [
  "filmcraft-time",
  "image",
  "rayon",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

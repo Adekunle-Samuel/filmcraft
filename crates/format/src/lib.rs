@@ -105,7 +105,7 @@ struct Probe {
     format: Option<String>,
     #[serde(default)]
     schema_version: Option<u32>,
-    /// v1: bare project with `version`.
+    /// Bare (pre-envelope) project: its `version` field.
     #[serde(default)]
     version: Option<u32>,
     #[serde(default)]
@@ -139,8 +139,13 @@ fn probe_version(p: &Probe) -> Result<u32, FormatError> {
         return Ok(v);
     }
     // Before the envelope (v1) a file was the bare Project object with `version`.
+    // Its `version` was 1, or 2 on builds that briefly bumped it when caption tracks were added
+    // (same shape; the new field loads with its default). Anything higher is from the future.
     if p.items.is_some() && p.root.is_some() {
-        return Ok(p.version.unwrap_or(1));
+        return Ok(match p.version.unwrap_or(1) {
+            0..=2 => 1,
+            v => v,
+        });
     }
     Err(FormatError::NotAProject("no `schema_version` and not a legacy project".into()))
 }

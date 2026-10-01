@@ -49,8 +49,12 @@ reproduce an image (for example, point lists traced from someone else's icon).
 - Never read, disassemble or copy anything inside Adobe application bundles; file names and listings only.
   Observe behaviour by using the app; never capture its Home screen, recent projects, account info or
   file browsers.
-- Never copy GPL/LGPL/AGPL code (FFmpeg, x264, x265, libvpx, MLT, Kdenlive, Shotcut, Olive, LAME…).
-  Implement codecs and formats from public specifications.
+- Never copy GPL/LGPL/AGPL code (FFmpeg, x264, x265, MLT, Kdenlive, Shotcut, Olive, LAME…).
+- Implement codecs and formats from public specifications (ITU-T/ISO/IEC standards, IETF RFCs, the VP9
+  and AV1 bitstream specs, SMPTE documents, published container specs). Do not read the source of
+  reference or third-party decoders/encoders while implementing a format, even permissively licensed
+  ones (libvpx, libopus, libaom, dav1d, openh264…); spec text and conformance vectors only. Record the
+  spec edition used in the crate README.
 - ffmpeg/ffprobe may be used only as external test oracles and fixture generators. They are never
   linked, bundled or shipped.
 - Dependencies must use permissive licences: MIT/Apache-2.0/BSD/ISC/Zlib/Unicode/CC0/BSL-1.0, or
@@ -60,3 +64,12 @@ reproduce an image (for example, point lists traced from someone else's icon).
 
 See `CLAUDE.md`: pure Rust, dependency layering (`cargo xtask layers`), exact `Tick` time, everything is
 a command, everything is agent-drivable, and the quality gates (`cargo xtask ci`) before every commit.
+
+## See also
+
+- [CONTRIBUTING.md](CONTRIBUTING.md) and [docs/contributing.md](docs/contributing.md): setup, gates, commits, how to add things
+- [docs/architecture.md](docs/architecture.md): layers, data model, commands, pipeline
+- [docs/testing.md](docs/testing.md): oracle tests, criteria, benchmarks
+- [docs/agents.md](docs/agents.md): driving FilmCraft over MCP / the control channel, and the agent work loop
+- [docs/control-protocol.md](docs/control-protocol.md): control-channel method reference
+- [ATTRIBUTION.md](ATTRIBUTION.md): asset index

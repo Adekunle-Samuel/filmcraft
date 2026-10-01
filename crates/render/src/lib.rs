@@ -13,6 +13,7 @@ pub mod blend;
 pub mod effects;
 pub mod image;
 pub mod plan;
+pub mod preview;
 pub mod transitions;
 
 use std::sync::Arc;
@@ -44,11 +45,14 @@ pub struct RenderOptions {
     pub effects: bool,
     /// Nesting depth guard.
     pub depth: u32,
+    /// Draw the sequence's visible caption tracks over the picture (Program monitor, burn-in on
+    /// export). Never applies to nested sequences.
+    pub captions: bool,
 }
 
 impl Default for RenderOptions {
     fn default() -> Self {
-        Self { scale: 1.0, effects: true, depth: 0 }
+        Self { scale: 1.0, effects: true, depth: 0, captions: false }
     }
 }
 
@@ -124,7 +128,20 @@ fn render_seq(project: &Project, seq: &Sequence, t: Tick, opts: RenderOptions, s
             blend::composite(&mut canvas, &layer, op, bl);
         }
     }
+    if opts.captions && opts.depth == 0 {
+        for o in caption_overlays(seq, t, w, h) {
+            o.composite_onto(&mut canvas.px, w, h);
+        }
+    }
     canvas
+}
+
+/// Rendered captions of the visible caption tracks at `t` for a `w`×`h` output.
+pub fn caption_overlays(seq: &Sequence, t: Tick, w: usize, h: usize) -> Vec<filmcraft_captions::burn::Overlay> {
+    if seq.caption_tracks.is_empty() {
+        return Vec::new();
+    }
+    filmcraft_captions::burn::sequence_overlays(seq, t, w, h)
 }
 
 fn with_opacity(mut img: Image, op: f32) -> Image {
@@ -214,7 +231,7 @@ pub(crate) fn item_layer(
             Image { w, h, px }
         }
         ItemKind::Sequence(nested) => {
-            let sub = RenderOptions { scale: want, effects: opts.effects, depth: opts.depth + 1 };
+            let sub = RenderOptions { scale: want, effects: opts.effects, depth: opts.depth + 1, captions: false };
             render_seq(project, nested, mt, sub, sources)
         }
         ItemKind::AdjustmentLayer { .. } => return None,
@@ -286,3 +303,7 @@ pub fn arc_source(s: impl filmcraft_media::MediaSource + 'static) -> SharedSourc
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+#[path = "preview_tests.rs"]
+mod preview_tests;

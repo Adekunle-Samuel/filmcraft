@@ -203,8 +203,9 @@ pub fn invoke(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, params: Val
         || (id == "file.saveCopy" && params.get("path").is_none())
         || (id == "file.open" && params.get("path").is_none())
         || (id == "file.save" && params.get("path").is_none() && app.session.path.is_none())
+        || (matches!(id, "captions.import" | "captions.export") && params.get("path").is_none())
     {
-        return app.file_dialog(id);
+        return app.file_dialog(id, &params);
     }
     let r = app.session.execute(id, params).map_err(|e| e.to_string());
     if let Err(e) = &r {

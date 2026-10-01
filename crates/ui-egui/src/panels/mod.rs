@@ -12,7 +12,9 @@ pub mod meters;
 pub mod misc;
 pub mod monitor;
 pub mod project;
+pub mod text;
 pub mod timeline;
+pub mod timeline_captions;
 pub mod tools;
 
 use egui::{Align2, Color32, Rect};
@@ -40,6 +42,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, p: PanelKind, rect: Rect)
         PanelKind::MediaBrowser => misc::media_browser(app, ui, rect),
         PanelKind::AudioTrackMixer => meters::track_mixer(app, ui, rect),
         PanelKind::LumetriScopes => misc::scopes(app, ui, rect),
+        PanelKind::Text => text::show(app, ui, rect),
         other => crate::dock::placeholder(ui, rect, &app.tokens, &format!("{} — coming in a later milestone", other.title())),
     }
 }

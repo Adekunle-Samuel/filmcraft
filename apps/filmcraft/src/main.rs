@@ -106,6 +106,9 @@ fn main() -> eframe::Result {
             app.hooks.pick_save = Some(Box::new(|name: &str| {
                 rfd::FileDialog::new().add_filter("FilmCraft Project", &["fcproj"]).set_file_name(name).save_file().map(|p| p.to_string_lossy().to_string())
             }));
+            app.hooks.pick_save_as = Some(Box::new(|filter: &str, exts: &[&str], name: &str| {
+                rfd::FileDialog::new().add_filter(filter, exts).set_file_name(name).save_file().map(|p| p.to_string_lossy().to_string())
+            }));
             app.hooks.pick_open_project =
                 Some(Box::new(|| rfd::FileDialog::new().add_filter("FilmCraft Project", &["fcproj"]).pick_file().map(|p| p.to_string_lossy().to_string())));
             #[cfg(target_os = "macos")]
