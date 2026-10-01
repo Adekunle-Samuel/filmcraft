@@ -50,6 +50,10 @@ pub struct HostHooks {
     pub pick_open_project: Option<Box<dyn FnMut() -> Option<String>>>,
     /// Save dialog with a filter: (filter name, extensions, suggested file name) → path.
     pub pick_save_as: Option<Box<dyn FnMut(&str, &[&str], &str) -> Option<String>>>,
+    /// The active keyboard shortcuts changed: update native menu key equivalents.
+    pub shortcuts_changed: Option<Box<dyn FnMut(&[menus::MenuItem])>>,
+    /// Open dialog for a JSON file (shortcut preset import): filter name, extensions → path.
+    pub pick_open_file: Option<Box<dyn FnMut(&str, &[&str]) -> Option<String>>>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -112,7 +116,11 @@ pub struct FilmcraftApp {
     pub last_timeline_width: f32,
     pub fps: f32,
     last_time: f64,
-    bindings: Vec<(egui::Modifiers, egui::Key, String)>,
+    bindings: Vec<menus::KeyBinding>,
+    /// Shortcut-set revision `bindings` (and the native menu) were built from.
+    bindings_rev: u64,
+    /// Keyboard Shortcuts dialog state.
+    pub shortcut_editor: panels::shortcuts_dialog::EditorState,
     pub toast: Option<(String, f64)>,
     pub tl: panels::timeline::TlState,
     /// Commands from outside the UI (native menu bar), invoked on the UI thread.
@@ -168,7 +176,8 @@ impl FilmcraftApp {
 }
 
 impl FilmcraftApp {
-    pub fn new(session: Session) -> Self {
+    pub fn new(mut session: Session) -> Self {
+        session.shortcuts.register_external(menus::external_commands());
         let recovery = !session.recovery_candidates().is_empty();
         let frames = Arc::new(FrameServer::new(
             session.media.clone(),
@@ -205,7 +214,9 @@ impl FilmcraftApp {
             last_timeline_width: 1000.0,
             fps: 60.0,
             last_time: 0.0,
-            bindings: menus::bindings(),
+            bindings: Vec::new(),
+            bindings_rev: 0,
+            shortcut_editor: Default::default(),
             toast: None,
             tl: Default::default(),
             command_inbox: None,
@@ -521,16 +532,28 @@ impl FilmcraftApp {
     // ---------------------------------------------------------------- input
 
     fn handle_shortcuts(&mut self, ctx: &egui::Context) {
-        if ctx.egui_wants_keyboard_input() {
+        if self.bindings_rev != self.session.shortcuts.revision {
+            self.bindings = menus::bindings(self);
+            self.bindings_rev = self.session.shortcuts.revision;
+            if let Some(hook) = self.hooks.shortcuts_changed.as_mut() {
+                let items = menus::menu_items_for(&self.session);
+                hook(&items);
+            }
+        }
+        if ctx.egui_wants_keyboard_input() || self.dialog == Some(Dialog::Shortcuts) {
             return;
         }
         // Esc cancels a dynamic trim in progress
         if self.session.trim_play.dynamic.is_some() && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape)) {
             let _ = self.session.execute("trim.cancelDynamic", json!({}));
         }
+        // Panel shortcuts of the focused panel first: they override application shortcuts.
+        let focused = self.ui.focused.title();
         let mut fire = Vec::new();
         ctx.input_mut(|i| {
-            for (m, k, id) in &self.bindings {
+            let panel = self.bindings.iter().filter(|b| b.3.as_deref() == Some(focused));
+            let app_wide = self.bindings.iter().filter(|b| b.3.is_none());
+            for (m, k, id, _) in panel.chain(app_wide) {
                 if i.consume_key(*m, *k) {
                     fire.push(id.clone());
                 }

@@ -916,7 +916,7 @@ fn build() -> Vec<CommandSpec> {
             s.events.push(crate::Event::OpenSequence(id));
             Ok(Value::Null)
         }),
-        cmd!("sequence.close", "Close Sequence", [], None, r#"{"item":id}"#, has_seq, |s, p| {
+        cmd!("sequence.close", "Close Sequence", [], None, r#"{"item":id?}"#, has_seq, |s, p| {
             let id = item_p(p, "item").or(s.state.active_sequence).ok_or(EngineError::NoSequence)?;
             s.state.open_sequences.retain(|x| *x != id);
             if s.state.active_sequence == Some(id) {
@@ -1424,7 +1424,7 @@ fn build() -> Vec<CommandSpec> {
             let n = s.prefs.trim.large_trim_offset as i64;
             crate::trim::nudge(s, &json!({"frames": n}))
         }),
-        cmd!("trim.applyDefaultTransition", "Apply Default Transitions to Selection", ["Sequence"], Some("Shift+D"), "{}", has_edit_points, |s, _| {
+        cmd!("trim.applyDefaultTransition", "Apply Default Transitions to Selection", ["Sequence"], None, "{}", has_edit_points, |s, _| {
             crate::trim::apply_default_transitions(s)
         }),
         cmd!("trim.shuttle", "Dynamic Trim (Shuttle)", [], None, r#"{"direction":"forward|reverse","slow":bool?,"clock":seconds}"#, has_edit_points, |s, p| {
@@ -1827,7 +1827,10 @@ fn build() -> Vec<CommandSpec> {
             Ok(Value::Array(
                 command_specs()
                     .iter()
-                    .map(|c| json!({"id": c.id, "label": c.label, "menu": c.menu, "shortcut": c.shortcut, "params": c.params, "enabled": (c.enabled)(s).is_ok()}))
+                    .map(|c| {
+                        let all: Vec<&str> = s.shortcuts.for_command(c.id).iter().map(|b| b.keys.as_str()).collect();
+                        json!({"id": c.id, "label": c.label, "menu": c.menu, "shortcut": s.shortcuts.primary(c.id), "shortcuts": all, "defaultShortcut": c.shortcut, "params": c.params, "enabled": (c.enabled)(s).is_ok()})
+                    })
                     .collect(),
             ))
         }),
@@ -1846,6 +1849,7 @@ fn build() -> Vec<CommandSpec> {
         )),
     ];
     v.extend(crate::captions::commands());
+    v.extend(crate::shortcuts::commands());
     // Labels as individual commands (Edit ▸ Label ▸ <name>)
     for l in Label::ALL {
         let _ = l;

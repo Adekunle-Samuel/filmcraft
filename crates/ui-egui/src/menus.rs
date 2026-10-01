@@ -26,9 +26,9 @@ pub const UI_COMMANDS: &[UiCommand] = &[
     uic!("playback.forward", "Shuttle Right", [], Some("L")),
     uic!("playback.stop", "Shuttle Stop", [], Some("K")),
     uic!("playback.reverse", "Shuttle Left", [], Some("J")),
-    uic!("playback.slowForward", "Shuttle Slow Right", [], Some("Shift+L")),
-    uic!("playback.slowReverse", "Shuttle Slow Left", [], Some("Shift+J")),
-    uic!("playback.playAround", "Play Around", [], Some("Shift+K")),
+    uic!("playback.slowForward", "Shuttle Slow Right", [], None),
+    uic!("playback.slowReverse", "Shuttle Slow Left", [], None),
+    uic!("playback.playAround", "Play Around", [], None),
     uic!("playback.inToOut", "Play In to Out", [], Some("Shift+Space")),
     uic!("playback.loop", "Loop", [], None),
     uic!("view.zoomIn", "Zoom In", ["View"], Some("=")),
@@ -67,7 +67,7 @@ pub const UI_COMMANDS: &[UiCommand] = &[
     uic!("mode.edit", "Edit", [], None),
     uic!("mode.export", "Export", ["File", "Export"], Some("Cmd+M")),
     uic!("app.about", "About FilmCraft", ["Help"], None),
-    uic!("help.shortcuts", "Keyboard Shortcuts", ["Help"], None),
+    uic!("app.keyboardShortcuts", "Keyboard Shortcuts…", ["Edit"], Some("Cmd+Alt+K")),
     uic!("app.preferences.autoSave", "Auto Save…", ["Edit", "Preferences"], Some("Cmd+,")),
 ];
 
@@ -164,8 +164,8 @@ pub fn invoke(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, params: Val
             app.dialog = Some(crate::Dialog::About);
             return Ok(Value::Null);
         }
-        "help.shortcuts" => {
-            app.dialog = Some(crate::Dialog::Shortcuts);
+        "help.shortcuts" | "app.keyboardShortcuts" => {
+            crate::panels::shortcuts_dialog::open(app);
             return Ok(Value::Null);
         }
         "app.preferences" | "app.preferences.autoSave" => {
@@ -237,6 +237,11 @@ pub struct MenuItem {
 pub const MENUS: [&str; 9] = ["File", "Edit", "Clip", "Sequence", "Markers", "Graphics and Titles", "View", "Window", "Help"];
 
 pub fn menu_items(app: &FilmcraftApp) -> Vec<MenuItem> {
+    menu_items_for(&app.session)
+}
+
+/// Menu entries with their live shortcuts and enablement.
+pub fn menu_items_for(session: &filmcraft_engine::Session) -> Vec<MenuItem> {
     let mut out = Vec::new();
     for c in filmcraft_engine::command_specs() {
         if c.menu.is_empty() {
@@ -246,8 +251,8 @@ pub fn menu_items(app: &FilmcraftApp) -> Vec<MenuItem> {
             id: c.id.into(),
             label: c.label.into(),
             path: c.menu.iter().map(|s| s.to_string()).collect(),
-            shortcut: c.shortcut.map(Into::into),
-            enabled: app.session.is_enabled(c.id),
+            shortcut: session.shortcuts.primary(c.id),
+            enabled: session.is_enabled(c.id),
         });
     }
     for c in UI_COMMANDS {
@@ -258,7 +263,7 @@ pub fn menu_items(app: &FilmcraftApp) -> Vec<MenuItem> {
             id: c.id.into(),
             label: c.label.into(),
             path: c.menu.iter().map(|s| s.to_string()).collect(),
-            shortcut: c.shortcut.map(Into::into),
+            shortcut: session.shortcuts.primary(c.id),
             enabled: true,
         });
     }
@@ -267,20 +272,17 @@ pub fn menu_items(app: &FilmcraftApp) -> Vec<MenuItem> {
             id: panel_command_id(p),
             label: p.title().into(),
             path: vec!["Window".into()],
-            shortcut: p.window_shortcut().map(Into::into),
+            shortcut: session.shortcuts.primary(&panel_command_id(p)),
             enabled: true,
         });
     }
     out
 }
 
-/// Pretty shortcut text for menus (macOS glyphs).
+/// Shortcut text for menus in this OS's notation (`⇧⌘K` on macOS, `Ctrl+Shift+K` elsewhere).
 pub fn shortcut_text(s: &str) -> String {
-    if cfg!(target_os = "macos") {
-        s.replace("Cmd+", "⌘").replace("Shift+", "⇧").replace("Alt+", "⌥").replace("Ctrl+", "⌃").replace("Backspace", "⌫").replace("Delete", "⌦")
-    } else {
-        s.replace("Cmd+", "Ctrl+")
-    }
+    use filmcraft_engine::shortcuts::{Chord, Platform};
+    Chord::parse(s).map(|c| c.display(Platform::current())).unwrap_or_else(|_| s.to_string())
 }
 
 /// Parse "Cmd+Shift+K" into modifiers + key.
@@ -313,26 +315,26 @@ pub fn parse_shortcut(s: &str) -> Option<(egui::Modifiers, egui::Key)> {
     key.map(|k| (m, k))
 }
 
-/// All shortcut bindings: (modifiers, key, command id).
-pub fn bindings() -> Vec<(egui::Modifiers, egui::Key, String)> {
-    let mut v = Vec::new();
-    for c in UI_COMMANDS {
-        if let Some((m, k)) = c.shortcut.and_then(parse_shortcut) {
-            v.push((m, k, c.id.to_string()));
-        }
-    }
-    for c in filmcraft_engine::command_specs() {
-        if let Some((m, k)) = c.shortcut.and_then(parse_shortcut) {
-            v.push((m, k, c.id.to_string()));
-        }
-    }
+/// One active key binding for the input loop: (modifiers, key, command id, panel or None).
+pub type KeyBinding = (egui::Modifiers, egui::Key, String, Option<String>);
+
+/// The active key bindings (from the engine's shortcut set), most specific first so Shift+I
+/// doesn't also fire I.
+pub fn bindings(app: &FilmcraftApp) -> Vec<KeyBinding> {
+    let mut v: Vec<KeyBinding> =
+        app.session.shortcuts.bindings.iter().filter_map(|b| parse_shortcut(&b.keys).map(|(m, k)| (m, k, b.command.clone(), b.panel.clone()))).collect();
+    v.sort_by_key(|(m, ..)| std::cmp::Reverse(m.command as u8 + m.shift as u8 + m.alt as u8 + m.ctrl as u8));
+    v
+}
+
+/// Frontend-owned commands, registered with the engine's shortcut set so they can be listed,
+/// rebound and resolved alongside engine commands (the `shortcuts.` commands).
+pub fn external_commands() -> Vec<filmcraft_engine::shortcuts::CommandInfo> {
+    use filmcraft_engine::shortcuts::CommandInfo;
+    let mut v: Vec<CommandInfo> = UI_COMMANDS.iter().map(|c| CommandInfo::new(c.id, c.label, c.menu, c.shortcut)).collect();
     for p in PanelKind::ALL {
-        if let Some((m, k)) = p.window_shortcut().and_then(parse_shortcut) {
-            v.push((m, k, panel_command_id(p)));
-        }
+        v.push(CommandInfo::new(&panel_command_id(p), p.title(), &["Window"], p.window_shortcut()));
     }
-    // Most specific (more modifiers) first so Shift+I doesn't also fire I.
-    v.sort_by_key(|(m, _, _)| std::cmp::Reverse(m.command as u8 + m.shift as u8 + m.alt as u8 + m.ctrl as u8));
     v
 }
 

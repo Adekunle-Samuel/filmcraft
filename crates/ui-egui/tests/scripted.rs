@@ -336,4 +336,109 @@ fn screenshots() {
     d.screenshot("trim-monitor-dynamic-roll");
     d.ok("ui.key", json!({"key": "K"}));
     d.frames(2);
+    d.exec("trim.clear", json!({}));
+    // Keyboard Shortcuts dialog: Premiere-compatible preset, Timeline panel context, key K selected
+    d.ok("ui.key", json!({"key": "Cmd+Alt+K"}));
+    d.frames(2);
+    d.screenshot("shortcuts-dialog");
+    d.ok("ui.click", json!({"id": "shortcuts.context"}));
+    d.frames(2);
+    d.ok("ui.click", json!({"id": "shortcuts.context.Timeline"}));
+    d.ok("ui.click", json!({"id": "shortcuts.key.K"}));
+    d.ok("ui.click", json!({"id": "shortcuts.search"}));
+    d.ok("ui.type", json!({"text": "trim"}));
+    d.frames(2);
+    d.screenshot("shortcuts-dialog-timeline-trim");
+    d.ok("ui.click", json!({"id": "shortcuts.mod.Cmd"}));
+    d.frames(2);
+    d.screenshot("shortcuts-dialog-cmd");
+}
+
+#[test]
+fn keyboard_shortcuts_dialog_assigns_live_and_cancel_restores() {
+    let mut d = Driver::demo();
+    let menu_shortcut = |d: &mut Driver, id: &str| -> Value {
+        let items = d.ok("ui.menu.list", json!({}));
+        items.as_array().unwrap().iter().find(|i| i["id"] == id).map(|i| i["shortcut"].clone()).unwrap_or(Value::Null)
+    };
+    assert_eq!(menu_shortcut(&mut d, "sequence.addEdit"), json!("Cmd+K"));
+    assert_eq!(menu_shortcut(&mut d, "app.keyboardShortcuts"), json!("Cmd+Alt+K"));
+    // Edit ▸ Keyboard Shortcuts… by its shortcut
+    d.ok("ui.key", json!({"key": "Cmd+Alt+K"}));
+    d.frames(2);
+    assert_eq!(d.inspect()["dialog"], json!("Shortcuts"));
+    let keys = d.element_ids("shortcuts.key.");
+    assert!(keys.len() > 60, "drawn keyboard: {}", keys.len());
+    // search, then click the Shortcut cell and press new keys
+    d.ok("ui.click", json!({"id": "shortcuts.search"}));
+    d.ok("ui.type", json!({"text": "add edit"}));
+    d.frames(2);
+    assert!(d.element_ids("shortcuts.row.").iter().any(|x| x == "shortcuts.row.sequence.addEdit"));
+    d.ok("ui.click", json!({"id": "shortcuts.cell.sequence.addEdit"}));
+    d.frames(1);
+    d.ok("ui.key", json!({"key": "Cmd+Shift+J"}));
+    d.frames(2);
+    assert_eq!(menu_shortcut(&mut d, "sequence.addEdit"), json!("Cmd+Shift+J"), "the menu shows the new key live");
+    let cmds = d.ok("engine.commands", json!({}));
+    let ae = cmds.as_array().unwrap().iter().find(|c| c["id"] == "sequence.addEdit").unwrap().clone();
+    assert_eq!(ae["shortcut"], json!("Cmd+Shift+J"), "command list too: {ae}");
+    // reassigning a used key takes it from the other command (and says so)
+    d.ok("ui.click", json!({"id": "shortcuts.cell.sequence.addEdit"}));
+    d.frames(1);
+    d.ok("ui.key", json!({"key": "Cmd+Shift+K"}));
+    d.frames(2);
+    assert_eq!(menu_shortcut(&mut d, "sequence.addEditAllTracks"), Value::Null);
+    let msg = d.element_ids("shortcuts.message");
+    assert_eq!(msg.len(), 1);
+    // Undo / Redo inside the dialog
+    d.ok("ui.click", json!({"id": "shortcuts.undo"}));
+    d.frames(1);
+    assert_eq!(menu_shortcut(&mut d, "sequence.addEditAllTracks"), json!("Cmd+Shift+K"));
+    assert_eq!(menu_shortcut(&mut d, "sequence.addEdit"), json!("Cmd+Shift+J"));
+    d.ok("ui.click", json!({"id": "shortcuts.redo"}));
+    d.frames(1);
+    assert_eq!(menu_shortcut(&mut d, "sequence.addEdit"), json!("Cmd+Shift+K"));
+    // Cancel restores everything
+    d.ok("ui.click", json!({"id": "shortcuts.cancel"}));
+    d.frames(2);
+    assert!(d.inspect()["dialog"].is_null());
+    assert_eq!(menu_shortcut(&mut d, "sequence.addEdit"), json!("Cmd+K"));
+    assert_eq!(menu_shortcut(&mut d, "sequence.addEditAllTracks"), json!("Cmd+Shift+K"));
+
+    // Assign + OK, then the new key really runs the command
+    d.ok("ui.menu.invoke", json!({"id": "app.keyboardShortcuts"}));
+    d.frames(2);
+    d.ok("ui.click", json!({"id": "shortcuts.search"}));
+    d.ok("ui.type", json!({"text": "add edit"}));
+    d.frames(2);
+    d.ok("ui.click", json!({"id": "shortcuts.add.sequence.addEdit"}));
+    d.frames(1);
+    d.ok("ui.key", json!({"key": "Cmd+Shift+J"}));
+    d.frames(2);
+    d.ok("ui.click", json!({"id": "shortcuts.ok"}));
+    d.frames(2);
+    let n0 = track_clips(&d.sequence(), 0).len();
+    d.exec("playhead.set", json!({"seconds": 2.0}));
+    d.ok("ui.set", json!({"focused": "Timeline"}));
+    d.ok("ui.key", json!({"key": "Cmd+Shift+J"}));
+    d.frames(2);
+    assert_eq!(track_clips(&d.sequence(), 0).len(), n0 + 1, "Cmd+Shift+J adds an edit");
+    d.ok("ui.key", json!({"key": "Cmd+K"}));
+    d.frames(2);
+    d.exec("playhead.set", json!({"seconds": 3.0}));
+    d.ok("ui.key", json!({"key": "Cmd+K"}));
+    d.frames(2);
+    assert_eq!(track_clips(&d.sequence(), 0).len(), n0 + 2, "the original Cmd+K was kept (added, not replaced)");
+
+    // Panel-specific: Left in the History panel is Undo; in the Timeline it steps back
+    d.ok("ui.set", json!({"focused": "History"}));
+    d.ok("ui.key", json!({"key": "Left"}));
+    d.frames(2);
+    assert_eq!(track_clips(&d.sequence(), 0).len(), n0 + 1, "History ▸ Left = Step Backward (undo)");
+    d.ok("ui.set", json!({"focused": "Timeline"}));
+    let ph = d.sequence()["playhead"].as_i64().unwrap();
+    d.ok("ui.key", json!({"key": "Left"}));
+    d.frames(2);
+    assert!(d.sequence()["playhead"].as_i64().unwrap() < ph, "Timeline ▸ Left steps back");
+    assert_eq!(track_clips(&d.sequence(), 0).len(), n0 + 1);
 }

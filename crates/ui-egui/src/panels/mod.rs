@@ -12,6 +12,7 @@ pub mod meters;
 pub mod misc;
 pub mod monitor;
 pub mod project;
+pub mod shortcuts_dialog;
 pub mod text;
 pub mod timeline;
 pub mod timeline_captions;

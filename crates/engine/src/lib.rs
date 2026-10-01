@@ -15,6 +15,8 @@ pub mod demo;
 pub mod interchange;
 pub mod media_pool;
 pub mod previews;
+pub mod shortcut_presets;
+pub mod shortcuts;
 pub mod trim;
 
 use std::sync::Arc;
@@ -167,6 +169,8 @@ pub struct Session {
     pub previews: Arc<previews::PreviewStore>,
     /// Dynamic (J/K/L) trimming and trim-mode loop playback in progress.
     pub trim_play: trim::TrimPlayback,
+    /// Keyboard shortcuts (active bindings, presets; `shortcuts.*` commands).
+    pub shortcuts: shortcuts::Shortcuts,
     /// Nesting depth of [`Session::execute`] (commands that run other commands).
     exec_depth: u32,
 }
@@ -229,6 +233,7 @@ impl Session {
             loaded_schema: filmcraft_format::SCHEMA_VERSION,
             previews: Arc::new(previews::PreviewStore::temp()),
             trim_play: Default::default(),
+            shortcuts: shortcuts::Shortcuts::new(),
             exec_depth: 0,
         }
     }
@@ -239,6 +244,7 @@ impl Session {
     pub fn start_autosave(&mut self, cfg: autosave::AutosaveConfig) -> std::io::Result<()> {
         let prefs_path = cfg.data_dir.join("preferences.json");
         self.prefs = autosave::Preferences::load(&prefs_path);
+        self.shortcuts.set_dir(&cfg.data_dir);
         self.prefs_path = Some(prefs_path);
         self.persistence = Some(autosave::Persistence::start(&cfg, self.prefs.auto_save.clone())?);
         self.sync_persistence();
@@ -518,6 +524,8 @@ mod autosave_tests;
 mod file_tests;
 #[cfg(test)]
 mod previews_tests;
+#[cfg(test)]
+mod shortcuts_tests;
 #[cfg(test)]
 mod tests;
 #[cfg(test)]
