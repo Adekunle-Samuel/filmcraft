@@ -26,6 +26,9 @@ pub enum Target {
     Item(ItemId),
     /// A GPU frame plan of a sequence (decoded layers + transforms), composited on the GPU.
     SequencePlan(ItemId),
+    /// The Multi-Camera view's angle grid of a multi-camera source at its time (all shown angles,
+    /// each at the job's scale).
+    MulticamGrid(ItemId),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -707,6 +710,7 @@ fn render_job(job: &Job, pool: &Arc<MediaPool>, services: &Arc<dyn Services>, pr
     let img = match job.key.target {
         Target::Sequence(seq) | Target::SequencePlan(seq) => Some(filmcraft_render::render_sequence(&job.project, seq, job.time, opts, &provider)),
         Target::Item(item) => filmcraft_render::render_item(&job.project, item, job.time, job.scale, &provider),
+        Target::MulticamGrid(item) => filmcraft_render::multicam::render_grid(&job.project, item, job.time, job.scale, &provider).map(|(img, _)| img),
     };
     let rgba = match img {
         Some(img) => Rgba { w: img.w, h: img.h, px: img.over_black_rgba8() },

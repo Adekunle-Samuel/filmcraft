@@ -338,6 +338,8 @@ impl FilmcraftApp {
             let t = self.session.playhead();
             let _ = self.session.execute("mixer.recordStart", json!({"time": t.0}));
         }
+        // Multi-Camera view: playing records live cuts (keys 1–9 / clicking angles)
+        panels::multicam::on_play(self);
     }
 
     pub fn stop(&mut self) {
@@ -355,6 +357,7 @@ impl FilmcraftApp {
                 self.ui.status = e.to_string();
             }
         }
+        panels::multicam::on_stop(self);
     }
 
     fn start_audio(&mut self) {

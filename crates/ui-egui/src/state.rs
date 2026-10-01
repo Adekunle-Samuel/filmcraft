@@ -220,11 +220,14 @@ pub struct MonitorView {
     pub zoom: Option<f32>,
     pub safe_margins: bool,
     pub show_transport: bool,
+    /// Program monitor display mode Multi-Camera (angle grid + program).
+    #[serde(default)]
+    pub multicam: bool,
 }
 
 impl Default for MonitorView {
     fn default() -> Self {
-        Self { res: PlaybackRes::Half, zoom: None, safe_margins: false, show_transport: true }
+        Self { res: PlaybackRes::Half, zoom: None, safe_margins: false, show_transport: true, multicam: false }
     }
 }
 
@@ -310,6 +313,60 @@ pub struct UiState {
     /// Open colour dialog (Interpret Footage ▸ Color Management, Sequence ▸ Color Management).
     #[serde(default)]
     pub color_dialog: Option<ColorDialog>,
+    /// Synchronize / Merge Clips / Create Multi-Camera Source Sequence dialog (open when Some).
+    #[serde(default)]
+    pub sync_dialog: Option<SyncDraft>,
+    /// Multi-Camera Record On/Off (key 0): playing in the Multi-Camera view records cuts.
+    #[serde(default = "yes")]
+    pub multicam_record: bool,
+}
+
+/// Clip ▸ Synchronize…, Merge Clips… and Create Multi-Camera Source Sequence… share one draft;
+/// `kind` says which dialog it is (`synchronize`, `merge`, `multicam`).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SyncDraft {
+    pub kind: String,
+    /// Project items (Merge Clips, Create Multi-Camera).
+    pub items: Vec<u64>,
+    pub name: String,
+    /// `in` | `out` | `timecode` | `marker` | `audio`
+    pub method: String,
+    pub ignore_hours: bool,
+    /// Clip marker name to sync on (empty = the first marker).
+    pub marker: String,
+    /// Frames added to every clip but the reference.
+    pub offset: i64,
+    /// Synchronize: reference track (`V1`, `A2`…; empty = the lowest track).
+    pub track: String,
+    /// Create Multi-Camera: `camera1` | `all` | `switch`.
+    pub audio: String,
+    /// Create Multi-Camera: `clip` | `track` | `metadata`.
+    pub camera_names: String,
+    pub processed_bin: bool,
+    /// Merge Clips: drop the video clip's own audio.
+    pub remove_video_audio: bool,
+    pub message: String,
+}
+
+impl Default for SyncDraft {
+    fn default() -> Self {
+        Self {
+            kind: "synchronize".into(),
+            items: vec![],
+            name: String::new(),
+            method: "audio".into(),
+            ignore_hours: false,
+            marker: String::new(),
+            offset: 0,
+            track: String::new(),
+            audio: "camera1".into(),
+            camera_names: "clip".into(),
+            processed_bin: true,
+            remove_video_audio: false,
+            message: String::new(),
+        }
+    }
 }
 
 /// File ▸ Link Media… (shown automatically when a project opens with missing media).
@@ -481,6 +538,8 @@ impl Default for UiState {
             project_manager: None,
             make_offline: None,
             color_dialog: None,
+            sync_dialog: None,
+            multicam_record: true,
         }
     }
 }

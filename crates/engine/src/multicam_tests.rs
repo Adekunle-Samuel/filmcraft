@@ -633,8 +633,11 @@ fn perf_grid_of_four_1080p_angles() {
         .iter()
         .map(|src| {
             filmcraft_testkit::fixtures::generate(&dir.join(format!("perf-{src}.mp4")), |tmp| {
-                let v = format!("{src}=s=1920x1080:r=24:d=4");
-                ff(&ffmpeg, &["-f", "lavfi", "-i", &v, "-c:v", "libx264", "-preset", "veryfast", "-g", "48", "-pix_fmt", "yuv420p", &tmp.to_string_lossy()])
+                let v = format!("{src}=s=1920x1080:r=24");
+                ff(
+                    &ffmpeg,
+                    &["-f", "lavfi", "-i", &v, "-t", "4", "-c:v", "libx264", "-preset", "veryfast", "-g", "48", "-pix_fmt", "yuv420p", &tmp.to_string_lossy()],
+                )
             })
             .expect("fixture")
         })
