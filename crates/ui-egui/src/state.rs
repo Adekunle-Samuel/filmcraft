@@ -286,6 +286,12 @@ pub struct UiState {
     /// Audio Gain dialog draft (mode, dB values).
     #[serde(default)]
     pub audio_gain: AudioGainDraft,
+    /// On-monitor text editing (Type tool / double-click on a text layer).
+    #[serde(default)]
+    pub gfx_edit: Option<GfxEdit>,
+    /// Pen tool: path points placed so far (sequence pixels).
+    #[serde(default)]
+    pub pen_points: Vec<[f64; 2]>,
 }
 
 /// The Audio Gain dialog (Clip ▸ Audio Gain…, G).
@@ -298,6 +304,16 @@ pub struct AudioGainDraft {
     pub adjust_db: f64,
     pub max_peak_db: f64,
     pub all_peaks_db: f64,
+}
+
+/// The text layer being edited on the Program monitor: caret and selection anchor are byte
+/// offsets into the layer's text.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct GfxEdit {
+    pub clip: u64,
+    pub layer: usize,
+    pub caret: usize,
+    pub anchor: usize,
 }
 
 fn captions_tab() -> String {
@@ -338,6 +354,8 @@ impl Default for UiState {
             play_after_render: true,
             mixer_fx_open: false,
             audio_gain: AudioGainDraft::default(),
+            gfx_edit: None,
+            pen_points: vec![],
         }
     }
 }

@@ -1,7 +1,7 @@
 //! Matroska/WebM media source (`filmcraft-matroska` demux, GOP-aware video via [`crate::gop`]).
 //!
 //! Video codecs are mapped onto ISO-BMFF sample entries so the same decoder factories serve both
-//! containers (H.264, HEVC, ProRes, MJPEG; VP9/AV1 once their decoders land). Audio: AAC and Opus
+//! containers (H.264, HEVC, VP9, ProRes, MJPEG; AV1 once its decoder lands). Audio: AAC and Opus
 //! via our decoders, PCM directly, MP3/FLAC/Vorbis via the bootstrap decoders.
 //!
 //! Opus (`A_OPUS`): `CodecPrivate` is the `OpusHead`; output is always 48 kHz. The demuxer
@@ -14,7 +14,7 @@ use std::sync::{Arc, Mutex};
 
 use filmcraft_color::{ColorInfo, Matrix, Primaries, Range, Transfer};
 use filmcraft_frame::{AudioBuffer, VideoFrame};
-use filmcraft_isobmff::{AvcConfig, FourCc, HevcConfig, PcmConfig, SampleEntry};
+use filmcraft_isobmff::{AvcConfig, CodecConfig, FourCc, HevcConfig, PcmConfig, SampleEntry, VpcConfig};
 use filmcraft_matroska::{Codec, MkvFile, TrackKind};
 use filmcraft_media::{AudioStreamInfo, FrameRequest, MediaError, MediaInfo, MediaKind, MediaSource, SharedSource, VideoStreamInfo};
 use filmcraft_time::{FrameRate, Tick};
@@ -105,8 +105,42 @@ fn from_tick(t: &filmcraft_matroska::Track, time: Tick) -> i64 {
     time.to_rational_floor(n, d)
 }
 
-fn sample_entry(c: &Codec, w: u16, h: u16) -> Option<SampleEntry> {
+/// VP9 configuration from the Matroska `CodecPrivate` feature list (ID / length / value triples:
+/// 1 profile, 2 level, 3 bit depth, 4 chroma subsampling) and the track's `Colour`.
+fn vp9_config(private: &[u8], v: Option<&filmcraft_matroska::VideoInfo>) -> VpcConfig {
+    let mut c = VpcConfig { bit_depth: 8, colour_primaries: 2, transfer_characteristics: 2, matrix_coefficients: 2, ..Default::default() };
+    let mut p = 0;
+    while p + 2 <= private.len() {
+        let (id, len) = (private[p], private[p + 1] as usize);
+        let Some(val) = private.get(p + 2..p + 2 + len) else { break };
+        let x = val.first().copied().unwrap_or(0);
+        match id {
+            1 => c.profile = x,
+            2 => c.level = x,
+            3 => c.bit_depth = x,
+            4 => c.chroma_subsampling = x,
+            _ => {}
+        }
+        p += 2 + len;
+    }
+    if let Some(col) = v.and_then(|v| v.colour.as_ref()) {
+        if let Some(t) = col.transfer_characteristics {
+            c.transfer_characteristics = t as u8;
+        }
+        if let Some(pr) = col.primaries {
+            c.colour_primaries = pr as u8;
+        }
+        if let Some(m) = col.matrix_coefficients {
+            c.matrix_coefficients = m as u8;
+        }
+        c.full_range = col.full_range();
+    }
+    c
+}
+
+fn sample_entry(c: &Codec, v: Option<&filmcraft_matroska::VideoInfo>, w: u16, h: u16) -> Option<SampleEntry> {
     Some(match c {
+        Codec::Vp9 { private } => SampleEntry::video(FourCc(*b"vp09"), CodecConfig::Vp9(vp9_config(private, v)), w, h),
         Codec::Avc { avcc } => SampleEntry::avc(AvcConfig::parse(avcc).ok()?, w, h),
         Codec::Hevc { hvcc } => SampleEntry::hevc(HevcConfig::parse(hvcc).ok()?, w, h),
         Codec::ProRes { fourcc } => SampleEntry::prores(FourCc(fourcc.unwrap_or(*b"apcn")), w, h),
@@ -190,7 +224,7 @@ impl MkvSource {
             if explicit {
                 explicit_color = Some(color);
             }
-            ventry = sample_entry(&t.codec, w as u16, h as u16);
+            ventry = sample_entry(&t.codec, t.video.as_ref(), w as u16, h as u16);
             let secs = file.duration_ns().unwrap_or(0) as f64 / 1e9;
             let bitrate = (secs > 0.0).then(|| (t.samples.iter().map(|s| s.size as u64).sum::<u64>() as f64 * 8.0 / secs) as u64);
             VideoStreamInfo {

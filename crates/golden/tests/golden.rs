@@ -223,7 +223,7 @@ fn transition(effect: &str, frame: i64) -> Scene {
     b.at(frame)
 }
 
-/// Timecode and Clip Name burn-ins (FilmCraft's built-in bitmap text).
+/// Timecode and Clip Name burn-ins (text engine: JetBrains Mono / Inter).
 fn text_burnin() -> Scene {
     let mut b = Builder::new(1);
     let bg = b.demo(DemoScene::CityNight);
@@ -231,6 +231,100 @@ fn text_burnin() -> Scene {
     b.effect(c, "timecode", &[("position", pt(160.0, 40.0)), ("size", fl(20.0))]);
     b.effect(c, "clip_name", &[("position", pt(160.0, 145.0)), ("size", fl(12.0))]);
     b.at(30)
+}
+
+/// A graphic clip on V2 over `bg` on V1, with `layers` (graphic layer effect instances).
+fn graphic_scene(bg: DemoScene, layers: Vec<EffectInstance>) -> Scene {
+    let mut b = Builder::new(2);
+    let bgi = b.demo(bg);
+    b.place(0, bgi, 0, 48);
+    let g = b.p.add_item("Graphic", Label::Rose, ItemKind::Graphic { width: W, height: H, rate: RATE }, None);
+    let c = b.place(1, g, 0, 48);
+    for mut l in layers {
+        filmcraft_project::resolve_auto_points(&mut l, (W, H), (W, H));
+        b.clip(c).effects.push(l);
+    }
+    b.at(12)
+}
+
+/// A title: bold centred text with an outer stroke and a soft drop shadow, a lower-third bar with
+/// rounded corners and a background-boxed caption line.
+fn graphic_title() -> Scene {
+    use filmcraft_project::graphic::{new_shape_layer, new_text_layer};
+    let mut bar = new_shape_layer(0, Vec2::new(160.0, 150.0), Vec2::new(280.0, 34.0), vec![]);
+    set(&mut bar, &[("corner_radius", fl(8.0)), ("fill_color", ParamValue::Color([0.12, 0.35, 0.8, 1.0])), ("opacity", fl(85.0))]);
+    let mut title = new_text_layer("Night Drive", Vec2::new(160.0, 80.0), 44.0);
+    set(
+        &mut title,
+        &[
+            ("font_style", ParamValue::Text("Bold".into())),
+            ("align", ParamValue::Choice(1)),
+            ("stroke", ParamValue::Bool(true)),
+            ("stroke_width", fl(2.5)),
+            ("stroke_color", ParamValue::Color([0.05, 0.05, 0.1, 1.0])),
+            ("shadow", ParamValue::Bool(true)),
+            ("shadow_distance", fl(5.0)),
+            ("shadow_blur", fl(8.0)),
+            ("tracking", fl(40.0)),
+        ],
+    );
+    let mut sub = new_text_layer("Directed by Nobody", Vec2::new(160.0, 156.0), 16.0);
+    set(
+        &mut sub,
+        &[
+            ("align", ParamValue::Choice(1)),
+            ("font", ParamValue::Text("Noto Serif".into())),
+            ("faux_italic", ParamValue::Bool(true)),
+            ("caps", ParamValue::Choice(2)),
+            ("fill_color", ParamValue::Color([1.0, 0.92, 0.6, 1.0])),
+        ],
+    );
+    graphic_scene(DemoScene::CityNight, vec![bar, title, sub])
+}
+
+/// Shapes: ellipse with centre stroke, rotated polygon with inner stroke, a pen path, rotated
+/// boxed text with a background and 2 strokes.
+fn graphic_shapes() -> Scene {
+    use filmcraft_project::graphic::{new_shape_layer, new_text_layer};
+    let mut ell = new_shape_layer(1, Vec2::new(70.0, 60.0), Vec2::new(100.0, 70.0), vec![]);
+    set(
+        &mut ell,
+        &[
+            ("stroke", ParamValue::Bool(true)),
+            ("stroke_width", fl(6.0)),
+            ("stroke_type", ParamValue::Choice(1)),
+            ("stroke_color", ParamValue::Color([1.0, 1.0, 1.0, 1.0])),
+        ],
+    );
+    let mut poly = new_shape_layer(2, Vec2::new(250.0, 60.0), Vec2::new(80.0, 80.0), vec![]);
+    set(
+        &mut poly,
+        &[
+            ("sides", fl(5.0)),
+            ("rotation", fl(18.0)),
+            ("fill_color", ParamValue::Color([0.2, 0.8, 0.4, 1.0])),
+            ("stroke", ParamValue::Bool(true)),
+            ("stroke_type", ParamValue::Choice(2)),
+            ("stroke_width", fl(5.0)),
+        ],
+    );
+    let path = new_shape_layer(3, Vec2::new(70.0, 140.0), Vec2::new(0.0, 0.0), vec![[-40.0, 20.0], [0.0, -25.0], [40.0, 20.0], [0.0, 5.0]]);
+    let mut txt = new_text_layer("Rotated\nTwo lines", Vec2::new(215.0, 140.0), 20.0);
+    set(
+        &mut txt,
+        &[
+            ("rotation", fl(-12.0)),
+            ("align", ParamValue::Choice(1)),
+            ("background", ParamValue::Bool(true)),
+            ("background_radius", fl(6.0)),
+            ("background_size", fl(6.0)),
+            ("stroke", ParamValue::Bool(true)),
+            ("stroke_width", fl(1.5)),
+            ("stroke2", ParamValue::Bool(true)),
+            ("stroke2_width", fl(3.5)),
+        ],
+    );
+    graphic_scene(DemoScene::Aurora, vec![ell, poly, path, txt])
 }
 
 /// (name, title, scene).
@@ -245,6 +339,8 @@ fn scenes() -> Vec<(&'static str, &'static str, fn() -> Scene)> {
         ("transition_dip_to_black", "Dip to Black at 25%", || transition("dip_to_black", 21)),
         ("transition_wipe", "Wipe at 50%", || transition("wipe", 24)),
         ("text_burnin", "Timecode and Clip Name burn-in text", text_burnin),
+        ("graphic_title", "Graphic clip: title text with stroke and shadow, lower-third bar", graphic_title),
+        ("graphic_shapes", "Graphic clip: ellipse, polygon, path and rotated text with background", graphic_shapes),
     ]
 }
 
@@ -286,7 +382,19 @@ macro_rules! goldens {
     };
 }
 
-goldens!(transform_opacity, blend_modes, gaussian_blur, lumetri_basic, crop, transition_cross_dissolve, transition_dip_to_black, transition_wipe, text_burnin);
+goldens!(
+    transform_opacity,
+    blend_modes,
+    gaussian_blur,
+    lumetri_basic,
+    crop,
+    transition_cross_dissolve,
+    transition_dip_to_black,
+    transition_wipe,
+    text_burnin,
+    graphic_title,
+    graphic_shapes
+);
 
 /// Sanity: the scenes are not trivially empty or identical to each other.
 #[test]

@@ -19,8 +19,12 @@ fn accel(s: &str) -> Option<Accelerator> {
     mapped.parse().ok()
 }
 
-pub fn install(app: &FilmcraftApp, ctx: egui::Context) -> Receiver<String> {
+/// Updates native key equivalents when the active keyboard shortcuts change.
+pub type ShortcutUpdater = Box<dyn FnMut(&[Item])>;
+
+pub fn install(app: &FilmcraftApp, ctx: egui::Context) -> (Receiver<String>, ShortcutUpdater) {
     let items = menu_items(app);
+    let mut native: Vec<(String, MenuItem)> = Vec::new();
     let bar = Menu::new();
     let app_menu = Submenu::new("FilmCraft", true);
     let _ = app_menu.append_items(&[
@@ -40,6 +44,7 @@ pub fn install(app: &FilmcraftApp, ctx: egui::Context) -> Receiver<String> {
         let mut subs: Vec<(String, Submenu)> = Vec::new();
         for it in mine {
             let mi = MenuItem::with_id(it.id.clone(), &it.label, true, it.shortcut.as_deref().and_then(accel));
+            native.push((it.id.clone(), mi.clone()));
             if let Some(name) = it.path.get(1) {
                 if let Some((_, s)) = subs.iter().find(|(n, _)| n == name) {
                     let _ = s.append(&mi);
@@ -69,5 +74,12 @@ pub fn install(app: &FilmcraftApp, ctx: egui::Context) -> Receiver<String> {
             ctx.request_repaint();
         }
     });
-    rx
+    let update: ShortcutUpdater = Box::new(move |items: &[Item]| {
+        for (id, mi) in &native {
+            if let Some(it) = items.iter().find(|i| &i.id == id) {
+                let _ = mi.set_accelerator(it.shortcut.as_deref().and_then(accel));
+            }
+        }
+    });
+    (rx, update)
 }
