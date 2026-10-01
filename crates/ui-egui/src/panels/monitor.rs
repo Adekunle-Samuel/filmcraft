@@ -322,6 +322,7 @@ fn transport(app: &mut FilmcraftApp, ui: &mut egui::Ui, row: Rect, which: Which)
             (Icon::Insert, "source.insert", "Insert (,)"),
             (Icon::Overwrite, "source.overwrite", "Overwrite (.)"),
             (Icon::Camera, "exportFrame", "Export Frame (Shift+E)"),
+            (Icon::Proxy, "media.toggleProxies", "Toggle Proxies"),
         ]
     } else {
         vec![
@@ -336,6 +337,7 @@ fn transport(app: &mut FilmcraftApp, ui: &mut egui::Ui, row: Rect, which: Which)
             (Icon::Lift, "sequence.lift", "Lift (;)"),
             (Icon::Extract, "sequence.extract", "Extract (')"),
             (Icon::Camera, "exportFrame", "Export Frame (Shift+E)"),
+            (Icon::Proxy, "media.toggleProxies", "Toggle Proxies"),
         ]
     };
     let bw = 30.0;

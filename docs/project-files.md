@@ -170,13 +170,13 @@ UI automation ids: `prefs.autoSave.enabled`, `prefs.autoSave.intervalMinutes`,
 `recovery.recover`, `recovery.later`, `recovery.discard`, `recovery.item.<n>`; `revert.yes`,
 `revert.no` (File ▸ Revert asks first when invoked without params).
 
-## Media: offline and relinking
+## Media: offline, relinking, proxies, ingest
 
 Media is referenced by path. Each imported file also records its **identity**
 (`MediaClip::identity`): the size and a 64-bit fingerprint of the size, the first MiB and the last
 MiB. Reading 2 MiB is cheap on any file, and it tells a moved original from a different take with
 the same name. The field is optional (`skip_serializing_if`), and older builds ignore it, so it
-needed no schema bump. Projects from older builds
+needed no schema bump. The same applies to `ProjectSettings::ingest`. Projects from older builds
 have no identity, so relinking them skips the fingerprint check.
 
 ### Offline media
@@ -227,5 +227,68 @@ Link Media dialog automation ids: `linkMedia.row.<n>`,
 `linkMedia.search`, `linkMedia.candidate.<n>`, `linkMedia.preview`, `linkMedia.link`,
 `linkMedia.locate`, `linkMedia.offline`, `linkMedia.offlineAll`, `linkMedia.cancel`.
 Make Offline: `makeOffline.keep|delete|ok|cancel`. In the Project panel, offline items get a
-broken-link badge (`project.item.<id>.offline` in Icon view).
+broken-link badge (`project.item.<id>.offline` in Icon view), and items with a proxy get a **P**
+badge (`project.item.<id>.proxy`).
+
+### Proxies
+
+| Command | Menu | |
+|---|---|---|
+| `media.createProxies {items?, preset?, destination?, attach?=true, wait?}` | Clip ▸ Proxy ▸ Create Proxies… | background job; attaches when done |
+| `media.attachProxies {item, path}` / `{items, paths}` | Attach Proxies… | duration within one frame and the same frame rate are required; size and aspect may differ |
+| `media.detachProxies {items?}` | Detach Proxies | |
+| `media.reconnectFullRes {item, path}` | Reconnect Full Resolution Media… | link the full-resolution file of a clip that has a proxy |
+| `media.toggleProxies {enabled?}` | View ▸ Toggle Proxies, monitor button | Preferences ▸ Media ▸ `media.enableProxies` |
+| `media.proxyPresets` | | |
+
+The presets use our own encoders:
+
+- `prores_proxy_quarter` (default), `prores_proxy_half`, `prores_lt_half`: ProRes 422 Proxy or LT
+  in MOV with PCM audio;
+- `h264_quarter`, `h264_half`: H.264 + AAC in MP4.
+
+Proxies go to `<media folder>/Proxies/<name>_Proxy.<ext>`, or to the chosen folder. Job progress is
+in `jobs.list`. `Session::poll_persistence`, which the app calls every frame, attaches finished
+proxies.
+
+With proxies enabled, monitors, thumbnails and playback read the proxy. The proxy source reports
+the original's size. The compositor derives its pixel scale from the frame it gets, so Motion and
+pixel-size effect parameters (blur radii…) give the same picture at the proxy's resolution. A
+320×180 clip with Motion and Gaussian Blur and a ½-size ProRes Proxy measures 44 dB PSNR against
+full resolution (48 dB at ½ playback resolution). **Export always uses full resolution**
+(`MediaPool::full_res_provider`). Toggling proxies bumps the revision so caches refresh, but it is
+not an edit and doesn't mark the project as modified.
+
+**Cost.** These numbers are from `proxy_playback_perf_4k`, an ignored test: `RAYON_NUM_THREADS=1
+cargo test --release -p filmcraft-engine proxy_playback_perf_4k -- --ignored --nocapture`. It plays a
+2 s 3840×2160 H.264 clip (ffmpeg `testsrc2`, libx264) on one core of the development Mac and reports
+milliseconds per frame:
+
+| | decode (GPU path) | CPU composite at ½ | CPU composite at ¼ | proxy creation |
+|---|---|---|---|---|
+| full resolution | 9.2 | 277 | 201 | |
+| ProRes Proxy ¼ | 8.9 | 150 | 35 | 17.8 s |
+| H.264 ¼ | 0.7 | 131 | 48 | 8.9 s |
+
+The test pattern is unusually cheap for H.264 to decode, so real camera footage gains more from
+proxies. The CPU composite (YUV→linear conversion and resampling) is what proxies cut most:
+5.7× at ¼ resolution, where the proxy needs no resampling.
+
+Create Proxies dialog ids: `proxies.preset.<id>`, `proxies.destination`, `proxies.browse`,
+`proxies.ok`, `proxies.cancel`. Monitor button: `program.transport.media.toggleProxies` (and
+`source.…`). It is lit while proxies are on.
+
+### Ingest settings
+
+`project.ingestSettings {enabled, action: copy|transcode|createProxies|copyAndCreateProxies,
+destination?, preset?}` (Project Settings ▸ Ingest) acts on every `file.import`:
+
+- **copy** copies the file to the destination (default `<media folder>/Ingested Media`), checks the
+  copy's fingerprint against the original, and then uses the copy;
+- **transcode** writes the preset's format (default ProRes 422 LT) in the background and switches the
+  clip to the result when it is done;
+- **createProxies** makes proxies in the background and attaches them;
+- **copyAndCreateProxies** does both.
+
+`file.import` reports this under `ingest`.
 

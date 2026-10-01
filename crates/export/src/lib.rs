@@ -101,6 +101,9 @@ pub struct ExportSettings {
     /// `progress.total`, `finished` and the final status; this call only adds to `done`.
     #[serde(default)]
     pub part_of_batch: bool,
+    /// ProRes flavour: `proxy`, `lt`, `standard` or `hq` (empty = HQ).
+    #[serde(default)]
+    pub prores_profile: String,
 }
 
 impl Default for ExportSettings {
@@ -115,6 +118,7 @@ impl Default for ExportSettings {
             bitrate_kbps: 20_000,
             burn_captions: false,
             part_of_batch: false,
+            prores_profile: String::new(),
         }
     }
 }
@@ -332,8 +336,19 @@ pub fn rgba_to_yuv422_10(rgba: &[u8], w: usize, h: usize, y: &mut [u16], cb: &mu
     });
 }
 
-fn prores_factory(format: Format, w: u32, h: u32, rate: FrameRate, _s: &ExportSettings) -> Option<Result<Box<dyn VideoEncoder>>> {
-    let profile = filmcraft_prores::Profile::Hq;
+/// The ProRes profile named by [`ExportSettings::prores_profile`].
+pub fn prores_profile(name: &str) -> filmcraft_prores::Profile {
+    use filmcraft_prores::Profile;
+    match name.to_ascii_lowercase().as_str() {
+        "proxy" => Profile::Proxy,
+        "lt" => Profile::Lt,
+        "standard" | "422" => Profile::Standard,
+        _ => Profile::Hq,
+    }
+}
+
+fn prores_factory(format: Format, w: u32, h: u32, rate: FrameRate, s: &ExportSettings) -> Option<Result<Box<dyn VideoEncoder>>> {
+    let profile = prores_profile(&s.prores_profile);
     (format == Format::ProRes)
         .then(|| Ok(Box::new(ProResEncoder { enc: filmcraft_prores::Encoder::new(profile, w, h), profile, w, h, rate }) as Box<dyn VideoEncoder>))
 }

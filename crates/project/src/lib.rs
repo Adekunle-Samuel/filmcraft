@@ -784,6 +784,36 @@ pub struct ProjectSettings {
     pub default_still_duration: Tick,
     pub default_transition_duration_frames: i64,
     pub default_audio_transition_duration: Tick,
+    /// Project Settings ▸ Ingest Settings: what happens to media on import.
+    #[serde(default)]
+    pub ingest: IngestSettings,
+}
+
+/// Ingest on import (Project Settings ▸ Ingest Settings).
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct IngestSettings {
+    pub enabled: bool,
+    pub action: IngestAction,
+    /// Destination folder for copies, transcodes and proxies (None = next to the media:
+    /// `<media dir>/Proxies` for proxies, `<media dir>/Ingest` for copies and transcodes).
+    pub destination: Option<String>,
+    /// Proxy / transcode preset id (the engine's `proxies::PRESETS`); empty = the default.
+    pub preset: String,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum IngestAction {
+    /// Copy the files to the destination (verified), then use the copies.
+    Copy,
+    /// Transcode to the preset's format, then use the transcodes.
+    Transcode,
+    /// Create proxies (in the background) and attach them.
+    #[default]
+    CreateProxies,
+    /// Copy, then create proxies of the copies.
+    CopyAndCreateProxies,
 }
 
 impl Default for ProjectSettings {
@@ -795,6 +825,7 @@ impl Default for ProjectSettings {
             default_still_duration: Tick(5 * TICKS_PER_SECOND),
             default_transition_duration_frames: 24,
             default_audio_transition_duration: Tick(TICKS_PER_SECOND),
+            ingest: IngestSettings::default(),
         }
     }
 }

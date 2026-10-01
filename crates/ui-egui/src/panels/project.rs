@@ -367,6 +367,20 @@ fn item_interactions(
                     ui.close();
                 }
             }
+            ui.menu_button("Proxy", |ui| {
+                for (label, cmd) in [
+                    ("Create Proxies…", "media.createProxies"),
+                    ("Attach Proxies…", "media.attachProxies"),
+                    ("Reconnect Full Resolution Media…", "media.reconnectFullRes"),
+                    ("Detach Proxies", "media.detachProxies"),
+                ] {
+                    if ui.button(label).clicked() {
+                        actions.push(("project.select".into(), json!({"items": [id.0]})));
+                        actions.push((cmd.into(), json!({})));
+                        ui.close();
+                    }
+                }
+            });
             ui.separator();
         }
         if ui.button("Clear").clicked() {

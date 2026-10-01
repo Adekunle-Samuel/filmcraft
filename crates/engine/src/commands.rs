@@ -543,6 +543,18 @@ fn build() -> Vec<CommandSpec> {
             if ids.is_empty() && sequences.is_empty() && reports.is_empty() && !errors.is_empty() {
                 return Err(EngineError::Other(errors.join("; ")));
             }
+            // Project Settings ▸ Ingest: copy / transcode / create proxies
+            let item_ids: Vec<ItemId> = ids.iter().map(|i| ItemId(*i)).collect();
+            let ingest = match crate::proxies::ingest(s, &item_ids) {
+                Ok(v) => v,
+                Err(e) => {
+                    errors.push(format!("ingest: {e}"));
+                    Value::Null
+                }
+            };
+            if !ingest.is_null() {
+                return Ok(json!({"items": ids, "sequences": sequences, "documents": reports, "errors": errors, "ingest": ingest}));
+            }
             if reports.is_empty() {
                 Ok(json!({"items": ids, "errors": errors}))
             } else {
@@ -1854,6 +1866,7 @@ fn build() -> Vec<CommandSpec> {
     v.extend(crate::graphics::commands());
     v.extend(crate::shortcuts::commands());
     v.extend(crate::relink::commands());
+    v.extend(crate::proxies::commands());
     // Labels as individual commands (Edit ▸ Label ▸ <name>)
     for l in Label::ALL {
         let _ = l;
@@ -1879,6 +1892,7 @@ fn export_media(s: &mut Session, p: &Value) -> Result<Value> {
         bitrate_kbps: u64_p(p, "bitrateKbps").unwrap_or(20_000) as u32,
         burn_captions: bool_p(p, "burnCaptions").unwrap_or(false),
         part_of_batch: false,
+        prores_profile: str_p(p, "proresProfile").unwrap_or_default().to_string(),
     };
     let id = s.jobs.len() as u64 + 1;
     let job = crate::Job {

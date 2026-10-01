@@ -203,7 +203,7 @@ file ──► codecs (MP4/MOV, MKV, audio)        demux + decode, GOP-aware see
   flag), so relinking and undo take effect at once. Media that can't be opened renders the offline
   slate (`render::offline`) instead of failing. With proxies enabled, an item with a proxy reads
   it through `ProxySource`, which reports the original's size. Export always uses
-  `MediaPool::full_res_provider`. See [project-files.md](project-files.md#media-offline-and-relinking).
+  `MediaPool::full_res_provider`. See [project-files.md](project-files.md#media-offline-relinking-proxies-ingest).
 - **Seeking.** `codecs::Mp4Source` seeks to the preceding sync sample and decodes forward, caching
   every frame of the GOP. Sequential playback reuses the decoder. Decoders implement
   `codecs::VideoDecoder`. `register_video_decoder` puts a factory in front of the built-in ones, so a

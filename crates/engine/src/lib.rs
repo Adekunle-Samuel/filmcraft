@@ -17,6 +17,7 @@ pub mod interchange;
 pub mod media_pool;
 pub mod mixer;
 pub mod previews;
+pub mod proxies;
 pub mod relink;
 pub mod shortcut_presets;
 pub mod shortcuts;
@@ -207,6 +208,8 @@ pub struct Session {
     pub shortcuts: shortcuts::Shortcuts,
     /// Missing / offline media found by the last scan (Link Media dialog).
     pub offline: relink::OfflineState,
+    /// Proxy / ingest / project-manager jobs whose results still have to be applied to the project.
+    pub media_jobs: Vec<proxies::PendingJob>,
     /// Nesting depth of [`Session::execute`] (commands that run other commands).
     exec_depth: u32,
 }
@@ -272,6 +275,7 @@ impl Session {
             trim_play: Default::default(),
             shortcuts: shortcuts::Shortcuts::new(),
             offline: Default::default(),
+            media_jobs: Vec::new(),
             exec_depth: 0,
         }
     }
@@ -282,6 +286,7 @@ impl Session {
     pub fn start_autosave(&mut self, cfg: autosave::AutosaveConfig) -> std::io::Result<()> {
         let prefs_path = cfg.data_dir.join("preferences.json");
         self.prefs = autosave::Preferences::load(&prefs_path);
+        self.media.set_use_proxies(self.prefs.media.enable_proxies);
         self.shortcuts.set_dir(&cfg.data_dir);
         self.prefs_path = Some(prefs_path);
         self.persistence = Some(autosave::Persistence::start(&cfg, self.prefs.auto_save.clone())?);
@@ -319,8 +324,10 @@ impl Session {
         p.last_sent = Some(cur);
     }
 
-    /// Apply worker notifications (call regularly, e.g. once per UI frame).
+    /// Apply worker notifications (call regularly, e.g. once per UI frame). Also applies the
+    /// results of finished proxy / ingest jobs.
     pub fn poll_persistence(&mut self) {
+        proxies::poll(self);
         let Some(p) = self.persistence.as_mut() else { return };
         for ev in p.drain_events() {
             match ev {
@@ -339,6 +346,10 @@ impl Session {
     /// Replace preferences (persisting them and updating the worker).
     pub fn set_prefs(&mut self, p: autosave::Preferences) -> std::io::Result<()> {
         self.prefs = p;
+        if self.media.use_proxies() != self.prefs.media.enable_proxies {
+            self.media.set_use_proxies(self.prefs.media.enable_proxies);
+            self.bump_view();
+        }
         if let Some(w) = &self.persistence {
             w.set_prefs(self.prefs.auto_save.clone());
         }
@@ -354,6 +365,16 @@ impl Session {
             && !cfg!(target_arch = "wasm32")
         {
             self.previews.move_to(previews::dir_for_project(p));
+        }
+    }
+
+    /// A change of what the project *looks like* that isn't an edit (proxies toggled): bumps the
+    /// revision so frame caches refresh, without marking a clean project as modified.
+    pub fn bump_view(&mut self) {
+        let clean = !self.is_dirty();
+        self.bump();
+        if clean {
+            self.saved_revision = self.revision;
         }
     }
 
@@ -589,6 +610,8 @@ mod media_test_util;
 mod mixer_tests;
 #[cfg(test)]
 mod previews_tests;
+#[cfg(test)]
+mod proxies_tests;
 #[cfg(test)]
 mod relink_tests;
 #[cfg(test)]

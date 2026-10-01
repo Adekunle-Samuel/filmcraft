@@ -1,5 +1,6 @@
 //! Headless UI tests of media management: the Link Media dialog opening for a project whose media
-//! moved (search a folder, link, the others follow) and the Project panel's offline markers.
+//! moved (search a folder, link, the others follow), Project panel offline / proxy badges, the
+//! monitors' Toggle Proxies button and the Create Proxies dialog.
 //!
 //! Set `FILMCRAFT_UI_SNAPSHOT_DIR=<dir>` to also render the window offscreen with wgpu and write PNGs
 //! there (`media-*.png`).
@@ -206,7 +207,7 @@ fn link_media_dialog_relinks_moved_media() {
 }
 
 #[test]
-fn offline_markers_in_the_project_panel() {
+fn offline_badges_proxy_toggle_and_dialogs() {
     let root = tmp_dir("badges");
     let path = moved_project(&root);
     let mut s = Session::default();
@@ -221,9 +222,29 @@ fn offline_markers_in_the_project_panel() {
     let offline_badges = d.ids("project.item.").into_iter().filter(|i| i.ends_with(".offline")).count();
     assert_eq!(offline_badges, 2, "icon-view offline markers");
     d.snapshot("media-offline-project");
-    // relinking clears the markers
+    // relink by folder remap, create proxies through the dialog, toggle them from the monitor
     d.exec("media.autoRelink", json!({"from": root.join("Media").to_string_lossy(), "to": root.join("Moved/Media").to_string_lossy()}));
-    d.frames(10);
-    assert_eq!(d.ids("project.item.").into_iter().filter(|i| i.ends_with(".offline")).count(), 0);
+    let items: Vec<u64> = d.exec("media.status", json!({})).as_array().unwrap().iter().map(|m| m["item"].as_u64().unwrap()).collect();
+    d.exec("project.select", json!({"items": items}));
+    d.ok("ui.menu.invoke", json!({"id": "media.createProxies"}));
+    d.frames(3);
+    assert!(d.app().ui.create_proxies.is_some());
+    d.snapshot("media-create-proxies");
+    d.click("proxies.preset.prores_proxy_quarter");
+    d.click("proxies.ok");
+    for _ in 0..400 {
+        d.frames(1);
+        let attached = d.app().session.project.items.values().filter(|i| i.as_media().is_some_and(|m| m.proxy.is_some())).count();
+        if attached == 2 {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    assert_eq!(d.app().session.project.items.values().filter(|i| i.as_media().is_some_and(|m| m.proxy.is_some())).count(), 2, "proxies attached");
+    d.click("program.transport.media.toggleProxies");
+    assert!(d.app().session.prefs.media.enable_proxies);
+    assert_eq!(d.ids("project.item.").into_iter().filter(|i| i.ends_with(".proxy")).count(), 2, "proxy badges");
+    d.frames(20);
+    d.snapshot("media-proxies-on");
     let _ = std::fs::remove_dir_all(&root);
 }

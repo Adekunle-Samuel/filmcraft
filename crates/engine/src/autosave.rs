@@ -104,6 +104,16 @@ pub struct Preferences {
     pub audio: AudioPrefs,
     pub playback: PlaybackPrefs,
     pub trim: TrimPrefs,
+    pub media: MediaPrefs,
+}
+
+/// Preferences ▸ Media.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct MediaPrefs {
+    /// "Enable proxies": playback and monitors read attached proxies (the monitors' Toggle
+    /// Proxies button). Export always uses full-resolution media.
+    pub enable_proxies: bool,
 }
 
 /// Preferences ▸ Audio (the mixer-automation part) and the Track Mixer panel-menu toggle.

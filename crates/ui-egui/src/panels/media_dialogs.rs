@@ -1,4 +1,4 @@
-//! Media management dialogs: Link Media (offline media / relink) and Make Offline.
+//! Media management dialogs: Link Media (offline media / relink), Make Offline and Create Proxies.
 //! Their state lives in `UiState` (serde), so agents can open and fill them as well as click them;
 //! the actions run engine commands (`media.*`).
 //!
@@ -8,12 +8,13 @@
 //!   `linkMedia.exactName`, `linkMedia.search`, `linkMedia.candidate.<n>`, `linkMedia.preview`,
 //!   `linkMedia.link`, `linkMedia.locate`, `linkMedia.offline`, `linkMedia.offlineAll`, `linkMedia.cancel`.
 //! - Make Offline: `makeOffline.keep`, `makeOffline.delete`, `makeOffline.ok`, `makeOffline.cancel`.
+//! - Create Proxies: `proxies.preset.<id>`, `proxies.destination`, `proxies.browse`, `proxies.ok`, `proxies.cancel`.
 
 use egui::{Color32, RichText};
 use serde_json::{Value, json};
 
 use crate::FilmcraftApp;
-use crate::state::LinkMediaDraft;
+use crate::state::{LinkMediaDraft, ProxyDraft};
 
 type Elems = Vec<(String, egui::Rect, String)>;
 
@@ -31,6 +32,9 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
     }
     if app.ui.make_offline.is_some() {
         make_offline(app, ctx);
+    }
+    if app.ui.create_proxies.is_some() {
+        create_proxies(app, ctx);
     }
 }
 
@@ -57,6 +61,19 @@ pub fn route(app: &mut FilmcraftApp, id: &str, params: &Value) -> Option<Result<
             app.ui.make_offline = Some(false);
             json!({"dialog": "makeOffline"})
         })),
+        "media.createProxies" => Some(enabled(app, id).map(|_| {
+            let items = app.session.state.project_selection.iter().map(|i| i.0).collect();
+            app.ui.create_proxies = Some(ProxyDraft { items, preset: filmcraft_engine::proxies::DEFAULT_PROXY_PRESET.into(), destination: String::new() });
+            json!({"dialog": "createProxies"})
+        })),
+        "media.attachProxies" | "media.reconnectFullRes" => {
+            let item = app.session.state.project_selection.first().copied();
+            let Some(item) = item else { return Some(Err("select a clip in the Project panel".into())) };
+            let exts: Vec<&str> = filmcraft_media::VIDEO_EXTENSIONS.to_vec();
+            let path = app.hooks.pick_files.as_mut().and_then(|f| f(&exts).into_iter().next());
+            let Some(path) = path else { return Some(Ok(Value::Null)) };
+            Some(app.session.execute(id, json!({"item": item.0, "path": path})).map_err(|e| e.to_string()))
+        }
         _ => None,
     }
 }
@@ -347,4 +364,57 @@ fn make_offline(app: &mut FilmcraftApp, ctx: &egui::Context) {
         keep = false;
     }
     app.ui.make_offline = (keep && !ctx.input(|i| i.key_pressed(egui::Key::Escape))).then_some(delete);
+}
+
+fn create_proxies(app: &mut FilmcraftApp, ctx: &egui::Context) {
+    let Some(mut d) = app.ui.create_proxies.clone() else { return };
+    let mut elems: Elems = Vec::new();
+    let mut keep = true;
+    let mut ok = false;
+    let mut browse = false;
+    egui::Window::new("Create Proxies").collapsible(false).resizable(false).anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0]).show(ctx, |ui| {
+        ui.label(format!("{} clip(s) selected.", d.items.len()));
+        ui.add_space(4.0);
+        ui.label(RichText::new("Format and size").strong());
+        for p in filmcraft_engine::proxies::PRESETS.iter().filter(|p| p.proxy) {
+            let r = ui.radio(d.preset == p.id, p.label);
+            push(&mut elems, format!("proxies.preset.{}", p.id), &r, p.label);
+            if r.clicked() {
+                d.preset = p.id.into();
+            }
+        }
+        ui.add_space(4.0);
+        ui.label(RichText::new("Destination").strong());
+        ui.horizontal(|ui| {
+            let r = ui.add(egui::TextEdit::singleline(&mut d.destination).desired_width(320.0).hint_text("Next to the original media, in a Proxies folder"));
+            push(&mut elems, "proxies.destination", &r, "destination");
+            let r = ui.button("Browse…");
+            push(&mut elems, "proxies.browse", &r, "Browse…");
+            browse = r.clicked();
+        });
+        ui.label(RichText::new("Proxies are made in the background and attached when done. Export always uses full-resolution media.").weak());
+        ui.horizontal(|ui| {
+            let r = ui.button("Cancel");
+            push(&mut elems, "proxies.cancel", &r, "Cancel");
+            keep &= !r.clicked();
+            let r = ui.add(egui::Button::new(RichText::new("OK").color(Color32::WHITE)).fill(app.tokens.accent));
+            push(&mut elems, "proxies.ok", &r, "OK");
+            ok = r.clicked();
+        });
+    });
+    for (id, r, l) in elems {
+        app.auto.add(&id, r, &l);
+    }
+    if browse && let Some(f) = app.hooks.pick_folder.as_mut().and_then(|f| f()) {
+        d.destination = f;
+    }
+    if ok {
+        let p = json!({"items": d.items, "preset": d.preset, "destination": if d.destination.is_empty() { Value::Null } else { json!(d.destination) }});
+        match app.session.execute("media.createProxies", p) {
+            Ok(v) => app.ui.status = format!("Creating {} proxy file(s)…", v["outputs"].as_array().map_or(0, Vec::len)),
+            Err(e) => app.ui.status = e.to_string(),
+        }
+        keep = false;
+    }
+    app.ui.create_proxies = (keep && !ctx.input(|i| i.key_pressed(egui::Key::Escape))).then_some(d);
 }

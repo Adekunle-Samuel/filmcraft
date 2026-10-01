@@ -83,6 +83,8 @@ pub enum Icon {
     Sparkle,
     Grid,
     Square,
+    /// Toggle Proxies: a small frame inside a large one.
+    Proxy,
     /// Offline media: a broken link.
     Offline,
 }
@@ -492,6 +494,12 @@ pub fn paint(painter: &Painter, rect: Rect, icon: Icon, color: Color32) {
             pen.line(&[(2.0, 10.0), (14.0, 10.0)]);
         }
         Square => pen.rect(3.0, 3.0, 13.0, 13.0),
+        Proxy => {
+            pen.rect(1.5, 3.0, 14.5, 13.0);
+            pen.rect_fill(3.5, 8.0, 8.5, 11.5);
+            pen.line(&[(9.5, 7.0), (12.5, 4.5)]);
+            pen.line(&[(10.5, 4.5), (12.5, 4.5), (12.5, 6.5)]);
+        }
         Offline => {
             pen.line(&[(7.0, 4.0), (4.5, 4.0), (2.5, 6.0), (2.5, 7.5), (4.0, 9.0)]);
             pen.line(&[(9.0, 12.0), (11.5, 12.0), (13.5, 10.0), (13.5, 8.5), (12.0, 7.0)]);

@@ -295,6 +295,9 @@ pub struct UiState {
     /// Link Media dialog (open when Some).
     #[serde(default)]
     pub link_media: Option<LinkMediaDraft>,
+    /// Create Proxies dialog (open when Some).
+    #[serde(default)]
+    pub create_proxies: Option<ProxyDraft>,
     /// Make Offline dialog: Some(delete files?) while open.
     #[serde(default)]
     pub make_offline: Option<bool>,
@@ -345,6 +348,16 @@ impl Default for LinkMediaDraft {
             message: String::new(),
         }
     }
+}
+
+/// Clip ▸ Proxy ▸ Create Proxies….
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ProxyDraft {
+    pub items: Vec<u64>,
+    pub preset: String,
+    /// Empty = a Proxies folder next to the original media.
+    pub destination: String,
 }
 
 /// The Audio Gain dialog (Clip ▸ Audio Gain…, G).
@@ -410,6 +423,7 @@ impl Default for UiState {
             gfx_edit: None,
             pen_points: vec![],
             link_media: None,
+            create_proxies: None,
             make_offline: None,
         }
     }
