@@ -182,6 +182,18 @@ cargo run --release -p filmcraft-cli -- mcp                # MCP server (headles
 
 The control protocol is documented in [docs/control-protocol.md](docs/control-protocol.md).
 
+## Documentation
+
+| | |
+|---|---|
+| [CONTRIBUTING.md](CONTRIBUTING.md) · [docs/contributing.md](docs/contributing.md) | Setup, quality gates, commit conventions, how to add commands, effects, codecs, panels and assets |
+| [AGENTS.md](AGENTS.md) | The rules every contributor must follow: assets, clean room, licences |
+| [docs/architecture.md](docs/architecture.md) | Layers, data model, time base, command system, render and export pipeline |
+| [docs/testing.md](docs/testing.md) | Unit, property and ffmpeg-oracle tests, accuracy criteria, benchmarks |
+| [docs/agents.md](docs/agents.md) | Driving FilmCraft over MCP and the control channel; how agents develop it |
+| [docs/control-protocol.md](docs/control-protocol.md) | Control-channel and MCP reference |
+| [ROADMAP.md](ROADMAP.md) | Milestones and estimates |
+
 ## Status
 
 FilmCraft is young and moving fast: roughly 30% of the way to Premiere Pro parity, with editing, colour, keyframes, codecs and export working today. [ROADMAP.md](ROADMAP.md) tracks every milestone with estimates.

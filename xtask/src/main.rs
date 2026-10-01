@@ -1,6 +1,6 @@
 //! Workspace automation: `cargo xtask <layers|wasm|ci>`.
 //!
-//! - `layers`: enforces the dependency layering of `plan/architecture.md` §3 (downward-only edges,
+//! - `layers`: enforces the dependency layering of `docs/architecture.md` §1 (downward-only edges,
 //!   listed same-layer edges, L0 codec crates depend on `bitstream` only, no UI/OS crates below L5).
 //! - `wasm`: `cargo check --target wasm32-unknown-unknown` for every crate in L0–L4.
 //! - `assets`: every asset file (image, icon, font, LUT, audio, video…) has a complete

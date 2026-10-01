@@ -60,3 +60,12 @@ reproduce an image (for example, point lists traced from someone else's icon).
 
 See `CLAUDE.md`: pure Rust, dependency layering (`cargo xtask layers`), exact `Tick` time, everything is
 a command, everything is agent-drivable, and the quality gates (`cargo xtask ci`) before every commit.
+
+## See also
+
+- [CONTRIBUTING.md](CONTRIBUTING.md) and [docs/contributing.md](docs/contributing.md): setup, gates, commits, how to add things
+- [docs/architecture.md](docs/architecture.md): layers, data model, commands, pipeline
+- [docs/testing.md](docs/testing.md): oracle tests, criteria, benchmarks
+- [docs/agents.md](docs/agents.md): driving FilmCraft over MCP / the control channel, and the agent work loop
+- [docs/control-protocol.md](docs/control-protocol.md): control-channel method reference
+- [ATTRIBUTION.md](ATTRIBUTION.md): asset index
