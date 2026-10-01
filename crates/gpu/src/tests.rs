@@ -77,3 +77,21 @@ fn half_float_conversion() {
         assert!((d - v).abs() <= v.abs() * 1e-3 + 1e-6, "{v} → {d}");
     }
 }
+
+/// The upload cache is keyed by pixel-buffer address, so it must keep the buffer alive: otherwise
+/// a new frame allocated at a freed frame's address is drawn with the stale texture (seen as
+/// whole frames from a previous composite in `crates/golden` GPU parity).
+#[test]
+fn upload_cache_keeps_buffers_alive() {
+    let Some((dev, q)) = device() else {
+        eprintln!("no GPU adapter; skipping");
+        return;
+    };
+    let mut c = GpuCompositor::new(&dev, &q);
+    let px = Arc::new(vec![200u8; 16 * 8 * 4]);
+    let frame = Arc::new(VideoFrame { width: 16, height: 8, data: PixelData::Rgba8(px.clone()), ..(*yuv_frame(16, 8)).clone() });
+    let plan = FramePlan::Layers { width: 16, height: 8, layers: vec![PlanLayer { frame, matrix: Affine::IDENTITY, opacity: 1.0 }] };
+    c.composite(&plan);
+    drop(plan);
+    assert!(Arc::strong_count(&px) > 1, "cached upload must own its pixel buffer");
+}

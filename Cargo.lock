@@ -1452,6 +1452,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "filmcraft-golden"
+version = "0.1.0"
+dependencies = [
+ "filmcraft-geom",
+ "filmcraft-gpu",
+ "filmcraft-media",
+ "filmcraft-project",
+ "filmcraft-render",
+ "filmcraft-testkit",
+ "filmcraft-time",
+ "pollster 0.4.0",
+ "wgpu",
+]
+
+[[package]]
 name = "filmcraft-gpu"
 version = "0.1.0"
 dependencies = [

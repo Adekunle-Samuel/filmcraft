@@ -4,11 +4,14 @@
 //!   `FILMCRAFT_REQUIRE_ORACLES=1`, fail — when they are missing ([`require_ffmpeg!`] & co.).
 //! - [`fixtures`]: the shared fixture directory (`<workspace>/target/fixtures/<crate>`) and
 //!   collision-free temporary names for concurrent generators.
+//! - [`golden`]: RGBA8 images, PNG I/O, image-difference metrics and golden-file checks
+//!   (`FILMCRAFT_BLESS=1` regenerates references).
 //!
 //! ffmpeg/ffprobe are external test oracles and fixture generators only; they are never linked
 //! or shipped (AGENTS.md §2).
 
 pub mod fixtures;
+pub mod golden;
 pub mod oracle;
 
 pub use fixtures::{fixtures_dir, temp_path, workspace_root};

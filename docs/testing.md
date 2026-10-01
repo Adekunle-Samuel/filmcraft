@@ -82,9 +82,26 @@ Each codec README has the full fixture matrix and the measured results.
   difference of ≤ 6 and a mean of < 1.5 (8-bit levels). It skips when no GPU adapter is available.
 - Effects implemented only on the CPU need no GPU test: the plan pre-renders those layers on the
   CPU.
-- Golden-image files (rendered PNGs compared against committed references) are not used yet. If you
-  add them, generate the references from FilmCraft itself, give each one an attribution sidecar,
-  and document the tolerance (PSNR in dB, or max/percentile error).
+- **Golden images** (`crates/golden`, a test-only crate): `tests/golden.rs` builds small procedural
+  projects (demo-generator footage, bars, no media files) at 320×180 and renders one frame of each
+  through the CPU compositor: Motion transform + opacity, four blend modes (Multiply, Screen,
+  Overlay, Difference), Gaussian Blur, Lumetri basic correction, Crop, Cross Dissolve at 50 %, Dip
+  to Black at 25 %, Wipe at 50 %, and Timecode / Clip Name burn-in text. Each frame is compared
+  with `crates/golden/goldens/<scene>.png` by `filmcraft_testkit::golden`:
+  **PSNR ≥ 45 dB, max abs ≤ 12, 99th-percentile per-pixel max channel difference ≤ 2** (8-bit
+  sRGB levels; `Tolerance::RENDER`). On failure the actual frame and a ×8 difference image go to
+  `<workspace>/target/golden-failures/`. `scenes_are_distinct` guards against blank or duplicate
+  scenes.
+- **Blessing:** `FILMCRAFT_BLESS=1 cargo test -p filmcraft-golden` rewrites the references (and
+  writes a `.attribution` sidecar for any new one; it prints the `ATTRIBUTION.md` row to add).
+  References are original work rendered by FilmCraft, must stay under 50 KB (enforced on bless),
+  and every one needs its sidecar and index row (`cargo xtask assets`). Look at a re-blessed PNG
+  before committing it.
+- The same scenes run through `plan_frame` + `GpuCompositor` when a GPU adapter exists
+  (`gpu_matches_cpu_on_golden_scenes`, same p99 ≤ 6 / mean < 1.5 criterion; skipped otherwise).
+  This found a real bug: the GPU upload cache was keyed by pixel-buffer address without keeping
+  the buffer alive, so a new frame allocated at a freed frame's address was drawn with the stale
+  texture (fixed; regression test `upload_cache_keeps_buffers_alive`).
 
 ## 4. UI: control channel and screenshots
 

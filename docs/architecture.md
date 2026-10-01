@@ -23,7 +23,7 @@ Design principles:
  L6  apps/filmcraft · apps/filmcraft-cli
  L5  ui-egui · automation
  L4  engine
- L3  render · gpu · export
+ L3  render · gpu · export · golden (test-only)
  L2  edit · codecs · interchange
  L1  frame · media · project · audio-dsp
  L0  foundation: time · geom · color · bitstream · testkit (dev-dependency only)
@@ -55,6 +55,7 @@ and `filmcraft-cli`.
 | `interchange` | L2 | EDL, FCP7 XML, FCPXML and OTIO import/export (no file I/O) |
 | `render` | L3 | sequence evaluation, CPU compositor, video effects, transitions, audio mix |
 | `gpu` | L3 | wgpu compositor (WGSL) |
+| `golden` | L3 | test-only: golden-image tests of the CPU renderer and GPU-vs-CPU parity; empty library, dev-dependencies only |
 | `export` | L3 | render → encode → mux pipeline, progress/cancel |
 | `engine` | L4 | `Session`, command registry, undo history, media pool, jobs, interchange glue |
 | `ui-egui` | L5 | the egui frontend: docking, panels, timeline, monitors, playback, control-channel handlers |

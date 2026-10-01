@@ -46,6 +46,7 @@ const LAYERS: &[(&str, u8)] = &[
     ("interchange", 2),
     ("render", 3),
     ("gpu", 3),
+    ("golden", 3),
     ("scopes", 3),
     ("playback", 3),
     ("export", 3),
