@@ -1,10 +1,22 @@
-//! Colour science for FilmCraft: YUV matrices, transfer functions, colour metadata and LUTs.
+//! Colour science for FilmCraft: YUV matrices, transfer functions, camera log curves, gamuts,
+//! colour-managed input/output transforms (tone and gamut mapping), colour metadata and LUTs.
+//! See the crate README for the formulas and their sources.
 //!
 //! The compositor works in **linear-light, premultiplied RGBA f32** in the sequence working space
 //! (Rec.709 primaries by default). Decoded frames carry [`ColorInfo`] so conversions are explicit.
 
 use serde::{Deserialize, Serialize};
 use std::sync::OnceLock;
+
+pub mod log;
+pub mod lut;
+pub mod spaces;
+pub mod transform;
+
+pub use log::LogCurve;
+pub use lut::{Lut, Lut1d, Lut3d, LutFormat};
+pub use spaces::{ColorPipeline, ColorSpace, Curve, Gamut, WorkingSpace};
+pub use transform::{DecodeTable, InputTransform, OutputTransform, REFERENCE_WHITE_NITS, ToneMap};
 
 /// YUV ↔ RGB matrix coefficients.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -251,107 +263,6 @@ pub fn hsl_to_rgb(h: f32, s: f32, l: f32) -> [f32; 3] {
     [f(h + 1.0 / 3.0), f(h), f(h - 1.0 / 3.0)]
 }
 
-/// A 3D LUT (from a `.cube` file), applied to encoded RGB in 0..1.
-#[derive(Clone, Debug, PartialEq)]
-pub struct Lut3d {
-    pub title: String,
-    pub size: usize,
-    pub domain_min: [f32; 3],
-    pub domain_max: [f32; 3],
-    /// `size³` entries, red fastest.
-    pub data: Vec<[f32; 3]>,
-}
-
-impl Lut3d {
-    pub fn identity(size: usize) -> Self {
-        let n = (size - 1) as f32;
-        let mut data = Vec::with_capacity(size * size * size);
-        for b in 0..size {
-            for g in 0..size {
-                for r in 0..size {
-                    data.push([r as f32 / n, g as f32 / n, b as f32 / n]);
-                }
-            }
-        }
-        Lut3d { title: "identity".into(), size, domain_min: [0.0; 3], domain_max: [1.0; 3], data }
-    }
-
-    /// Parse the Adobe/Resolve `.cube` text format (3D LUTs).
-    pub fn parse_cube(text: &str) -> Result<Lut3d, String> {
-        let mut size = 0usize;
-        let mut title = String::new();
-        let mut dmin = [0.0f32; 3];
-        let mut dmax = [1.0f32; 3];
-        let mut data = Vec::new();
-        for line in text.lines() {
-            let line = line.trim();
-            if line.is_empty() || line.starts_with('#') {
-                continue;
-            }
-            let mut it = line.split_whitespace();
-            let key = it.next().unwrap_or("");
-            match key {
-                "TITLE" => title = line[5..].trim().trim_matches('"').to_string(),
-                "LUT_3D_SIZE" => size = it.next().and_then(|v| v.parse().ok()).ok_or("bad LUT_3D_SIZE")?,
-                "LUT_1D_SIZE" => return Err("1D .cube LUTs are not supported yet".into()),
-                "DOMAIN_MIN" | "DOMAIN_MAX" => {
-                    let v: Vec<f32> = it.filter_map(|x| x.parse().ok()).collect();
-                    if v.len() != 3 {
-                        return Err(format!("bad {key}"));
-                    }
-                    let t = if key == "DOMAIN_MIN" { &mut dmin } else { &mut dmax };
-                    t.copy_from_slice(&v);
-                }
-                _ => {
-                    let v: Vec<f32> = line.split_whitespace().filter_map(|x| x.parse().ok()).collect();
-                    if v.len() == 3 {
-                        data.push([v[0], v[1], v[2]]);
-                    }
-                }
-            }
-        }
-        if size < 2 || data.len() != size * size * size {
-            return Err(format!("expected {}³ entries, found {}", size, data.len()));
-        }
-        Ok(Lut3d { title, size, domain_min: dmin, domain_max: dmax, data })
-    }
-
-    pub fn to_cube(&self) -> String {
-        let mut s = format!("TITLE \"{}\"\nLUT_3D_SIZE {}\n", self.title, self.size);
-        for d in &self.data {
-            s += &format!("{:.6} {:.6} {:.6}\n", d[0], d[1], d[2]);
-        }
-        s
-    }
-
-    /// Trilinear lookup.
-    pub fn apply(&self, rgb: [f32; 3]) -> [f32; 3] {
-        let n = self.size;
-        let m = (n - 1) as f32;
-        let mut idx = [0usize; 3];
-        let mut frac = [0f32; 3];
-        for c in 0..3 {
-            let t = ((rgb[c] - self.domain_min[c]) / (self.domain_max[c] - self.domain_min[c])).clamp(0.0, 1.0) * m;
-            let i = (t.floor() as usize).min(n - 2);
-            idx[c] = i;
-            frac[c] = t - i as f32;
-        }
-        let at = |r: usize, g: usize, b: usize| self.data[r + g * n + b * n * n];
-        let mut out = [0f32; 3];
-        for (k, o) in out.iter_mut().enumerate() {
-            let c = |dr, dg, db| at(idx[0] + dr, idx[1] + dg, idx[2] + db)[k];
-            let x00 = c(0, 0, 0) + (c(1, 0, 0) - c(0, 0, 0)) * frac[0];
-            let x10 = c(0, 1, 0) + (c(1, 1, 0) - c(0, 1, 0)) * frac[0];
-            let x01 = c(0, 0, 1) + (c(1, 0, 1) - c(0, 0, 1)) * frac[0];
-            let x11 = c(0, 1, 1) + (c(1, 1, 1) - c(0, 1, 1)) * frac[0];
-            let y0 = x00 + (x10 - x00) * frac[1];
-            let y1 = x01 + (x11 - x01) * frac[1];
-            *o = y0 + (y1 - y0) * frac[2];
-        }
-        out
-    }
-}
-
 /// Parse `#rrggbb` / `#rrggbbaa` into 0..1 floats.
 pub fn parse_hex(s: &str) -> Option<[f32; 4]> {
     let s = s.trim().trim_start_matches('#');
@@ -417,15 +328,6 @@ mod tests {
         for k in 0..3 {
             assert!((c[k] - b[k]).abs() < 1e-5);
         }
-    }
-
-    #[test]
-    fn cube_identity() {
-        let lut = Lut3d::identity(17);
-        let parsed = Lut3d::parse_cube(&lut.to_cube()).unwrap();
-        let v = parsed.apply([0.3, 0.55, 0.91]);
-        assert!((v[0] - 0.3).abs() < 1e-4 && (v[1] - 0.55).abs() < 1e-4 && (v[2] - 0.91).abs() < 1e-4);
-        assert!(Lut3d::parse_cube("LUT_3D_SIZE 2\n0 0 0\n").is_err());
     }
 
     #[test]
