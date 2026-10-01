@@ -1336,6 +1336,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "filmcraft-captions"
+version = "0.1.0"
+dependencies = [
+ "filmcraft-color",
+ "filmcraft-project",
+ "filmcraft-time",
+ "proptest",
+ "skrifa",
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "filmcraft-cli"
 version = "0.1.0"
 dependencies = [
@@ -1392,6 +1404,7 @@ dependencies = [
 name = "filmcraft-engine"
 version = "0.1.0"
 dependencies = [
+ "filmcraft-captions",
  "filmcraft-codecs",
  "filmcraft-color",
  "filmcraft-edit",
