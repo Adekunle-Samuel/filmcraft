@@ -85,6 +85,7 @@ impl EffectDef {
             enabled: true,
             params: self.params.iter().map(|p| (p.id.to_string(), Param::new(p.default.clone()))).collect(),
             masks: Vec::new(),
+            post_fader: false,
         }
     }
 }
@@ -113,6 +114,9 @@ pub struct EffectInstance {
     pub params: BTreeMap<String, Param>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub masks: Vec<Mask>,
+    /// Track/Mix inserts only: process after the fader instead of before it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub post_fader: bool,
 }
 
 impl EffectInstance {

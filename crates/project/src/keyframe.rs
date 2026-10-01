@@ -186,6 +186,11 @@ impl Param {
         self.set_at_force(t, v);
     }
 
+    /// Add or replace a keyframe at `t` (the parameter becomes animated).
+    pub fn put_keyframe(&mut self, t: Tick, value: ParamValue) {
+        self.set_at_force(t, value);
+    }
+
     fn set_at_force(&mut self, t: Tick, value: ParamValue) {
         match self.keyframes.binary_search_by_key(&t, |k| k.time) {
             Ok(i) => self.keyframes[i].value = value,
@@ -238,6 +243,35 @@ impl Param {
     pub fn f64_at(&self, t: Tick) -> f64 {
         self.value_at(t).as_f64().unwrap_or(0.0)
     }
+
+    /// Allocation-free [`Param::f64_at`] for scalar parameters (Float / Choice / Bool), for
+    /// per-sample evaluation in the audio mixer. Non-scalar values evaluate to 0.
+    pub fn scalar_at(&self, t: Tick) -> f64 {
+        let k = &self.keyframes;
+        let s = |v: &ParamValue| v.as_f64().unwrap_or(0.0);
+        if k.is_empty() {
+            return s(&self.value);
+        }
+        if t <= k[0].time {
+            return s(&k[0].value);
+        }
+        let last = &k[k.len() - 1];
+        if t >= last.time {
+            return s(&last.value);
+        }
+        let i = match k.binary_search_by_key(&t, |kf| kf.time) {
+            Ok(i) => return s(&k[i].value),
+            Err(i) => i - 1,
+        };
+        let (a, b) = (&k[i], &k[i + 1]);
+        let (va, vb) = (s(&a.value), s(&b.value));
+        if a.interp == Interpolation::Hold || !matches!(a.value, ParamValue::Float(_)) {
+            return va;
+        }
+        let u = (t - a.time).0 as f64 / (b.time - a.time).0 as f64;
+        va + (vb - va) * ease(a, b, u)
+    }
+
     pub fn vec2_at(&self, t: Tick) -> Vec2 {
         self.value_at(t).as_vec2().unwrap_or_default()
     }

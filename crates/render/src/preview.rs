@@ -247,10 +247,12 @@ pub fn audio_segments(project: &Project, seq_id: ItemId) -> Vec<AudioSegment> {
     cuts.dedup();
     let any_solo = seq.audio_tracks.iter().any(|t| t.solo);
     let mut global = Fnv128::new();
-    global.json(&(HASH_VERSION, "audio", sr, seq.master_volume_db, &seq.master_effects, any_solo));
+    global.json(&(HASH_VERSION, "audio", sr, seq.master_volume_db, &seq.master_effects, &seq.master_mixer, any_solo));
     for (ti, tr) in seq.audio_tracks.iter().enumerate() {
-        global.json(&(ti, tr.muted, tr.solo, tr.volume_db, tr.pan, tr.channels, &tr.effects));
+        global.json(&(ti, tr.muted, tr.solo, tr.volume_db, tr.pan, tr.channels, &tr.effects, &tr.mixer));
     }
+    // submixes (routing, inserts, automation) affect every segment
+    global.json(&seq.submix_tracks);
     let mut out = Vec::new();
     for w in cuts.windows(2) {
         let (a, b) = (w[0], w[1]);

@@ -10,6 +10,7 @@
 pub mod caption;
 pub mod effect;
 pub mod keyframe;
+pub mod mixer;
 
 use std::collections::BTreeMap;
 
@@ -21,6 +22,7 @@ use serde::{Deserialize, Serialize};
 pub use caption::{Caption, CaptionAlign, CaptionAnchor, CaptionFormat, CaptionStyle, CaptionTrack, plain_text};
 pub use effect::{EffectDef, EffectInstance, EffectKind, ParamDef, ParamKind, effect_defs, find_effect};
 pub use keyframe::{Interpolation, Keyframe, Param, ParamValue};
+pub use mixer::{AutomationMode, InputMap, MixerStrip, TrackSend};
 
 macro_rules! id_type {
     ($name:ident) => {
@@ -528,9 +530,12 @@ pub struct Track {
     /// Audio track volume (dB) and pan (-100..100) for the Track Mixer.
     pub volume_db: f64,
     pub pan: f64,
-    /// Track-level audio effects (mixer inserts).
+    /// Track-level audio effects (mixer inserts, slots 1–5; `EffectInstance::post_fader` picks the side).
     #[serde(default)]
     pub effects: Vec<EffectInstance>,
+    /// Audio Track Mixer state: automation mode and lanes, sends, output, record arm.
+    #[serde(default)]
+    pub mixer: MixerStrip,
 }
 
 impl Track {
@@ -550,6 +555,7 @@ impl Track {
             volume_db: 0.0,
             pan: 0.0,
             effects: Vec::new(),
+            mixer: MixerStrip::default(),
         }
     }
     pub fn end(&self) -> Tick {
@@ -640,8 +646,16 @@ pub struct Sequence {
     /// Master audio volume (dB).
     #[serde(default)]
     pub master_volume_db: f64,
+    /// Mix track inserts (`EffectInstance::post_fader` picks the side).
     #[serde(default)]
     pub master_effects: Vec<EffectInstance>,
+    /// Mix track automation (`volume` lane) and mode.
+    #[serde(default)]
+    pub master_mixer: MixerStrip,
+    /// Audio submix tracks (no clips); tracks and sends route into them, they route to the Mix
+    /// or to a submix after them.
+    #[serde(default)]
+    pub submix_tracks: Vec<Track>,
     /// Caption tracks (drawn above the video tracks; first = top). Older files have none (serde default).
     #[serde(default)]
     pub caption_tracks: Vec<CaptionTrack>,
@@ -826,6 +840,8 @@ impl Project {
             start_timecode: 0,
             master_volume_db: 0.0,
             master_effects: Vec::new(),
+            master_mixer: MixerStrip::default(),
+            submix_tracks: Vec::new(),
             caption_tracks: Vec::new(),
         };
         for i in 0..v {

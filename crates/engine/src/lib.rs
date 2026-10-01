@@ -14,6 +14,7 @@ pub mod commands;
 pub mod demo;
 pub mod interchange;
 pub mod media_pool;
+pub mod mixer;
 pub mod previews;
 pub mod trim;
 
@@ -162,6 +163,8 @@ pub struct Session {
     pub loaded_schema: u32,
     /// Render preview files + render-bar segments (shared with the frontend's frame workers).
     pub previews: Arc<previews::PreviewStore>,
+    /// Audio Track Mixer automation pass in progress.
+    pub mixrec: mixer::Recorder,
 }
 
 /// A background job with shared progress.
@@ -221,6 +224,7 @@ impl Session {
             persistence: None,
             loaded_schema: filmcraft_format::SCHEMA_VERSION,
             previews: Arc::new(previews::PreviewStore::temp()),
+            mixrec: Default::default(),
         }
     }
 
@@ -314,6 +318,8 @@ impl Session {
         (spec.enabled)(self).map_err(|why| EngineError::Disabled(id.to_string(), why))?;
         let r = (spec.run)(self, &params);
         self.sync_persistence();
+        // playback reads the newest snapshot (mixer moves, mutes… are heard while playing)
+        self.previews.live.publish_project(self.project.clone());
         if r.is_ok() && spec.journal {
             self.journal.push((id.to_string(), params));
             if self.journal.len() > 10_000 {
@@ -487,6 +493,8 @@ pub fn media_duration(p: &Project, _pool: &MediaPool, id: ItemId) -> Option<Tick
 mod autosave_tests;
 #[cfg(test)]
 mod file_tests;
+#[cfg(test)]
+mod mixer_tests;
 #[cfg(test)]
 mod previews_tests;
 #[cfg(test)]

@@ -469,6 +469,8 @@ pub(crate) fn empty_sequence(settings: SequenceSettings) -> Sequence {
         start_timecode: 0,
         master_volume_db: 0.0,
         master_effects: Vec::new(),
+        master_mixer: Default::default(),
+        submix_tracks: Vec::new(),
         caption_tracks: Vec::new(),
     }
 }
@@ -594,6 +596,7 @@ pub(crate) fn transition_effect(name: &str, audio: bool, report: &mut Report) ->
         enabled: true,
         params: Default::default(),
         masks: vec![],
+        post_fader: false,
     })
 }
 

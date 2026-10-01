@@ -12,6 +12,7 @@ pub mod audio_fx;
 pub mod blend;
 pub mod effects;
 pub mod image;
+pub mod mixer;
 pub mod plan;
 pub mod preview;
 pub mod transitions;
@@ -303,6 +304,10 @@ pub fn arc_source(s: impl filmcraft_media::MediaSource + 'static) -> SharedSourc
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+#[path = "mixer_tests.rs"]
+mod mixer_tests;
 
 #[cfg(test)]
 #[path = "preview_tests.rs"]

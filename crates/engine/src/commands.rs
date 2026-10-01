@@ -1814,6 +1814,7 @@ fn build() -> Vec<CommandSpec> {
         )),
     ];
     v.extend(crate::captions::commands());
+    v.extend(crate::mixer::commands());
     // Labels as individual commands (Edit ▸ Label ▸ <name>)
     for l in Label::ALL {
         let _ = l;

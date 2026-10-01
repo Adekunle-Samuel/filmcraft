@@ -15,12 +15,12 @@ use filmcraft_project::{EffectInstance, TrackItem};
 use filmcraft_time::Tick;
 
 /// How a project effect maps onto a DSP effect.
-struct Mapping {
-    dsp: &'static str,
+pub(crate) struct Mapping {
+    pub(crate) dsp: &'static str,
     /// Pre-roll (seconds) for a fresh chain; closures get the effect instance at the start time.
-    preroll: fn(&EffectInstance, Tick) -> f64,
+    pub(crate) preroll: fn(&EffectInstance, Tick) -> f64,
     /// Set DSP parameters from the (keyframed) project parameters at media time `mt`.
-    apply: fn(&mut dyn AudioEffect, &EffectInstance, Tick),
+    pub(crate) apply: fn(&mut dyn AudioEffect, &EffectInstance, Tick),
 }
 
 fn ignore(_: bool) {}
@@ -29,7 +29,7 @@ fn f(e: &EffectInstance, id: &str, mt: Tick) -> f32 {
     e.f64_at(id, mt) as f32
 }
 
-fn mapping(id: &str) -> Option<Mapping> {
+pub(crate) fn mapping(id: &str) -> Option<Mapping> {
     Some(match id {
         "amplify" => Mapping { dsp: "amplify", preroll: |_, _| 0.0, apply: |d, e, t| ignore(d.set_param("gain", f(e, "gain", t))) },
         "dynamics" => Mapping {
@@ -160,8 +160,10 @@ fn run(chain: &mut Chain, item: &TrackItem, in0: i64, input: &mut [Vec<f32>; 2],
     let n = input[0].len();
     let mut i = 0;
     while i < n {
-        let end = (i + BLOCK).min(n);
-        let mt = item.source_time_at(Tick::from_units(in0 + i as i64, sr as i64));
+        // absolute block grid: parameters update at the same samples however requests are cut
+        let pos = in0 + i as i64;
+        let end = (((pos.div_euclid(BLOCK as i64) + 1) * BLOCK as i64 - in0) as usize).min(n);
+        let mt = item.source_time_at(Tick::from_units(pos.div_euclid(BLOCK as i64) * BLOCK as i64, sr as i64));
         for ((e, m), d) in act.iter().zip(chain.fx.iter_mut()) {
             (m.apply)(d.as_mut(), e, mt);
         }

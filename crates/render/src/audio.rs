@@ -1,11 +1,9 @@
-//! Sequence audio mixdown (clip gain → Volume/Channel Volume/Panner → track volume/pan →
-//! master), with audio transitions, mute/solo, speed changes (varispeed resampling).
-//!
-//! The dedicated `audio` crate (M7) adds the effect DSP, submixes and meters; this module is the
-//! reference mixer used by playback and export.
+//! Clip-level audio: clip gain → clip effects → Volume / Channel Volume / Panner, audio transitions
+//! and speed changes (varispeed resampling), summed per track. The track/submix/Mix graph that
+//! consumes it is [`crate::mixer`].
 
 use filmcraft_frame::AudioBuffer;
-use filmcraft_project::{Project, Sequence, TrackItem};
+use filmcraft_project::{Project, Sequence, Track, TrackItem};
 use filmcraft_time::{Tick, TimeRange};
 
 use crate::{SourceProvider, transitions};
@@ -14,74 +12,63 @@ pub fn db_to_gain(db: f64) -> f32 {
     if db <= -96.0 { 0.0 } else { 10f64.powf(db / 20.0) as f32 }
 }
 
-/// Mix `frames` stereo samples of sequence audio starting at sample `start` (sequence rate).
+/// Mix `frames` stereo samples of sequence audio starting at sample `start` (sequence rate), through
+/// the full mixer graph ([`crate::mixer`]). Export and playback both use this.
 pub fn mix_sequence(project: &Project, seq: &Sequence, start: i64, frames: usize, sources: &dyn SourceProvider) -> AudioBuffer {
-    let sr = seq.settings.sample_rate;
-    let mut out = AudioBuffer::silence(sr, 2, frames);
-    let range = TimeRange::from_bounds(Tick::from_units(start, sr as i64), Tick::from_units(start + frames as i64, sr as i64));
-    let any_solo = seq.audio_tracks.iter().any(|t| t.solo);
-    for track in &seq.audio_tracks {
-        if track.muted || (any_solo && !track.solo) {
-            continue;
-        }
-        let mut tbuf = AudioBuffer::silence(sr, 2, frames);
-        for item in track.items.iter().filter(|i| i.enabled && i.range().overlaps(&range)) {
-            mix_item(project, item, start, frames, sr, sources, &mut tbuf, 1.0);
-        }
-        // audio transitions: attenuate the covered region of each side
-        for tr in &track.transitions {
-            if !tr.range().overlaps(&range) {
-                continue;
-            }
-            // Re-mix: recompute the covered samples with crossfade gains.
-            let from = tr.from.and_then(|id| track.item(id));
-            let to = tr.to.and_then(|id| track.item(id));
-            let s0 = tr.start.to_units_floor(sr as i64).max(start);
-            let s1 = tr.end().to_units_floor(sr as i64).min(start + frames as i64);
-            if s1 <= s0 {
-                continue;
-            }
-            let n = (s1 - s0) as usize;
-            let off = (s0 - start) as usize;
-            for ch in tbuf.channels.iter_mut() {
-                ch[off..off + n].fill(0.0);
-            }
-            let mut a = AudioBuffer::silence(sr, 2, n);
-            let mut b = AudioBuffer::silence(sr, 2, n);
-            if let Some(f) = from {
-                mix_item(project, f, s0, n, sr, sources, &mut a, 1.0);
-            }
-            if let Some(tt) = to {
-                mix_item(project, tt, s0, n, sr, sources, &mut b, 1.0);
-            }
-            let dur = (tr.end() - tr.start).to_units_floor(sr as i64).max(1) as f32;
-            let base = (s0 - tr.start.to_units_floor(sr as i64)) as f32;
-            for i in 0..n {
-                let p = (base + i as f32) / dur;
-                let (ga, gb) = transitions::audio_gains(&tr.effect.effect, p);
-                for c in 0..2 {
-                    tbuf.channels[c][off + i] += a.channels[c][i] * ga + b.channels[c][i] * gb;
-                }
-            }
-        }
-        let g = db_to_gain(track.volume_db);
-        let pan = (track.pan / 100.0).clamp(-1.0, 1.0) as f32;
-        let (gl, gr) = pan_gains(pan);
-        out.mix_from(&tbuf, &[g * gl, g * gr]);
-    }
-    let mg = db_to_gain(seq.master_volume_db);
-    if (mg - 1.0).abs() > 1e-6 {
-        for ch in &mut out.channels {
-            for s in ch.iter_mut() {
-                *s *= mg;
-            }
-        }
-    }
-    out
+    crate::mixer::mix_graph(project, seq, start, frames, sources, None)
 }
 
-/// -3 dB constant-power pan law, normalised so centre = unity.
-fn pan_gains(pan: f32) -> (f32, f32) {
+/// The summed clip audio of one track (clip gain, clip effects, Volume / Channel Volume / Panner,
+/// audio transitions) for sequence samples `[start, start + frames)`: the track's mixer input.
+pub fn track_input(project: &Project, track: &Track, start: i64, frames: usize, sr: u32, sources: &dyn SourceProvider) -> AudioBuffer {
+    let range = TimeRange::from_bounds(Tick::from_units(start, sr as i64), Tick::from_units(start + frames as i64, sr as i64));
+    let mut tbuf = AudioBuffer::silence(sr, 2, frames);
+    for item in track.items.iter().filter(|i| i.enabled && i.range().overlaps(&range)) {
+        mix_item(project, item, start, frames, sr, sources, &mut tbuf, 1.0);
+    }
+    // audio transitions: attenuate the covered region of each side
+    for tr in &track.transitions {
+        if !tr.range().overlaps(&range) {
+            continue;
+        }
+        // Re-mix: recompute the covered samples with crossfade gains.
+        let from = tr.from.and_then(|id| track.item(id));
+        let to = tr.to.and_then(|id| track.item(id));
+        let s0 = tr.start.to_units_floor(sr as i64).max(start);
+        let s1 = tr.end().to_units_floor(sr as i64).min(start + frames as i64);
+        if s1 <= s0 {
+            continue;
+        }
+        let n = (s1 - s0) as usize;
+        let off = (s0 - start) as usize;
+        for ch in tbuf.channels.iter_mut() {
+            ch[off..off + n].fill(0.0);
+        }
+        let mut a = AudioBuffer::silence(sr, 2, n);
+        let mut b = AudioBuffer::silence(sr, 2, n);
+        if let Some(f) = from {
+            mix_item(project, f, s0, n, sr, sources, &mut a, 1.0);
+        }
+        if let Some(tt) = to {
+            mix_item(project, tt, s0, n, sr, sources, &mut b, 1.0);
+        }
+        let dur = (tr.end() - tr.start).to_units_floor(sr as i64).max(1) as f32;
+        let base = (s0 - tr.start.to_units_floor(sr as i64)) as f32;
+        for i in 0..n {
+            let p = (base + i as f32) / dur;
+            let (ga, gb) = transitions::audio_gains(&tr.effect.effect, p);
+            for c in 0..2 {
+                tbuf.channels[c][off + i] += a.channels[c][i] * ga + b.channels[c][i] * gb;
+            }
+        }
+    }
+    tbuf
+}
+
+/// Balance for stereo signals (clip Panner, stereo track pan): centre = unity on both sides, turning
+/// one way attenuates the other side along the −3 dB constant-power curve (normalised so the
+/// centre is 0 dB); hard left/right silences the opposite side.
+pub fn pan_gains(pan: f32) -> (f32, f32) {
     let a = (pan + 1.0) * std::f32::consts::FRAC_PI_4;
     let k = std::f32::consts::SQRT_2;
     ((a.cos() * k).min(1.0), (a.sin() * k).min(1.0))
@@ -115,19 +102,23 @@ fn mix_item(project: &Project, item: &TrackItem, start: i64, frames: usize, sr: 
     let chv = item.effect("channel_volume").filter(|e| e.enabled && !e.param("bypass").and_then(|p| p.value.as_bool()).unwrap_or(false));
     let pan = item.effect("panner").filter(|e| e.enabled);
     let off = (a0 - start) as usize;
-    for blk in (0..n).step_by(64) {
-        let t_tl = Tick::from_units(a0 + blk as i64, sr as i64);
+    // Gains change on an absolute 64-sample grid, so the output does not depend on how callers cut
+    // the timeline into requests.
+    let mut blk = 0usize;
+    while blk < n {
+        let t_tl = Tick::from_units((a0 + blk as i64).div_euclid(64) * 64, sr as i64);
         let mt = item.source_time_at(t_tl);
         let v = vol.map(|e| db_to_gain(e.f64_at("level", mt))).unwrap_or(1.0);
         let (cl, cr) = chv.map(|e| (db_to_gain(e.f64_at("left", mt)), db_to_gain(e.f64_at("right", mt)))).unwrap_or((1.0, 1.0));
         let (pl, pr) = pan.map(|e| pan_gains((e.f64_at("balance", mt) / 100.0) as f32)).unwrap_or((1.0, 1.0));
         let g = clip_gain * v * extra;
-        let end = (blk + 64).min(n);
+        let end = (((a0 + blk as i64).div_euclid(64) + 1) * 64 - a0).min(n as i64) as usize;
         for i in blk..end {
             let (l, r) = (buf[0][i], buf[1][i]);
             out.channels[0][off + i] += l * g * cl * pl;
             out.channels[1][off + i] += r * g * cr * pr;
         }
+        blk = end;
     }
 }
 

@@ -79,6 +79,8 @@ pub struct PreviewStore {
     audio_memo: Mutex<Vec<AudioMemo>>,
     /// Bumped whenever the set of preview files changes.
     pub generation: AtomicU64,
+    /// Live mixer state shared with playback: held controls, meters, newest project snapshot.
+    pub live: Arc<filmcraft_render::mixer::LiveMix>,
 }
 
 fn video_name(hash: &str) -> String {
@@ -244,9 +246,11 @@ impl PreviewStore {
     /// live mix ([`filmcraft_render::audio::mix_sequence`]) everywhere else.
     pub fn mix(&self, project: &Arc<Project>, seq: ItemId, start: i64, frames: usize, sources: &dyn filmcraft_render::SourceProvider) -> AudioBuffer {
         let Some(q) = project.sequence(seq) else { return AudioBuffer::silence(48_000, 2, frames) };
+        let live = Some(&*self.live);
         let has_audio = self.files.read().unwrap_or_else(|e| e.into_inner()).iter().any(|n| n.ends_with(".wav"));
-        if !has_audio {
-            return filmcraft_render::audio::mix_sequence(project, q, start, frames, sources);
+        // held mixer controls are heard live (rendered previews don't know them)
+        if !has_audio || self.live.is_active() {
+            return filmcraft_render::mixer::mix_graph(project, q, start, frames, sources, live);
         }
         let segs = self.audio_segments(project, seq);
         let mut out = AudioBuffer::silence(q.settings.sample_rate, 2, frames);
@@ -271,7 +275,7 @@ impl PreviewStore {
                     }
                 }
                 _ => {
-                    let b = filmcraft_render::audio::mix_sequence(project, q, pos, n, sources);
+                    let b = filmcraft_render::mixer::mix_graph(project, q, pos, n, sources, live);
                     for c in 0..2 {
                         out.channels[c][off..off + n].copy_from_slice(&b.channels[c.min(b.channels.len() - 1)][..n]);
                     }
