@@ -5,6 +5,7 @@ pub mod dialogs;
 pub mod effect_controls;
 pub mod effects;
 pub mod export_mode;
+pub mod file_dialogs;
 pub mod import_mode;
 pub mod lumetri;
 pub mod meters;

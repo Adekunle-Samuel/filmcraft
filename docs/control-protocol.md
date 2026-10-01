@@ -31,6 +31,9 @@ Methods (handlers in `crates/ui-egui/src/control.rs`):
 Element ids are stable, e.g. `timeline.clip.<id>`, `timeline.track.V1.lock`, `tools.Razor`,
 `project.item.<id>`, `effects.item.gaussian_blur`, `panel.tab.Timeline`, `program.transport.playback.toggle`.
 
+Project files, auto-save, crash recovery and preferences commands (`file.recover`, `prefs.set`, …) and their
+automation ids are listed in [project-files.md](project-files.md).
+
 ## MCP
 `filmcraft-cli mcp` serves MCP on stdio: headless (in-process session; `--demo` / `--project p.fcproj`)
 or `--bridge 127.0.0.1:9876` to drive the running app. Tools: `command_list`, `command_run`,

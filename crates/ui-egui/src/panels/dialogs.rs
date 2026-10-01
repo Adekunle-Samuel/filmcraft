@@ -1,9 +1,15 @@
-//! Modal dialogs (About, Keyboard Shortcuts).
+//! Modal dialogs (About, Keyboard Shortcuts; Preferences/Recovery/Revert in `file_dialogs`).
 
 use crate::{Dialog, FilmcraftApp};
 
 pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
     let Some(d) = app.dialog else { return };
+    if let Some(still_open) = crate::panels::file_dialogs::show(app, ctx, d) {
+        if !still_open && app.dialog == Some(d) {
+            app.dialog = None;
+        }
+        return;
+    }
     let mut open = true;
     match d {
         Dialog::About => {
@@ -32,7 +38,7 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
                 });
             });
         }
-        Dialog::NewSequence => {}
+        Dialog::NewSequence | Dialog::Preferences | Dialog::Recovery | Dialog::RevertConfirm => {}
     }
     if !open {
         app.dialog = None;

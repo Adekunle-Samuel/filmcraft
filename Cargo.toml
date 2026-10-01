@@ -35,6 +35,7 @@ filmcraft-captions = { path = "crates/captions" }
 filmcraft-render = { path = "crates/render" }
 filmcraft-gpu = { path = "crates/gpu" }
 filmcraft-export = { path = "crates/export" }
+filmcraft-format = { path = "crates/format" }
 filmcraft-engine = { path = "crates/engine" }
 filmcraft-ui-egui = { path = "crates/ui-egui" }
 filmcraft-automation = { path = "crates/automation" }

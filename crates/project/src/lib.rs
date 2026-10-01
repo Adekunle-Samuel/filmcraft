@@ -642,7 +642,7 @@ pub struct Sequence {
     pub master_volume_db: f64,
     #[serde(default)]
     pub master_effects: Vec<EffectInstance>,
-    /// Caption tracks (drawn above the video tracks; first = top). Added in project version 2.
+    /// Caption tracks (drawn above the video tracks; first = top). Older files have none (serde default).
     #[serde(default)]
     pub caption_tracks: Vec<CaptionTrack>,
 }
@@ -749,12 +749,7 @@ pub struct Project {
     pub items: BTreeMap<ItemId, ProjectItem>,
     /// Monotonic id source for all id types.
     pub next_id: u64,
-    /// Format version of the serialized project.
-    pub version: u32,
 }
-
-/// 2: sequences gained `caption_tracks` (older projects load with none).
-pub const PROJECT_VERSION: u32 = 2;
 
 impl Default for Project {
     fn default() -> Self {
@@ -770,7 +765,6 @@ impl Project {
             root: Bin { id: BinId(0), name: name.into(), children: Vec::new() },
             items: BTreeMap::new(),
             next_id: 1,
-            version: PROJECT_VERSION,
         }
     }
 
@@ -877,17 +871,13 @@ impl Project {
         })
     }
 
+    /// The bare model as JSON. Project *files* add a schema-versioned envelope; read and write them
+    /// with `filmcraft-format`, not with these.
     pub fn to_json(&self) -> String {
         serde_json::to_string_pretty(self).unwrap_or_default()
     }
     pub fn from_json(s: &str) -> Result<Project, String> {
-        let mut p: Project = serde_json::from_str(s).map_err(|e| e.to_string())?;
-        if p.version > PROJECT_VERSION {
-            return Err(format!("project version {} is newer than this FilmCraft ({PROJECT_VERSION})", p.version));
-        }
-        // Older versions load with serde defaults for new fields; saving writes the current version.
-        p.version = PROJECT_VERSION;
-        Ok(p)
+        serde_json::from_str(s).map_err(|e| e.to_string())
     }
 }
 
@@ -964,9 +954,8 @@ mod tests {
     }
 
     #[test]
-    fn version1_projects_load_without_captions() {
-        let (mut p, _, seq) = demo_project();
-        p.version = 1;
+    fn projects_without_caption_tracks_load() {
+        let (p, _, seq) = demo_project();
         let mut v: serde_json::Value = serde_json::from_str(&p.to_json()).unwrap();
         // a v1 file has no `caption_tracks` key
         let items = v["items"].as_object_mut().unwrap();
@@ -976,7 +965,6 @@ mod tests {
             }
         }
         let q = Project::from_json(&v.to_string()).unwrap();
-        assert_eq!(q.version, PROJECT_VERSION);
         assert!(q.sequence(seq).unwrap().caption_tracks.is_empty());
     }
 

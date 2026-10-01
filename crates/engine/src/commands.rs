@@ -65,6 +65,13 @@ fn has_edit_points(s: &Session) -> std::result::Result<(), String> {
     if s.state.edit_points.is_empty() { Err("no edit points selected".into()) } else { Ok(()) }
 }
 
+fn has_saved_path(s: &Session) -> std::result::Result<(), String> {
+    if s.path.is_some() { Ok(()) } else { Err("the project has not been saved yet".into()) }
+}
+fn has_recovery(s: &Session) -> std::result::Result<(), String> {
+    if s.recovery_candidates().is_empty() { Err("there are no unsaved changes to recover".into()) } else { Ok(()) }
+}
+
 pub(crate) fn has_seq(s: &Session) -> std::result::Result<(), String> {
     s.active_sequence().map(|_| ()).ok_or_else(|| "no sequence is open".into())
 }
@@ -565,41 +572,100 @@ fn build() -> Vec<CommandSpec> {
         }),
         cmd!("file.save", "Save", ["File"], Some("Cmd+S"), r#"{"path":str?}"#, always, |s, p| {
             let path = str_p(p, "path").map(str::to_string).or_else(|| s.path.clone()).ok_or_else(|| bad("file.save", "no path (use Save As)"))?;
-            let data = s.project.to_json();
-            s.services.write_file(&path, data.as_bytes()).map_err(|e| EngineError::Other(e.to_string()))?;
-            s.path = Some(path.clone());
-            s.previews_follow_path();
-            s.saved_revision = s.revision;
-            Ok(json!({"path": path}))
+            write_project(s, &path, true)
         }),
         cmd!("file.saveAs", "Save As…", ["File"], Some("Cmd+Shift+S"), r#"{"path":str}"#, always, |s, p| {
             let path = str_p(p, "path").ok_or_else(|| bad("file.saveAs", "need `path`"))?.to_string();
-            s.services.write_file(&path, s.project.to_json().as_bytes()).map_err(|e| EngineError::Other(e.to_string()))?;
-            s.path = Some(path.clone());
-            s.previews_follow_path();
-            s.saved_revision = s.revision;
-            Ok(json!({"path": path}))
+            write_project(s, &path, true)
+        }),
+        cmd!("file.saveCopy", "Save a Copy…", ["File"], Some("Cmd+Alt+S"), r#"{"path":str}"#, always, |s, p| {
+            let path = str_p(p, "path").ok_or_else(|| bad("file.saveCopy", "need `path`"))?.to_string();
+            write_project(s, &path, false)
+        }),
+        cmd!("file.revert", "Revert", ["File"], None, "{}", has_saved_path, |s, _| {
+            let path = s.path.clone().ok_or_else(|| bad("file.revert", "project was never saved"))?;
+            let keep = s.state.active_sequence;
+            let r = open_project(s, &path)?;
+            if let Some(k) = keep.filter(|k| s.project.sequence(*k).is_some()) {
+                s.state.active_sequence = Some(k);
+                s.state.open_sequences = vec![k];
+            }
+            Ok(r)
         }),
         cmd!("file.open", "Open Project…", ["File"], Some("Cmd+O"), r#"{"path":str}"#, always, |s, p| {
             let path = str_p(p, "path").ok_or_else(|| bad("file.open", "need `path`"))?.to_string();
-            let bytes = s.services.read_file(&path).map_err(|e| EngineError::Other(e.to_string()))?;
-            let proj = filmcraft_project::Project::from_json(&String::from_utf8_lossy(&bytes)).map_err(EngineError::Other)?;
-            s.media = std::sync::Arc::new(crate::MediaPool::default());
-            let first = proj.sequences().next().map(|i| i.id);
-            s.project = std::sync::Arc::new(proj);
-            s.history = Default::default();
-            s.history.limit = 200;
-            s.state = crate::Session::default().state;
-            s.state.active_sequence = first;
-            s.state.open_sequences = first.into_iter().collect();
-            if !cfg!(target_arch = "wasm32") {
-                s.previews.set_dir(Some(crate::previews::dir_for_project(&path)));
+            open_project(s, &path)
+        }),
+        cmd!("file.recover", "Recover Unsaved Changes…", ["File"], None, r#"{"id":str?}"#, has_recovery, |s, p| recover(s, str_p(p, "id"))),
+        cmd!("file.discardRecovery", "Discard Unsaved Changes", [], None, r#"{"id":str?,"all":bool?}"#, has_recovery, |s, p| {
+            let all = bool_p(p, "all").unwrap_or(false);
+            let id = str_p(p, "id").map(str::to_string);
+            let Some(per) = s.persistence.as_mut() else { return Ok(json!({"discarded": 0})) };
+            let mut n = 0;
+            let mut keep = Vec::new();
+            for (i, c) in std::mem::take(&mut per.candidates).into_iter().enumerate() {
+                let hit = all || id.as_deref().map_or(i == 0, |want| want == c.id);
+                if hit {
+                    crate::autosave::discard_candidate(&c).map_err(|e| EngineError::Other(e.to_string()))?;
+                    n += 1;
+                } else {
+                    keep.push(c);
+                }
             }
-            s.path = Some(path);
-            s.revision += 1;
-            s.saved_revision = s.revision;
-            s.events.push(crate::Event::ProjectChanged { revision: s.revision });
-            Ok(Value::Null)
+            per.candidates = keep;
+            if n == 0 {
+                return Err(bad("file.discardRecovery", "no such recovery session"));
+            }
+            Ok(json!({"discarded": n}))
+        }),
+        query!("file.recoveryList", "List Recoverable Sessions", "{}", |s, _| {
+            Ok(s.persistence.as_ref().map(|p| p.candidates_json()).unwrap_or_else(|| json!([])))
+        }),
+        cmd!("file.autoSaveNow", "Auto Save Now", [], None, "{}", always, |s, _| {
+            let per = s.persistence.as_ref().ok_or_else(|| EngineError::Other("auto-save is not running in this session".into()))?;
+            let r = per.auto_save_now().map_err(EngineError::Other)?;
+            s.poll_persistence();
+            Ok(json!({"path": r.map(|p| p.to_string_lossy().into_owned())}))
+        }),
+        query!("file.autoSaveStatus", "Auto Save Status", "{}", |s, _| {
+            let Some(per) = s.persistence.as_ref() else { return Ok(json!({"running": false, "prefs": s.prefs.auto_save})) };
+            Ok(json!({
+                "running": true,
+                "prefs": s.prefs.auto_save,
+                "dataDir": per.data_dir,
+                "sessionDir": per.session_dir,
+                "autoSaveDir": auto_save_dir(s),
+                "status": per.status,
+                "lastAutoSaveAt": per.status.last_auto_save_unix.map(|u| per.local_time(u)),
+                "lastJournalAt": per.status.last_journal_unix.map(|u| per.local_time(u)),
+                "recoverable": per.candidates.len(),
+            }))
+        }),
+        query!("file.listAutoSaves", "Browse Auto-Saves", "{}", |s, _| {
+            let dir = auto_save_dir(s);
+            let files = filmcraft_format::autosave::list_auto_saves(&dir, &auto_save_name(s));
+            Ok(json!({"dir": dir, "files": files.iter().rev().map(|p| p.to_string_lossy().into_owned()).collect::<Vec<_>>()}))
+        }),
+        query!("prefs.get", "Get Preferences", r#"{"key":str?}"#, |s, p| match str_p(p, "key") {
+            Some(k) => s.prefs.get(k).ok_or_else(|| bad("prefs.get", format!("unknown preference `{k}`"))),
+            None => Ok(json!({"values": s.prefs.to_value(), "keys": s.prefs.keys()})),
+        }),
+        cmd!("prefs.set", "Set Preferences", [], None, r#"{"key":str,"value":any}|{"values":{key:value}}"#, always, |s, p| {
+            let mut next = s.prefs.clone();
+            if let Some(k) = str_p(p, "key") {
+                next.set(k, p.get("value").cloned().ok_or_else(|| bad("prefs.set", "need `value`"))?).map_err(|e| bad("prefs.set", e))?;
+            }
+            if let Some(m) = p.get("values").and_then(Value::as_object) {
+                for (k, v) in m {
+                    next.set(k, v.clone()).map_err(|e| bad("prefs.set", e))?;
+                }
+            }
+            s.set_prefs(next).map_err(|e| EngineError::Other(format!("saving preferences: {e}")))?;
+            Ok(s.prefs.to_value())
+        }),
+        cmd!("prefs.reset", "Reset Preferences", [], None, "{}", always, |s, _| {
+            s.set_prefs(Default::default()).map_err(|e| EngineError::Other(format!("saving preferences: {e}")))?;
+            Ok(s.prefs.to_value())
         }),
         cmd!(
             "file.exportMedia",
@@ -2165,4 +2231,108 @@ pub fn inspect_sequence(s: &Session, id: ItemId, q: &filmcraft_project::Sequence
 /// Seconds → ticks helper for callers.
 pub fn secs(s: f64) -> Tick {
     Tick((s * TICKS_PER_SECOND as f64).round() as i64)
+}
+
+// ---------- project files ----------
+
+/// Serialize the project in the current schema and write it (atomically) to `path`. `adopt` =
+/// Save / Save As (the file becomes the project's path and the project is clean); otherwise Save a
+/// Copy. The first save over a file upgraded from an older schema keeps the original as
+/// `<name> (schema vN backup).fcproj`.
+fn write_project(s: &mut Session, path: &str, adopt: bool) -> Result<Value> {
+    let t0 = std::time::Instant::now();
+    let bytes = filmcraft_format::encode(&s.project, false);
+    let mut backup = None;
+    if adopt && s.path.as_deref() == Some(path) && s.loaded_schema < filmcraft_format::SCHEMA_VERSION {
+        let b = schema_backup_path(path, s.loaded_schema);
+        if s.services.read_file(&b).is_err()
+            && let Ok(old) = s.services.read_file(path)
+        {
+            s.services.write_file(&b, &old).map_err(|e| EngineError::Other(format!("{b}: {e}")))?;
+            backup = Some(b);
+        }
+    }
+    s.services.write_file(path, &bytes).map_err(|e| EngineError::Other(format!("{path}: {e}")))?;
+    if adopt {
+        s.path = Some(path.to_string());
+        s.previews_follow_path();
+        s.saved_revision = s.revision;
+        s.loaded_schema = filmcraft_format::SCHEMA_VERSION;
+    }
+    Ok(json!({"path": path, "bytes": bytes.len(), "ms": t0.elapsed().as_secs_f64() * 1000.0, "backup": backup}))
+}
+
+fn schema_backup_path(path: &str, schema: u32) -> String {
+    let stem = path.strip_suffix(".fcproj").unwrap_or(path);
+    format!("{stem} (schema v{schema} backup).fcproj")
+}
+
+/// Make `proj` the session's project (fresh history, media pool and editor state).
+fn install_project(s: &mut Session, proj: filmcraft_project::Project, path: Option<String>, clean: bool) {
+    s.media = std::sync::Arc::new(crate::MediaPool::default());
+    let first = proj.sequences().next().map(|i| i.id);
+    s.project = std::sync::Arc::new(proj);
+    s.history = Default::default();
+    s.history.limit = 200;
+    s.state = crate::Session::default().state;
+    s.state.active_sequence = first;
+    s.state.open_sequences = first.into_iter().collect();
+    if let Some(p) = &path
+        && !cfg!(target_arch = "wasm32")
+    {
+        s.previews.set_dir(Some(crate::previews::dir_for_project(p)));
+    }
+    s.path = path;
+    s.revision += 1;
+    // A recovered project is unsaved: its saved revision is one that never existed.
+    s.saved_revision = if clean { s.revision } else { 0 };
+    s.loaded_schema = filmcraft_format::SCHEMA_VERSION;
+    s.events.push(crate::Event::ProjectChanged { revision: s.revision });
+}
+
+fn open_project(s: &mut Session, path: &str) -> Result<Value> {
+    let bytes = s.services.read_file(path).map_err(|e| EngineError::Other(format!("{path}: {e}")))?;
+    let loaded = filmcraft_format::decode(&bytes).map_err(|e| EngineError::Other(format!("{path}: {e}")))?;
+    let (from, migrated) = (loaded.schema_version, loaded.migrated());
+    install_project(s, loaded.project, Some(path.to_string()), true);
+    s.loaded_schema = from;
+    if migrated {
+        s.toast(format!("Upgraded project from schema v{from} to v{}; the original is kept as a backup when you save", filmcraft_format::SCHEMA_VERSION));
+    }
+    Ok(json!({"path": path, "schemaVersion": from, "migrated": migrated}))
+}
+
+/// Load a recovery candidate (newest when `id` is None) as the current, unsaved project.
+fn recover(s: &mut Session, id: Option<&str>) -> Result<Value> {
+    let per = s.persistence.as_ref().ok_or_else(|| EngineError::Other("recovery is not running".into()))?;
+    let idx = match id {
+        Some(id) => per.candidates.iter().position(|c| c.id == id).ok_or_else(|| bad("file.recover", format!("no recovery session `{id}`")))?,
+        None => 0,
+    };
+    let c = per.candidates[idx].clone();
+    let saved_at = per.local_time(c.meta.saved_unix);
+    let loaded = crate::autosave::load_candidate(&c).map_err(EngineError::Other)?;
+    install_project(s, loaded.project, c.meta.project_path.clone(), false);
+    // Our own journal must hold the recovered state before the old one is deleted.
+    s.sync_persistence();
+    if let Some(per) = s.persistence.as_mut() {
+        per.flush();
+        per.candidates.remove(idx);
+    }
+    crate::autosave::discard_candidate(&c).map_err(|e| EngineError::Other(e.to_string()))?;
+    s.toast(format!("Recovered unsaved changes to {} from {saved_at}", c.meta.project_name));
+    Ok(json!({"id": c.id, "name": c.meta.project_name, "path": c.meta.project_path, "savedAt": saved_at, "revision": c.meta.revision}))
+}
+
+/// Where auto-saves of the current project go.
+fn auto_save_dir(s: &Session) -> std::path::PathBuf {
+    match (&s.path, &s.persistence) {
+        (Some(p), _) => filmcraft_format::autosave::auto_save_dir(std::path::Path::new(p)),
+        (None, Some(per)) => per.data_dir.join(filmcraft_format::autosave::AUTO_SAVE_DIR),
+        (None, None) => std::path::PathBuf::from(filmcraft_format::autosave::AUTO_SAVE_DIR),
+    }
+}
+
+fn auto_save_name(s: &Session) -> String {
+    s.path.as_deref().and_then(|p| std::path::Path::new(p).file_stem()).map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| s.project.name.clone())
 }
