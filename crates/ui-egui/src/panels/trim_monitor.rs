@@ -125,14 +125,15 @@ fn picture(app: &mut FilmcraftApp, ui: &mut egui::Ui, area: Rect, side: &Value, 
     let scale = *buckets.iter().find(|b| **b >= want - 1e-4).unwrap_or(&1.0);
     let scale = scale.min(app.ui.program.res.scale());
     let size_key = (scale * 1000.0) as u32;
-    let key = FrameKey { target: Target::Item(item), frame, size: size_key, revision: 0 };
+    let rev = app.item_revision(item);
+    let key = FrameKey { target: Target::Item(item), frame, size: size_key, revision: rev };
     let project = app.session.project.clone();
     app.frames.request(key, rate.tick_of(frame), scale, &project, 0);
     let ctx = ui.ctx().clone();
     let tex = if let Some(img) = app.frames.get(&key) {
         Some(app.texture_for(&ctx, tex_name, key, &img))
     } else {
-        match app.frames.nearest(Target::Item(item), frame, size_key, 0, 48) {
+        match app.frames.nearest(Target::Item(item), frame, size_key, rev, 48) {
             Some(img) => Some(app.texture_for(&ctx, tex_name, FrameKey { frame: frame - 1, ..key }, &img)),
             None => app.texture_existing(tex_name).map(|(id, _)| id),
         }

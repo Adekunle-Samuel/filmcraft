@@ -34,6 +34,7 @@ pub fn add_generator(p: &mut Project, pool: &MediaPool, src: GeneratorSource, na
             markers: vec![],
             offline: false,
             proxy: None,
+            identity: None,
         }),
         bin,
     );

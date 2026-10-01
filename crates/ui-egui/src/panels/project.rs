@@ -159,6 +159,51 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     }
 }
 
+const OFFLINE: Color32 = Color32::from_rgb(0xe8, 0x5c, 0x5c);
+
+/// Offline / proxy state of a project item for the badges.
+struct Badge {
+    offline: bool,
+    offline_text: &'static str,
+    proxy: bool,
+    /// Proxies are enabled (the badge is lit).
+    proxy_on: bool,
+}
+
+fn media_badge(app: &FilmcraftApp, it: &filmcraft_project::ProjectItem) -> Badge {
+    let mut b = Badge { offline: false, offline_text: "", proxy: false, proxy_on: false };
+    let target = match &it.kind {
+        ItemKind::Subclip { parent, .. } => app.session.project.item(*parent),
+        _ => Some(it),
+    };
+    let Some(m) = target.and_then(|t| t.as_media()) else { return b };
+    let id = target.map(|t| t.id).unwrap_or(it.id);
+    if m.offline {
+        (b.offline, b.offline_text) = (true, "Offline");
+    } else if app.session.offline.missing.contains(&id) {
+        (b.offline, b.offline_text) = (true, "Media missing");
+    } else if let Some(st) = app.session.media.offline_status(id) {
+        b.offline = true;
+        b.offline_text = if st.reason == filmcraft_render::offline::OfflineReason::Unreadable { "Unreadable" } else { "Media missing" };
+    }
+    b.proxy = m.proxy.is_some();
+    b.proxy_on = app.session.media.use_proxies();
+    b
+}
+
+fn paint_badges(ui: &egui::Ui, b: &Badge, at: egui::Pos2, t: &Tokens) {
+    let mut x = at.x;
+    if b.offline {
+        icons::paint(ui.painter(), Rect::from_center_size(pos2(x + 7.0, at.y), vec2(13.0, 13.0)), Icon::Offline, OFFLINE);
+        x += 18.0;
+    }
+    if b.proxy {
+        let pr = Rect::from_min_size(pos2(x, at.y - 7.0), vec2(16.0, 14.0));
+        ui.painter().rect_filled(pr, 2.0, if b.proxy_on { t.accent } else { Color32::from_gray(70) });
+        ui.painter().text(pr.center(), Align2::CENTER_CENTER, "P", Tokens::ui(10.0), Color32::WHITE);
+    }
+}
+
 fn columns(r: Rect) -> [f32; 4] {
     let w = r.width();
     let name_w = (w * 0.46).max(160.0);
@@ -238,7 +283,10 @@ fn list_bin(
                 ui.painter().rect_filled(Rect::from_center_size(pos2(x + 5.0, r.center().y), vec2(8.0, 12.0)), 1.5, Color32::from_rgb(lc[0], lc[1], lc[2]));
                 icons::paint(ui.painter(), Rect::from_center_size(pos2(x + 20.0, r.center().y), vec2(14.0, 14.0)), item_icon(&it.kind), t.icon);
                 let name_clip = ui.painter().with_clip_rect(Rect::from_min_max(r.min, pos2(cols[1] - 6.0, r.max.y)));
-                name_clip.text(pos2(x + 32.0, r.center().y), Align2::LEFT_CENTER, &it.name, Tokens::ui(12.0), t.text);
+                let badge = media_badge(app, &it);
+                let name_col = if badge.offline { OFFLINE } else { t.text };
+                let nr = name_clip.text(pos2(x + 32.0, r.center().y), Align2::LEFT_CENTER, &it.name, Tokens::ui(12.0), name_col);
+                paint_badges(ui, &badge, pos2(nr.max.x + 6.0, r.center().y), &t);
                 let rate = it.frame_rate();
                 let has_v = it.has_video();
                 let cells = [
@@ -310,6 +358,17 @@ fn item_interactions(
                 }
             }
         });
+        if matches!(kind, ItemKind::Media(m) if matches!(m.media, filmcraft_project::MediaRef::File { .. })) {
+            ui.separator();
+            for (label, cmd) in [("Link Media…", "media.linkMedia"), ("Make Offline…", "media.makeOffline")] {
+                if ui.button(label).clicked() {
+                    actions.push(("project.select".into(), json!({"items": [id.0]})));
+                    actions.push((cmd.into(), json!({})));
+                    ui.close();
+                }
+            }
+            ui.separator();
+        }
         if ui.button("Clear").clicked() {
             actions.push(("project.delete".into(), json!({"items": [id.0]})));
             ui.close();
@@ -347,6 +406,21 @@ fn icon_view(app: &mut FilmcraftApp, ui: &mut egui::Ui, root: &Bin, filter: &str
                 ui.painter().image(tex, fitted, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
             } else {
                 icons::paint(ui.painter(), Rect::from_center_size(r.center(), vec2(28.0, 28.0)), item_icon(&it.kind), t.text_faint);
+            }
+            let badge = media_badge(app, &it);
+            if badge.offline {
+                // our own offline marker over the thumbnail: dark red band with a broken link
+                let band = Rect::from_min_max(pos2(r.min.x, r.max.y - 20.0), r.max);
+                ui.painter().rect_filled(band, 0.0, Color32::from_rgba_unmultiplied(0x5c, 0x10, 0x16, 230));
+                icons::paint(ui.painter(), Rect::from_center_size(pos2(band.min.x + 12.0, band.center().y), vec2(13.0, 13.0)), Icon::Offline, Color32::WHITE);
+                ui.painter().text(pos2(band.min.x + 24.0, band.center().y), Align2::LEFT_CENTER, badge.offline_text, Tokens::ui(10.5), Color32::WHITE);
+                app.auto.add(&format!("project.item.{}.offline", id.0), band, badge.offline_text);
+            }
+            if badge.proxy {
+                let pr = Rect::from_min_size(pos2(r.max.x - 22.0, r.min.y + 4.0), vec2(18.0, 14.0));
+                ui.painter().rect_filled(pr, 2.0, if badge.proxy_on { t.accent } else { Color32::from_gray(70) });
+                ui.painter().text(pr.center(), Align2::CENTER_CENTER, "P", Tokens::ui(10.0), Color32::WHITE);
+                app.auto.add(&format!("project.item.{}.proxy", id.0), pr, "Proxy attached");
             }
             let selected = app.session.state.project_selection.contains(id);
             if selected {

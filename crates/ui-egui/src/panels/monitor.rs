@@ -77,19 +77,9 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, which: Which)
         let screen_scale = (pic.width() * ppp / frame_size.0 as f32).min(1.0);
         let scale = quantize_scale(res.scale().min(screen_scale.max(1.0 / 32.0)));
         let frame = rate.frame_at(time);
-        let rev = if matches!(target, Target::Item(_))
-            && app
-                .session
-                .project
-                .item(match target {
-                    Target::Item(i) => i,
-                    Target::Sequence(s) | Target::SequencePlan(s) => s,
-                })
-                .is_some_and(|i| !matches!(i.kind, ItemKind::Sequence(_)))
-        {
-            0
-        } else {
-            app.session.revision
+        let rev = match target {
+            Target::Item(i) => app.item_revision(i),
+            _ => app.session.revision,
         };
         let size_key = (scale * 1000.0) as u32;
         let use_gpu = which == Which::Program && app.gpu.is_some();
@@ -362,7 +352,15 @@ fn transport(app: &mut FilmcraftApp, ui: &mut egui::Ui, row: Rect, which: Which)
             ui.painter().rect_filled(r, 4.0, t.hover);
         }
         let sz = if is_play { 16.0 } else { 14.0 };
-        icons::paint(ui.painter(), Rect::from_center_size(r.center(), vec2(sz, sz)), icon, if resp.hovered() { t.tab_text_active } else { t.icon });
+        let on = cmd == "media.toggleProxies" && app.session.media.use_proxies();
+        let col = if on {
+            t.accent
+        } else if resp.hovered() {
+            t.tab_text_active
+        } else {
+            t.icon
+        };
+        icons::paint(ui.painter(), Rect::from_center_size(r.center(), vec2(sz, sz)), icon, col);
         if resp.clicked() {
             let r = match cmd {
                 "src.markIn" => app.session.execute("markers.markIn", json!({"target": "source"})).map_err(|e| e.to_string()),

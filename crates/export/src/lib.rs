@@ -279,9 +279,10 @@ fn aac_factory(_format: Format, sample_rate: u32, channels: u32, _s: &ExportSett
     )
 }
 
-/// ProRes 422 HQ encoder: sRGB/709 RGBA8 → 10-bit limited-range BT.709 4:2:2.
+/// ProRes 422 encoder (HQ unless the settings pick another flavour): sRGB/709 RGBA8 → 10-bit limited-range BT.709 4:2:2.
 struct ProResEncoder {
     enc: filmcraft_prores::Encoder,
+    profile: filmcraft_prores::Profile,
     w: u32,
     h: u32,
     rate: FrameRate,
@@ -289,7 +290,7 @@ struct ProResEncoder {
 
 impl VideoEncoder for ProResEncoder {
     fn sample_entry(&self) -> SampleEntry {
-        SampleEntry::prores(filmcraft_isobmff::FourCc(*b"apch"), self.w as u16, self.h as u16)
+        SampleEntry::prores(filmcraft_isobmff::FourCc(self.profile.fourcc()), self.w as u16, self.h as u16)
     }
     fn timescale(&self) -> u32 {
         self.rate.num as u32
@@ -332,8 +333,9 @@ pub fn rgba_to_yuv422_10(rgba: &[u8], w: usize, h: usize, y: &mut [u16], cb: &mu
 }
 
 fn prores_factory(format: Format, w: u32, h: u32, rate: FrameRate, _s: &ExportSettings) -> Option<Result<Box<dyn VideoEncoder>>> {
+    let profile = filmcraft_prores::Profile::Hq;
     (format == Format::ProRes)
-        .then(|| Ok(Box::new(ProResEncoder { enc: filmcraft_prores::Encoder::new(filmcraft_prores::Profile::Hq, w, h), w, h, rate }) as Box<dyn VideoEncoder>))
+        .then(|| Ok(Box::new(ProResEncoder { enc: filmcraft_prores::Encoder::new(profile, w, h), profile, w, h, rate }) as Box<dyn VideoEncoder>))
 }
 
 /// H.264 High (our encoder): sRGB/709 RGBA8 → 8-bit limited-range BT.709 4:2:0, VBR at the

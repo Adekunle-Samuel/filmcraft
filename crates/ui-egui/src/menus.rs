@@ -100,6 +100,12 @@ pub fn invoke(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, params: Val
     if let Some(r) = crate::panels::trim_monitor::route_transport(app, ctx, id) {
         return r;
     }
+    if let Some(r) = crate::panels::media_dialogs::route(app, id, &params) {
+        if let Err(e) = &r {
+            app.ui.status = e.clone();
+        }
+        return r;
+    }
     match id {
         "playback.slowForward" | "playback.slowReverse" => {
             app.play(if id == "playback.slowForward" { 0.25 } else { -0.25 });

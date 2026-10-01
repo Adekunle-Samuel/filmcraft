@@ -164,9 +164,38 @@ pub struct MediaClip {
     pub mark_in: Option<Tick>,
     pub mark_out: Option<Tick>,
     pub markers: Vec<Marker>,
+    /// Made offline on purpose (Make Offline / Offline All): renders the offline slate even if
+    /// the file exists. Files that are merely missing are detected at run time instead (the
+    /// engine's media pool), so a project whose media comes back needs no change.
     pub offline: bool,
     /// Proxy media, if attached.
     pub proxy: Option<MediaRef>,
+    /// Size and content fingerprint of the file when it was imported (or last linked); relinking
+    /// checks a candidate against it. None for generators and projects from older builds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub identity: Option<MediaIdentity>,
+}
+
+/// What a media file looked like when it was linked: its size plus a fast content fingerprint
+/// (a 64-bit hash of the size, the first MiB and the last MiB). Cheap to compute on any file and
+/// enough to tell a moved original from a different file with the same name.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct MediaIdentity {
+    pub size: u64,
+    /// Hex-encoded in JSON (`"9f3c…"`), so the value survives JavaScript readers.
+    #[serde(with = "hex_u64")]
+    pub fingerprint: u64,
+}
+
+mod hex_u64 {
+    use serde::{Deserialize, Deserializer, Serializer};
+    pub fn serialize<S: Serializer>(v: &u64, s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_str(&format!("{v:016x}"))
+    }
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<u64, D::Error> {
+        let s = String::deserialize(d)?;
+        u64::from_str_radix(&s, 16).map_err(serde::de::Error::custom)
+    }
 }
 
 impl MediaClip {
@@ -870,6 +899,49 @@ impl Project {
         self.add_item(name, Label::Forest, ItemKind::Sequence(Box::new(seq)), bin)
     }
 
+    /// Re-base an item's media time: whatever was at media time `t` is at `t - delta` afterwards
+    /// (a relink with Align Timecode, a consolidated file that starts later). Moves the source
+    /// in-points, frame holds and keyframes of every track item that shows the item or one of its
+    /// subclips, the subclip ranges, and the clip's own marks and markers.
+    pub fn shift_media_time(&mut self, item: ItemId, delta: Tick) {
+        if delta == Tick::ZERO {
+            return;
+        }
+        let mut users = vec![item];
+        for it in self.items.values_mut() {
+            if let ItemKind::Subclip { parent, range } = &mut it.kind
+                && *parent == item
+            {
+                range.start -= delta;
+                users.push(it.id);
+            }
+        }
+        for it in self.items.values_mut() {
+            if let ItemKind::Sequence(seq) = &mut it.kind {
+                for t in seq.all_tracks_mut() {
+                    for ti in t.items.iter_mut().filter(|ti| users.contains(&ti.item)) {
+                        ti.source_in -= delta;
+                        if let Some(h) = &mut ti.frame_hold {
+                            *h -= delta;
+                        }
+                        for e in &mut ti.effects {
+                            for p in e.params.values_mut() {
+                                for k in &mut p.keyframes {
+                                    k.time -= delta;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        if let Some(m) = self.item_mut(item).and_then(|i| i.as_media_mut()) {
+            m.mark_in = m.mark_in.map(|t| t - delta);
+            m.mark_out = m.mark_out.map(|t| t - delta);
+            m.markers.iter_mut().for_each(|mk| mk.start -= delta);
+        }
+    }
+
     /// Build a track item for `item` placed at `start` covering `source` range (media time).
     pub fn make_track_item(&mut self, item: ItemId, kind: TrackKind, start: Tick, source: TimeRange, seq_rate: FrameRate) -> Option<TrackItem> {
         let it = self.items.get(&item)?;
@@ -949,6 +1021,7 @@ mod tests {
                 markers: vec![],
                 offline: false,
                 proxy: None,
+                identity: None,
             }),
             None,
         );

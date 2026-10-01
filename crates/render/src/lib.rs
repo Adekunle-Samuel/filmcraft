@@ -15,6 +15,7 @@ pub mod graphic_clip;
 pub mod graphics;
 pub mod image;
 pub mod mixer;
+pub mod offline;
 pub mod plan;
 pub mod preview;
 pub mod transitions;

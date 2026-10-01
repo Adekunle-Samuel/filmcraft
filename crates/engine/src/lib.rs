@@ -17,6 +17,7 @@ pub mod interchange;
 pub mod media_pool;
 pub mod mixer;
 pub mod previews;
+pub mod relink;
 pub mod shortcut_presets;
 pub mod shortcuts;
 pub mod trim;
@@ -60,6 +61,17 @@ pub type Result<T> = std::result::Result<T, EngineError>;
 pub trait Services: Send + Sync {
     fn read_file(&self, path: &str) -> std::io::Result<Vec<u8>>;
     fn write_file(&self, path: &str, data: &[u8]) -> std::io::Result<()>;
+    /// Size of a file in bytes (an error when it is missing). Hosts should override this: the
+    /// default reads the whole file.
+    fn file_size(&self, path: &str) -> std::io::Result<u64> {
+        self.read_file(path).map(|b| b.len() as u64)
+    }
+    /// Up to `len` bytes of a file starting at `offset` (fewer at the end of the file).
+    fn read_range(&self, path: &str, offset: u64, len: usize) -> std::io::Result<Vec<u8>> {
+        let b = self.read_file(path)?;
+        let a = (offset as usize).min(b.len());
+        Ok(b[a..(a + len).min(b.len())].to_vec())
+    }
 }
 
 /// Native filesystem services.
@@ -71,6 +83,18 @@ impl Services for FsServices {
     fn write_file(&self, path: &str, data: &[u8]) -> std::io::Result<()> {
         // Atomic + durable: temp file in the same directory, fsync, rename, fsync the directory.
         filmcraft_format::atomic_write(std::path::Path::new(path), data)
+    }
+    fn file_size(&self, path: &str) -> std::io::Result<u64> {
+        let m = std::fs::metadata(path)?;
+        if m.is_file() { Ok(m.len()) } else { Err(std::io::Error::new(std::io::ErrorKind::NotFound, format!("{path} is not a file"))) }
+    }
+    fn read_range(&self, path: &str, offset: u64, len: usize) -> std::io::Result<Vec<u8>> {
+        use std::io::{Read, Seek, SeekFrom};
+        let mut f = std::fs::File::open(path)?;
+        f.seek(SeekFrom::Start(offset))?;
+        let mut out = Vec::with_capacity(len);
+        f.take(len as u64).read_to_end(&mut out)?;
+        Ok(out)
     }
 }
 
@@ -181,6 +205,8 @@ pub struct Session {
     pub trim_play: trim::TrimPlayback,
     /// Keyboard shortcuts (active bindings, presets; `shortcuts.*` commands).
     pub shortcuts: shortcuts::Shortcuts,
+    /// Missing / offline media found by the last scan (Link Media dialog).
+    pub offline: relink::OfflineState,
     /// Nesting depth of [`Session::execute`] (commands that run other commands).
     exec_depth: u32,
 }
@@ -245,6 +271,7 @@ impl Session {
             mixrec: Default::default(),
             trim_play: Default::default(),
             shortcuts: shortcuts::Shortcuts::new(),
+            offline: Default::default(),
             exec_depth: 0,
         }
     }
@@ -557,9 +584,13 @@ mod autosave_tests;
 #[cfg(test)]
 mod file_tests;
 #[cfg(test)]
+mod media_test_util;
+#[cfg(test)]
 mod mixer_tests;
 #[cfg(test)]
 mod previews_tests;
+#[cfg(test)]
+mod relink_tests;
 #[cfg(test)]
 mod shortcuts_tests;
 #[cfg(test)]

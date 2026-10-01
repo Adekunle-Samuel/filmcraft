@@ -169,3 +169,63 @@ UI automation ids: `prefs.autoSave.enabled`, `prefs.autoSave.intervalMinutes`,
 `prefs.autoSave.recoveryIntervalSeconds`, `prefs.ok`, `prefs.cancel`, `prefs.reset`;
 `recovery.recover`, `recovery.later`, `recovery.discard`, `recovery.item.<n>`; `revert.yes`,
 `revert.no` (File ▸ Revert asks first when invoked without params).
+
+## Media: offline and relinking
+
+Media is referenced by path. Each imported file also records its **identity**
+(`MediaClip::identity`): the size and a 64-bit fingerprint of the size, the first MiB and the last
+MiB. Reading 2 MiB is cheap on any file, and it tells a moved original from a different take with
+the same name. The field is optional (`skip_serializing_if`), and older builds ignore it, so it
+needed no schema bump. Projects from older builds
+have no identity, so relinking them skips the fingerprint check.
+
+### Offline media
+
+- **Opening a project** checks every file (`media.findMissing`). Missing items don't stop the open.
+  They render the **offline slate** (`crates/render/src/offline.rs`, our own design: a red striped
+  field, a warning triangle, "MEDIA NOT FOUND", the file name and a hint), their audio is silent,
+  and the app opens the **Link Media** dialog. `file.open` returns `missingMedia`.
+- **Make Offline** (`media.makeOffline {items?, deleteFiles?}`) sets `MediaClip::offline`. The clip
+  then shows "MEDIA SET OFFLINE" even though the file exists, until it is linked again. Files are
+  deleted only with `deleteFiles: true`.
+- The media pool caches sources per item **and** per reference (path, offline flag). So relinking,
+  Make Offline and undoing either take effect on the next frame.
+
+### Link Media
+
+| Command | |
+|---|---|
+| `media.findMissing` | `{missing: [{item, name, fileName, path, status: missing\|offline\|proxyMissing, duration, startTimecode}]}` |
+| `media.status {item?}` | per item: `online`, `missing`, `offline`, `unreadable` or `generated`, plus identity and proxy |
+| `media.linkMedia` | File ▸ Link Media… (rescans; the UI opens the dialog) |
+| `media.relink {item, path, force?, relinkOthers?=true, alignTimecode?, match?}` | check, link, then the others |
+| `media.autoRelink {from, to}` / `{folder}` | batch relink: a folder-prefix remap, or a search of a folder tree |
+| `media.search {folder, item?, exactName?=true}` | ranked candidates with `ok`, `identityMatch`, `problems` |
+| `media.replaceFootage {item, path}` | relink without checks (Replace Footage) |
+| `media.offlineAll` | close the dialog and leave the rest offline |
+
+`match` selects which properties must agree. Each defaults as shown:
+
+- `fileName` (true): the file name stem;
+- `extension` (true);
+- `clipId` (true): the fingerprint; a mismatch is refused with "not the same file…";
+- `duration` (true): within one frame;
+- `mediaStart` (false): the start timecode;
+- `metadata` (true): frame size, frame rate and audio channels.
+
+`force: true` links regardless. **Relink others automatically** works out the folder remap from the
+file just linked, by dropping the common trailing path components (`/Volumes/A/shoot/a.mov` →
+`/Users/me/shoot/a.mov` gives `/Volumes/A` → `/Users/me`). It applies the remap to the other missing
+files and checks each one. It also looks in the new file's folder. Windows and macOS separators both
+work. **Align Timecode** keeps clips on the same timecode when the new file starts at a different
+timecode: the clips' source in-points, keyframes, marks and markers move with it
+(`Project::shift_media_time`). One relink, together with the files it pulls along, is one undo step.
+
+Link Media dialog automation ids: `linkMedia.row.<n>`,
+`linkMedia.match.<fileName|extension|clipId|duration|mediaStart|metadata>`, `linkMedia.alignTimecode`,
+`linkMedia.relinkOthers`, `linkMedia.folder`, `linkMedia.browse`, `linkMedia.exactName`,
+`linkMedia.search`, `linkMedia.candidate.<n>`, `linkMedia.preview`, `linkMedia.link`,
+`linkMedia.locate`, `linkMedia.offline`, `linkMedia.offlineAll`, `linkMedia.cancel`.
+Make Offline: `makeOffline.keep|delete|ok|cancel`. In the Project panel, offline items get a
+broken-link badge (`project.item.<id>.offline` in Icon view).
+

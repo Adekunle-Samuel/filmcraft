@@ -258,7 +258,17 @@ pub(crate) fn media_info(name: &str, spec: &MediaSpec) -> MediaInfo {
 }
 
 pub(crate) fn media_clip(media: MediaRef, info: MediaInfo) -> MediaClip {
-    MediaClip { media, info, interpret: Interpretation::default(), mark_in: None, mark_out: None, markers: Vec::new(), offline: false, proxy: None }
+    MediaClip {
+        media,
+        info,
+        interpret: Interpretation::default(),
+        mark_in: None,
+        mark_out: None,
+        markers: Vec::new(),
+        offline: false,
+        proxy: None,
+        identity: None,
+    }
 }
 
 /// The file path behind an item (following subclips), if it is file media.

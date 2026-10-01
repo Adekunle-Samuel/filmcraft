@@ -46,7 +46,9 @@ record|soloSafe|output|input|fx.<n>|send.<n>|meter|name>` (popup entries below t
 `timeline.track.A1.lane[.kf.<n>]`, `audioGain.<set|adjust|normalizeMax|normalizeAll|ok|cancel|peak>`.
 
 Project files, auto-save, crash recovery and preferences commands (`file.recover`, `prefs.set`, …) and their
-automation ids are listed in [project-files.md](project-files.md).
+automation ids are listed in [project-files.md](project-files.md). That file also lists the offline
+media and relinking commands and dialog ids (`media.findMissing`,
+`media.relink`, `media.autoRelink`, `media.search`, `media.makeOffline`, `media.status`, `linkMedia.*`).
 
 **Trim mode** (`crates/engine/src/trim.rs`): `trim.selectEditPoint` / `trim.selectNearest` enter trim
 mode (the Program monitor becomes the Trim Monitor, ids `trimMonitor.*`); `trim.monitor` returns what

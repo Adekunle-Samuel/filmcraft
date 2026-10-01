@@ -292,6 +292,59 @@ pub struct UiState {
     /// Pen tool: path points placed so far (sequence pixels).
     #[serde(default)]
     pub pen_points: Vec<[f64; 2]>,
+    /// Link Media dialog (open when Some).
+    #[serde(default)]
+    pub link_media: Option<LinkMediaDraft>,
+    /// Make Offline dialog: Some(delete files?) while open.
+    #[serde(default)]
+    pub make_offline: Option<bool>,
+}
+
+/// File ▸ Link Media… (shown automatically when a project opens with missing media).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct LinkMediaDraft {
+    /// Selected row (index into the missing list).
+    pub row: usize,
+    pub file_name: bool,
+    pub extension: bool,
+    pub clip_id: bool,
+    pub duration: bool,
+    pub media_start: bool,
+    pub metadata: bool,
+    pub align_timecode: bool,
+    pub relink_others: bool,
+    /// Search: folder and "Display only exact name matches".
+    pub folder: String,
+    pub exact_name: bool,
+    /// Search results for the selected row: (path, ok, identity match, problems).
+    pub candidates: Vec<(String, bool, Option<bool>, String)>,
+    pub candidate: Option<usize>,
+    /// Rows the user set offline in this session of the dialog (item ids).
+    pub skipped: Vec<u64>,
+    pub message: String,
+}
+
+impl Default for LinkMediaDraft {
+    fn default() -> Self {
+        Self {
+            row: 0,
+            file_name: true,
+            extension: true,
+            clip_id: true,
+            duration: true,
+            media_start: false,
+            metadata: true,
+            align_timecode: false,
+            relink_others: true,
+            folder: String::new(),
+            exact_name: true,
+            candidates: vec![],
+            candidate: None,
+            skipped: vec![],
+            message: String::new(),
+        }
+    }
 }
 
 /// The Audio Gain dialog (Clip ▸ Audio Gain…, G).
@@ -356,6 +409,8 @@ impl Default for UiState {
             audio_gain: AudioGainDraft::default(),
             gfx_edit: None,
             pen_points: vec![],
+            link_media: None,
+            make_offline: None,
         }
     }
 }

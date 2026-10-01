@@ -1,0 +1,350 @@
+//! Media management dialogs: Link Media (offline media / relink) and Make Offline.
+//! Their state lives in `UiState` (serde), so agents can open and fill them as well as click them;
+//! the actions run engine commands (`media.*`).
+//!
+//! Automation ids:
+//! - Link Media: `linkMedia.row.<n>`, `linkMedia.match.<fileName|extension|clipId|duration|mediaStart|metadata>`,
+//!   `linkMedia.alignTimecode`, `linkMedia.relinkOthers`, `linkMedia.folder`, `linkMedia.browse`,
+//!   `linkMedia.exactName`, `linkMedia.search`, `linkMedia.candidate.<n>`, `linkMedia.preview`,
+//!   `linkMedia.link`, `linkMedia.locate`, `linkMedia.offline`, `linkMedia.offlineAll`, `linkMedia.cancel`.
+//! - Make Offline: `makeOffline.keep`, `makeOffline.delete`, `makeOffline.ok`, `makeOffline.cancel`.
+
+use egui::{Color32, RichText};
+use serde_json::{Value, json};
+
+use crate::FilmcraftApp;
+use crate::state::LinkMediaDraft;
+
+type Elems = Vec<(String, egui::Rect, String)>;
+
+fn push(elems: &mut Elems, id: impl Into<String>, r: &egui::Response, label: impl Into<String>) {
+    elems.push((id.into(), r.rect, label.into()));
+}
+
+/// Draw whichever media dialogs are open; open Link Media when a project needs it.
+pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
+    if app.session.offline.prompt && app.ui.link_media.is_none() {
+        app.ui.link_media = Some(LinkMediaDraft::default());
+    }
+    if app.ui.link_media.is_some() {
+        link_media(app, ctx);
+    }
+    if app.ui.make_offline.is_some() {
+        make_offline(app, ctx);
+    }
+}
+
+/// Menu / shortcut entry points without params open a dialog. Returns None for other ids.
+pub fn route(app: &mut FilmcraftApp, id: &str, params: &Value) -> Option<Result<Value, String>> {
+    let empty = params.as_object().is_none_or(|m| m.is_empty());
+    if !empty {
+        return None;
+    }
+    let enabled = |app: &FilmcraftApp, id: &str| filmcraft_engine::find_command(id).map_or(Ok(()), |c| (c.enabled)(&app.session));
+    match id {
+        "media.linkMedia" => {
+            let r = app.session.execute("media.linkMedia", json!({})).map_err(|e| e.to_string());
+            if let Ok(v) = &r
+                && v["missing"].as_array().is_some_and(|a| a.is_empty())
+            {
+                app.ui.status = "All media is online.".into();
+                return Some(r);
+            }
+            app.ui.link_media = Some(LinkMediaDraft::default());
+            Some(r)
+        }
+        "media.makeOffline" => Some(enabled(app, id).map(|_| {
+            app.ui.make_offline = Some(false);
+            json!({"dialog": "makeOffline"})
+        })),
+        _ => None,
+    }
+}
+
+fn missing_list(app: &FilmcraftApp) -> Vec<(u64, String, String, String, &'static str)> {
+    app.session
+        .offline
+        .missing
+        .iter()
+        .filter_map(|id| {
+            let it = app.session.project.item(*id)?;
+            let m = it.as_media()?;
+            let filmcraft_project::MediaRef::File { path } = &m.media else { return None };
+            let fname = path.rsplit(['/', '\\']).next().unwrap_or(path).to_string();
+            Some((id.0, it.name.clone(), fname, path.clone(), if m.offline { "Offline" } else { "Missing" }))
+        })
+        .collect()
+}
+
+fn match_params(d: &LinkMediaDraft) -> Value {
+    json!({
+        "match": {"fileName": d.file_name, "extension": d.extension, "clipId": d.clip_id, "duration": d.duration, "mediaStart": d.media_start, "metadata": d.metadata},
+        "alignTimecode": d.align_timecode,
+        "relinkOthers": d.relink_others,
+    })
+}
+
+fn preview_texture(app: &FilmcraftApp, ctx: &egui::Context, path: &str) -> Option<egui::TextureHandle> {
+    let key = egui::Id::new(("link-preview", path));
+    if let Some(t) = ctx.data(|d| d.get_temp::<Option<egui::TextureHandle>>(key)) {
+        return t;
+    }
+    let tex = app.session.media.open_file(path, &*app.session.services).ok().and_then(|src| {
+        let t = filmcraft_time::Tick(src.info().duration.0 / 3);
+        let f = src.video_frame(filmcraft_media::FrameRequest { time: t, scale: 0.25 }).ok()?;
+        let img = egui::ColorImage::from_rgba_unmultiplied([f.width as usize, f.height as usize], &f.to_rgba8());
+        Some(ctx.load_texture(format!("link-preview-{path}"), img, egui::TextureOptions::LINEAR))
+    });
+    ctx.data_mut(|d| d.insert_temp(key, tex.clone()));
+    tex
+}
+
+fn link_media(app: &mut FilmcraftApp, ctx: &egui::Context) {
+    let Some(mut d) = app.ui.link_media.clone() else { return };
+    let rows: Vec<_> = missing_list(app).into_iter().filter(|r| !d.skipped.contains(&r.0)).collect();
+    if rows.is_empty() {
+        app.ui.link_media = None;
+        app.session.offline.prompt = false;
+        return;
+    }
+    d.row = d.row.min(rows.len() - 1);
+    let mut elems: Elems = Vec::new();
+    let mut keep = true;
+    let mut action: Option<&str> = None;
+    let accent = app.tokens.accent;
+    let sel_path = d.candidate.and_then(|c| d.candidates.get(c)).map(|c| c.0.clone());
+    let preview = sel_path.as_deref().and_then(|p| preview_texture(app, ctx, p));
+    egui::Window::new("Link Media").collapsible(false).resizable(false).default_width(760.0).anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0]).show(ctx, |ui| {
+        ui.label(format!("{} clip(s) can't find their media. Locate them, search a folder, or leave them offline.", rows.len()));
+        ui.add_space(6.0);
+        egui::Grid::new("link-media-rows").num_columns(4).striped(true).spacing([14.0, 4.0]).show(ui, |ui| {
+            for h in ["Clip Name", "File Name", "File Path", "Status"] {
+                ui.label(RichText::new(h).strong());
+            }
+            ui.end_row();
+            for (k, (_, name, fname, path, status)) in rows.iter().enumerate() {
+                let r = ui.selectable_label(d.row == k, name);
+                push(&mut elems, format!("linkMedia.row.{k}"), &r, name.clone());
+                if r.clicked() && d.row != k {
+                    d.row = k;
+                    d.candidates.clear();
+                    d.candidate = None;
+                }
+                ui.label(fname);
+                ui.label(RichText::new(path).small());
+                ui.label(RichText::new(*status).color(Color32::from_rgb(0xe0, 0x5a, 0x5a)));
+                ui.end_row();
+            }
+        });
+        ui.separator();
+        ui.horizontal(|ui| {
+            ui.label("Match file properties:");
+            for (id, label, v) in [
+                ("fileName", "File Name", &mut d.file_name),
+                ("extension", "File Extension", &mut d.extension),
+                ("clipId", "Clip ID (fingerprint)", &mut d.clip_id),
+                ("duration", "Duration", &mut d.duration),
+                ("mediaStart", "Media Start", &mut d.media_start),
+                ("metadata", "Frame Size / Rate", &mut d.metadata),
+            ] {
+                let r = ui.checkbox(v, label);
+                push(&mut elems, format!("linkMedia.match.{id}"), &r, label);
+            }
+        });
+        ui.horizontal(|ui| {
+            let r = ui.checkbox(&mut d.align_timecode, "Align Timecode");
+            push(&mut elems, "linkMedia.alignTimecode", &r, "Align Timecode");
+            let r = ui.checkbox(&mut d.relink_others, "Relink others automatically");
+            push(&mut elems, "linkMedia.relinkOthers", &r, "Relink others automatically");
+        });
+        ui.separator();
+        ui.horizontal(|ui| {
+            ui.label("Search in:");
+            let r = ui.add(egui::TextEdit::singleline(&mut d.folder).desired_width(360.0).hint_text("folder"));
+            push(&mut elems, "linkMedia.folder", &r, "folder");
+            let r = ui.button("Browse…");
+            push(&mut elems, "linkMedia.browse", &r, "Browse…");
+            if r.clicked() {
+                action = Some("browse");
+            }
+            let r = ui.checkbox(&mut d.exact_name, "Exact name matches only");
+            push(&mut elems, "linkMedia.exactName", &r, "Exact name matches only");
+            let r = ui.button("Search");
+            push(&mut elems, "linkMedia.search", &r, "Search");
+            if r.clicked() {
+                action = Some("search");
+            }
+        });
+        ui.horizontal(|ui| {
+            ui.vertical(|ui| {
+                ui.set_width(520.0);
+                if d.candidates.is_empty() {
+                    ui.label(RichText::new("No candidates yet — Search a folder or Locate the file.").weak());
+                }
+                for (k, (path, ok, idm, problems)) in d.candidates.iter().enumerate() {
+                    let mark = match (ok, idm) {
+                        (true, Some(true)) => "✔ same file",
+                        (true, _) => "✔ matches",
+                        (false, Some(false)) => "✖ different file",
+                        _ => "✖",
+                    };
+                    let text = format!("{mark}  {path}");
+                    let r = ui.selectable_label(
+                        d.candidate == Some(k),
+                        RichText::new(&text).color(if *ok { Color32::LIGHT_GREEN } else { Color32::from_rgb(0xe0, 0x8a, 0x6a) }),
+                    );
+                    let r = if problems.is_empty() { r } else { r.on_hover_text(problems) };
+                    push(&mut elems, format!("linkMedia.candidate.{k}"), &r, text);
+                    if r.clicked() {
+                        d.candidate = Some(k);
+                    }
+                }
+            });
+            let (rect, _) = ui.allocate_exact_size(egui::vec2(192.0, 108.0), egui::Sense::hover());
+            ui.painter().rect_filled(rect, 3.0, Color32::from_rgb(12, 12, 12));
+            match &preview {
+                Some(t) => {
+                    let fitted = crate::panels::monitor::fit(rect, t.size()[0] as f32, t.size()[1] as f32);
+                    ui.painter().image(t.id(), fitted, egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)), Color32::WHITE);
+                }
+                None => {
+                    ui.painter().text(rect.center(), egui::Align2::CENTER_CENTER, "Preview", crate::theme::Tokens::ui(11.0), Color32::GRAY);
+                }
+            }
+            elems.push(("linkMedia.preview".into(), rect, "preview".into()));
+        });
+        if !d.message.is_empty() {
+            ui.colored_label(Color32::from_rgb(0xe0, 0x8a, 0x6a), &d.message);
+        }
+        ui.add_space(6.0);
+        ui.horizontal(|ui| {
+            for (id, label) in [("offlineAll", "Offline All"), ("offline", "Offline"), ("cancel", "Cancel"), ("locate", "Locate…")] {
+                let r = ui.button(label);
+                push(&mut elems, format!("linkMedia.{id}"), &r, label);
+                if r.clicked() {
+                    action = Some(id);
+                }
+            }
+            let r = ui.add_enabled(d.candidate.is_some(), egui::Button::new(RichText::new("Link").color(Color32::WHITE)).fill(accent));
+            push(&mut elems, "linkMedia.link", &r, "Link");
+            if r.clicked() {
+                action = Some("link");
+            }
+        });
+    });
+    for (id, r, l) in elems {
+        app.auto.add(&id, r, &l);
+    }
+    if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+        action = Some("cancel");
+    }
+    let (item, ..) = rows[d.row].clone();
+    let relink = |app: &mut FilmcraftApp, d: &mut LinkMediaDraft, path: String| {
+        let mut p = match_params(d);
+        p["item"] = json!(item);
+        p["path"] = json!(path);
+        match app.session.execute("media.relink", p) {
+            Ok(v) => {
+                d.message.clear();
+                d.candidates.clear();
+                d.candidate = None;
+                app.ui.status = format!("Linked {} clip(s)", v["relinked"].as_array().map_or(0, Vec::len));
+            }
+            Err(e) => d.message = e.to_string(),
+        }
+    };
+    match action {
+        Some("browse") => {
+            if let Some(f) = app.hooks.pick_folder.as_mut().and_then(|f| f()) {
+                d.folder = f;
+            }
+        }
+        Some("search") => {
+            let mut p = match_params(&d);
+            p["folder"] = json!(d.folder);
+            p["item"] = json!(item);
+            p["exactName"] = json!(d.exact_name);
+            match app.session.execute("media.search", p) {
+                Ok(v) => {
+                    d.candidates = v["results"][0]["candidates"]
+                        .as_array()
+                        .map(|a| {
+                            a.iter()
+                                .map(|c| {
+                                    let probs =
+                                        c["problems"].as_array().map(|p| p.iter().filter_map(Value::as_str).collect::<Vec<_>>().join("; ")).unwrap_or_default();
+                                    (c["path"].as_str().unwrap_or_default().to_string(), c["ok"] == json!(true), c["identityMatch"].as_bool(), probs)
+                                })
+                                .collect()
+                        })
+                        .unwrap_or_default();
+                    d.candidate = d.candidates.iter().position(|c| c.1);
+                    d.message = if d.candidates.is_empty() { "Nothing found with that name.".into() } else { String::new() };
+                }
+                Err(e) => d.message = e.to_string(),
+            }
+        }
+        Some("locate") => {
+            let exts: Vec<&str> =
+                filmcraft_media::VIDEO_EXTENSIONS.iter().chain(filmcraft_media::AUDIO_EXTENSIONS).chain(filmcraft_media::STILL_EXTENSIONS).copied().collect();
+            if let Some(path) = app.hooks.pick_files.as_mut().and_then(|f| f(&exts).into_iter().next()) {
+                relink(app, &mut d, path);
+            }
+        }
+        Some("link") => {
+            if let Some(path) = d.candidate.and_then(|c| d.candidates.get(c)).map(|c| c.0.clone()) {
+                relink(app, &mut d, path);
+            }
+        }
+        Some("offline") => {
+            d.skipped.push(item);
+            d.candidates.clear();
+            d.candidate = None;
+        }
+        Some("offlineAll") | Some("cancel") => {
+            let _ = app.session.execute("media.offlineAll", json!({}));
+            keep = false;
+        }
+        _ => {}
+    }
+    app.ui.link_media = keep.then_some(d);
+}
+
+fn make_offline(app: &mut FilmcraftApp, ctx: &egui::Context) {
+    let Some(mut delete) = app.ui.make_offline else { return };
+    let mut elems: Elems = Vec::new();
+    let mut keep = true;
+    let mut ok = false;
+    let n = app.session.state.project_selection.len();
+    egui::Window::new("Make Offline").collapsible(false).resizable(false).anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0]).show(ctx, |ui| {
+        ui.label(format!("Make {n} selected clip(s) offline. Their clips show the offline slate until you link them again."));
+        let r = ui.radio(!delete, "Media files remain on disk");
+        push(&mut elems, "makeOffline.keep", &r, "Media files remain on disk");
+        if r.clicked() {
+            delete = false;
+        }
+        let r = ui.radio(delete, "Media files are deleted");
+        push(&mut elems, "makeOffline.delete", &r, "Media files are deleted");
+        if r.clicked() {
+            delete = true;
+        }
+        ui.horizontal(|ui| {
+            let r = ui.button("Cancel");
+            push(&mut elems, "makeOffline.cancel", &r, "Cancel");
+            keep &= !r.clicked();
+            let r = ui.button("OK");
+            push(&mut elems, "makeOffline.ok", &r, "OK");
+            ok = r.clicked();
+        });
+    });
+    for (id, r, l) in elems {
+        app.auto.add(&id, r, &l);
+    }
+    if ok {
+        if let Err(e) = app.session.execute("media.makeOffline", json!({"deleteFiles": delete})) {
+            app.ui.status = e.to_string();
+        }
+        keep = false;
+    }
+    app.ui.make_offline = (keep && !ctx.input(|i| i.key_pressed(egui::Key::Escape))).then_some(delete);
+}

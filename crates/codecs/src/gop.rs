@@ -33,6 +33,8 @@ struct State {
     /// Decoded frames by presentation pts (bounded).
     frames: BTreeMap<i64, Arc<VideoFrame>>,
     bytes: usize,
+    /// The shared decoder is out decoding (see [`GopCache::frame`]).
+    busy: bool,
 }
 
 /// Decoder + decoded-frame cache for one video track.
@@ -45,7 +47,7 @@ pub struct GopCache {
 
 impl GopCache {
     pub fn new(explicit_color: Option<ColorInfo>) -> Self {
-        Self { state: Mutex::new(State { decoder: None, next: usize::MAX, frames: BTreeMap::new(), bytes: 0 }), explicit_color, budget: 384 << 20 }
+        Self { state: Mutex::new(State { decoder: None, next: usize::MAX, frames: BTreeMap::new(), bytes: 0, busy: false }), explicit_color, budget: 384 << 20 }
     }
 
     fn store(&self, st: &mut State, pts: i64, mut f: VideoFrame) {
@@ -68,6 +70,11 @@ impl GopCache {
     }
 
     /// The frame presented at `target` (track units, clamped to the stream).
+    ///
+    /// The decoder is taken out of the shared state while it decodes, so the lock is never held
+    /// across a decode: decoders may run slices on rayon, and a rayon worker waiting in a decode
+    /// can pick up another render job that asks this same source for a frame. A request that
+    /// finds the shared decoder busy decodes with a private decoder instead of waiting.
     pub fn frame(&self, s: &dyn VideoSamples, target: i64) -> crate::Result<Arc<VideoFrame>> {
         let n = s.count();
         let i = s.sample_at(target.max(0)).or_else(|| (n > 0).then(|| n - 1)).ok_or_else(|| CodecError::Decode("empty track".into()))?;
@@ -76,47 +83,31 @@ impl GopCache {
         if let Some(f) = st.frames.get(&want_pts) {
             return Ok(f.clone());
         }
-        if st.decoder.is_none() {
-            st.decoder = Some(s.make_decoder()?);
-            st.next = usize::MAX;
+        let shared = !st.busy;
+        let (mut dec, mut next) = if shared {
+            st.busy = true;
+            (st.decoder.take(), st.next)
+        } else {
+            (None, usize::MAX)
+        };
+        drop(st);
+        let decoded = (|| -> crate::Result<Vec<crate::video::DecodedFrame>> {
+            if dec.is_none() {
+                dec = Some(s.make_decoder()?);
+                next = usize::MAX;
+            }
+            let d = dec.as_mut().expect("decoder");
+            Self::decode_to(s, d.as_mut(), &mut next, i, want_pts, n)
+        })();
+        let mut st = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        if shared {
+            st.busy = false;
+            st.decoder = dec;
+            st.next = if decoded.is_ok() { next } else { usize::MAX };
         }
-        let mut key = s.sync_before(i);
-        // Continue the running decoder when the wanted sample is ahead within this GOP run.
-        let continuing = st.next != usize::MAX && st.next > key && st.next <= i + 16 && st.next <= n;
-        if !continuing {
-            // The container's sync flags may be wrong for the codec (an MP4 without `stss` marks
-            // every sample): step back to a sample the decoder can start from.
-            while key > 0 {
-                let data = s.read(key)?;
-                if st.decoder.as_ref().expect("decoder").is_random_access(&data) != Some(false) {
-                    break;
-                }
-                key = s.sync_before(key - 1);
-            }
-            if let Some(d) = st.decoder.as_mut() {
-                d.reset();
-            }
-            st.next = key;
-        }
-        let limit = (i + 64).min(n);
-        while st.next < limit {
-            let k = st.next;
-            let data = s.read(k)?;
-            let out = st.decoder.as_mut().expect("decoder").decode(&data, s.pts(k))?;
-            st.next += 1;
-            for d in out {
-                self.store(&mut st, d.pts, d.frame);
-            }
-            if st.frames.contains_key(&want_pts) {
-                break;
-            }
-        }
-        if !st.frames.contains_key(&want_pts) {
-            let out = st.decoder.as_mut().expect("decoder").flush();
-            for d in out {
-                self.store(&mut st, d.pts, d.frame);
-            }
-            st.next = usize::MAX;
+        let out = decoded?;
+        for d in out {
+            self.store(&mut st, d.pts, d.frame);
         }
         // nearest decoded frame at or before the wanted pts (robust to decoder pts quirks)
         st.frames
@@ -124,5 +115,51 @@ impl GopCache {
             .cloned()
             .or_else(|| st.frames.range(..=want_pts).next_back().map(|(_, f)| f.clone()))
             .ok_or_else(|| CodecError::Decode("frame not produced".into()))
+    }
+
+    /// Decode with `d` (positioned at `next`) until the picture with `want_pts` (sample `i`) comes out.
+    fn decode_to(
+        s: &dyn VideoSamples,
+        d: &mut dyn VideoDecoder,
+        next: &mut usize,
+        i: usize,
+        want_pts: i64,
+        n: usize,
+    ) -> crate::Result<Vec<crate::video::DecodedFrame>> {
+        let mut key = s.sync_before(i);
+        // Continue the running decoder when the wanted sample is ahead within this GOP run.
+        let continuing = *next != usize::MAX && *next > key && *next <= i + 16 && *next <= n;
+        if !continuing {
+            // The container's sync flags may be wrong for the codec (an MP4 without `stss` marks
+            // every sample): step back to a sample the decoder can start from.
+            while key > 0 {
+                let data = s.read(key)?;
+                if d.is_random_access(&data) != Some(false) {
+                    break;
+                }
+                key = s.sync_before(key - 1);
+            }
+            d.reset();
+            *next = key;
+        }
+        let limit = (i + 64).min(n);
+        let mut out = Vec::new();
+        let mut found = false;
+        while *next < limit {
+            let k = *next;
+            let data = s.read(k)?;
+            let pics = d.decode(&data, s.pts(k))?;
+            *next += 1;
+            found |= pics.iter().any(|p| p.pts == want_pts);
+            out.extend(pics);
+            if found {
+                break;
+            }
+        }
+        if !found {
+            out.extend(d.flush());
+            *next = usize::MAX;
+        }
+        Ok(out)
     }
 }

@@ -23,6 +23,7 @@ fn project() -> (Arc<Project>, ItemId, SourceMap) {
                 markers: vec![],
                 offline: false,
                 proxy: None,
+                identity: None,
             }),
             None,
         )
@@ -125,6 +126,7 @@ fn caption_burn_in_h264_ffmpeg_oracle() {
             markers: vec![],
             offline: false,
             proxy: None,
+            identity: None,
         }),
         None,
     );
