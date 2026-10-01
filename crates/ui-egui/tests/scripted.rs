@@ -442,3 +442,30 @@ fn keyboard_shortcuts_dialog_assigns_live_and_cancel_restores() {
     assert!(d.sequence()["playhead"].as_i64().unwrap() < ph, "Timeline ▸ Left steps back");
     assert_eq!(track_clips(&d.sequence(), 0).len(), n0 + 1);
 }
+
+/// Waveform peaks are cached per item id; ids repeat across projects, so opening another project
+/// must not reuse the previous project's peaks (it showed a long mission-audio clip as silent).
+#[test]
+fn waveform_peaks_do_not_survive_opening_another_project() {
+    let mut d = Driver::demo();
+    let mut first = None;
+    for _ in 0..2000 {
+        d.frames(1);
+        let peaks = d.harness.state().tl.peaks.lock().unwrap().iter().map(|(k, v)| (*k, v.clone())).next();
+        if peaks.is_some() {
+            first = peaks;
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    let (item, old) = first.expect("the demo timeline computes waveform peaks");
+    // Reopen the same project from disk: same item ids, new media pool.
+    let path = std::env::temp_dir().join(format!("fc-peaks-{}.fcproj", std::process::id()));
+    let path = path.to_string_lossy().to_string();
+    d.exec("file.saveAs", json!({"path": path}));
+    d.exec("file.open", json!({"path": path}));
+    d.frames(2);
+    let _ = std::fs::remove_file(&path);
+    let now = d.harness.state().tl.peaks.lock().unwrap().get(&item).cloned();
+    assert!(now.is_none_or(|p| !std::sync::Arc::ptr_eq(&p, &old)), "peaks from the previous project were reused");
+}

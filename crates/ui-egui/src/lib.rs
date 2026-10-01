@@ -250,6 +250,7 @@ impl FilmcraftApp {
                 FrameServer::default_workers(),
             ));
             self.textures.clear();
+            self.tl.reset_media_caches();
         }
     }
 

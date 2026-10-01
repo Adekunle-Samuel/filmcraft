@@ -42,6 +42,16 @@ pub struct TlState {
     zoom_anchor: Option<(f64, f32)>,
 }
 
+impl TlState {
+    /// Forget cached waveform peaks: they are keyed by item id, and ids repeat across projects
+    /// (opening another project would otherwise show the old project's waveforms). Peak jobs
+    /// still running finish into the old maps and are dropped.
+    pub fn reset_media_caches(&mut self) {
+        self.peaks = Default::default();
+        self.peaks_pending = Default::default();
+    }
+}
+
 #[derive(Clone, Debug)]
 pub enum Drag {
     Scrub,
@@ -544,6 +554,8 @@ fn request_peaks(app: &mut FilmcraftApp, item: ItemId) -> Option<Arc<Vec<(f32, f
     if let Some(p) = app.tl.peaks.lock().unwrap_or_else(|e| e.into_inner()).get(&item) {
         return Some(p.clone());
     }
+    // No source: try again on a later frame instead of leaving the item pending forever.
+    let src = app.session.source(item)?;
     {
         let mut pend = app.tl.peaks_pending.lock().unwrap_or_else(|e| e.into_inner());
         if pend.contains(&item) {
@@ -551,7 +563,6 @@ fn request_peaks(app: &mut FilmcraftApp, item: ItemId) -> Option<Arc<Vec<(f32, f
         }
         pend.push(item);
     }
-    let src = app.session.source(item)?;
     let peaks = app.tl.peaks.clone();
     let pending = app.tl.peaks_pending.clone();
     let dur = src.info().duration;
