@@ -492,8 +492,20 @@ fn build() -> Vec<CommandSpec> {
             }
             let mut ids = Vec::new();
             let mut errors = Vec::new();
+            let mut sequences = Vec::new();
+            let mut reports = Vec::new();
             for path in paths {
                 match s.services.read_file(&path) {
+                    Ok(b) if crate::interchange::detect(&path, &b).is_some() => {
+                        let fmt = crate::interchange::detect(&path, &b).expect("detected");
+                        match crate::interchange::import(s, &path, &b, fmt) {
+                            Ok(r) => {
+                                sequences.extend(r["sequences"].as_array().cloned().unwrap_or_default());
+                                reports.push(r);
+                            }
+                            Err(e) => errors.push(format!("{path}: {e}")),
+                        }
+                    }
                     Ok(b) => match import_bytes(s, &path, b.into(), None) {
                         Ok(id) => ids.push(id.0),
                         Err(e) => errors.push(format!("{path}: {e}")),
@@ -501,10 +513,37 @@ fn build() -> Vec<CommandSpec> {
                     Err(e) => errors.push(format!("{path}: {e}")),
                 }
             }
-            if ids.is_empty() && !errors.is_empty() {
+            if ids.is_empty() && sequences.is_empty() && !errors.is_empty() {
                 return Err(EngineError::Other(errors.join("; ")));
             }
-            Ok(json!({"items": ids, "errors": errors}))
+            if reports.is_empty() {
+                Ok(json!({"items": ids, "errors": errors}))
+            } else {
+                Ok(json!({"items": ids, "sequences": sequences, "documents": reports, "errors": errors}))
+            }
+        }),
+        cmd!("file.exportInterchange", "Export Interchange", [], None, r#"{"format":"edl|xml|fcpxml|otio","path":str,"sequence":id?}"#, has_seq, |s, p| {
+            crate::interchange::export(s, p)
+        }),
+        cmd!("file.exportEdl", "EDL…", ["File", "Export"], None, r#"{"path":str}"#, has_seq, |s, p| {
+            let mut q = p.clone();
+            q["format"] = json!("edl");
+            crate::interchange::export(s, &q)
+        }),
+        cmd!("file.exportFcp7Xml", "Final Cut Pro XML…", ["File", "Export"], None, r#"{"path":str}"#, has_seq, |s, p| {
+            let mut q = p.clone();
+            q["format"] = json!("xml");
+            crate::interchange::export(s, &q)
+        }),
+        cmd!("file.exportFcpxml", "FCPXML…", ["File", "Export"], None, r#"{"path":str}"#, has_seq, |s, p| {
+            let mut q = p.clone();
+            q["format"] = json!("fcpxml");
+            crate::interchange::export(s, &q)
+        }),
+        cmd!("file.exportOtio", "OpenTimelineIO…", ["File", "Export"], None, r#"{"path":str}"#, has_seq, |s, p| {
+            let mut q = p.clone();
+            q["format"] = json!("otio");
+            crate::interchange::export(s, &q)
         }),
         cmd!("file.save", "Save", ["File"], Some("Cmd+S"), r#"{"path":str?}"#, always, |s, p| {
             let path = str_p(p, "path").map(str::to_string).or_else(|| s.path.clone()).ok_or_else(|| bad("file.save", "no path (use Save As)"))?;

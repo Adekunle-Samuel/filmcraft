@@ -1398,6 +1398,7 @@ dependencies = [
  "filmcraft-export",
  "filmcraft-frame",
  "filmcraft-geom",
+ "filmcraft-interchange",
  "filmcraft-media",
  "filmcraft-project",
  "filmcraft-render",

@@ -205,3 +205,24 @@ fn ripple_trim_to_playhead_q_w() {
     assert_eq!(s.active_sequence().unwrap().duration(), d1 - rate.tick_of(6));
     assert_eq!(s.playhead(), start2, "playhead parks on the new edit");
 }
+
+#[test]
+fn interchange_roundtrip_through_files() {
+    let dir = std::env::temp_dir().join(format!("fc-ix-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut s = demo();
+    let n0 = clip_ids(&s, 0).len();
+    for (cmd, ext) in [("file.exportFcp7Xml", "xml"), ("file.exportOtio", "otio"), ("file.exportFcpxml", "fcpxml"), ("file.exportEdl", "edl")] {
+        let path = dir.join(format!("demo.{ext}")).to_string_lossy().to_string();
+        s.execute(cmd, json!({"path": path})).unwrap();
+        let r = s.execute("file.import", json!({"paths": [path]})).unwrap();
+        let seq = r["sequences"][0].as_u64().unwrap_or_else(|| panic!("{ext}: no sequence in {r}"));
+        assert_eq!(s.state.active_sequence, Some(ItemId(seq)), "{ext}: imported sequence is opened");
+        // FCP7 XML and OTIO carry our generator (synthetic) media; FCPXML/EDL only file media.
+        if matches!(ext, "xml" | "otio") {
+            assert_eq!(clip_ids(&s, 0).len(), n0, "{ext}: V1 clip count survives the round trip");
+        }
+        s.execute("sequence.open", json!({"item": s.state.open_sequences[0].0})).unwrap();
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}

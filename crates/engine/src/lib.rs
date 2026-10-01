@@ -10,6 +10,7 @@
 
 pub mod commands;
 pub mod demo;
+pub mod interchange;
 pub mod media_pool;
 pub mod trim;
 
