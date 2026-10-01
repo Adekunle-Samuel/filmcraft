@@ -39,7 +39,7 @@ Status: ✅ done · 🟡 in progress · ⬜ not started. Estimates are remaining
 | M8 | Colour | 🟡 | Lumetri: basic, creative + looks, RGB & hue curves, wheels, HSL secondary, vignette; basic scopes | LUT import UI, colour match, colour management + HDR (PQ/HLG, log, tone mapping) | 8–12 |
 | M9 | More codecs | 🟡 | ProRes decode+encode, AAC decode+encode, HEVC Main/Main 10 decoder (bit-exact on 41 fixtures, ~225 fps 1080p), Matroska/WebM import (H.264/HEVC/ProRes/MJPEG + AAC/FLAC/MP3/Vorbis/PCM) | VP9 and Opus (in progress), AV1 (rav1d), DNxHR, MXF, hardware decode | 12–20 |
 | M10 | Graphics & captions | ⬜ | — | Text engine, Type tool, Essential Graphics, captions (SRT/VTT/SCC), speech-to-text | 20–30 |
-| M11 | Interchange & project management | 🟡 | `.fcproj` save/open | Autosave/recovery, FCP7 XML, FCPXML, EDL, OTIO, relink, project manager, proxies | 15 |
+| M11 | Interchange & project management | 🟡 | `.fcproj` schema versions + migrations, atomic saves, Save a Copy/Revert, auto-save ring + crash-recovery journal (Preferences ▸ Auto Save, recovery prompt), FCP7 XML, FCPXML, EDL, OTIO | Relink/offline, project manager, proxies | 8 |
 | M12–M16 | Web (WASM), platform, long tail | 🟡 | L0–L4 crates compile to wasm32 | Web app shell (file access, WebCodecs, audio), ~850 remaining commands and dialogs, performance hardening | 40–65 |
 
 ## Running now

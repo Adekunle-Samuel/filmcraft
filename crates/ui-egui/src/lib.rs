@@ -55,6 +55,12 @@ pub enum Dialog {
     About,
     Shortcuts,
     NewSequence,
+    /// Preferences ▸ Auto Save.
+    Preferences,
+    /// "Recover unsaved changes from <time>?" (shown at startup when a dead session left some).
+    Recovery,
+    /// "Are you sure you want to discard your changes?" (File ▸ Revert).
+    RevertConfirm,
 }
 
 #[derive(Default)]
@@ -81,6 +87,7 @@ pub struct FilmcraftApp {
     pub audio: Option<Box<dyn AudioOut>>,
     pub hooks: HostHooks,
     pub dialog: Option<Dialog>,
+    pub file_dialogs: panels::file_dialogs::FileDialogState,
     pub auto: automation::Registry,
     /// Named textures (monitors, thumbnails) with the key they show.
     textures: HashMap<String, (FrameKey, TextureHandle)>,
@@ -158,6 +165,7 @@ impl FilmcraftApp {
 
 impl FilmcraftApp {
     pub fn new(session: Session) -> Self {
+        let recovery = !session.recovery_candidates().is_empty();
         let frames = Arc::new(FrameServer::new(
             session.media.clone(),
             session.services.clone(),
@@ -171,7 +179,9 @@ impl FilmcraftApp {
             playback: Playback { speed: 1.0, ..Default::default() },
             audio: None,
             hooks: HostHooks::default(),
-            dialog: None,
+            // Unsaved changes left by a session that died are offered first thing.
+            dialog: recovery.then_some(Dialog::Recovery),
+            file_dialogs: Default::default(),
             auto: Default::default(),
             textures: HashMap::new(),
             control_rx: None,
@@ -602,6 +612,11 @@ impl FilmcraftApp {
         let ctx = ui.ctx().clone();
         self.auto.begin_frame();
         self.frames.set_context(&ctx);
+        self.session.poll_persistence();
+        if self.session.persistence.is_some() && self.session.is_dirty() {
+            // Keep polling the auto-save worker (status, "also save the project" results).
+            ctx.request_repaint_after(std::time::Duration::from_secs(1));
+        }
         self.sync_pool();
         for ev in self.session.drain_events() {
             match ev {
@@ -782,6 +797,12 @@ impl eframe::App for FilmcraftApp {
         }
         self.issue_screenshots(ctx);
         self.collect_screenshots(ctx);
+    }
+
+    fn on_exit(&mut self) {
+        // Flush the recovery journal and stop the auto-save worker; a session with nothing unsaved
+        // removes its journal, one with unsaved changes keeps it for the next launch.
+        self.session.shutdown();
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {

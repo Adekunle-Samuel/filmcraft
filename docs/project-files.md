@@ -78,3 +78,90 @@ one. If a step fails, the temp file is removed and the old file is untouched.
 | `file.open {path}` | File ▸ Open Project… (⌘O) | returns `{schemaVersion, migrated}` |
 
 In the UI, Save / Save As / Save a Copy without a `path` show a file dialog.
+
+## Auto Save
+
+Preferences ▸ Auto Save (Edit ▸ Preferences ▸ Auto Save…, ⌘,; FilmCraft ▸ Settings… on macOS) works
+like Premiere's:
+
+| Setting | Key | Default |
+|---|---|---|
+| Automatically save projects | `autoSave.enabled` | on |
+| Automatically Save Every N minute(s) | `autoSave.intervalMinutes` | 5 (1–1440) |
+| Maximum Project Versions | `autoSave.maxVersions` | 20 (1–1000) |
+| Auto Save also saves the current project(s) | `autoSave.saveCurrentProject` | off |
+| Keep a recovery copy of unsaved changes | `autoSave.recoveryJournal` | on |
+| Update it at least every N second(s) | `autoSave.recoveryIntervalSeconds` | 5 (1–600) |
+
+At each interval, if the project changed since the last auto-save, a copy is written to the
+`Auto-Save` folder next to the project as `<name>-YYYY-MM-DD_HH-MM-SS.fcproj` (local time). An
+unsaved project uses `<data dir>/Auto-Save/`. After each write the oldest copies beyond the limit are
+deleted. Only files named exactly `<name>-<timestamp>.fcproj` are ever deleted. An auto-save is an
+ordinary project file: open it with File ▸ Open Project. `file.listAutoSaves` lists them, newest
+first.
+
+Preferences are stored in `<data dir>/preferences.json`. The `prefs.*` commands read and change them.
+
+## Crash recovery
+
+Premiere's auto-save can lose up to one interval of work. FilmCraft also keeps a **recovery journal**:
+
+- Whenever the project has unsaved changes, a snapshot is written to
+  `<data dir>/Recovery/<started>-<pid>[-<n>]/snapshot.fcproj`, plus `session.json` (time, revision, project
+  name and path). It is written about 1 s after the last edit, or after at most
+  `recoveryIntervalSeconds` while edits keep coming. Saving the project deletes the snapshot.
+- Each running FilmCraft holds an OS file lock on `<session>/lock`. When the process dies (crash,
+  `kill -9`, power loss) the OS releases the lock.
+- At startup, every other session directory whose lock can be taken and that has a snapshot is a
+  recovery candidate. FilmCraft asks: *"FilmCraft quit unexpectedly while 'X' had unsaved changes.
+  Recover unsaved changes from 2026-10-01 00:02:09?"*, with the buttons **Recover**, **Not Now** and
+  **Discard**. Stale directories without a snapshot are removed. Journals of running sessions are
+  never touched.
+- Recovering loads the snapshot as an **unsaved** project with its original path, so Save writes
+  over the original file. The recovered state goes into the new session's own journal before the old
+  journal is deleted.
+- A normal quit with nothing unsaved removes the session directory. Quitting with unsaved changes
+  keeps the snapshot, marked `cleanExit`, and FilmCraft offers it on the next launch ("FilmCraft was
+  closed while … had unsaved changes"). There is no "Save changes?" prompt on quit yet, so this
+  keeps the work.
+
+Desktop flags: `--recover` recovers the newest candidate without asking. `--no-recover` starts
+without asking; the changes stay available through File ▸ Recover Unsaved Changes…. `--data-dir
+<dir>` (or `FILMCRAFT_DATA_DIR`) moves the data directory. The default is `~/Library/Application
+Support/FilmCraft` on macOS, `%APPDATA%\FilmCraft` on Windows, and `$XDG_DATA_HOME/filmcraft` or
+`~/.local/share/filmcraft` elsewhere.
+
+### Cost
+
+The UI thread only gives the worker thread an `Arc<Project>`: the immutable snapshot the engine
+already keeps for undo, passed through a channel. JSON encoding and all file I/O run on the
+`filmcraft-autosave` thread. Measured on the development Mac (release build) with a 2,000-clip project
+(`cargo test --release -p filmcraft-format --test fixtures -- --nocapture`):
+
+| Step | Time | Size |
+|---|---|---|
+| encode, compact (what is written) | 2.5 ms | 1.4 MB |
+| encode, pretty (not used) | 7.1 ms | 5.6 MB |
+| decode | 4.6 ms | |
+| atomic write + fsync (APFS SSD) | 30 ms | |
+
+In the running app with the demo project, a recovery write measured 0.1 ms to encode and 27 ms to
+write (two fsynced files).
+
+## Commands
+
+| Id | |
+|---|---|
+| `file.recoveryList` | candidates: `id`, `projectName`, `projectPath`, `savedAt`, `revision`, `cleanExit`… |
+| `file.recover {id?}` | recover (newest when no `id`). From the UI, `{}` opens the recovery dialog |
+| `file.discardRecovery {id?, all?}` | delete a candidate's journal |
+| `file.autoSaveNow` | write an auto-save now (if anything is unsaved) |
+| `file.autoSaveStatus` | prefs, folders, last auto-save / journal times, last encode/write ms and bytes |
+| `file.listAutoSaves` | auto-save files of the current project, newest first |
+| `prefs.get {key?}` / `prefs.set {key, value}` or `{values:{…}}` / `prefs.reset` | preferences |
+
+UI automation ids: `prefs.autoSave.enabled`, `prefs.autoSave.intervalMinutes`,
+`prefs.autoSave.maxVersions`, `prefs.autoSave.saveCurrentProject`, `prefs.autoSave.recoveryJournal`,
+`prefs.autoSave.recoveryIntervalSeconds`, `prefs.ok`, `prefs.cancel`, `prefs.reset`;
+`recovery.recover`, `recovery.later`, `recovery.discard`, `recovery.item.<n>`; `revert.yes`,
+`revert.no` (File ▸ Revert asks first when invoked without params).
