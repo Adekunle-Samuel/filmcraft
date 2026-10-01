@@ -1,8 +1,4 @@
-# Third-party assets
+# Assets
 
-| File | Licence | Source |
-|---|---|---|
-| `fonts/Inter-*.ttf` | SIL OFL 1.1 (`fonts/OFL-Inter.txt`) | https://rsms.me/inter |
-| `fonts/JetBrainsMono-Regular.ttf` | SIL OFL 1.1 (`fonts/OFL-JetBrainsMono.txt`) | https://www.jetbrains.com/lp/mono/ |
-
-All icons are drawn in code (`crates/ui-egui/src/icons.rs`); no Adobe artwork is used.
+Every file here is listed in [`../ATTRIBUTION.md`](../ATTRIBUTION.md) and has a `<file>.attribution` sidecar.
+Rules: [`../AGENTS.md`](../AGENTS.md) §1. No Adobe artwork, open licences only, every asset attributed.

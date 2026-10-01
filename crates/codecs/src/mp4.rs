@@ -1,10 +1,6 @@
-//! MP4/MOV media source with GOP-aware random access.
-//!
-//! Seeking: find the sample whose presentation interval covers the requested time, decode forward
-//! from the preceding sync sample, and cache every decoded frame (keyed by pts). Playback requests
-//! for the next frames therefore hit the cache or continue the running decoder without re-seeking.
+//! MP4/MOV media source with GOP-aware random access (see [`crate::gop`]).
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use filmcraft_color::{ColorInfo, Matrix, Primaries, Range, Transfer};
@@ -14,17 +10,9 @@ use filmcraft_media::{AudioStreamInfo, FrameRequest, MediaError, MediaInfo, Medi
 use filmcraft_time::{FrameRate, Tick};
 
 use crate::audio::{PacketDecoder, decode_pcm};
+use crate::gop::{GopCache, VideoSamples};
 use crate::video::VideoDecoder;
 use crate::{CodecError, make_video_decoder};
-
-struct VideoState {
-    decoder: Option<Box<dyn VideoDecoder>>,
-    /// Next sample (decode order) to feed.
-    next: usize,
-    /// Decoded frames by presentation pts (bounded).
-    frames: BTreeMap<i64, Arc<VideoFrame>>,
-    bytes: usize,
-}
 
 struct AudioState {
     decoder: Option<PacketDecoder>,
@@ -40,13 +28,10 @@ pub struct Mp4Source {
     file: Mp4File,
     vtrack: Option<usize>,
     atrack: Option<usize>,
-    video: Mutex<VideoState>,
+    video: GopCache,
     audio: Mutex<AudioState>,
-    /// Colour from an explicit `colr` box, if the file has one.
-    explicit_color: Option<ColorInfo>,
     /// Cumulative sample start frames for the audio track (for packet lookup).
     audio_starts: Vec<i64>,
-    cache_budget: usize,
 }
 
 pub fn sniff(b: &[u8]) -> bool {
@@ -184,11 +169,9 @@ impl Mp4Source {
             file,
             vtrack,
             atrack,
-            video: Mutex::new(VideoState { decoder: None, next: usize::MAX, frames: BTreeMap::new(), bytes: 0 }),
+            video: GopCache::new(explicit_color),
             audio: Mutex::new(AudioState { decoder: None, packets: HashMap::new(), order: Vec::new(), last_decoded: None }),
-            explicit_color,
             audio_starts,
-            cache_budget: 384 << 20,
         })
     }
 
@@ -196,80 +179,10 @@ impl Mp4Source {
         self.file.read_sample(&self.bytes[..], track, i).map_err(|e| CodecError::Container(e.to_string()))
     }
 
-    fn store(&self, st: &mut VideoState, pts: i64, mut f: VideoFrame) {
-        // An explicit container `colr` box wins; otherwise keep what the decoder signalled.
-        if let Some(c) = self.explicit_color
-            && !matches!(f.data, filmcraft_frame::PixelData::Rgba8(_) | filmcraft_frame::PixelData::RgbaF32(_))
-        {
-            f.color = c;
-        }
-        st.bytes += f.byte_size();
-        st.frames.insert(pts, Arc::new(f));
-        // evict frames far from the most recent (keep a window around the working position)
-        while st.bytes > self.cache_budget && st.frames.len() > 2 {
-            let first = *st.frames.keys().next().expect("non-empty");
-            let last = *st.frames.keys().next_back().expect("non-empty");
-            let victim = if pts - first > last - pts { first } else { last };
-            if let Some(v) = st.frames.remove(&victim) {
-                st.bytes -= v.byte_size();
-            }
-        }
-    }
-
     fn video_at(&self, t: Tick) -> crate::Result<Arc<VideoFrame>> {
         let ti = self.vtrack.ok_or_else(|| CodecError::Unsupported("no video".into()))?;
-        let track = &self.file.tracks[ti];
-        let ts = track.timescale as i64;
-        let target = t.to_rational_floor(1, ts).max(0);
-        let i = track
-            .sample_at_presentation_time(target)
-            .or_else(|| (!track.samples.is_empty()).then(|| track.samples.len() - 1))
-            .ok_or_else(|| CodecError::Decode("empty track".into()))?;
-        let want_pts = track.samples[i].pts;
-        let mut st = self.video.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some(f) = st.frames.get(&want_pts) {
-            return Ok(f.clone());
-        }
-        if st.decoder.is_none() {
-            st.decoder = Some(make_video_decoder(&track.entries[0])?);
-            st.next = usize::MAX;
-        }
-        let key = track.sync_sample_before(i);
-        // Continue the running decoder when the wanted sample is ahead within this GOP run.
-        let continuing = st.next != usize::MAX && st.next > key && st.next <= i + 16 && st.next <= track.samples.len();
-        if !continuing {
-            if let Some(d) = st.decoder.as_mut() {
-                d.reset();
-            }
-            st.next = key;
-        }
-        let limit = (i + 64).min(track.samples.len());
-        while st.next < limit {
-            let n = st.next;
-            let data = self.read(ti, n)?;
-            let pts = track.samples[n].pts;
-            let out = st.decoder.as_mut().expect("decoder").decode(&data, pts)?;
-            st.next += 1;
-            for d in out {
-                self.store(&mut st, d.pts, d.frame);
-            }
-            if st.frames.contains_key(&want_pts) {
-                break;
-            }
-        }
-        if !st.frames.contains_key(&want_pts) {
-            let out = st.decoder.as_mut().expect("decoder").flush();
-            for d in out {
-                self.store(&mut st, d.pts, d.frame);
-            }
-            st.next = usize::MAX;
-        }
-        // nearest decoded frame at or before the wanted pts (robust to decoder pts quirks)
-        st.frames
-            .get(&want_pts)
-            .cloned()
-            .or_else(|| st.frames.range(..=want_pts).next_back().map(|(_, f)| f.clone()))
-            .ok_or_else(|| CodecError::Decode("frame not produced".into()))
+        let ts = self.file.tracks[ti].timescale as i64;
+        self.video.frame(&Mp4Video { src: self, track: ti }, t.to_rational_floor(1, ts))
     }
 
     fn audio_packet(&self, st: &mut AudioState, i: usize) -> crate::Result<Arc<Vec<Vec<f32>>>> {
@@ -312,6 +225,33 @@ impl Mp4Source {
             st.packets.remove(&old);
         }
         Ok(p)
+    }
+}
+
+/// The MP4 video track as a [`VideoSamples`] table.
+struct Mp4Video<'a> {
+    src: &'a Mp4Source,
+    track: usize,
+}
+
+impl VideoSamples for Mp4Video<'_> {
+    fn count(&self) -> usize {
+        self.src.file.tracks[self.track].samples.len()
+    }
+    fn pts(&self, i: usize) -> i64 {
+        self.src.file.tracks[self.track].samples[i].pts
+    }
+    fn sync_before(&self, i: usize) -> usize {
+        self.src.file.tracks[self.track].sync_sample_before(i)
+    }
+    fn sample_at(&self, t: i64) -> Option<usize> {
+        self.src.file.tracks[self.track].sample_at_presentation_time(t)
+    }
+    fn read(&self, i: usize) -> crate::Result<Vec<u8>> {
+        self.src.read(self.track, i)
+    }
+    fn make_decoder(&self) -> crate::Result<Box<dyn VideoDecoder>> {
+        make_video_decoder(&self.src.file.tracks[self.track].entries[0])
     }
 }
 

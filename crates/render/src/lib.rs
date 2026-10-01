@@ -8,6 +8,7 @@
 //! The same code renders monitors, thumbnails and exports, and is the oracle for the GPU path.
 
 pub mod audio;
+pub mod audio_fx;
 pub mod blend;
 pub mod effects;
 pub mod image;

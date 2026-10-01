@@ -11,12 +11,15 @@
 //! - [`openers`]: the openers to register with the engine's media pool.
 
 pub mod audio;
+pub mod gop;
+pub mod mkv;
 pub mod mp4;
 pub mod video;
 
 use std::sync::{Arc, RwLock};
 
 pub use audio::AudioFileSource;
+pub use mkv::MkvSource;
 pub use mp4::Mp4Source;
 pub use video::{DecodedFrame, VideoDecoder, VideoDecoderFactory};
 
@@ -65,9 +68,9 @@ pub fn make_video_decoder(entry: &filmcraft_isobmff::SampleEntry) -> Result<Box<
     Err(CodecError::Unsupported(format!("no decoder for {} video", entry.codec.name())))
 }
 
-/// Openers for the engine's media pool (MP4/MOV, standalone audio).
+/// Openers for the engine's media pool (MP4/MOV, Matroska/WebM, standalone audio).
 pub fn openers() -> Vec<filmcraft_media::Opener> {
-    vec![mp4::opener, audio::opener]
+    vec![mp4::opener, mkv::opener, audio::opener]
 }
 
 /// Convenience: an `Arc` media source from bytes (tries MP4/MOV then audio files).
