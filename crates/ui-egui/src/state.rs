@@ -295,9 +295,113 @@ pub struct UiState {
     /// Pen tool: path points placed so far (sequence pixels).
     #[serde(default)]
     pub pen_points: Vec<[f64; 2]>,
+    /// Link Media dialog (open when Some).
+    #[serde(default)]
+    pub link_media: Option<LinkMediaDraft>,
+    /// Create Proxies dialog (open when Some).
+    #[serde(default)]
+    pub create_proxies: Option<ProxyDraft>,
+    /// Project Manager dialog (open when Some).
+    #[serde(default)]
+    pub project_manager: Option<ProjectManagerDraft>,
+    /// Make Offline dialog: Some(delete files?) while open.
+    #[serde(default)]
+    pub make_offline: Option<bool>,
     /// Open colour dialog (Interpret Footage ▸ Color Management, Sequence ▸ Color Management).
     #[serde(default)]
     pub color_dialog: Option<ColorDialog>,
+}
+
+/// File ▸ Link Media… (shown automatically when a project opens with missing media).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct LinkMediaDraft {
+    /// Selected row (index into the missing list).
+    pub row: usize,
+    pub file_name: bool,
+    pub extension: bool,
+    pub clip_id: bool,
+    pub duration: bool,
+    pub media_start: bool,
+    pub metadata: bool,
+    pub align_timecode: bool,
+    pub relink_others: bool,
+    /// Search: folder and "Display only exact name matches".
+    pub folder: String,
+    pub exact_name: bool,
+    /// Search results for the selected row: (path, ok, identity match, problems).
+    pub candidates: Vec<(String, bool, Option<bool>, String)>,
+    pub candidate: Option<usize>,
+    /// Rows the user set offline in this session of the dialog (item ids).
+    pub skipped: Vec<u64>,
+    pub message: String,
+}
+
+impl Default for LinkMediaDraft {
+    fn default() -> Self {
+        Self {
+            row: 0,
+            file_name: true,
+            extension: true,
+            clip_id: true,
+            duration: true,
+            media_start: false,
+            metadata: true,
+            align_timecode: false,
+            relink_others: true,
+            folder: String::new(),
+            exact_name: true,
+            candidates: vec![],
+            candidate: None,
+            skipped: vec![],
+            message: String::new(),
+        }
+    }
+}
+
+/// Clip ▸ Proxy ▸ Create Proxies….
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ProxyDraft {
+    pub items: Vec<u64>,
+    pub preset: String,
+    /// Empty = a Proxies folder next to the original media.
+    pub destination: String,
+}
+
+/// File ▸ Project Manager….
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ProjectManagerDraft {
+    pub sequences: Vec<u64>,
+    /// "collect" | "consolidate"
+    pub mode: String,
+    pub preset: String,
+    pub exclude_unused: bool,
+    pub handles: u32,
+    pub include_proxies: bool,
+    pub include_previews: bool,
+    pub destination: String,
+    /// Last dry-run estimate: (original bytes, resulting bytes, files).
+    pub estimate: Option<(u64, u64, usize)>,
+    pub message: String,
+}
+
+impl Default for ProjectManagerDraft {
+    fn default() -> Self {
+        Self {
+            sequences: vec![],
+            mode: "collect".into(),
+            preset: "prores_lt".into(),
+            exclude_unused: true,
+            handles: 30,
+            include_proxies: true,
+            include_previews: false,
+            destination: String::new(),
+            estimate: None,
+            message: String::new(),
+        }
+    }
 }
 
 /// Colour dialogs: drafts are applied with one engine command on OK.
@@ -372,6 +476,10 @@ impl Default for UiState {
             audio_gain: AudioGainDraft::default(),
             gfx_edit: None,
             pen_points: vec![],
+            link_media: None,
+            create_proxies: None,
+            project_manager: None,
+            make_offline: None,
             color_dialog: None,
         }
     }

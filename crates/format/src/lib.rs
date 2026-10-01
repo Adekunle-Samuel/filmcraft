@@ -26,6 +26,7 @@
 //!   No-op step; older builds would otherwise drop these fields silently when saving.
 //! - **v5** (M8.8): colour management (sequence working space, Interpret Footage colour space,
 //!   project LUT library). No-op step, for the same reason.
+//! - **v6** (M11.7/M11.9): media identity fingerprints and ingest settings. No-op step.
 
 pub mod atomic;
 pub mod autosave;
@@ -44,7 +45,7 @@ pub type Migration = fn(Value) -> Result<Value, String>;
 
 /// `MIGRATIONS[i]` upgrades schema `i + 1` to `i + 2`. Append one function per schema bump; never
 /// edit a shipped one.
-pub const MIGRATIONS: &[Migration] = &[v1_to_v2, v2_to_v3, v3_to_v4, v4_to_v5];
+pub const MIGRATIONS: &[Migration] = &[v1_to_v2, v2_to_v3, v3_to_v4, v4_to_v5, v5_to_v6];
 
 /// The schema version this build writes (and the newest it reads).
 pub const SCHEMA_VERSION: u32 = MIGRATIONS.len() as u32 + 1;
@@ -233,13 +234,18 @@ fn v4_to_v5(doc: Value) -> Result<Value, String> {
     Ok(doc)
 }
 
+/// v5 → v6: media identity and ingest settings added; existing data needs no change.
+fn v5_to_v6(doc: Value) -> Result<Value, String> {
+    Ok(doc)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn schema_version_matches_table() {
-        assert_eq!(SCHEMA_VERSION, 5);
+        assert_eq!(SCHEMA_VERSION, 6);
     }
 
     #[test]

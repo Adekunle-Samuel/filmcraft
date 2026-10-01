@@ -209,6 +209,7 @@ fn default_seq_settings_for(info: &filmcraft_media::MediaInfo) -> SequenceSettin
 /// Import bytes as a media item (engine-level; the UI reads files through services).
 pub fn import_bytes(s: &mut Session, path: &str, bytes: std::sync::Arc<[u8]>, bin: Option<filmcraft_project::BinId>) -> Result<ItemId> {
     let name = std::path::Path::new(path).file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| path.to_string());
+    let identity = crate::relink::identity_of_bytes(&bytes);
     let src = s.media.open_bytes(&name, bytes)?;
     let info = src.info().clone();
     let label = match info.kind {
@@ -230,11 +231,12 @@ pub fn import_bytes(s: &mut Session, path: &str, bytes: std::sync::Arc<[u8]>, bi
                 markers: vec![],
                 offline: false,
                 proxy: None,
+                identity: Some(identity),
             }),
             bin,
         ))
     })?;
-    s.media.insert(id, src);
+    s.media.insert_file(id, path, src);
     Ok(id)
 }
 
@@ -541,6 +543,18 @@ fn build() -> Vec<CommandSpec> {
             }
             if ids.is_empty() && sequences.is_empty() && reports.is_empty() && !errors.is_empty() {
                 return Err(EngineError::Other(errors.join("; ")));
+            }
+            // Project Settings ▸ Ingest: copy / transcode / create proxies
+            let item_ids: Vec<ItemId> = ids.iter().map(|i| ItemId(*i)).collect();
+            let ingest = match crate::proxies::ingest(s, &item_ids) {
+                Ok(v) => v,
+                Err(e) => {
+                    errors.push(format!("ingest: {e}"));
+                    Value::Null
+                }
+            };
+            if !ingest.is_null() {
+                return Ok(json!({"items": ids, "sequences": sequences, "documents": reports, "errors": errors, "ingest": ingest}));
             }
             if reports.is_empty() {
                 Ok(json!({"items": ids, "errors": errors}))
@@ -1872,6 +1886,9 @@ fn build() -> Vec<CommandSpec> {
     v.extend(crate::color::commands());
     v.extend(crate::graphics::commands());
     v.extend(crate::shortcuts::commands());
+    v.extend(crate::relink::commands());
+    v.extend(crate::proxies::commands());
+    v.extend(crate::project_manager::commands());
     // Labels as individual commands (Edit ▸ Label ▸ <name>)
     for l in Label::ALL {
         let _ = l;
@@ -1897,6 +1914,7 @@ fn export_media(s: &mut Session, p: &Value) -> Result<Value> {
         bitrate_kbps: u64_p(p, "bitrateKbps").unwrap_or(20_000) as u32,
         burn_captions: bool_p(p, "burnCaptions").unwrap_or(false),
         part_of_batch: false,
+        prores_profile: str_p(p, "proresProfile").unwrap_or_default().to_string(),
         sdr: bool_p(p, "sdr").unwrap_or(false),
         ..Default::default()
     };
@@ -1908,7 +1926,8 @@ fn export_media(s: &mut Session, p: &Value) -> Result<Value> {
         result: Default::default(),
     };
     let project = s.project.clone();
-    let provider = s.media.provider(project.clone(), s.services.clone());
+    // Export always renders full-resolution media, whatever the proxy toggle says.
+    let provider = s.media.full_res_provider(project.clone(), s.services.clone());
     let (prog, res) = (job.progress.clone(), job.result.clone());
     let run = move || {
         let r = filmcraft_export::export(&project, seq, &settings, &provider, &prog).map_err(|e| e.to_string());
@@ -2347,7 +2366,10 @@ fn schema_backup_path(path: &str, schema: u32) -> String {
 
 /// Make `proj` the session's project (fresh history, media pool and editor state).
 fn install_project(s: &mut Session, proj: filmcraft_project::Project, path: Option<String>, clean: bool) {
+    let proxies = s.media.use_proxies();
     s.media = std::sync::Arc::new(crate::MediaPool::default());
+    s.media.set_use_proxies(proxies);
+    s.offline = Default::default();
     let first = proj.sequences().next().map(|i| i.id);
     s.project = std::sync::Arc::new(proj);
     s.history = Default::default();
@@ -2377,7 +2399,8 @@ fn open_project(s: &mut Session, path: &str) -> Result<Value> {
     if migrated {
         s.toast(format!("Upgraded project from schema v{from} to v{}; the original is kept as a backup when you save", filmcraft_format::SCHEMA_VERSION));
     }
-    Ok(json!({"path": path, "schemaVersion": from, "migrated": migrated}))
+    let missing = crate::relink::on_open(s);
+    Ok(json!({"path": path, "schemaVersion": from, "migrated": migrated, "missingMedia": missing}))
 }
 
 /// Load a recovery candidate (newest when `id` is None) as the current, unsaved project.
@@ -2391,6 +2414,7 @@ fn recover(s: &mut Session, id: Option<&str>) -> Result<Value> {
     let saved_at = per.local_time(c.meta.saved_unix);
     let loaded = crate::autosave::load_candidate(&c).map_err(EngineError::Other)?;
     install_project(s, loaded.project, c.meta.project_path.clone(), false);
+    crate::relink::on_open(s);
     // Our own journal must hold the recovered state before the old one is deleted.
     s.sync_persistence();
     if let Some(per) = s.persistence.as_mut() {

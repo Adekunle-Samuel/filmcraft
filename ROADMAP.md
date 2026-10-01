@@ -2,7 +2,7 @@
 
 Progress toward feature parity with Adobe Premiere Pro, with estimates. Updated as milestones land.
 
-**Last updated:** 2026-10-01 · **Overall parity:** ~45% · **Code:** ~125k lines of Rust in 31 crates, 800+ tests
+**Last updated:** 2026-10-01 (evening) · **Overall parity:** ~50% · **Code:** ~134k lines of Rust in 31 crates, 901 tests
 
 ## Estimate to parity
 
@@ -39,15 +39,16 @@ Status: ✅ done · 🟡 in progress · ⬜ not started. Estimates are remaining
 | M8 | Colour | 🟡 | Lumetri: basic, creative + looks, RGB & hue curves, wheels, HSL secondary, vignette, section bypass; Input LUT / Look LUT (.cube 1D/3D/shaper, .3dl; tetrahedral CPU + WGSL; project LUT library; built-in camera conversions); Colour Match (Oklab tonal-range statistics, skin protection, solved in Lumetri wheels); colour management: Rec. 709 / Rec. 2100 PQ / HLG working spaces + wide gamut, Interpret Footage colour space (S-Log3, V-Log, Canon Log 2/3, LogC3/4, Apple Log, D-Log from published specs), metadata auto-detect, BT.2390 tone mapping, gamut mapping, HDR export signalling (VUI/colr/mdcv/clli/SEI, ffprobe-verified); scopes incl. HDR nits waveform | Parade/histogram/HLS scopes, HDR-aware Lumetri maths, macOS EDR monitors, mastering metadata → tone-map peak, D-Log M (no published formula), HSL Secondary refine | 3–5 |
 | M9 | More codecs | 🟡 | ProRes decode+encode, AAC decode+encode, HEVC Main/Main 10 decoder (bit-exact on 41 fixtures, ~225 fps 1080p), VP9 decoder (profiles 0–3, 8/10/12-bit, bit-exact on 50+ fixtures; WebM/MKV `V_VP9` and MP4 `vp09` import with key-frame-checked seeking), Matroska/WebM import (H.264/HEVC/VP9/ProRes/MJPEG + AAC/Opus/FLAC/MP3/Vorbis/PCM), Opus decoder (SILK/CELT/hybrid, 5.1/7.1 multistream; all RFC 8251 vectors range-exact; WebM/MKV/MP4) | VP9 frame threading, Ogg Opus files, AV1 (rav1d), DNxHR, MXF, hardware decode | 12–20 |
 | M10 | Graphics & captions | 🟡 | Caption tracks (Subtitle/CEA-608/708/Teletext formats, track style), SRT/WebVTT/SCC import+export (frame-exact, property-tested), caption editing (add/split/merge/trim/move, sync-locked insert/extract), Text panel Captions tab, burn-in in Program monitor and export; text engine (`crates/text`: bundled + system fonts, harfrust shaping, bidi, line breaking, paragraph layout, glyph cache; 3-line 1080p title ≈ 0.15 ms warm); graphic clips with text + shape layers (fill, 2 strokes, background, shadow, keyframable transform), Type tool with on-monitor editing, shape/pen tools, Properties/Essential Graphics editor, align/distribute | Responsive design pins, rolls/crawls, per-character styles, motion graphics templates, MCC/STL/TTML, 608/708 embedding, speech-to-text | 12–18 |
-| M11 | Interchange & project management | 🟡 | `.fcproj` schema versions + migrations, atomic saves, Save a Copy/Revert, auto-save ring + crash-recovery journal (Preferences ▸ Auto Save, recovery prompt), FCP7 XML, FCPXML, EDL, OTIO | Relink/offline, project manager, proxies | 8 |
+| M11 | Interchange & project management | ✅ | `.fcproj` schema versions + migrations, atomic saves, Save a Copy/Revert, auto-save ring + crash-recovery journal (Preferences ▸ Auto Save, recovery prompt), FCP7 XML, FCPXML, EDL, OTIO; offline media (own slate) + Link Media (fingerprint-checked relink, folder remap, search, Align Timecode, Make Offline); proxies (ProRes Proxy/LT, H.264 ¼/½ background jobs, attach/detach/reconnect, monitor toggle, export full-res) + ingest (copy/transcode/proxies); Project Manager (collect, consolidate + transcode with handles, size estimate) | Rename media to clip names, image-sequence conversion, Media Browser-driven relink, smart (cross-drive) path tracking | 1–2 |
 | M12–M16 | Web (WASM), platform, long tail | 🟡 | L0–L4 crates compile to wasm32 | Web app shell (file access, WebCodecs, audio), ~850 remaining commands and dialogs, performance hardening | 40–65 |
 
 ## Running now
 
-- Playback: fix a UI hang after preview renders, then a load-robust playback benchmark and profiling (target: 3 × 1080p streams with 0 dropped frames)
+- README hero: a real documentary edit (NASA Apollo 11 footage, public domain) replacing the trailer demo
 
 ## Log
 
+- **2026-10-01 (evening):** M11 done: offline media with our own slate and the Link Media dialog (fingerprint-checked relink, folder remap, search), proxies (create in background / attach / toggle; export stays full-res) with ingest settings, Project Manager (collect, consolidate + transcode). Fixed: GOP cache deadlock when a rayon decoder inside a parallel export re-entered the same source.
 - **2026-10-01 (M7.4):** Essential Sound panel: Dialogue/Music/SFX/Ambience types, Loudness auto-match (BS.1770, exact to the target), Repair (noise, rumble, hum, new DeEsser and spectral DeReverb), Clarity (dynamics, EQ presets, Enhance Speech DSP chain), Creative reverb / stereo width, ducking that writes Volume keyframes, presets; all `essentialSound.*` commands, effects visible and keyframable in Effect Controls.
 - **2026-10-01 (night):** M8 colour: camera log curves and gamuts from published specs, colour-managed pipeline (PQ/HLG working spaces, Interpret Footage, BT.2390 tone mapping), HDR export signalling verified with ffprobe, LUTs (.cube/.3dl, tetrahedral CPU + WGSL, project library, Lumetri Input LUT / Look), Colour Match, Lumetri section bypass, HDR scopes.
 

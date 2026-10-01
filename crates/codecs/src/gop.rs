@@ -88,6 +88,35 @@ struct State {
     bytes: usize,
 }
 
+thread_local! {
+    /// Caches whose lock this thread holds while decoding (see [`GopCache::frame`]).
+    static DECODING: std::cell::RefCell<Vec<usize>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Marks a cache as decoding on this thread until dropped (also on early return / `?`).
+struct DecodingGuard(usize);
+
+impl DecodingGuard {
+    fn enter(cache: usize) -> Self {
+        DECODING.with(|d| d.borrow_mut().push(cache));
+        Self(cache)
+    }
+    fn active(cache: usize) -> bool {
+        DECODING.with(|d| d.borrow().contains(&cache))
+    }
+}
+
+impl Drop for DecodingGuard {
+    fn drop(&mut self) {
+        DECODING.with(|d| {
+            let mut d = d.borrow_mut();
+            if let Some(k) = d.iter().rposition(|&c| c == self.0) {
+                d.remove(k);
+            }
+        });
+    }
+}
+
 /// Decoder + decoded-frame cache for one video track.
 pub struct GopCache {
     state: Mutex<State>,
@@ -124,12 +153,17 @@ impl GopCache {
         }
     }
 
-    fn store(&self, st: &mut State, pts: i64, mut f: VideoFrame) {
+    /// Colour signalled by the container wins over the bitstream's (YUV frames only).
+    fn apply_color(&self, f: &mut VideoFrame) {
         if let Some(c) = self.explicit_color
             && !matches!(f.data, filmcraft_frame::PixelData::Rgba8(_) | filmcraft_frame::PixelData::RgbaF32(_))
         {
             f.color = c;
         }
+    }
+
+    fn store(&self, st: &mut State, pts: i64, mut f: VideoFrame) {
+        self.apply_color(&mut f);
         let budget = self.budget.max(MIN_FRAMES * f.byte_size());
         st.bytes += f.byte_size();
         if let Some(old) = st.frames.insert(pts, Arc::new(f)) {
@@ -156,11 +190,21 @@ impl GopCache {
     }
 
     /// The frame presented at `target` (track units, clamped to the stream).
+    ///
+    /// Decoders may run slices on rayon, and a rayon thread waiting inside a decode can pick up
+    /// another render job that asks this same source for a frame — on the thread that holds this
+    /// cache's lock. Such a nested request must not lock again (deadlock): it decodes the frame
+    /// with a private decoder instead ([`Self::private_frame`]).
     pub fn frame(&self, s: &dyn VideoSamples, target: i64) -> crate::Result<Arc<VideoFrame>> {
         let n = s.count();
         let i = s.sample_at(target.max(0)).or_else(|| (n > 0).then(|| n - 1)).ok_or_else(|| CodecError::Decode("empty track".into()))?;
         let want_pts = s.pts(i);
+        let me = self as *const Self as usize;
+        if DecodingGuard::active(me) {
+            return self.private_frame(s, i, want_pts, n);
+        }
         let mut st = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        let _decoding = DecodingGuard::enter(me);
         if let Some(f) = st.frames.get(&want_pts) {
             HITS.fetch_add(1, Ordering::Relaxed);
             return Ok(f.clone());
@@ -235,6 +279,68 @@ impl GopCache {
             .cloned()
             .or_else(|| st.frames.range(..=want_pts).next_back().map(|(_, f)| f.clone()))
             .ok_or_else(|| CodecError::Decode("frame not produced".into()))
+    }
+
+    /// A nested request (see [`Self::frame`]): decode from the sync sample with a fresh decoder,
+    /// without touching the shared state.
+    fn private_frame(&self, s: &dyn VideoSamples, i: usize, want_pts: i64, n: usize) -> crate::Result<Arc<VideoFrame>> {
+        let mut d = s.make_decoder()?;
+        let mut next = usize::MAX;
+        let out = Self::decode_to(s, d.as_mut(), &mut next, i, want_pts, n)?;
+        let mut f = out
+            .into_iter()
+            .filter(|p| p.pts <= want_pts)
+            .max_by_key(|p| p.pts)
+            .map(|p| p.frame)
+            .ok_or_else(|| CodecError::Decode("frame not produced".into()))?;
+        self.apply_color(&mut f);
+        Ok(Arc::new(f))
+    }
+
+    /// Decode with `d` (positioned at `next`) until the picture with `want_pts` (sample `i`) comes out.
+    fn decode_to(
+        s: &dyn VideoSamples,
+        d: &mut dyn VideoDecoder,
+        next: &mut usize,
+        i: usize,
+        want_pts: i64,
+        n: usize,
+    ) -> crate::Result<Vec<crate::video::DecodedFrame>> {
+        let mut key = s.sync_before(i);
+        // Continue the running decoder when the wanted sample is ahead within this GOP run.
+        let continuing = *next != usize::MAX && *next > key && *next <= i + 16 && *next <= n;
+        if !continuing {
+            // The container's sync flags may be wrong for the codec (an MP4 without `stss` marks
+            // every sample): step back to a sample the decoder can start from.
+            while key > 0 {
+                let data = s.read(key)?;
+                if d.is_random_access(&data) != Some(false) {
+                    break;
+                }
+                key = s.sync_before(key - 1);
+            }
+            d.reset();
+            *next = key;
+        }
+        let limit = (i + 64).min(n);
+        let mut out = Vec::new();
+        let mut found = false;
+        while *next < limit {
+            let k = *next;
+            let data = s.read(k)?;
+            let pics = d.decode(&data, s.pts(k))?;
+            *next += 1;
+            found |= pics.iter().any(|p| p.pts == want_pts);
+            out.extend(pics);
+            if found {
+                break;
+            }
+        }
+        if !found {
+            out.extend(d.flush());
+            *next = usize::MAX;
+        }
+        Ok(out)
     }
 
     /// Intra-only streams: decode the one sample outside the lock, so several frame workers

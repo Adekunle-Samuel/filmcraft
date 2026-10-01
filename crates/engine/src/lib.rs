@@ -19,6 +19,9 @@ pub mod interchange;
 pub mod media_pool;
 pub mod mixer;
 pub mod previews;
+pub mod project_manager;
+pub mod proxies;
+pub mod relink;
 pub mod shortcut_presets;
 pub mod shortcuts;
 pub mod trim;
@@ -62,6 +65,17 @@ pub type Result<T> = std::result::Result<T, EngineError>;
 pub trait Services: Send + Sync {
     fn read_file(&self, path: &str) -> std::io::Result<Vec<u8>>;
     fn write_file(&self, path: &str, data: &[u8]) -> std::io::Result<()>;
+    /// Size of a file in bytes (an error when it is missing). Hosts should override this: the
+    /// default reads the whole file.
+    fn file_size(&self, path: &str) -> std::io::Result<u64> {
+        self.read_file(path).map(|b| b.len() as u64)
+    }
+    /// Up to `len` bytes of a file starting at `offset` (fewer at the end of the file).
+    fn read_range(&self, path: &str, offset: u64, len: usize) -> std::io::Result<Vec<u8>> {
+        let b = self.read_file(path)?;
+        let a = (offset as usize).min(b.len());
+        Ok(b[a..(a + len).min(b.len())].to_vec())
+    }
 }
 
 /// Native filesystem services.
@@ -73,6 +87,18 @@ impl Services for FsServices {
     fn write_file(&self, path: &str, data: &[u8]) -> std::io::Result<()> {
         // Atomic + durable: temp file in the same directory, fsync, rename, fsync the directory.
         filmcraft_format::atomic_write(std::path::Path::new(path), data)
+    }
+    fn file_size(&self, path: &str) -> std::io::Result<u64> {
+        let m = std::fs::metadata(path)?;
+        if m.is_file() { Ok(m.len()) } else { Err(std::io::Error::new(std::io::ErrorKind::NotFound, format!("{path} is not a file"))) }
+    }
+    fn read_range(&self, path: &str, offset: u64, len: usize) -> std::io::Result<Vec<u8>> {
+        use std::io::{Read, Seek, SeekFrom};
+        let mut f = std::fs::File::open(path)?;
+        f.seek(SeekFrom::Start(offset))?;
+        let mut out = Vec::with_capacity(len);
+        f.take(len as u64).read_to_end(&mut out)?;
+        Ok(out)
     }
 }
 
@@ -183,6 +209,10 @@ pub struct Session {
     pub trim_play: trim::TrimPlayback,
     /// Keyboard shortcuts (active bindings, presets; `shortcuts.*` commands).
     pub shortcuts: shortcuts::Shortcuts,
+    /// Missing / offline media found by the last scan (Link Media dialog).
+    pub offline: relink::OfflineState,
+    /// Proxy / ingest / project-manager jobs whose results still have to be applied to the project.
+    pub media_jobs: Vec<proxies::PendingJob>,
     /// Nesting depth of [`Session::execute`] (commands that run other commands).
     exec_depth: u32,
 }
@@ -247,6 +277,8 @@ impl Session {
             mixrec: Default::default(),
             trim_play: Default::default(),
             shortcuts: shortcuts::Shortcuts::new(),
+            offline: Default::default(),
+            media_jobs: Vec::new(),
             exec_depth: 0,
         }
     }
@@ -257,6 +289,7 @@ impl Session {
     pub fn start_autosave(&mut self, cfg: autosave::AutosaveConfig) -> std::io::Result<()> {
         let prefs_path = cfg.data_dir.join("preferences.json");
         self.prefs = autosave::Preferences::load(&prefs_path);
+        self.media.set_use_proxies(self.prefs.media.enable_proxies);
         self.shortcuts.set_dir(&cfg.data_dir);
         self.prefs_path = Some(prefs_path);
         self.persistence = Some(autosave::Persistence::start(&cfg, self.prefs.auto_save.clone())?);
@@ -294,8 +327,10 @@ impl Session {
         p.last_sent = Some(cur);
     }
 
-    /// Apply worker notifications (call regularly, e.g. once per UI frame).
+    /// Apply worker notifications (call regularly, e.g. once per UI frame). Also applies the
+    /// results of finished proxy / ingest jobs.
     pub fn poll_persistence(&mut self) {
+        proxies::poll(self);
         let Some(p) = self.persistence.as_mut() else { return };
         for ev in p.drain_events() {
             match ev {
@@ -314,6 +349,10 @@ impl Session {
     /// Replace preferences (persisting them and updating the worker).
     pub fn set_prefs(&mut self, p: autosave::Preferences) -> std::io::Result<()> {
         self.prefs = p;
+        if self.media.use_proxies() != self.prefs.media.enable_proxies {
+            self.media.set_use_proxies(self.prefs.media.enable_proxies);
+            self.bump_view();
+        }
         if let Some(w) = &self.persistence {
             w.set_prefs(self.prefs.auto_save.clone());
         }
@@ -329,6 +368,16 @@ impl Session {
             && !cfg!(target_arch = "wasm32")
         {
             self.previews.move_to(previews::dir_for_project(p));
+        }
+    }
+
+    /// A change of what the project *looks like* that isn't an edit (proxies toggled): bumps the
+    /// revision so frame caches refresh, without marking a clean project as modified.
+    pub fn bump_view(&mut self) {
+        let clean = !self.is_dirty();
+        self.bump();
+        if clean {
+            self.saved_revision = self.revision;
         }
     }
 
@@ -572,9 +621,17 @@ mod essential_sound_tests;
 #[cfg(test)]
 mod file_tests;
 #[cfg(test)]
+mod media_test_util;
+#[cfg(test)]
 mod mixer_tests;
 #[cfg(test)]
 mod previews_tests;
+#[cfg(test)]
+mod project_manager_tests;
+#[cfg(test)]
+mod proxies_tests;
+#[cfg(test)]
+mod relink_tests;
 #[cfg(test)]
 mod shortcuts_tests;
 #[cfg(test)]

@@ -57,6 +57,7 @@ pub fn import(s: &mut Session, path: &str, bytes: &[u8], format: Format) -> Resu
         match opened {
             Some(src) => {
                 let info = src.info().clone();
+                let identity = crate::relink::identity_of(&*s.services, &mpath).ok();
                 let rebase = (format == Format::Edl).then_some(info.start_timecode).flatten();
                 s.edit("Link Media", |proj, _| {
                     if let Some(item) = proj.items.get_mut(&id)
@@ -65,13 +66,14 @@ pub fn import(s: &mut Session, path: &str, bytes: &[u8], format: Format) -> Resu
                         let rate = info.video.as_ref().map(|v| v.frame_rate);
                         m.info = info.clone();
                         m.offline = false;
+                        m.identity = identity;
                         if let (Some(tc), Some(rate)) = (rebase, rate) {
                             filmcraft_interchange::rebase_source_timecode(proj, id, tc, rate);
                         }
                     }
                     Ok(())
                 })?;
-                s.media.insert(id, src);
+                s.media.insert_file(id, &mpath, src);
                 linked += 1;
             }
             None => offline.push(mpath),

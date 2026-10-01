@@ -101,6 +101,9 @@ pub struct ExportSettings {
     /// `progress.total`, `finished` and the final status; this call only adds to `done`.
     #[serde(default)]
     pub part_of_batch: bool,
+    /// ProRes flavour: `proxy`, `lt`, `standard` or `hq` (empty = HQ).
+    #[serde(default)]
+    pub prores_profile: String,
     /// Encode display-referred SDR (Rec. 709, tone mapped) even when the sequence works in
     /// Rec. 2100 PQ/HLG. Otherwise H.264 and ProRes exports of an HDR sequence are encoded in the
     /// sequence's HDR space and signal it (VUI / `colr` / `mdcv` / `clli` / SEI).
@@ -168,6 +171,7 @@ impl Default for ExportSettings {
             bitrate_kbps: 20_000,
             burn_captions: false,
             part_of_batch: false,
+            prores_profile: String::new(),
             sdr: false,
             signal: ColorSignal::default(),
         }
@@ -336,9 +340,10 @@ fn aac_factory(_format: Format, sample_rate: u32, channels: u32, _s: &ExportSett
     )
 }
 
-/// ProRes 422 HQ encoder: sRGB/709 RGBA8 → 10-bit limited-range BT.709 4:2:2.
+/// ProRes 422 encoder (HQ unless the settings pick another flavour): sRGB/709 RGBA8 → 10-bit limited-range BT.709 4:2:2.
 struct ProResEncoder {
     enc: filmcraft_prores::Encoder,
+    profile: filmcraft_prores::Profile,
     w: u32,
     h: u32,
     rate: FrameRate,
@@ -347,7 +352,7 @@ struct ProResEncoder {
 
 impl VideoEncoder for ProResEncoder {
     fn sample_entry(&self) -> SampleEntry {
-        let mut e = SampleEntry::prores(filmcraft_isobmff::FourCc(*b"apch"), self.w as u16, self.h as u16);
+        let mut e = SampleEntry::prores(filmcraft_isobmff::FourCc(self.profile.fourcc()), self.w as u16, self.h as u16);
         self.signal.apply_to(&mut e, true);
         e
     }
@@ -397,6 +402,17 @@ pub fn rgba_to_yuv422_10(rgba: &[u8], w: usize, h: usize, y: &mut [u16], cb: &mu
     });
 }
 
+/// The ProRes profile named by [`ExportSettings::prores_profile`].
+pub fn prores_profile(name: &str) -> filmcraft_prores::Profile {
+    use filmcraft_prores::Profile;
+    match name.to_ascii_lowercase().as_str() {
+        "proxy" => Profile::Proxy,
+        "lt" => Profile::Lt,
+        "standard" | "422" => Profile::Standard,
+        _ => Profile::Hq,
+    }
+}
+
 /// Limited-range 10-bit 4:2:2 from encoded R'G'B' floats with matrix (Kr, Kb).
 #[allow(clippy::too_many_arguments)]
 pub fn rgbf_to_yuv422_10(rgb: &[f32], w: usize, h: usize, kr: f32, kb: f32, y: &mut [u16], cb: &mut [u16], cr: &mut [u16]) {
@@ -426,11 +442,12 @@ pub fn rgbf_to_yuv422_10(rgb: &[f32], w: usize, h: usize, kr: f32, kb: f32, y: &
 
 fn prores_factory(format: Format, w: u32, h: u32, rate: FrameRate, s: &ExportSettings) -> Option<Result<Box<dyn VideoEncoder>>> {
     (format == Format::ProRes).then(|| {
-        let mut cfg = filmcraft_prores::EncoderConfig::new(filmcraft_prores::Profile::Hq, w, h);
+        let profile = prores_profile(&s.prores_profile);
+        let mut cfg = filmcraft_prores::EncoderConfig::new(profile, w, h);
         if s.signal.is_hdr() {
             cfg.color = filmcraft_prores::ColorInfo { primaries: s.signal.primaries, transfer: s.signal.transfer, matrix: s.signal.matrix };
         }
-        Ok(Box::new(ProResEncoder { enc: filmcraft_prores::Encoder::with_config(cfg), w, h, rate, signal: s.signal }) as Box<dyn VideoEncoder>)
+        Ok(Box::new(ProResEncoder { enc: filmcraft_prores::Encoder::with_config(cfg), profile, w, h, rate, signal: s.signal }) as Box<dyn VideoEncoder>)
     })
 }
 

@@ -22,6 +22,7 @@ fn setup() -> (Project, ItemId, ItemId, ItemId, SourceMap) {
                 markers: vec![],
                 offline: false,
                 proxy: None,
+                identity: None,
             }),
             None,
         );
@@ -111,6 +112,7 @@ fn cross_dissolve_midpoint() {
             markers: vec![],
             offline: false,
             proxy: None,
+            identity: None,
         }),
         None,
     );
@@ -151,6 +153,7 @@ fn audio_mix_bars_tone() {
             markers: vec![],
             offline: false,
             proxy: None,
+            identity: None,
         }),
         None,
     );
@@ -211,6 +214,7 @@ fn tone_with(effects: &[(&str, &[(&str, f64)])]) -> (Project, ItemId, SourceMap)
             markers: vec![],
             offline: false,
             proxy: None,
+            identity: None,
         }),
         None,
     );
@@ -266,4 +270,21 @@ fn audio_fx_chain_is_continuous_and_random_access_matches() {
     let dry = mix(&tone_with(&[]).0, tone_with(&[]).1, &tone_with(&[]).2, start, 9_600);
     let diff = whole.iter().zip(&dry).map(|(a, b)| (a - b).abs()).fold(0f32, f32::max);
     assert!(diff > 1e-3, "delay had no effect");
+}
+
+#[test]
+fn offline_slate_is_deterministic_and_marked() {
+    use crate::offline::{FIELD, OfflineReason, slate_rgba8};
+    let a = slate_rgba8(640, 360, "A001_C002.mov", OfflineReason::Missing);
+    assert_eq!(a, slate_rgba8(640, 360, "A001_C002.mov", OfflineReason::Missing));
+    assert_ne!(a, slate_rgba8(640, 360, "A001_C002.mov", OfflineReason::MadeOffline), "the headline names the reason");
+    // corners are the red field / stripes, opaque
+    let px = |x: usize, y: usize| &a[(y * 640 + x) * 4..(y * 640 + x) * 4 + 4];
+    assert_eq!(px(0, 359)[3], 255);
+    assert!(px(0, 359)[0] >= FIELD[0] && px(0, 359)[1] <= 0x20, "{:?}", px(0, 359));
+    // tiny sizes work (thumbnails)
+    assert_eq!(slate_rgba8(8, 4, "x", OfflineReason::Unreadable).len(), 8 * 4 * 4);
+    if let Some(p) = std::env::var_os("FILMCRAFT_SLATE_PNG") {
+        ::image::save_buffer(p, &a, 640, 360, ::image::ExtendedColorType::Rgba8).unwrap();
+    }
 }

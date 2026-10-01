@@ -199,10 +199,18 @@ file ──► codecs (MP4/MOV, MKV, audio)        demux + decode, GOP-aware see
   `audio(start, frames, rate)` in media time. Sources are `Send + Sync` and shared by monitors,
   thumbnails, playback and export. The engine's `MediaPool` creates one per project item, lazily,
   through registered openers (`codecs::openers()`: MP4/MOV, MKV/WebM, audio files).
+- **Offline media and proxies.** The pool caches each item's source per reference (path, offline
+  flag), so relinking and undo take effect at once. Media that can't be opened renders the offline
+  slate (`render::offline`) instead of failing. With proxies enabled, an item with a proxy reads
+  it through `ProxySource`, which reports the original's size. Export always uses
+  `MediaPool::full_res_provider`. See [project-files.md](project-files.md#media-offline-relinking-proxies-ingest).
 - **Seeking.** `codecs::Mp4Source` seeks to the preceding sync sample and decodes forward, caching
   every frame of the GOP. Sequential playback reuses the decoder. Decoders implement
   `codecs::VideoDecoder`. `register_video_decoder` puts a factory in front of the built-in ones, so a
-  hardware decoder can take precedence.
+  hardware decoder can take precedence. The GOP cache never holds its lock while decoding.
+  Decoders run slices on rayon, so an export worker waiting inside a decode can pick up another
+  frame of the same source. A request that finds the shared decoder busy decodes with a private
+  decoder.
 - **Compositor.** `render` is the reference for monitors, thumbnails and export. `render::plan`
   turns a frame into GPU layers. Non-Normal blend modes, standard effects, adjustment layers, nested
   sequences and non-dissolve transitions are rendered on the CPU for that layer or frame and handed to

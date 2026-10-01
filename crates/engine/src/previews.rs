@@ -432,7 +432,8 @@ pub fn render(s: &mut Session, mode: RenderMode, p: &Value) -> Result<Value> {
     };
     job.progress.total.store(frames.max(1) as u64, Ordering::Relaxed);
     let project = s.project.clone();
-    let provider = s.media.provider(project.clone(), s.services.clone());
+    // Previews are cached by content and reused with proxies on or off: always full resolution.
+    let provider = s.media.full_res_provider(project.clone(), s.services.clone());
     let (prog, res) = (job.progress.clone(), job.result.clone());
     let nseg = todo.len();
     let pool = s.media.clone();
@@ -532,7 +533,7 @@ pub fn render_audio(s: &mut Session, p: &Value) -> Result<Value> {
     let job = crate::Job { id, label: "Rendering audio previews".into(), progress: Default::default(), result: Default::default() };
     job.progress.total.store(total.max(1) as u64, Ordering::Relaxed);
     let project = s.project.clone();
-    let provider = s.media.provider(project.clone(), s.services.clone());
+    let provider = s.media.full_res_provider(project.clone(), s.services.clone());
     let (prog, res) = (job.progress.clone(), job.result.clone());
     let nseg = todo.len();
     let run = move || {

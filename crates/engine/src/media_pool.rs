@@ -1,17 +1,41 @@
 //! The media pool: one shared [`MediaSource`] per project item, created lazily from its
 //! [`MediaRef`], plus the registry of container/codec openers.
+//!
+//! - Sources are cached per item **and per reference** (the file path, the offline flag), so a
+//!   relink, Make Offline or their undo picks up the right file on the next frame.
+//! - Media that can't be opened (missing, unreadable) or was made offline renders the offline
+//!   slate ([`filmcraft_render::offline`]) instead of failing; the reason is kept for the UI.
+//! - With proxies enabled ([`MediaPool::set_use_proxies`]) items with an attached proxy are read
+//!   from it. Proxy frames are smaller; the source still reports the full-resolution size, and the
+//!   compositor derives its pixel scale from the frame it gets, so effects and Motion render the
+//!   same picture at lower resolution. Export asks for [`MediaPool::full_res_provider`].
 
 use std::collections::HashMap;
-use std::sync::{Arc, RwLock};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, RwLock};
 
+use filmcraft_frame::{AudioBuffer, VideoFrame};
 use filmcraft_media::generators::GeneratorSource;
-use filmcraft_media::{MediaError, OfflineSource, Opener, SharedSource};
-use filmcraft_project::{ItemId, ItemKind, MediaRef, Project};
+use filmcraft_media::{FrameRequest, MediaError, MediaInfo, MediaSource, Opener, SharedSource};
+use filmcraft_project::{ItemId, ItemKind, MediaClip, MediaRef, Project};
+use filmcraft_render::offline::OfflineReason;
 
 use crate::Services;
 
+/// Why an item renders the offline slate, as last seen by the pool.
+#[derive(Clone, Debug, PartialEq)]
+pub struct OfflineStatus {
+    pub reason: OfflineReason,
+    pub path: String,
+    pub error: String,
+}
+
 pub struct MediaPool {
-    sources: RwLock<HashMap<ItemId, SharedSource>>,
+    /// item → (reference key, source)
+    sources: RwLock<HashMap<ItemId, (String, SharedSource)>>,
+    proxies: RwLock<HashMap<ItemId, (String, SharedSource)>>,
+    offline: RwLock<HashMap<ItemId, OfflineStatus>>,
+    use_proxies: AtomicBool,
     /// Openers tried before the built-in ones (MP4/MOV + codecs register here).
     pub openers: RwLock<Vec<Opener>>,
 }
@@ -19,8 +43,28 @@ pub struct MediaPool {
 impl Default for MediaPool {
     /// A pool with the built-in container/codec openers registered.
     fn default() -> Self {
-        Self { sources: RwLock::new(HashMap::new()), openers: RwLock::new(filmcraft_codecs::openers()) }
+        Self {
+            sources: RwLock::new(HashMap::new()),
+            proxies: RwLock::new(HashMap::new()),
+            offline: RwLock::new(HashMap::new()),
+            use_proxies: AtomicBool::new(false),
+            openers: RwLock::new(filmcraft_codecs::openers()),
+        }
     }
+}
+
+/// Cache key of a media clip's full-resolution reference ("" matches anything: generators and
+/// sources inserted without a key).
+pub fn media_key(m: &MediaClip) -> String {
+    match &m.media {
+        MediaRef::File { path } if m.offline => format!("offline:{path}"),
+        MediaRef::File { path } => format!("file:{path}"),
+        MediaRef::Generator(_) => String::new(),
+    }
+}
+
+fn file_name(path: &str) -> String {
+    path.rsplit(['/', '\\']).next().unwrap_or(path).to_string()
 }
 
 impl MediaPool {
@@ -28,16 +72,45 @@ impl MediaPool {
         self.openers.write().unwrap_or_else(|e| e.into_inner()).push(o);
     }
 
+    /// Cache a source for an item, valid whatever the item's reference (generators).
     pub fn insert(&self, item: ItemId, src: SharedSource) {
-        self.sources.write().unwrap_or_else(|e| e.into_inner()).insert(item, src);
+        self.sources.write().unwrap_or_else(|e| e.into_inner()).insert(item, (String::new(), src));
+    }
+
+    /// Cache a source opened from `path` for an item.
+    pub fn insert_file(&self, item: ItemId, path: &str, src: SharedSource) {
+        self.sources.write().unwrap_or_else(|e| e.into_inner()).insert(item, (format!("file:{path}"), src));
+        self.offline.write().unwrap_or_else(|e| e.into_inner()).remove(&item);
     }
 
     pub fn remove(&self, item: ItemId) {
         self.sources.write().unwrap_or_else(|e| e.into_inner()).remove(&item);
+        self.proxies.write().unwrap_or_else(|e| e.into_inner()).remove(&item);
+        self.offline.write().unwrap_or_else(|e| e.into_inner()).remove(&item);
+    }
+
+    /// Forget every opened source (files are re-read on next use).
+    pub fn clear(&self) {
+        self.sources.write().unwrap_or_else(|e| e.into_inner()).clear();
+        self.proxies.write().unwrap_or_else(|e| e.into_inner()).clear();
+        self.offline.write().unwrap_or_else(|e| e.into_inner()).clear();
     }
 
     pub fn cached(&self, item: ItemId) -> Option<SharedSource> {
-        self.sources.read().unwrap_or_else(|e| e.into_inner()).get(&item).cloned()
+        self.sources.read().unwrap_or_else(|e| e.into_inner()).get(&item).map(|(_, s)| s.clone())
+    }
+
+    pub fn use_proxies(&self) -> bool {
+        self.use_proxies.load(Ordering::Relaxed)
+    }
+
+    pub fn set_use_proxies(&self, on: bool) {
+        self.use_proxies.store(on, Ordering::Relaxed);
+    }
+
+    /// Why an item last rendered offline (None = online or not opened yet).
+    pub fn offline_status(&self, item: ItemId) -> Option<OfflineStatus> {
+        self.offline.read().unwrap_or_else(|e| e.into_inner()).get(&item).cloned()
     }
 
     /// Open a file through the registered openers.
@@ -46,43 +119,104 @@ impl MediaPool {
         filmcraft_media::open_bytes(name, bytes, &openers)
     }
 
-    /// Resolve (and cache) the source for a project item.
+    /// Read and open a file through `services`.
+    pub fn open_file(&self, path: &str, services: &dyn Services) -> Result<SharedSource, MediaError> {
+        let bytes = services
+            .read_file(path)
+            .map_err(|e| if e.kind() == std::io::ErrorKind::NotFound { MediaError::Offline(e.to_string()) } else { MediaError::Io(e.to_string()) })?;
+        self.open_bytes(&file_name(path), bytes.into())
+    }
+
+    /// Resolve (and cache) the source for a project item, using proxies when they are enabled.
     pub fn source_for(&self, p: &Project, item: ItemId, services: &dyn Services) -> Option<SharedSource> {
-        if let Some(s) = self.cached(item) {
-            return Some(s);
-        }
+        self.resolve(p, item, services, self.use_proxies())
+    }
+
+    /// Resolve the full-resolution source for an item (never a proxy).
+    pub fn full_res_source(&self, p: &Project, item: ItemId, services: &dyn Services) -> Option<SharedSource> {
+        self.resolve(p, item, services, false)
+    }
+
+    fn resolve(&self, p: &Project, item: ItemId, services: &dyn Services, proxies: bool) -> Option<SharedSource> {
         let it = p.item(item)?;
-        let src: SharedSource = match &it.kind {
-            ItemKind::Media(m) => match &m.media {
-                MediaRef::Generator(g) => {
-                    let v = m.info.video.as_ref();
-                    let (w, h, r) = v.map(|v| (v.width, v.height, v.frame_rate)).unwrap_or((1920, 1080, Default::default()));
-                    Arc::new(GeneratorSource::new(g.clone(), w, h, r, m.info.duration).with_name(&it.name))
-                }
-                MediaRef::File { path } => {
-                    let opened = services.read_file(path).map_err(|e| MediaError::Io(e.to_string())).and_then(|b| {
-                        let name = std::path::Path::new(path).file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
-                        self.open_bytes(&name, b.into())
-                    });
-                    match opened {
-                        Ok(s) => s,
-                        Err(e) => {
-                            log::warn!("media offline: {path}: {e}");
-                            Arc::new(OfflineSource { info: m.info.clone() })
-                        }
-                    }
-                }
-            },
-            ItemKind::Subclip { parent, .. } => return self.source_for(p, *parent, services),
+        let m = match &it.kind {
+            ItemKind::Media(m) => m,
+            ItemKind::Subclip { parent, .. } => return self.resolve(p, *parent, services, proxies),
             _ => return None,
         };
-        self.insert(item, src.clone());
+        if proxies
+            && !m.offline
+            && let Some(MediaRef::File { path }) = &m.proxy
+            && let Some(s) = self.proxy_source(item, path, m, services)
+        {
+            return Some(s);
+        }
+        let key = media_key(m);
+        if let Some((k, s)) = self.sources.read().unwrap_or_else(|e| e.into_inner()).get(&item)
+            && (k.is_empty() || *k == key)
+        {
+            return Some(s.clone());
+        }
+        let src: SharedSource = match &m.media {
+            MediaRef::Generator(g) => {
+                let v = m.info.video.as_ref();
+                let (w, h, r) = v.map(|v| (v.width, v.height, v.frame_rate)).unwrap_or((1920, 1080, Default::default()));
+                Arc::new(GeneratorSource::new(g.clone(), w, h, r, m.info.duration).with_name(&it.name))
+            }
+            MediaRef::File { path } if m.offline => {
+                self.set_offline(item, OfflineReason::MadeOffline, path, "made offline");
+                Arc::new(SlateSource::new(m.info.clone(), &file_name(path), OfflineReason::MadeOffline))
+            }
+            MediaRef::File { path } => match self.open_file(path, services) {
+                Ok(s) => {
+                    self.offline.write().unwrap_or_else(|e| e.into_inner()).remove(&item);
+                    s
+                }
+                Err(e) => {
+                    log::warn!("media offline: {path}: {e}");
+                    let reason = if matches!(e, MediaError::Offline(_)) { OfflineReason::Missing } else { OfflineReason::Unreadable };
+                    self.set_offline(item, reason, path, &e.to_string());
+                    Arc::new(SlateSource::new(m.info.clone(), &file_name(path), reason))
+                }
+            },
+        };
+        self.sources.write().unwrap_or_else(|e| e.into_inner()).insert(item, (key, src.clone()));
         Some(src)
     }
 
-    /// A render-side provider bound to a project snapshot.
+    fn set_offline(&self, item: ItemId, reason: OfflineReason, path: &str, error: &str) {
+        self.offline.write().unwrap_or_else(|e| e.into_inner()).insert(item, OfflineStatus { reason, path: path.to_string(), error: error.to_string() });
+    }
+
+    fn proxy_source(&self, item: ItemId, path: &str, m: &MediaClip, services: &dyn Services) -> Option<SharedSource> {
+        let key = format!("proxy:{path}");
+        if let Some((k, s)) = self.proxies.read().unwrap_or_else(|e| e.into_inner()).get(&item)
+            && *k == key
+        {
+            return Some(s.clone());
+        }
+        match self.open_file(path, services) {
+            Ok(s) => {
+                let src: SharedSource = Arc::new(ProxySource { proxy: s, info: m.info.clone() });
+                self.proxies.write().unwrap_or_else(|e| e.into_inner()).insert(item, (key, src.clone()));
+                Some(src)
+            }
+            Err(e) => {
+                // a missing proxy falls back to the full-resolution media
+                log::warn!("proxy offline: {path}: {e}");
+                None
+            }
+        }
+    }
+
+    /// A render-side provider bound to a project snapshot (proxies when enabled).
     pub fn provider(self: &Arc<Self>, project: Arc<Project>, services: Arc<dyn Services>) -> PoolProvider {
-        PoolProvider { pool: self.clone(), project, services }
+        PoolProvider { pool: self.clone(), project, services, full_res: false }
+    }
+
+    /// A provider that always reads full-resolution media (export).
+    pub fn full_res_provider(self: &Arc<Self>, project: Arc<Project>, services: Arc<dyn Services>) -> PoolProvider {
+        PoolProvider { pool: self.clone(), project, services, full_res: true }
     }
 }
 
@@ -91,10 +225,93 @@ pub struct PoolProvider {
     pub pool: Arc<MediaPool>,
     pub project: Arc<Project>,
     pub services: Arc<dyn Services>,
+    /// Ignore proxies (export always renders full resolution).
+    pub full_res: bool,
 }
 
 impl filmcraft_render::SourceProvider for PoolProvider {
     fn source(&self, item: ItemId) -> Option<SharedSource> {
-        self.pool.source_for(&self.project, item, &*self.services)
+        if self.full_res { self.pool.full_res_source(&self.project, item, &*self.services) } else { self.pool.source_for(&self.project, item, &*self.services) }
+    }
+}
+
+/// The offline slate as a media source: video frames are the slate at the requested scale of the
+/// item's frame size; audio is silence.
+pub struct SlateSource {
+    info: MediaInfo,
+    name: String,
+    reason: OfflineReason,
+    last: Mutex<Option<Arc<VideoFrame>>>,
+}
+
+impl SlateSource {
+    pub fn new(info: MediaInfo, name: &str, reason: OfflineReason) -> Self {
+        Self { info, name: name.to_string(), reason, last: Mutex::new(None) }
+    }
+    pub fn reason(&self) -> OfflineReason {
+        self.reason
+    }
+}
+
+impl MediaSource for SlateSource {
+    fn info(&self) -> &MediaInfo {
+        &self.info
+    }
+    fn video_frame(&self, req: FrameRequest) -> filmcraft_media::Result<Arc<VideoFrame>> {
+        let v = self.info.video.as_ref().ok_or(MediaError::NoStream("video"))?;
+        let s = req.scale.clamp(1.0 / 64.0, 1.0);
+        let (w, h) = (((v.width as f32 * s).round() as u32).max(2), ((v.height as f32 * s).round() as u32).max(2));
+        let mut last = self.last.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(f) = last.as_ref()
+            && f.width == w
+            && f.height == h
+        {
+            return Ok(Arc::new((**f).clone().with_pts(req.time)));
+        }
+        let px = filmcraft_render::offline::slate_rgba8(w as usize, h as usize, &self.name, self.reason);
+        let f = Arc::new(VideoFrame::rgba8(w, h, px));
+        *last = Some(f.clone());
+        Ok(Arc::new((*f).clone().with_pts(req.time)))
+    }
+    fn audio(&self, _start: i64, frames: usize, sample_rate: u32) -> filmcraft_media::Result<AudioBuffer> {
+        Ok(AudioBuffer::silence(sample_rate, self.info.audio.as_ref().map_or(2, |a| a.channels as usize), frames))
+    }
+}
+
+/// A proxy standing in for its full-resolution media: reports the full-resolution info and hands
+/// out the proxy's (smaller) frames. A proxy whose aspect ratio differs from the original is
+/// resampled to the original's aspect so it lines up exactly.
+pub struct ProxySource {
+    pub proxy: SharedSource,
+    pub info: MediaInfo,
+}
+
+impl MediaSource for ProxySource {
+    fn info(&self) -> &MediaInfo {
+        &self.info
+    }
+    fn video_frame(&self, req: FrameRequest) -> filmcraft_media::Result<Arc<VideoFrame>> {
+        let full = self.info.video.as_ref().ok_or(MediaError::NoStream("video"))?;
+        let pv = self.proxy.info().video.as_ref().map(|v| (v.width, v.height)).unwrap_or((full.width, full.height));
+        // ask the proxy for the scale relative to its own size
+        let k = (full.width as f32 / pv.0.max(1) as f32).max(1.0);
+        let f = self.proxy.video_frame(FrameRequest { time: req.time, scale: (req.scale * k).min(1.0) })?;
+        let want_h = (f.width as f64 * full.height as f64 / full.width.max(1) as f64).round() as u32;
+        if want_h.abs_diff(f.height) <= 1 {
+            return Ok(f);
+        }
+        // different aspect: resample (nearest) to the original's aspect at the proxy's width
+        let src = f.to_rgba8();
+        let (w, h) = (f.width as usize, want_h.max(1) as usize);
+        let mut out = vec![0u8; w * h * 4];
+        for y in 0..h {
+            let sy = ((y as f64 + 0.5) * f.height as f64 / h as f64) as usize;
+            let row = &src[sy.min(f.height as usize - 1) * w * 4..][..w * 4];
+            out[y * w * 4..(y + 1) * w * 4].copy_from_slice(row);
+        }
+        Ok(Arc::new(VideoFrame::rgba8(w as u32, h as u32, out).with_pts(f.pts)))
+    }
+    fn audio(&self, start: i64, frames: usize, sample_rate: u32) -> filmcraft_media::Result<AudioBuffer> {
+        self.proxy.audio(start, frames, sample_rate)
     }
 }

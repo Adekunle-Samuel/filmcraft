@@ -64,6 +64,7 @@ impl Builder {
                 markers: vec![],
                 offline: false,
                 proxy: None,
+                identity: None,
             }),
             None,
         );

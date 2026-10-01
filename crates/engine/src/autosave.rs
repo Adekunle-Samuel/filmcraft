@@ -104,7 +104,17 @@ pub struct Preferences {
     pub audio: AudioPrefs,
     pub playback: PlaybackPrefs,
     pub trim: TrimPrefs,
+    pub media: MediaPrefs,
     pub essential_sound: EssentialSoundPrefs,
+}
+
+/// Preferences ▸ Media.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct MediaPrefs {
+    /// "Enable proxies": playback and monitors read attached proxies (the monitors' Toggle
+    /// Proxies button). Export always uses full-resolution media.
+    pub enable_proxies: bool,
 }
 
 /// Essential Sound: user presets saved from the panel (built-in presets live in

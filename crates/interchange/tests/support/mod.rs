@@ -46,6 +46,7 @@ pub fn media(p: &mut Project, path: &str, video: bool, audio: bool, rate: FrameR
             markers: vec![],
             offline: false,
             proxy: None,
+            identity: None,
         }),
         None,
     )
@@ -66,6 +67,7 @@ pub fn generator(p: &mut Project, name: &str, g: Generator) -> ItemId {
             markers: vec![],
             offline: false,
             proxy: None,
+            identity: None,
         }),
         None,
     )

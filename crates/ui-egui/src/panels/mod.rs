@@ -11,6 +11,7 @@ pub mod file_dialogs;
 pub mod graphics;
 pub mod import_mode;
 pub mod lumetri;
+pub mod media_dialogs;
 pub mod meters;
 pub mod misc;
 pub mod mixer;
