@@ -4,10 +4,13 @@
 //! frames playback will need next, then thumbnails). Results land in a byte-budgeted cache keyed
 //! by (target, frame, scale, revision); the UI shows the exact frame when ready and otherwise holds
 //! the nearest frame it already has, so scrubbing never flashes black and never blocks the UI.
+//! Sequence frames inside a rendered segment come from its render preview instead of the live
+//! render (see `filmcraft_engine::previews`).
 
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Condvar, Mutex};
 
+use filmcraft_engine::previews::PreviewStore;
 use filmcraft_engine::{MediaPool, Services};
 use filmcraft_project::{ItemId, Project};
 use filmcraft_time::Tick;
@@ -86,11 +89,12 @@ pub struct FrameServer {
     shared: Arc<Shared>,
     pub pool: Arc<MediaPool>,
     pub services: Arc<dyn Services>,
+    pub previews: Arc<PreviewStore>,
     repaint: Arc<Mutex<Option<egui::Context>>>,
 }
 
 impl FrameServer {
-    pub fn new(pool: Arc<MediaPool>, services: Arc<dyn Services>, workers: usize) -> Self {
+    pub fn new(pool: Arc<MediaPool>, services: Arc<dyn Services>, previews: Arc<PreviewStore>, workers: usize) -> Self {
         let shared = Arc::new(Shared {
             queue: Mutex::new(VecDeque::new()),
             cv: Condvar::new(),
@@ -105,11 +109,12 @@ impl FrameServer {
             let pool = pool.clone();
             let services = services.clone();
             let rp = repaint.clone();
-            std::thread::Builder::new().name(format!("filmcraft-frames-{i}")).spawn(move || worker(sh, pool, services, rp)).ok();
+            let pv = previews.clone();
+            std::thread::Builder::new().name(format!("filmcraft-frames-{i}")).spawn(move || worker(sh, pool, services, pv, rp)).ok();
         }
         #[cfg(target_arch = "wasm32")]
         let _ = workers;
-        Self { shared, pool, services, repaint }
+        Self { shared, pool, services, previews, repaint }
     }
 
     pub fn set_context(&self, ctx: &egui::Context) {
@@ -188,17 +193,10 @@ impl FrameServer {
         let job = { self.shared.queue.lock().unwrap_or_else(|e| e.into_inner()).pop_front() };
         if let Some(job) = job {
             if let Target::SequencePlan(seq) = job.key.target {
-                let provider = self.pool.provider(job.project.clone(), self.services.clone());
-                let plan = filmcraft_render::plan::plan_frame(
-                    &job.project,
-                    seq,
-                    job.time,
-                    filmcraft_render::RenderOptions { scale: job.scale, captions: true, ..Default::default() },
-                    &provider,
-                );
+                let plan = plan_job(&job, seq, &self.pool, &self.services, &self.previews);
                 self.shared.plans.lock().unwrap_or_else(|e| e.into_inner()).insert(job.key, (Arc::new(plan), 0));
             } else {
-                let img = render_job(&job, &self.pool, &self.services);
+                let img = render_job(&job, &self.pool, &self.services, &self.previews);
                 self.shared.done.lock().unwrap_or_else(|e| e.into_inner()).insert(job.key, Arc::new(img));
             }
         }
@@ -206,7 +204,7 @@ impl FrameServer {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-fn worker(sh: Arc<Shared>, pool: Arc<MediaPool>, services: Arc<dyn Services>, repaint: Arc<Mutex<Option<egui::Context>>>) {
+fn worker(sh: Arc<Shared>, pool: Arc<MediaPool>, services: Arc<dyn Services>, previews: Arc<PreviewStore>, repaint: Arc<Mutex<Option<egui::Context>>>) {
     loop {
         let job = {
             let mut q = sh.queue.lock().unwrap_or_else(|e| e.into_inner());
@@ -221,14 +219,7 @@ fn worker(sh: Arc<Shared>, pool: Arc<MediaPool>, services: Arc<dyn Services>, re
         };
         sh.in_flight.lock().unwrap_or_else(|e| e.into_inner()).push(job.key);
         if let Target::SequencePlan(seq) = job.key.target {
-            let provider = pool.provider(job.project.clone(), services.clone());
-            let plan = filmcraft_render::plan::plan_frame(
-                &job.project,
-                seq,
-                job.time,
-                filmcraft_render::RenderOptions { scale: job.scale, captions: true, ..Default::default() },
-                &provider,
-            );
+            let plan = plan_job(&job, seq, &pool, &services, &previews);
             let mut g = sh.plans.lock().unwrap_or_else(|e| e.into_inner());
             let clock = g.values().map(|v| v.1).max().unwrap_or(0) + 1;
             g.insert(job.key, (Arc::new(plan), clock));
@@ -240,7 +231,7 @@ fn worker(sh: Arc<Shared>, pool: Arc<MediaPool>, services: Arc<dyn Services>, re
                 }
             }
         } else {
-            let img = render_job(&job, &pool, &services);
+            let img = render_job(&job, &pool, &services, &previews);
             sh.done.lock().unwrap_or_else(|e| e.into_inner()).insert(job.key, Arc::new(img));
         }
         sh.in_flight.lock().unwrap_or_else(|e| e.into_inner()).retain(|k| *k != job.key);
@@ -250,7 +241,54 @@ fn worker(sh: Arc<Shared>, pool: Arc<MediaPool>, services: Arc<dyn Services>, re
     }
 }
 
-fn render_job(job: &Job, pool: &Arc<MediaPool>, services: &Arc<dyn Services>) -> Rgba {
+/// The preview frame for a sequence job, when its segment has been rendered.
+fn preview_frame(job: &Job, seq: ItemId, pool: &MediaPool, previews: &PreviewStore) -> Option<Arc<filmcraft_frame::VideoFrame>> {
+    let rate = job.project.sequence(seq)?.settings.frame_rate;
+    previews.frame(pool, &job.project, seq, rate.frame_at(job.time), job.scale)
+}
+
+fn plan_job(job: &Job, seq: ItemId, pool: &Arc<MediaPool>, services: &Arc<dyn Services>, previews: &PreviewStore) -> filmcraft_render::plan::FramePlan {
+    let opts = filmcraft_render::RenderOptions { scale: job.scale, captions: true, ..Default::default() };
+    if let Some(frame) = preview_frame(job, seq, pool, previews)
+        && let Some(q) = job.project.sequence(seq)
+    {
+        // One full-frame layer: the preview scaled to the output size. Previews never contain
+        // captions (they are not part of the preview hash), so captions are layered on live.
+        let (w, h) = filmcraft_render::output_size(q, job.scale);
+        let matrix = filmcraft_geom::Affine::scale(w as f64 / frame.width.max(1) as f64, h as f64 / frame.height.max(1) as f64);
+        let mut layers = vec![filmcraft_render::plan::PlanLayer { frame, matrix, opacity: 1.0 }];
+        for o in filmcraft_render::caption_overlays(q, job.time, w, h) {
+            layers.push(filmcraft_render::plan::PlanLayer {
+                frame: Arc::new(filmcraft_frame::VideoFrame::rgba_f32(o.w as u32, o.h as u32, o.px)),
+                matrix: filmcraft_geom::Affine::translate(o.x as f64, o.y as f64),
+                opacity: 1.0,
+            });
+        }
+        return filmcraft_render::plan::FramePlan::Layers { width: w, height: h, layers };
+    }
+    let provider = pool.provider(job.project.clone(), services.clone());
+    filmcraft_render::plan::plan_frame(&job.project, seq, job.time, opts, &provider)
+}
+
+fn render_job(job: &Job, pool: &Arc<MediaPool>, services: &Arc<dyn Services>, previews: &PreviewStore) -> Rgba {
+    if let Target::Sequence(seq) | Target::SequencePlan(seq) = job.key.target
+        && let Some(f) = preview_frame(job, seq, pool, previews)
+        && let Some(q) = job.project.sequence(seq)
+    {
+        let (w, h) = filmcraft_render::output_size(q, job.scale);
+        let img = filmcraft_render::Image { w: f.width as usize, h: f.height as usize, px: f.to_linear_f32() };
+        let mut img = if img.w == w && img.h == h {
+            img
+        } else {
+            img.transformed(w, h, &filmcraft_geom::Affine::scale(w as f64 / img.w.max(1) as f64, h as f64 / img.h.max(1) as f64))
+        };
+        if matches!(job.key.target, Target::Sequence(_)) {
+            for o in filmcraft_render::caption_overlays(q, job.time, w, h) {
+                o.composite_onto(&mut img.px, w, h);
+            }
+        }
+        return Rgba { w: img.w, h: img.h, px: img.over_black_rgba8() };
+    }
     let provider = pool.provider(job.project.clone(), services.clone());
     let img = match job.key.target {
         Target::Sequence(seq) => Some(filmcraft_render::render_sequence(

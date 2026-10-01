@@ -15,7 +15,8 @@ fn levels(app: &FilmcraftApp) -> [f32; 2] {
     let sr = seq.settings.sample_rate as i64;
     let s0 = app.session.playhead().to_units_floor(sr);
     let provider = app.session.media.provider(app.session.project.clone(), app.session.services.clone());
-    let buf = filmcraft_render::audio::mix_sequence(&app.session.project, seq, s0, 1024, &provider);
+    let Some(seq_id) = app.session.state.active_sequence else { return [-90.0; 2] };
+    let buf = app.session.previews.mix(&app.session.project, seq_id, s0, 1024, &provider);
     let p = buf.peaks();
     [20.0 * p.first().copied().unwrap_or(0.0).max(1e-6).log10(), 20.0 * p.get(1).copied().unwrap_or(0.0).max(1e-6).log10()]
 }
@@ -42,7 +43,8 @@ fn feed_loudness(app: &mut FilmcraftApp) {
         return;
     }
     let provider = app.session.media.provider(app.session.project.clone(), app.session.services.clone());
-    let buf = filmcraft_render::audio::mix_sequence(&app.session.project, seq, next, (now - next) as usize, &provider);
+    let Some(seq_id) = app.session.state.active_sequence else { return };
+    let buf = app.session.previews.mix(&app.session.project, seq_id, next, (now - next) as usize, &provider);
     if let Some((m, n)) = app.loudness.as_mut() {
         let chans: Vec<&[f32]> = buf.channels.iter().take(2).map(Vec::as_slice).collect();
         if chans.len() == 2 {

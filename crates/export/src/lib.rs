@@ -97,6 +97,10 @@ pub struct ExportSettings {
     /// Burn the visible caption tracks into the picture (Export ▸ Captions ▸ Burn Captions Into
     /// Video).
     pub burn_captions: bool,
+    /// This export is one part of a larger job (render previews): the caller owns
+    /// `progress.total`, `finished` and the final status; this call only adds to `done`.
+    #[serde(default)]
+    pub part_of_batch: bool,
 }
 
 impl Default for ExportSettings {
@@ -110,6 +114,7 @@ impl Default for ExportSettings {
             quality: 90,
             bitrate_kbps: 20_000,
             burn_captions: false,
+            part_of_batch: false,
         }
     }
 }
@@ -449,8 +454,10 @@ pub fn export(project: &Arc<Project>, seq: ItemId, settings: &ExportSettings, so
     let nframes = (f1 - f0).max(0) as u64;
     let w = (((q.settings.width as f32 * settings.scale).round() as u32).max(2)) & !1;
     let h = (((q.settings.height as f32 * settings.scale).round() as u32).max(2)) & !1;
-    progress.total.store(if settings.format == Format::Wav { 1 } else { nframes }, Ordering::Relaxed);
-    progress.set_status(format!("Exporting {} frames ({})", nframes, settings.format.label()));
+    if !settings.part_of_batch {
+        progress.total.store(if settings.format == Format::Wav { 1 } else { nframes }, Ordering::Relaxed);
+        progress.set_status(format!("Exporting {} frames ({})", nframes, settings.format.label()));
+    }
     let opts = RenderOptions { scale: w as f32 / q.settings.width as f32, captions: settings.burn_captions, ..Default::default() };
     let render = |f: i64| -> Vec<u8> {
         let img = filmcraft_render::render_sequence(project, seq, rate.tick_of(f), opts, sources);
@@ -635,8 +642,10 @@ pub fn export(project: &Arc<Project>, seq: ItemId, settings: &ExportSettings, so
         }
     };
     let secs = t0.elapsed().as_secs_f64();
-    progress.finished.store(true, Ordering::Relaxed);
-    progress.set_status(format!("Done in {secs:.1}s"));
+    if !settings.part_of_batch {
+        progress.finished.store(true, Ordering::Relaxed);
+        progress.set_status(format!("Done in {secs:.1}s"));
+    }
     Ok(Report { path: settings.path.clone(), frames: nframes, seconds: secs, bytes, render_fps: nframes as f64 / secs.max(1e-6) })
 }
 

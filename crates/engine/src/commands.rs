@@ -91,6 +91,10 @@ fn has_in_out(s: &Session) -> std::result::Result<(), String> {
     let seq = s.active_sequence().ok_or("no sequence is open")?;
     if seq.mark_in.is_some() || seq.mark_out.is_some() { Ok(()) } else { Err("mark an In or Out point first".into()) }
 }
+fn has_previews(s: &Session) -> std::result::Result<(), String> {
+    has_seq(s)?;
+    if s.previews.count() == 0 { Err("there are no render files".into()) } else { Ok(()) }
+}
 fn has_project_selection(s: &Session) -> std::result::Result<(), String> {
     if s.state.project_selection.is_empty() { Err("select an item in the Project panel".into()) } else { Ok(()) }
 }
@@ -346,7 +350,9 @@ fn build() -> Vec<CommandSpec> {
             s.history = Default::default();
             s.history.limit = 200;
             s.state = crate::Session::default().state;
-            s.path = None;
+            if s.path.take().is_some() {
+                s.previews.reset_temp();
+            }
             s.revision += 1;
             s.saved_revision = s.revision;
             s.events.push(crate::Event::ProjectChanged { revision: s.revision });
@@ -562,6 +568,7 @@ fn build() -> Vec<CommandSpec> {
             let data = s.project.to_json();
             s.services.write_file(&path, data.as_bytes()).map_err(|e| EngineError::Other(e.to_string()))?;
             s.path = Some(path.clone());
+            s.previews_follow_path();
             s.saved_revision = s.revision;
             Ok(json!({"path": path}))
         }),
@@ -569,6 +576,7 @@ fn build() -> Vec<CommandSpec> {
             let path = str_p(p, "path").ok_or_else(|| bad("file.saveAs", "need `path`"))?.to_string();
             s.services.write_file(&path, s.project.to_json().as_bytes()).map_err(|e| EngineError::Other(e.to_string()))?;
             s.path = Some(path.clone());
+            s.previews_follow_path();
             s.saved_revision = s.revision;
             Ok(json!({"path": path}))
         }),
@@ -584,6 +592,9 @@ fn build() -> Vec<CommandSpec> {
             s.state = crate::Session::default().state;
             s.state.active_sequence = first;
             s.state.open_sequences = first.into_iter().collect();
+            if !cfg!(target_arch = "wasm32") {
+                s.previews.set_dir(Some(crate::previews::dir_for_project(&path)));
+            }
             s.path = Some(path);
             s.revision += 1;
             s.saved_revision = s.revision;
@@ -958,6 +969,21 @@ fn build() -> Vec<CommandSpec> {
             })?;
             Ok(Value::Null)
         }),
+        cmd!("sequence.renderEffectsInToOut", "Render Effects In to Out", ["Sequence"], Some("Enter"), r#"{"wait":bool=false}"#, has_seq, |s, p| {
+            crate::previews::render(s, crate::previews::RenderMode::EffectsInToOut, p)
+        }),
+        cmd!("sequence.renderInToOut", "Render In to Out", ["Sequence"], None, r#"{"wait":bool=false}"#, has_seq, |s, p| {
+            crate::previews::render(s, crate::previews::RenderMode::InToOut, p)
+        }),
+        cmd!("sequence.renderSelection", "Render Selection", ["Sequence"], None, r#"{"wait":bool=false}"#, has_selection, |s, p| {
+            crate::previews::render(s, crate::previews::RenderMode::Selection, p)
+        }),
+        cmd!("sequence.renderAudio", "Render Audio", ["Sequence"], None, r#"{"wait":bool=false}"#, has_seq, |s, p| crate::previews::render_audio(s, p)),
+        cmd!("sequence.deleteRenderFiles", "Delete Render Files", ["Sequence"], None, "{}", has_previews, |s, _| crate::previews::delete(s, false)),
+        cmd!("sequence.deleteRenderFilesInToOut", "Delete Render Files In to Out", ["Sequence"], None, "{}", has_in_out, |s, _| {
+            crate::previews::delete(s, true)
+        }),
+        query!("sequence.renderBar", "Render Bar", "{}", |s, _| crate::previews::bar_json(s)),
         cmd!("sequence.matchFrame", "Match Frame", ["Sequence"], Some("F"), "{}", has_seq, |s, _| {
             let t = s.playhead();
             let seq = s.active_sequence().ok_or(EngineError::NoSequence)?;
@@ -1746,6 +1772,7 @@ fn export_media(s: &mut Session, p: &Value) -> Result<Value> {
         quality: u64_p(p, "quality").unwrap_or(90).min(100) as u8,
         bitrate_kbps: u64_p(p, "bitrateKbps").unwrap_or(20_000) as u32,
         burn_captions: bool_p(p, "burnCaptions").unwrap_or(false),
+        part_of_batch: false,
     };
     let id = s.jobs.len() as u64 + 1;
     let job = crate::Job {
