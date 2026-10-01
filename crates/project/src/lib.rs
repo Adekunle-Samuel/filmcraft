@@ -7,6 +7,7 @@
 //!
 //! Time: timeline positions are sequence ticks; `source_in` is media time.
 
+pub mod caption;
 pub mod effect;
 pub mod keyframe;
 
@@ -17,6 +18,7 @@ use filmcraft_media::{Generator, MediaInfo};
 use filmcraft_time::{FrameRate, TICKS_PER_SECOND, Tick, TimeRange};
 use serde::{Deserialize, Serialize};
 
+pub use caption::{Caption, CaptionAlign, CaptionAnchor, CaptionFormat, CaptionStyle, CaptionTrack, plain_text};
 pub use effect::{EffectDef, EffectInstance, EffectKind, ParamDef, ParamKind, effect_defs, find_effect};
 pub use keyframe::{Interpolation, Keyframe, Param, ParamValue};
 
@@ -640,11 +642,25 @@ pub struct Sequence {
     pub master_volume_db: f64,
     #[serde(default)]
     pub master_effects: Vec<EffectInstance>,
+    /// Caption tracks (drawn above the video tracks; first = top). Older files have none (serde default).
+    #[serde(default)]
+    pub caption_tracks: Vec<CaptionTrack>,
 }
 
 impl Sequence {
     pub fn duration(&self) -> Tick {
-        self.video_tracks.iter().chain(&self.audio_tracks).map(Track::end).max().unwrap_or(Tick::ZERO)
+        let media = self.video_tracks.iter().chain(&self.audio_tracks).map(Track::end).max().unwrap_or(Tick::ZERO);
+        media.max(self.caption_tracks.iter().map(CaptionTrack::end).max().unwrap_or(Tick::ZERO))
+    }
+    pub fn caption_track(&self, id: TrackId) -> Option<&CaptionTrack> {
+        self.caption_tracks.iter().find(|t| t.id == id)
+    }
+    pub fn caption_track_mut(&mut self, id: TrackId) -> Option<&mut CaptionTrack> {
+        self.caption_tracks.iter_mut().find(|t| t.id == id)
+    }
+    /// Find a caption anywhere: (caption track id, caption).
+    pub fn find_caption(&self, id: ClipId) -> Option<(TrackId, &Caption)> {
+        self.caption_tracks.iter().find_map(|t| t.caption(id).map(|c| (t.id, c)))
     }
     pub fn tracks(&self, kind: TrackKind) -> &Vec<Track> {
         match kind {
@@ -694,6 +710,9 @@ impl Sequence {
         for t in self.all_tracks() {
             t.check()?;
         }
+        for t in &self.caption_tracks {
+            t.check()?;
+        }
         Ok(())
     }
 }
@@ -730,11 +749,7 @@ pub struct Project {
     pub items: BTreeMap<ItemId, ProjectItem>,
     /// Monotonic id source for all id types.
     pub next_id: u64,
-    /// Format version of the serialized project.
-    pub version: u32,
 }
-
-pub const PROJECT_VERSION: u32 = 1;
 
 impl Default for Project {
     fn default() -> Self {
@@ -750,7 +765,6 @@ impl Project {
             root: Bin { id: BinId(0), name: name.into(), children: Vec::new() },
             items: BTreeMap::new(),
             next_id: 1,
-            version: PROJECT_VERSION,
         }
     }
 
@@ -812,6 +826,7 @@ impl Project {
             start_timecode: 0,
             master_volume_db: 0.0,
             master_effects: Vec::new(),
+            caption_tracks: Vec::new(),
         };
         for i in 0..v {
             let id = TrackId(self.alloc_id());
@@ -856,15 +871,13 @@ impl Project {
         })
     }
 
+    /// The bare model as JSON. Project *files* add a schema-versioned envelope; read and write them
+    /// with `filmcraft-format`, not with these.
     pub fn to_json(&self) -> String {
         serde_json::to_string_pretty(self).unwrap_or_default()
     }
     pub fn from_json(s: &str) -> Result<Project, String> {
-        let p: Project = serde_json::from_str(s).map_err(|e| e.to_string())?;
-        if p.version > PROJECT_VERSION {
-            return Err(format!("project version {} is newer than this FilmCraft ({PROJECT_VERSION})", p.version));
-        }
-        Ok(p)
+        serde_json::from_str(s).map_err(|e| e.to_string())
     }
 }
 
@@ -938,6 +951,41 @@ mod tests {
         assert_eq!(t.item_at(rate.tick_of(10)).unwrap().id, a.id);
         assert!(t.item_at(rate.tick_of(48)).is_none());
         assert_eq!(a.source_time_at(rate.tick_of(10)), Tick(1000) + rate.tick_of(20));
+    }
+
+    #[test]
+    fn projects_without_caption_tracks_load() {
+        let (p, _, seq) = demo_project();
+        let mut v: serde_json::Value = serde_json::from_str(&p.to_json()).unwrap();
+        // a v1 file has no `caption_tracks` key
+        let items = v["items"].as_object_mut().unwrap();
+        for it in items.values_mut() {
+            if let Some(s) = it["kind"].get_mut("Sequence") {
+                s.as_object_mut().unwrap().remove("caption_tracks");
+            }
+        }
+        let q = Project::from_json(&v.to_string()).unwrap();
+        assert!(q.sequence(seq).unwrap().caption_tracks.is_empty());
+    }
+
+    #[test]
+    fn caption_tracks_roundtrip() {
+        let (mut p, _, seq) = demo_project();
+        let id = TrackId(p.alloc_id());
+        let mut ct = CaptionTrack::new(id, "Subtitle".into(), CaptionFormat::Cea608);
+        ct.captions.push(Caption {
+            id: ClipId(p.alloc_id()),
+            start: Tick(10),
+            duration: Tick(TICKS_PER_SECOND),
+            text: "Hello\n<i>world</i>".into(),
+            speaker: Some("Ann".into()),
+            cue_id: Some("1".into()),
+            settings: "line:90%".into(),
+        });
+        p.sequence_mut(seq).unwrap().caption_tracks.push(ct);
+        let q = Project::from_json(&p.to_json()).unwrap();
+        assert_eq!(p, q);
+        assert_eq!(q.sequence(seq).unwrap().duration(), Tick(10 + TICKS_PER_SECOND));
     }
 
     #[test]

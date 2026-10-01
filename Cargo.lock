@@ -1302,6 +1302,7 @@ dependencies = [
 name = "filmcraft"
 version = "0.1.0"
 dependencies = [
+ "chrono",
  "cpal",
  "eframe",
  "egui",
@@ -1351,6 +1352,18 @@ name = "filmcraft-bitstream"
 version = "0.1.0"
 dependencies = [
  "proptest",
+]
+
+[[package]]
+name = "filmcraft-captions"
+version = "0.1.0"
+dependencies = [
+ "filmcraft-color",
+ "filmcraft-project",
+ "filmcraft-time",
+ "proptest",
+ "skrifa",
+ "thiserror 2.0.21",
 ]
 
 [[package]]
@@ -1411,10 +1424,12 @@ dependencies = [
 name = "filmcraft-engine"
 version = "0.1.0"
 dependencies = [
+ "filmcraft-captions",
  "filmcraft-codecs",
  "filmcraft-color",
  "filmcraft-edit",
  "filmcraft-export",
+ "filmcraft-format",
  "filmcraft-frame",
  "filmcraft-geom",
  "filmcraft-interchange",
@@ -1445,6 +1460,18 @@ dependencies = [
  "filmcraft-time",
  "image",
  "rayon",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "filmcraft-format"
+version = "0.1.0"
+dependencies = [
+ "filmcraft-media",
+ "filmcraft-project",
+ "filmcraft-time",
  "serde",
  "serde_json",
  "thiserror 2.0.21",
@@ -1612,6 +1639,7 @@ name = "filmcraft-render"
 version = "0.1.0"
 dependencies = [
  "filmcraft-audio-dsp",
+ "filmcraft-captions",
  "filmcraft-color",
  "filmcraft-frame",
  "filmcraft-geom",
@@ -1620,6 +1648,8 @@ dependencies = [
  "filmcraft-time",
  "image",
  "rayon",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

@@ -65,6 +65,7 @@ pub const UI_COMMANDS: &[UiCommand] = &[
     uic!("mode.export", "Export", ["File", "Export"], Some("Cmd+M")),
     uic!("app.about", "About FilmCraft", ["Help"], None),
     uic!("help.shortcuts", "Keyboard Shortcuts", ["Help"], None),
+    uic!("app.preferences.autoSave", "Auto Save…", ["Edit", "Preferences"], Some("Cmd+,")),
 ];
 
 pub fn panel_command_id(p: PanelKind) -> String {
@@ -157,6 +158,27 @@ pub fn invoke(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, params: Val
             app.dialog = Some(crate::Dialog::Shortcuts);
             return Ok(Value::Null);
         }
+        "app.preferences" | "app.preferences.autoSave" => {
+            app.file_dialogs.prefs_draft = Some(app.session.prefs.auto_save.clone());
+            app.dialog = Some(crate::Dialog::Preferences);
+            return Ok(Value::Null);
+        }
+        // From menus/shortcuts (no params) these ask first; agents pass params to act directly.
+        "file.revert" if params.as_object().is_none_or(|m| m.is_empty()) && app.session.is_dirty() => {
+            if app.session.path.is_none() {
+                return Err("the project has not been saved yet".into());
+            }
+            app.dialog = Some(crate::Dialog::RevertConfirm);
+            return Ok(json!({"dialog": "revert"}));
+        }
+        "file.recover" if params.as_object().is_none_or(|m| m.is_empty()) => {
+            if app.session.recovery_candidates().is_empty() {
+                return Err("there are no unsaved changes to recover".into());
+            }
+            app.file_dialogs.recovery_choice = 0;
+            app.dialog = Some(crate::Dialog::Recovery);
+            return Ok(json!({"dialog": "recovery"}));
+        }
         _ => {}
     }
     if let Some(r) = id.strip_prefix("view.playbackRes.") {
@@ -178,10 +200,12 @@ pub fn invoke(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, params: Val
     // File dialogs for commands that need a path.
     if (id == "file.import" && params.get("paths").is_none() && params.get("path").is_none())
         || (id == "file.saveAs" && params.get("path").is_none())
+        || (id == "file.saveCopy" && params.get("path").is_none())
         || (id == "file.open" && params.get("path").is_none())
         || (id == "file.save" && params.get("path").is_none() && app.session.path.is_none())
+        || (matches!(id, "captions.import" | "captions.export") && params.get("path").is_none())
     {
-        return app.file_dialog(id);
+        return app.file_dialog(id, &params);
     }
     let r = app.session.execute(id, params).map_err(|e| e.to_string());
     if let Err(e) = &r {
