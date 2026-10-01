@@ -1430,6 +1430,7 @@ dependencies = [
 name = "filmcraft-engine"
 version = "0.1.0"
 dependencies = [
+ "filmcraft-audio-dsp",
  "filmcraft-captions",
  "filmcraft-codecs",
  "filmcraft-color",

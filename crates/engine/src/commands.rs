@@ -1849,6 +1849,7 @@ fn build() -> Vec<CommandSpec> {
     ];
     v.extend(crate::captions::commands());
     v.extend(crate::mixer::commands());
+    v.extend(crate::essential_sound::commands());
     v.extend(crate::graphics::commands());
     v.extend(crate::shortcuts::commands());
     // Labels as individual commands (Edit ▸ Label ▸ <name>)

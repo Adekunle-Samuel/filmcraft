@@ -133,6 +133,18 @@ keyframes and the Audio Gain dialog by automation id and with multi-frame pointe
 over several frames, release). With `FILMCRAFT_UI_SNAPSHOT_DIR=<dir>` it also renders the window
 offscreen through wgpu (`Harness::render`) and writes `mixer-*.png`; this works without a visible
 window (for example on a locked screen, where `ui.screenshot` cannot capture).
+`crates/ui-egui/tests/essential_sound_ui.rs` does the same for the Essential Sound panel (type buttons,
+switches, a slider drag as one undo step, section bypass, Auto-Match, ducking, Browse presets;
+`essential-sound-*.png`).
+
+Essential Sound engine tests (`crates/engine/src/essential_sound_tests.rs`) build projects from
+generated speech-like and tonal WAVs: Auto-Match lands within ±0.5 LU of the target (measured: 0.000 LU,
+with and without a repair/clarity chain); ducking on a dialogue + music project gives keyframes within
+60 ms of the expected times (measured 20 ms) and −15.00 dB in the mix; each repair stage improves its
+metric through the render path (hum −39 dB, rumble −22 dB, noise floor −13 dB, sibilance −19 dB,
+reverb tail −10 dB); the mix is bit-identical however requests are cut and the WAV export equals it.
+`perf_full_dialogue_chain_realtime_factor` (ignored; run with `--release`) prints the realtime factor of
+all nine Dialogue effects on one clip (22× on one core).
 
 Not covered headless: `ui.screenshot` (needs a real viewport), the wgpu monitor path (the harness
 runs the CPU texture path), audio output, and wall-clock playback advance (kittest frames do not

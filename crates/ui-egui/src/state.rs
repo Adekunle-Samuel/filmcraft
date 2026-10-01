@@ -264,6 +264,9 @@ pub struct UiState {
     /// Transient status line shown in the footer.
     pub status: String,
     /// Export mode: chosen format id and output path.
+    /// Essential Sound sub-tab: "Edit" or "Browse".
+    #[serde(default)]
+    pub essential_sound_tab: String,
     #[serde(default)]
     pub export_format: String,
     #[serde(default)]
@@ -346,6 +349,7 @@ impl Default for UiState {
             dark: true,
             show_scopes: false,
             status: String::new(),
+            essential_sound_tab: "Edit".into(),
             export_format: "h264".into(),
             export_path: String::new(),
             export_burn_captions: false,

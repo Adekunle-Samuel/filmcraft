@@ -15,6 +15,7 @@
 //! portable to wasm).
 
 pub mod biquad;
+pub mod ducking;
 pub mod effects;
 pub mod fft;
 pub mod loudness;
