@@ -270,8 +270,11 @@ fn check_vp9_seeks(name: &str, container: &str, pix_fmt: &str, extra: &[&str], f
     }
 }
 
-/// All-intra AV1 (libsvtav1) in MP4 / WebM: random access is sample-exact against libdav1d.
-fn check_av1_seeks(name: &str, container: &str, pix_fmt: &str, frames: usize) {
+/// AV1 (libsvtav1) in MP4 / WebM: random access is sample-exact against libdav1d. `keyint`
+/// "1" is all-intra; larger values give hierarchical inter GOPs (hidden ALTREFs, shown-existing
+/// frames), so seeks decode forward from the previous key frame.
+fn check_av1_seeks(name: &str, container: &str, pix_fmt: &str, frames: usize, keyint: &str) {
+    let params = format!("keyint={keyint}");
     let n = frames.to_string();
     let args = [
         "-f",
@@ -289,7 +292,7 @@ fn check_av1_seeks(name: &str, container: &str, pix_fmt: &str, frames: usize) {
         "-crf",
         "40",
         "-svtav1-params",
-        "keyint=1",
+        &params,
     ];
     let Some(path) = fixture_path(name, &args) else { return };
     let ref_name = format!("{name}.{pix_fmt}.yuv");
@@ -304,7 +307,7 @@ fn check_av1_seeks(name: &str, container: &str, pix_fmt: &str, frames: usize) {
     assert_eq!((v.width, v.height), (320, 240));
     let frame_len = reference.len() / frames;
     let rate = info.frame_rate();
-    for k in [frames - 1, 2, 7, 0, 5, 6, 3] {
+    for k in [frames - 1, 2, 7, 0, 5, 6, 3, frames / 2 + 1, frames - 2] {
         let f = src.video_frame(FrameRequest::full(rate.tick_of(k as i64))).unwrap();
         assert_eq!((f.width, f.height), (320, 240));
         assert!(yuv_bytes(&f) == reference[k * frame_len..(k + 1) * frame_len], "{name}: frame {k} differs from libdav1d");
@@ -313,12 +316,22 @@ fn check_av1_seeks(name: &str, container: &str, pix_fmt: &str, frames: usize) {
 
 #[test]
 fn mp4_av1_intra_seeks_bit_exact() {
-    check_av1_seeks("noise_av1_intra.mp4", "MPEG-4", "yuv420p", 10);
+    check_av1_seeks("noise_av1_intra.mp4", "MPEG-4", "yuv420p", 10, "1");
+}
+
+#[test]
+fn mp4_av1_inter_gop_seeks_bit_exact() {
+    check_av1_seeks("noise_av1_gop16.mp4", "MPEG-4", "yuv420p", 40, "16");
+}
+
+#[test]
+fn webm_av1_inter_gop_10bit_seeks_bit_exact() {
+    check_av1_seeks("noise_av1_gop16_10bit.webm", "WebM", "yuv420p10le", 24, "16");
 }
 
 #[test]
 fn webm_av1_intra_10bit_seeks_bit_exact() {
-    check_av1_seeks("noise_av1_intra_10bit.webm", "WebM", "yuv420p10le", 10);
+    check_av1_seeks("noise_av1_intra_10bit.webm", "WebM", "yuv420p10le", 10, "1");
 }
 
 #[test]
