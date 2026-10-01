@@ -16,6 +16,8 @@ FILMCRAFT_REQUIRE_ORACLES=1 cargo test --workspace   # CI: missing ffmpeg fails 
 | Unit | `src/` `#[cfg(test)]` modules, `src/tests.rs` | CABAC engines, VLC tables (prefix-freeness, Kraft sums), colour matrices, frame cache |
 | Property (`proptest`) | `time`, `bitstream`, `edit`, `isobmff/tests/roundtrip.rs`, `interchange/tests/*` | tick↔frame round trips for every rate, DF timecode, edit invariants (no overlaps, durations conserved), mux→demux round trips, interchange export→import |
 | Synthetic streams | `h264/src/synth_tests.rs`, `hevc/src/synth_tests.rs` | hand-built bitstreams for features the reference encoders don't emit; expected output known exactly |
+| Scripted UI | `crates/ui-egui/tests/scripted.rs` | headless app (egui_kittest) driven over the control channel: razor/undo, insert, apply effect, playback, click by automation id (§4) |
+| Golden images | `crates/golden/tests/golden.rs` | CPU renders vs committed PNGs; GPU vs CPU on the same scenes (§3) |
 | Engine / command | `crates/engine/src/tests.rs` | run commands on the demo project, assert the sequence, undo/redo, disabled cases |
 | Render | `crates/render/src/tests.rs` | compositing, opacity, Motion, cross dissolve midpoint, ½-res vs full, GPU plan vs reference, audio mix, audio-effect continuity |
 | Oracle | `crates/*/tests/*oracle*.rs`, `conformance.rs` | compare with ffmpeg/ffprobe (§2) |
@@ -106,7 +108,33 @@ Each codec README has the full fixture matrix and the measured results.
 
 ## 4. UI: control channel and screenshots
 
-There is no automated UI test suite yet. UI work is checked by driving the real app:
+### Scripted UI tests (headless)
+
+`crates/ui-egui/tests/scripted.rs` runs the real `FilmcraftApp` under
+[`egui_kittest`](https://docs.rs/egui_kittest) (`build_eframe`): no window, no GPU, no OS event loop.
+A small `Driver` opens the demo project, sends requests through the same control channel agents use
+(`ControlRequest` → `control::handle`, exactly as the TCP server does) and steps egui frames until
+each reply arrives. Synthetic input queued by `ui.click` / `ui.drag` / `ui.key` is moved into the
+next frame by the app's own `raw_input_hook`, so clicks by automation id work headless. Covered:
+
+| Test | Asserts |
+|---|---|
+| `demo_project_opens_headless_and_registers_widgets` | active sequence, > 50 registered widgets, panel and tool ids, 6 clips on V1 (`sequence.inspect`) |
+| `razor_then_undo_through_the_control_channel` | `timeline.razor` adds a clip, the timeline can locate it on screen, `edit.undo` via `ui.menu.invoke`, redo |
+| `insert_from_source_ripples_the_sequence` | `source.open` + marks + `source.insert` lengthens the sequence |
+| `apply_effect_appears_in_effect_controls` | `effects.apply` adds Gaussian Blur in the model and `effectControls.effect.gaussian_blur` appears in the panel; undo removes it |
+| `playback_toggle_and_stop` | `playback.toggle` / `ui.playback stop` and `ui.inspect` playback state |
+| `clicking_a_tool_button_by_automation_id` | `ui.click {id: "tools.Razor"}` changes the tool (real egui input path) |
+| `unknown_methods_and_commands_fail_cleanly` | errors come back as `{"ok": false}` |
+
+Not covered headless: `ui.screenshot` (needs a real viewport), the wgpu monitor path (the harness
+runs the CPU texture path), audio output, and wall-clock playback advance (kittest frames do not
+advance real time). Use `Driver` for new UI regressions: `d.exec(command, params)`,
+`d.ok(method, params)`, `d.frames(n)`.
+
+### Interactive checks
+
+For visual work, drive the real app:
 
 ```sh
 cargo run --release -p filmcraft -- --control 9876
