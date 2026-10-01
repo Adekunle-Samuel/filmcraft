@@ -129,7 +129,7 @@ pub fn ensure(f: &Fixture) -> Option<(PathBuf, PathBuf)> {
     let hevc = dir.join(format!("{}.hevc", f.name));
     let yuv = dir.join(format!("{}.yuv", f.name));
     if !hevc.exists() {
-        let tmp = dir.join(format!("{}.tmp.{}.hevc", f.name, std::process::id()));
+        let tmp = dir.join(format!("{}.tmp.{}.hevc", f.name, unique()));
         let mut vf = format!("{}=size={}x{}:rate=25,format={}", f.source, f.width, f.height, pix_fmt(f.bit_depth));
         if !f.filter.is_empty() {
             vf.push(',');
@@ -154,7 +154,7 @@ pub fn ensure(f: &Fixture) -> Option<(PathBuf, PathBuf)> {
         std::fs::rename(&tmp, &hevc).unwrap();
     }
     if !yuv.exists() {
-        let tmp = dir.join(format!("{}.tmp.{}.yuv", f.name, std::process::id()));
+        let tmp = dir.join(format!("{}.tmp.{}.yuv", f.name, unique()));
         let mut c = Command::new(&ff);
         c.args(["-hide_banner", "-loglevel", "error", "-y", "-i"]).arg(&hevc);
         c.args(["-fps_mode", "passthrough", "-f", "rawvideo", "-pix_fmt", pix_fmt(f.bit_depth)]).arg(&tmp);
@@ -315,4 +315,10 @@ pub fn check_pts(pics: &[Picture]) -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+/// Unique temp-file suffix: process id plus a per-process counter (tests run on parallel threads).
+fn unique() -> String {
+    static N: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    format!("{}-{}", std::process::id(), N.fetch_add(1, std::sync::atomic::Ordering::Relaxed))
 }

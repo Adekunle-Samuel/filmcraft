@@ -287,7 +287,7 @@ impl Default for UiState {
             dark: true,
             show_scopes: false,
             status: String::new(),
-            export_format: "mjpeg".into(),
+            export_format: "h264".into(),
             export_path: String::new(),
         }
     }

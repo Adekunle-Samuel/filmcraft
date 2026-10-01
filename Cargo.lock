@@ -1359,6 +1359,7 @@ dependencies = [
  "filmcraft-h264",
  "filmcraft-hevc",
  "filmcraft-isobmff",
+ "filmcraft-matroska",
  "filmcraft-media",
  "filmcraft-prores",
  "filmcraft-time",
@@ -1397,6 +1398,7 @@ dependencies = [
  "filmcraft-export",
  "filmcraft-frame",
  "filmcraft-geom",
+ "filmcraft-interchange",
  "filmcraft-media",
  "filmcraft-project",
  "filmcraft-render",
@@ -1489,6 +1491,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "filmcraft-interchange"
+version = "0.1.0"
+dependencies = [
+ "filmcraft-color",
+ "filmcraft-geom",
+ "filmcraft-media",
+ "filmcraft-project",
+ "filmcraft-time",
+ "proptest",
+ "roxmltree",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "filmcraft-isobmff"
 version = "0.1.0"
 dependencies = [
@@ -1545,6 +1563,7 @@ dependencies = [
 name = "filmcraft-render"
 version = "0.1.0"
 dependencies = [
+ "filmcraft-audio-dsp",
  "filmcraft-color",
  "filmcraft-frame",
  "filmcraft-geom",
@@ -1569,6 +1588,7 @@ version = "0.1.0"
 dependencies = [
  "eframe",
  "egui",
+ "filmcraft-audio-dsp",
  "filmcraft-color",
  "filmcraft-edit",
  "filmcraft-engine",
@@ -3695,6 +3715,15 @@ dependencies = [
  "quote",
  "serde_json",
  "syn 3.0.6",
+]
+
+[[package]]
+name = "roxmltree"
+version = "0.21.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f1964b10c76125c36f8afe190065a4bf9a87bf324842c05701330bba9f1cacbb"
+dependencies = [
+ "memchr",
 ]
 
 [[package]]

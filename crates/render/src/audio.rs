@@ -107,6 +107,43 @@ fn mix_item(project: &Project, item: &TrackItem, start: i64, frames: usize, sr: 
         return;
     }
     let n = (a1 - a0) as usize;
+    let read = |x0: i64, len: usize| raw_stereo(item, src.as_ref(), x0, len, sr);
+    let buf = if crate::audio_fx::has_effects(item) { crate::audio_fx::process(item, a0, n, sr, &read) } else { read(a0, n) };
+    // gains: clip gain × Volume (keyframed, per 64-sample block) × channel volume × panner
+    let clip_gain = db_to_gain(item.gain_db);
+    let vol = item.effect("volume").filter(|e| e.enabled && !e.param("bypass").and_then(|p| p.value.as_bool()).unwrap_or(false));
+    let chv = item.effect("channel_volume").filter(|e| e.enabled && !e.param("bypass").and_then(|p| p.value.as_bool()).unwrap_or(false));
+    let pan = item.effect("panner").filter(|e| e.enabled);
+    let off = (a0 - start) as usize;
+    for blk in (0..n).step_by(64) {
+        let t_tl = Tick::from_units(a0 + blk as i64, sr as i64);
+        let mt = item.source_time_at(t_tl);
+        let v = vol.map(|e| db_to_gain(e.f64_at("level", mt))).unwrap_or(1.0);
+        let (cl, cr) = chv.map(|e| (db_to_gain(e.f64_at("left", mt)), db_to_gain(e.f64_at("right", mt)))).unwrap_or((1.0, 1.0));
+        let (pl, pr) = pan.map(|e| pan_gains((e.f64_at("balance", mt) / 100.0) as f32)).unwrap_or((1.0, 1.0));
+        let g = clip_gain * v * extra;
+        let end = (blk + 64).min(n);
+        for i in blk..end {
+            let (l, r) = (buf[0][i], buf[1][i]);
+            out.channels[0][off + i] += l * g * cl * pl;
+            out.channels[1][off + i] += r * g * cr * pr;
+        }
+    }
+}
+
+/// The clip's audio (after speed/reverse) for timeline samples `[x0, x0 + len)` as stereo, with
+/// silence outside the clip. Mono sources are duplicated to both channels.
+fn raw_stereo(item: &TrackItem, src: &dyn filmcraft_media::MediaSource, x0: i64, len: usize, sr: u32) -> [Vec<f32>; 2] {
+    let mut out = [vec![0.0f32; len], vec![0.0f32; len]];
+    let item_s0 = item.start.to_units_floor(sr as i64);
+    let item_s1 = item.end().to_units_floor(sr as i64);
+    let a0 = x0.max(item_s0);
+    let a1 = (x0 + len as i64).min(item_s1);
+    if a1 <= a0 {
+        return out;
+    }
+    let n = (a1 - a0) as usize;
+    let off = (a0 - x0) as usize;
     let speed = item.speed.abs().max(1e-6);
     let src_start_ticks = item.source_time_at(Tick::from_units(a0, sr as i64));
     let buf = if (speed - 1.0).abs() < 1e-9 && !item.reverse {
@@ -130,29 +167,14 @@ fn mix_item(project: &Project, item: &TrackItem, start: i64, frames: usize, sr: 
             b
         })
     };
-    let Some(buf) = buf else { return };
-    // gains: clip gain × Volume (keyframed, per 64-sample block) × channel volume × panner
-    let clip_gain = db_to_gain(item.gain_db);
-    let vol = item.effect("volume").filter(|e| e.enabled && !e.param("bypass").and_then(|p| p.value.as_bool()).unwrap_or(false));
-    let chv = item.effect("channel_volume").filter(|e| e.enabled && !e.param("bypass").and_then(|p| p.value.as_bool()).unwrap_or(false));
-    let pan = item.effect("panner").filter(|e| e.enabled);
-    let off = (a0 - start) as usize;
-    let stereo_src = buf.channel_count() >= 2;
-    for blk in (0..n).step_by(64) {
-        let t_tl = Tick::from_units(a0 + blk as i64, sr as i64);
-        let mt = item.source_time_at(t_tl);
-        let v = vol.map(|e| db_to_gain(e.f64_at("level", mt))).unwrap_or(1.0);
-        let (cl, cr) = chv.map(|e| (db_to_gain(e.f64_at("left", mt)), db_to_gain(e.f64_at("right", mt)))).unwrap_or((1.0, 1.0));
-        let (pl, pr) = pan.map(|e| pan_gains((e.f64_at("balance", mt) / 100.0) as f32)).unwrap_or((1.0, 1.0));
-        let g = clip_gain * v * extra;
-        let end = (blk + 64).min(n);
-        for i in blk..end {
-            let l = buf.channels[0][i];
-            let r = if stereo_src { buf.channels[1][i] } else { l };
-            out.channels[0][off + i] += l * g * cl * pl;
-            out.channels[1][off + i] += r * g * cr * pr;
-        }
+    let Some(buf) = buf else { return out };
+    let right = if buf.channel_count() >= 2 { 1 } else { 0 };
+    for (c, dst) in out.iter_mut().enumerate() {
+        let ch = &buf.channels[if c == 0 { 0 } else { right }];
+        let m = n.min(ch.len());
+        dst[off..off + m].copy_from_slice(&ch[..m]);
     }
+    out
 }
 
 /// Peak (min, max) pairs per bucket of `bucket` samples for channel `ch` — waveform display.

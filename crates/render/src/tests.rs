@@ -193,3 +193,77 @@ fn plan_matches_reference_renderer() {
         assert!(max < 0.02, "frame {f}: max diff {max}");
     }
 }
+
+/// A project with a 4 s bars-and-tone clip (1 kHz at −20 dBFS) on A1, with extra audio effects.
+fn tone_with(effects: &[(&str, &[(&str, f64)])]) -> (Project, ItemId, SourceMap) {
+    let mut p = Project::new("fx");
+    let g = GeneratorSource::new(Generator::BarsAndTone, 64, 36, FrameRate::FPS_24, Tick(10 * TICKS_PER_SECOND));
+    let info = g.info().clone();
+    let id = p.add_item(
+        "bars",
+        Label::Iris,
+        ItemKind::Media(MediaClip {
+            media: MediaRef::Generator(Generator::BarsAndTone),
+            info,
+            interpret: Default::default(),
+            mark_in: None,
+            mark_out: None,
+            markers: vec![],
+            offline: false,
+            proxy: None,
+        }),
+        None,
+    );
+    let mut map = SourceMap::default();
+    map.0.insert(id, Arc::new(g));
+    let seq = p.new_sequence("s", SequenceSettings::default(), 1, 1, None);
+    let r = FrameRate::FPS_23_976;
+    let mut ti = p.make_track_item(id, TrackKind::Audio, Tick::ZERO, TimeRange::new(Tick::ZERO, Tick(4 * TICKS_PER_SECOND)), r).unwrap();
+    for (fx, params) in effects {
+        let mut e = filmcraft_project::find_effect(fx).expect("effect").instance();
+        for (k, v) in *params {
+            e.param_mut(k).expect("param").value = ParamValue::Float(*v);
+        }
+        ti.effects.push(e);
+    }
+    p.sequence_mut(seq).unwrap().audio_tracks[0].items.push(ti);
+    (p, seq, map)
+}
+
+fn mix(p: &Project, seq: ItemId, map: &SourceMap, start: i64, n: usize) -> Vec<f32> {
+    audio::mix_sequence(p, p.sequence(seq).unwrap(), start, n, map).channels[0].clone()
+}
+
+#[test]
+fn audio_fx_limiter_holds_ceiling() {
+    // +30 dB boost via Amplify (tone at +10 dBFS), then a −6 dB hard limiter.
+    let (p, seq, map) = tone_with(&[("amplify", &[("gain", 30.0)]), ("hard_limiter", &[("max", -6.0)])]);
+    let out = mix(&p, seq, &map, 24_000, 48_000);
+    let peak = out.iter().fold(0f32, |m, s| m.max(s.abs()));
+    let ceiling = 10f32.powf(-6.0 / 20.0);
+    assert!(peak <= ceiling * 1.01 && peak > ceiling * 0.7, "peak {peak} vs ceiling {ceiling}");
+}
+
+#[test]
+fn audio_fx_chain_is_continuous_and_random_access_matches() {
+    let (p, seq, map) = tone_with(&[("delay", &[("delay", 0.05), ("feedback", 50.0), ("mix", 50.0)])]);
+    let start = 48_000;
+    // one long call (fresh chain with pre-roll)
+    let whole = mix(&p, seq, &map, start, 9_600);
+    // the same range in consecutive blocks from a different position (continues a cached chain)
+    let (p2, seq2, map2) = tone_with(&[("delay", &[("delay", 0.05), ("feedback", 50.0), ("mix", 50.0)])]);
+    let mut parts = Vec::new();
+    let mut s = start - 4_800;
+    let _ = mix(&p2, seq2, &map2, s, 4_800);
+    s += 4_800;
+    while s < start + 9_600 {
+        parts.extend(mix(&p2, seq2, &map2, s, 1_200));
+        s += 1_200;
+    }
+    let max = whole.iter().zip(&parts).map(|(a, b)| (a - b).abs()).fold(0f32, f32::max);
+    assert!(max < 1e-4, "sequential blocks differ from one call by {max}");
+    // the delay changes the signal (wet echoes mixed in)
+    let dry = mix(&tone_with(&[]).0, tone_with(&[]).1, &tone_with(&[]).2, start, 9_600);
+    let diff = whole.iter().zip(&dry).map(|(a, b)| (a - b).abs()).fold(0f32, f32::max);
+    assert!(diff > 1e-3, "delay had no effect");
+}

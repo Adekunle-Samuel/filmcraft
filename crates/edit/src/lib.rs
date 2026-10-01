@@ -503,6 +503,82 @@ pub fn trim(seq: &mut Sequence, clip: ClipId, edge: Edge, mode: TrimMode, delta:
     Ok(d)
 }
 
+/// Ripple-trim one edge of a group of linked items (e.g. a clip and its audio partners) as a single
+/// edit: every member's edge moves by the same delta, later material on the members' tracks and on
+/// sync-locked tracks shifts by the change. Only tracks without a group member can block the edit
+/// (a sync-locked track whose material would be overwritten).
+pub fn ripple_trim_group(seq: &mut Sequence, clips: &[ClipId], edge: Edge, delta: Tick, ctx: &mut EditCtx) -> Result<Tick> {
+    let Some(&first) = clips.first() else { return Ok(Tick::ZERO) };
+    let mut d = delta;
+    for c in clips {
+        let x = clamp_trim(seq, *c, edge, TrimMode::Ripple, d, ctx)?;
+        if x.abs() < d.abs() {
+            d = x;
+        }
+    }
+    if d == Tick::ZERO {
+        return Ok(d);
+    }
+    let mut work = seq.clone();
+    // track → shift origin for the members on it
+    let mut origins: Vec<(TrackId, Tick)> = Vec::new();
+    for c in clips {
+        let (tid, it) = work.find_item_mut(*c).ok_or(EditError::NoItem(*c))?;
+        let speed = it.speed.abs();
+        let from = match edge {
+            Edge::In => it.start + Tick(1),
+            Edge::Out => it.end(),
+        };
+        match edge {
+            Edge::In => {
+                if !it.reverse && it.frame_hold.is_none() {
+                    it.source_in += src_of(d, speed);
+                }
+                it.duration -= d;
+            }
+            Edge::Out => {
+                if it.reverse {
+                    it.source_in -= src_of(d, speed);
+                }
+                it.duration += d;
+            }
+        }
+        if !origins.iter().any(|(t, _)| *t == tid) {
+            origins.push((tid, from));
+        }
+    }
+    let main_from = {
+        let (tid, _) = seq.find_item(first).ok_or(EditError::NoItem(first))?;
+        origins.iter().find(|(t, _)| *t == tid).map(|o| o.1).unwrap_or_default()
+    };
+    let shift = if edge == Edge::In { -d } else { d };
+    for tr in work.all_tracks_mut() {
+        if tr.locked {
+            continue;
+        }
+        let member = origins.iter().find(|(t, _)| *t == tr.id).map(|o| o.1);
+        if member.is_none() && !tr.sync_lock {
+            continue;
+        }
+        let from = member.unwrap_or(main_from);
+        if member.is_none() && shift < Tick::ZERO {
+            let at = if edge == Edge::In { from - Tick(1) } else { from };
+            if !track_range_empty(tr, TimeRange::new(at + shift, -shift)) {
+                return Err(EditError::SyncLockConflict);
+            }
+        }
+        for i in &mut tr.items {
+            if !clips.contains(&i.id) && i.start >= from {
+                i.start += shift;
+            }
+        }
+        tr.sort();
+    }
+    work.check().map_err(EditError::Other)?;
+    *seq = work;
+    Ok(d)
+}
+
 /// Rolling edit between two adjacent items on one track: moves the cut by `delta`.
 pub fn roll(seq: &mut Sequence, left: ClipId, right: ClipId, delta: Tick, ctx: &mut EditCtx) -> Result<Tick> {
     let (_, l) = seq.find_item(left).ok_or(EditError::NoItem(left))?;

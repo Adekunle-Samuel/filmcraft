@@ -139,3 +139,90 @@ fn save_and_open_roundtrip() {
     assert!(t.render_program(0.1).is_some());
     std::fs::remove_dir_all(dir).ok();
 }
+
+/// Demo project with sync lock off on every track except V1/A1 (the A2 score spans every cut).
+fn demo_unlocked() -> Session {
+    let mut s = demo();
+    for t in ["V2", "V3", "A2", "A3"] {
+        let _ = s.execute("timeline.setTrack", json!({"track": t, "syncLock": false}));
+    }
+    s
+}
+
+fn v1(s: &Session) -> Vec<(u64, Tick, Tick)> {
+    s.active_sequence().unwrap().video_tracks[0].items.iter().map(|i| (i.id.0, i.start, i.end())).collect()
+}
+
+#[test]
+fn trim_mode_roll_ripple_and_toggle() {
+    let mut s = demo_unlocked();
+    let rate = s.sequence_rate();
+    let clips = v1(&s);
+    // park near the first V1 cut and pick it as a roll
+    let cut = clips[0].2;
+    s.execute("playhead.set", json!({"time": (cut + rate.tick_of(2)).0})).unwrap();
+    let r = s.execute("trim.selectNearest", json!({"kind": "roll"})).unwrap();
+    assert!(!r["editPoints"].as_array().unwrap().is_empty());
+    let dur_before = s.active_sequence().unwrap().duration();
+    s.execute("trim.forwardMany", json!({})).unwrap();
+    let after = v1(&s);
+    let left = after.iter().find(|c| c.0 == clips[0].0).unwrap();
+    assert_eq!(left.2, cut + rate.tick_of(5), "roll moved the cut 5 frames later");
+    assert_eq!(s.active_sequence().unwrap().duration(), dur_before, "roll keeps the duration");
+    // toggle Roll -> Trim -> Ripple; ripple backward shortens the sequence
+    s.execute("trim.toggleType", json!({})).unwrap();
+    s.execute("trim.toggleType", json!({})).unwrap();
+    assert_eq!(s.state.edit_points[0].kind, crate::trim::TrimKind::Ripple);
+    let d0 = s.active_sequence().unwrap().duration();
+    s.execute("trim.backward", json!({})).unwrap();
+    assert!(s.active_sequence().unwrap().duration() <= d0, "ripple trim back must not lengthen");
+    s.execute("trim.clear", json!({})).unwrap();
+    assert!(s.execute("trim.forward", json!({})).is_err(), "disabled without edit points");
+}
+
+#[test]
+fn ripple_trim_to_playhead_q_w() {
+    let mut s = demo_unlocked();
+    let rate = s.sequence_rate();
+    let clips = v1(&s);
+    let (id, start, end) = clips[1];
+    let d0 = s.active_sequence().unwrap().duration();
+    // W: ripple trim the end of the clip under the playhead to the playhead
+    let ph = start + rate.tick_of(10);
+    s.execute("playhead.set", json!({"time": ph.0})).unwrap();
+    s.execute("trim.rippleNext", json!({})).unwrap();
+    let c = v1(&s).into_iter().find(|c| c.0 == id).unwrap();
+    assert_eq!(c.2, ph, "clip now ends at the playhead");
+    assert_eq!(s.active_sequence().unwrap().duration(), d0 - (end - ph), "later material rippled left");
+    // Q: ripple trim the start of the (new) clip under the playhead to the playhead
+    let (_, start2, end2) = v1(&s)[2];
+    let d1 = s.active_sequence().unwrap().duration();
+    let ph2 = start2 + rate.tick_of(6);
+    s.execute("playhead.set", json!({"time": ph2.0})).unwrap();
+    s.execute("trim.ripplePrevious", json!({})).unwrap();
+    let c2 = v1(&s).into_iter().find(|c| c.1 == start2).expect("a clip still starts at the old edit");
+    assert_eq!(c2.2, end2 - rate.tick_of(6), "its head (6 frames) was removed");
+    assert_eq!(s.active_sequence().unwrap().duration(), d1 - rate.tick_of(6));
+    assert_eq!(s.playhead(), start2, "playhead parks on the new edit");
+}
+
+#[test]
+fn interchange_roundtrip_through_files() {
+    let dir = std::env::temp_dir().join(format!("fc-ix-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut s = demo();
+    let n0 = clip_ids(&s, 0).len();
+    for (cmd, ext) in [("file.exportFcp7Xml", "xml"), ("file.exportOtio", "otio"), ("file.exportFcpxml", "fcpxml"), ("file.exportEdl", "edl")] {
+        let path = dir.join(format!("demo.{ext}")).to_string_lossy().to_string();
+        s.execute(cmd, json!({"path": path})).unwrap();
+        let r = s.execute("file.import", json!({"paths": [path]})).unwrap();
+        let seq = r["sequences"][0].as_u64().unwrap_or_else(|| panic!("{ext}: no sequence in {r}"));
+        assert_eq!(s.state.active_sequence, Some(ItemId(seq)), "{ext}: imported sequence is opened");
+        // FCP7 XML and OTIO carry our generator (synthetic) media; FCPXML/EDL only file media.
+        if matches!(ext, "xml" | "otio") {
+            assert_eq!(clip_ids(&s, 0).len(), n0, "{ext}: V1 clip count survives the round trip");
+        }
+        s.execute("sequence.open", json!({"item": s.state.open_sequences[0].0})).unwrap();
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}

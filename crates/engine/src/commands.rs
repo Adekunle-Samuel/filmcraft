@@ -60,6 +60,11 @@ pub fn find(id: &str) -> Option<&'static CommandSpec> {
 fn always(_: &Session) -> std::result::Result<(), String> {
     Ok(())
 }
+fn has_edit_points(s: &Session) -> std::result::Result<(), String> {
+    has_seq(s)?;
+    if s.state.edit_points.is_empty() { Err("no edit points selected".into()) } else { Ok(()) }
+}
+
 fn has_seq(s: &Session) -> std::result::Result<(), String> {
     s.active_sequence().map(|_| ()).ok_or_else(|| "no sequence is open".into())
 }
@@ -487,8 +492,20 @@ fn build() -> Vec<CommandSpec> {
             }
             let mut ids = Vec::new();
             let mut errors = Vec::new();
+            let mut sequences = Vec::new();
+            let mut reports = Vec::new();
             for path in paths {
                 match s.services.read_file(&path) {
+                    Ok(b) if crate::interchange::detect(&path, &b).is_some() => {
+                        let fmt = crate::interchange::detect(&path, &b).expect("detected");
+                        match crate::interchange::import(s, &path, &b, fmt) {
+                            Ok(r) => {
+                                sequences.extend(r["sequences"].as_array().cloned().unwrap_or_default());
+                                reports.push(r);
+                            }
+                            Err(e) => errors.push(format!("{path}: {e}")),
+                        }
+                    }
                     Ok(b) => match import_bytes(s, &path, b.into(), None) {
                         Ok(id) => ids.push(id.0),
                         Err(e) => errors.push(format!("{path}: {e}")),
@@ -496,10 +513,37 @@ fn build() -> Vec<CommandSpec> {
                     Err(e) => errors.push(format!("{path}: {e}")),
                 }
             }
-            if ids.is_empty() && !errors.is_empty() {
+            if ids.is_empty() && sequences.is_empty() && !errors.is_empty() {
                 return Err(EngineError::Other(errors.join("; ")));
             }
-            Ok(json!({"items": ids, "errors": errors}))
+            if reports.is_empty() {
+                Ok(json!({"items": ids, "errors": errors}))
+            } else {
+                Ok(json!({"items": ids, "sequences": sequences, "documents": reports, "errors": errors}))
+            }
+        }),
+        cmd!("file.exportInterchange", "Export Interchange", [], None, r#"{"format":"edl|xml|fcpxml|otio","path":str,"sequence":id?}"#, has_seq, |s, p| {
+            crate::interchange::export(s, p)
+        }),
+        cmd!("file.exportEdl", "EDL…", ["File", "Export"], None, r#"{"path":str}"#, has_seq, |s, p| {
+            let mut q = p.clone();
+            q["format"] = json!("edl");
+            crate::interchange::export(s, &q)
+        }),
+        cmd!("file.exportFcp7Xml", "Final Cut Pro XML…", ["File", "Export"], None, r#"{"path":str}"#, has_seq, |s, p| {
+            let mut q = p.clone();
+            q["format"] = json!("xml");
+            crate::interchange::export(s, &q)
+        }),
+        cmd!("file.exportFcpxml", "FCPXML…", ["File", "Export"], None, r#"{"path":str}"#, has_seq, |s, p| {
+            let mut q = p.clone();
+            q["format"] = json!("fcpxml");
+            crate::interchange::export(s, &q)
+        }),
+        cmd!("file.exportOtio", "OpenTimelineIO…", ["File", "Export"], None, r#"{"path":str}"#, has_seq, |s, p| {
+            let mut q = p.clone();
+            q["format"] = json!("otio");
+            crate::interchange::export(s, &q)
         }),
         cmd!("file.save", "Save", ["File"], Some("Cmd+S"), r#"{"path":str?}"#, always, |s, p| {
             let path = str_p(p, "path").map(str::to_string).or_else(|| s.path.clone()).ok_or_else(|| bad("file.save", "no path (use Save As)"))?;
@@ -1212,13 +1256,10 @@ fn build() -> Vec<CommandSpec> {
                         }
                     }
                     if mode == TrimMode::Ripple {
-                        edit::trim(q, c, edge, mode, dd, ctx)?;
-                        for o in clips.iter().filter(|o| **o != c) {
-                            // partners on other tracks were already shifted by sync lock; trim their edge in place
-                            let (_, it) = q.find_item(*o).ok_or(filmcraft_edit::EditError::NoItem(*o))?;
-                            let _ = it;
-                            edit::trim(q, *o, edge, TrimMode::Regular, if edge == Edge::In { Tick::ZERO } else { dd }, ctx).ok();
-                        }
+                        // the clip and its linked partners ripple as one edit
+                        let mut group = vec![c];
+                        group.extend(clips.iter().copied().filter(|o| *o != c));
+                        dd = edit::ripple_trim_group(q, &group, edge, dd, ctx)?;
                     } else {
                         for c in &clips {
                             edit::trim(q, *c, edge, mode, dd, ctx)?;
@@ -1229,6 +1270,50 @@ fn build() -> Vec<CommandSpec> {
                 Ok(json!({"delta": applied.0}))
             }
         ),
+        // ================= Trim mode =================
+        cmd!("trim.selectEditPoint", "Select Edit Point", [], None, r#"{"clip":id,"edge":"in|out","kind":"trim|ripple|roll","add":bool?}"#, has_seq, |s, p| {
+            crate::trim::select(s, p)
+        }),
+        cmd!("trim.selectNearest", "Select Nearest Edit Point", [], None, r#"{"kind":"rippleIn|rippleOut|roll|trimIn|trimOut"}"#, has_seq, |s, p| {
+            crate::trim::select_nearest(s, p)
+        }),
+        cmd!("trim.edit", "Trim Edit", ["Sequence"], Some("Shift+T"), "{}", has_seq, |s, _| {
+            if s.state.edit_points.is_empty() {
+                crate::trim::select_nearest(s, &json!({"kind": "roll"}))
+            } else {
+                Ok(json!({"editPoints": s.state.edit_points}))
+            }
+        }),
+        cmd!("trim.clear", "Clear Edit Point Selection", [], None, "{}", has_edit_points, |s, _| {
+            s.state.edit_points.clear();
+            Ok(Value::Null)
+        }),
+        cmd!("trim.toggleType", "Toggle Trim Type", [], Some("Ctrl+T"), "{}", has_edit_points, |s, _| crate::trim::toggle_type(s)),
+        cmd!("trim.backward", "Trim Backward", [], Some("Alt+Left"), "{}", has_edit_points, |s, _| crate::trim::nudge(s, &json!({"frames": -1}))),
+        cmd!("trim.forward", "Trim Forward", [], Some("Alt+Right"), "{}", has_edit_points, |s, _| crate::trim::nudge(s, &json!({"frames": 1}))),
+        cmd!("trim.backwardMany", "Trim Backward Many", [], Some("Alt+Shift+Left"), "{}", has_edit_points, |s, _| crate::trim::nudge(
+            s,
+            &json!({"frames": -5})
+        )),
+        cmd!("trim.forwardMany", "Trim Forward Many", [], Some("Alt+Shift+Right"), "{}", has_edit_points, |s, _| crate::trim::nudge(s, &json!({"frames": 5}))),
+        cmd!("trim.nudge", "Trim by Frames", [], None, r#"{"frames":i64}"#, has_edit_points, |s, p| crate::trim::nudge(s, p)),
+        cmd!("trim.extendToPlayhead", "Extend Selected Edit to Playhead", [], Some("E"), "{}", has_edit_points, |s, _| { crate::trim::extend_to_playhead(s) }),
+        cmd!("trim.ripplePrevious", "Ripple Trim Previous Edit to Playhead", [], Some("Q"), "{}", has_seq, |s, _| crate::trim::to_playhead(
+            s,
+            &json!({"side": "previous", "ripple": true})
+        )),
+        cmd!("trim.rippleNext", "Ripple Trim Next Edit to Playhead", [], Some("W"), "{}", has_seq, |s, _| crate::trim::to_playhead(
+            s,
+            &json!({"side": "next", "ripple": true})
+        )),
+        cmd!("trim.previous", "Trim Previous Edit to Playhead", [], Some("Alt+Q"), "{}", has_seq, |s, _| crate::trim::to_playhead(
+            s,
+            &json!({"side": "previous", "ripple": false})
+        )),
+        cmd!("trim.next", "Trim Next Edit to Playhead", [], Some("Alt+W"), "{}", has_seq, |s, _| crate::trim::to_playhead(
+            s,
+            &json!({"side": "next", "ripple": false})
+        )),
         cmd!("timeline.roll", "Rolling Edit", [], None, r#"{"left":id,"right":id,"delta":ticks|"deltaFrames":i64}"#, has_seq, |s, p| {
             let (l, r) = (
                 clip_p(p, "left").ok_or_else(|| bad("timeline.roll", "need `left`"))?,
