@@ -208,3 +208,23 @@ jobs for frames that were never due.
 Wall-clock columns (shown/drop, ontime, latencies) depend on machine load, so each row prints the
 load average. CPU columns (thread and process CPU time) and the structural counters (seeks,
 samples decoded, wasted jobs) do not, and are what to compare between runs on a busy machine.
+
+Results on an M4 Pro (14 cores), GPU path, 8 s plays, median of 2 alternating runs of the M4.6
+baseline (commit `5170376`) and the result of M4.6, on a machine shared with parallel agent
+builds (**load average 86–207**, so wall-clock columns are pessimistic; CPU ms/frame is not):
+
+| Scenario | shown/dropped before | after | CPU ms/frame before → after | decoder seeks |
+|---|---|---|---|---|
+| h264-1080 Full / Half | 106/86, 118/74 | **192/0, 192/0** | 80 → 46, 95 → 46 | 3–4 → 1 |
+| stack3 (3 × 1080p) Full / Half | 185/7, 174/18 | **192/0, 192/0** | 136 → 109, 117 → 111 | 4 → 3 (one per source) |
+| h264-2160 Full / Half | 0/192, 0/192 | 5/187, 19/173 | 110 → 135, 170 → 145 | 4–5 → 1–2 |
+| demo Full / Half | 63/129, 124/68 | 97/95, 152/40 | 140 → 80, 93 → 40 | |
+| after-preview, 1st play after render (Full) | 80/112 | **190/2** | 119 → 26 | 104 → 0 |
+| after-preview, 2nd play (Full) | 145/47 | **192/0** | 76 → 26 | 132 → 0 |
+| after-preview, live effects (Half) | 18/174 | 69/123 (frames skipped evenly) | 109 → 95 | |
+| seek-storm (40 jumps, 150 ms each) | 0/40 shown | 6/40 | 827 → 666 per jump | |
+
+At load ~25–60 the same final build plays h264-1080, stack3 and h264-2160 at Full with 0 dropped
+in 3 of 3 runs (192/0) and render previews 192/0. The 4K fixture needs ~4 cores of decode per
+real-time second (≈160 ms CPU per frame at 170 Mbit/s); the demo project's procedural footage
+~190 ms per Full-resolution frame.
