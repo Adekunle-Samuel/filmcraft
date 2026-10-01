@@ -14,5 +14,6 @@ filmcraft-bitstream = { workspace = true }
 thiserror = { workspace = true }
 
 [dev-dependencies]
+filmcraft-testkit = { workspace = true }
 proptest = { workspace = true }
 serde_json = { workspace = true }

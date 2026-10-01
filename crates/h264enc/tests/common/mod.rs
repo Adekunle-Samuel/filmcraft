@@ -95,29 +95,19 @@ pub fn synth(w: usize, h: usize, t: usize) -> Yuv {
     Yuv { w, h, y, u, v }
 }
 
+/// ffmpeg (see `filmcraft_testkit::oracle`); `None` after printing `SKIPPED`.
 pub fn ffmpeg() -> Option<PathBuf> {
-    for p in ["/opt/homebrew/bin/ffmpeg", "/usr/local/bin/ffmpeg", "/usr/bin/ffmpeg"] {
-        if Path::new(p).exists() {
-            return Some(p.into());
-        }
-    }
-    None
+    filmcraft_testkit::ffmpeg_or_skip("h264enc oracle")
 }
 
+/// ffprobe (see `filmcraft_testkit::oracle`); `None` after printing `SKIPPED`.
 pub fn ffprobe() -> Option<PathBuf> {
-    for p in ["/opt/homebrew/bin/ffprobe", "/usr/local/bin/ffprobe", "/usr/bin/ffprobe"] {
-        if Path::new(p).exists() {
-            return Some(p.into());
-        }
-    }
-    None
+    filmcraft_testkit::ffprobe_or_skip("h264enc oracle")
 }
 
+/// Per-test output directory under `<workspace>/target/fixtures/h264enc/`.
 pub fn out_dir(name: &str) -> PathBuf {
-    let base = std::env::var("CARGO_TARGET_DIR").map(PathBuf::from).unwrap_or_else(|_| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target"));
-    let d = base.join("fixtures").join("h264enc").join(name);
-    std::fs::create_dir_all(&d).unwrap();
-    d
+    filmcraft_testkit::fixtures_dir(&format!("h264enc/{name}"))
 }
 
 /// Decode an Annex-B file with ffmpeg; returns (stderr, raw yuv420p bytes).

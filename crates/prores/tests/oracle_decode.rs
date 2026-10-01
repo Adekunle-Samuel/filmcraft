@@ -140,3 +140,14 @@ fn color_metadata_is_reported() {
     let f = decode_frame(&packets(&ff, &mov)[0]).unwrap();
     assert_eq!((f.color.primaries, f.color.transfer, f.color.matrix), (9, 16, 9));
 }
+
+/// Pre-generate every decode fixture (`cargo xtask fixtures`).
+#[test]
+#[ignore]
+fn generate_fixtures() {
+    let Some(ff) = ffmpeg() else { return };
+    for spec in specs() {
+        let out = [fixture_dir().join(format!("{}.mov", spec.name))];
+        filmcraft_testkit::fixtures::generate_and_report(&format!("prores/{}", spec.name), &out, || Some(make(&ff, &spec)));
+    }
+}

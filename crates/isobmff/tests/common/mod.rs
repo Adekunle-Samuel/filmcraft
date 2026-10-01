@@ -6,37 +6,27 @@ use serde_json::Value;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+/// Find a tool silently (see `filmcraft_testkit::oracle`).
 pub fn tool(name: &str) -> Option<PathBuf> {
-    for dir in ["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin"] {
-        let p = Path::new(dir).join(name);
-        if p.exists() {
-            return Some(p);
-        }
+    match name {
+        "ffmpeg" => filmcraft_testkit::ffmpeg(),
+        "ffprobe" => filmcraft_testkit::ffprobe(),
+        _ => filmcraft_testkit::oracle::find_tool(name),
     }
-    let ok = Command::new(name).arg("-version").output().map(|o| o.status.success()).unwrap_or(false);
-    ok.then(|| PathBuf::from(name))
 }
 
+/// ffmpeg, or `None` after printing `SKIPPED` (a failure with `FILMCRAFT_REQUIRE_ORACLES=1`).
 pub fn ffmpeg() -> Option<PathBuf> {
-    let f = tool("ffmpeg");
-    if f.is_none() {
-        eprintln!("ffmpeg not found; skipping oracle test");
-    }
-    f
+    filmcraft_testkit::ffmpeg_or_skip("isobmff oracle")
 }
 
+/// ffprobe, or `None` after printing `SKIPPED` (a failure with `FILMCRAFT_REQUIRE_ORACLES=1`).
 pub fn ffprobe() -> Option<PathBuf> {
-    let f = tool("ffprobe");
-    if f.is_none() {
-        eprintln!("ffprobe not found; skipping oracle test");
-    }
-    f
+    filmcraft_testkit::ffprobe_or_skip("isobmff oracle")
 }
 
 pub fn fixture_dir() -> PathBuf {
-    let d = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/fixtures/isobmff");
-    std::fs::create_dir_all(&d).unwrap();
-    d
+    filmcraft_testkit::fixtures_dir("isobmff")
 }
 
 pub fn out_dir() -> PathBuf {
@@ -120,10 +110,7 @@ pub fn fixture_specs() -> Vec<(&'static str, Vec<&'static str>)> {
 }
 
 fn run_ffmpeg(ff: &Path, args: &[&str], out: &Path) -> bool {
-    static COUNTER: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
-    let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let ext = out.extension().unwrap().to_str().unwrap();
-    let tmp = out.with_extension(format!("tmp{}_{n}.{ext}", std::process::id()));
+    let tmp = filmcraft_testkit::temp_path(out);
     let st = Command::new(ff).args(["-v", "error", "-y", "-nostdin"]).args(args).arg(&tmp).output();
     match st {
         Ok(o) if o.status.success() => std::fs::rename(&tmp, out).is_ok(),
@@ -139,7 +126,7 @@ fn run_ffmpeg(ff: &Path, args: &[&str], out: &Path) -> bool {
 /// Path to a fixture, generating it with ffmpeg if needed. `None` if ffmpeg is missing or the
 /// encoder isn't available.
 pub fn fixture(name: &str) -> Option<PathBuf> {
-    let ff = tool("ffmpeg")?;
+    let ff = ffmpeg()?;
     let path = fixture_dir().join(name);
     if path.exists() {
         return Some(path);

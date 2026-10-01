@@ -85,19 +85,13 @@ pub fn fixture(name: &str) -> &'static Fixture {
     FIXTURES.iter().find(|f| f.name == name).unwrap_or_else(|| panic!("unknown fixture {name}"))
 }
 
+/// ffmpeg (see `filmcraft_testkit::oracle`).
 pub fn ffmpeg() -> Option<PathBuf> {
-    for p in ["/opt/homebrew/bin/ffmpeg", "/usr/local/bin/ffmpeg", "/usr/bin/ffmpeg"] {
-        if Path::new(p).exists() {
-            return Some(PathBuf::from(p));
-        }
-    }
-    None
+    filmcraft_testkit::ffmpeg()
 }
 
 pub fn fixtures_dir() -> PathBuf {
-    let d = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/fixtures/hevc");
-    std::fs::create_dir_all(&d).expect("create fixtures dir");
-    d
+    filmcraft_testkit::fixtures_dir("hevc")
 }
 
 fn run(cmd: &mut Command) -> bool {
@@ -121,15 +115,12 @@ pub fn pix_fmt(bd: u32) -> &'static str {
 /// Generate (if needed) the fixture stream and its ffmpeg reference decode.
 /// Returns None (with a message) when ffmpeg or the encoder is unavailable.
 pub fn ensure(f: &Fixture) -> Option<(PathBuf, PathBuf)> {
-    let Some(ff) = ffmpeg() else {
-        eprintln!("SKIP {}: ffmpeg not found", f.name);
-        return None;
-    };
+    let ff = filmcraft_testkit::ffmpeg_or_skip(f.name)?;
     let dir = fixtures_dir();
     let hevc = dir.join(format!("{}.hevc", f.name));
     let yuv = dir.join(format!("{}.yuv", f.name));
     if !hevc.exists() {
-        let tmp = dir.join(format!("{}.tmp.{}.hevc", f.name, unique()));
+        let tmp = filmcraft_testkit::temp_path(&hevc);
         let mut vf = format!("{}=size={}x{}:rate=25,format={}", f.source, f.width, f.height, pix_fmt(f.bit_depth));
         if !f.filter.is_empty() {
             vf.push(',');
@@ -148,13 +139,13 @@ pub fn ensure(f: &Fixture) -> Option<(PathBuf, PathBuf)> {
             // Platform encoders (VideoToolbox) are optional; libx265 fixtures must generate.
             assert!(f.args.contains(&"-c:v"), "fixture generation failed for {}", f.name);
             let _ = std::fs::remove_file(&tmp);
-            eprintln!("SKIP {}: encoder unavailable", f.name);
+            eprintln!("SKIPPED ({}): encoder unavailable", f.name);
             return None;
         }
         std::fs::rename(&tmp, &hevc).unwrap();
     }
     if !yuv.exists() {
-        let tmp = dir.join(format!("{}.tmp.{}.yuv", f.name, unique()));
+        let tmp = filmcraft_testkit::temp_path(&yuv);
         let mut c = Command::new(&ff);
         c.args(["-hide_banner", "-loglevel", "error", "-y", "-i"]).arg(&hevc);
         c.args(["-fps_mode", "passthrough", "-f", "rawvideo", "-pix_fmt", pix_fmt(f.bit_depth)]).arg(&tmp);
@@ -315,10 +306,4 @@ pub fn check_pts(pics: &[Picture]) -> Result<(), String> {
         }
     }
     Ok(())
-}
-
-/// Unique temp-file suffix: process id plus a per-process counter (tests run on parallel threads).
-fn unique() -> String {
-    static N: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
-    format!("{}-{}", std::process::id(), N.fetch_add(1, std::sync::atomic::Ordering::Relaxed))
 }

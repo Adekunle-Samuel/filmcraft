@@ -141,6 +141,20 @@ fn push_item(
 ) {
     let mt = item.source_time_at(t);
     let (op, bl) = crate::opacity_blend(item, mt);
+    // Graphic clips without standard effects: the layers are rasterised (cached) into one tight
+    // image the GPU places as a layer.
+    if bl == Blend::Normal
+        && !(opts.effects && item.has_standard_effects())
+        && project.item(item.item).is_some_and(|p| matches!(p.kind, ItemKind::Graphic { .. }))
+    {
+        let Some(size) = crate::source_size(project, item.item) else { return };
+        let (w, h) = output_size(seq, opts.scale);
+        let m = Affine::scale(opts.scale as f64, opts.scale as f64).then_apply(&motion_matrix(seq, item, size, mt));
+        if let Some((img, x, y)) = crate::graphic_clip::render_graphic_tight(&item.effects, mt, size, &m, w, h) {
+            out.push(PlanLayer { frame: cpu_frame(img), matrix: Affine::translate(x as f64, y as f64), opacity: op * extra_opacity });
+        }
+        return;
+    }
     if gpu_simple(project, item, mt) && bl == Blend::Normal {
         let Some(src) = sources.source(item.item) else { return };
         let Some(size) = crate::source_size(project, item.item) else { return };

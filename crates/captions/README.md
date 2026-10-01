@@ -1,7 +1,7 @@
 # filmcraft-captions
 
 Caption files and caption burn-in for FilmCraft (layer L2: depends on `filmcraft-time`,
-`filmcraft-color`, `filmcraft-project` and `skrifa`).
+`filmcraft-color`, `filmcraft-project` and `filmcraft-text`).
 
 The caption *model* (caption tracks in a sequence, captions, track style) lives in
 `filmcraft-project` (`caption.rs`) because it is part of the `.fcproj` document. This crate reads
@@ -40,16 +40,13 @@ rasterises it to a small premultiplied linear-light RGBA overlay. `filmcraft-ren
 overlays of visible caption tracks over the finished frame (Program monitor and export burn-in).
 
 Text is set in **Inter SemiBold** (`assets/fonts/Inter-SemiBold.ttf`, SIL OFL 1.1, attributed in
-`ATTRIBUTION.md`). `skrifa` (MIT OR Apache-2.0) provides glyph outlines and metrics; the
-rasteriser (`raster.rs`, non-zero winding, 5 sub-scanlines with exact horizontal coverage) is our
-own. Glyph masks are cached per character, size and quarter-pixel offset. There is no shaping or
-kerning yet; that arrives with the M10.1 text engine.
+`ATTRIBUTION.md`) by the `filmcraft-text` engine: shaped with kerning and ligatures, bidi-ordered,
+and drawn from its sub-pixel positioned glyph cache.
 
 ## Tests
 
 - Unit tests per module (timestamps, decoding, sloppy SRT, WebVTT blocks and voices, CEA-608
-  tables, PAC round trips, known SCC pop-on and roll-up streams, rasteriser coverage, glyphs,
-  layout).
+  tables, PAC round trips, known SCC pop-on and roll-up streams, layout).
 - `tests/roundtrip.rs`: property tests — SRT (also with BOM + CRLF), WebVTT (ids, speakers,
   settings, STYLE blocks) and SCC (drop-frame and non-drop, gaps and back-to-back captions)
   round-trip exactly; readers never panic on random bytes; SRT → VTT → SCC keeps text and frames.

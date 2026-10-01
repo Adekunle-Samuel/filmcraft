@@ -12,4 +12,5 @@ workspace = true
 [dependencies]
 
 [dev-dependencies]
+filmcraft-testkit = { workspace = true }
 serde_json = { workspace = true }

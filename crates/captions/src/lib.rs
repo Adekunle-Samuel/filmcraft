@@ -10,13 +10,11 @@
 //!   (drop-frame or not) convert exactly; [`Document::snap_to_frames`] snaps to a sequence's frames.
 //! - **Model:** [`track_from_document`] / [`document_from_track`] convert to and from the project's
 //!   [`CaptionTrack`].
-//! - **Burn-in:** [`burn`] lays a caption out with the track style and rasterises it with the
-//!   bundled Inter font (outlines via `skrifa`, coverage rasteriser in [`raster`]).
+//! - **Burn-in:** [`burn`] lays a caption out with the track style and draws it with the
+//!   `filmcraft-text` engine (Inter SemiBold, shaped and kerned).
 
 pub mod burn;
 pub mod cea608;
-pub mod font;
-pub mod raster;
 pub mod scc;
 pub mod srt;
 pub mod vtt;

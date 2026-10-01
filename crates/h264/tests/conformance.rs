@@ -95,3 +95,14 @@ fn coverage_report() {
         );
     }
 }
+
+/// Pre-generate every fixture and its reference decode (`cargo xtask fixtures`).
+#[test]
+#[ignore]
+fn generate_fixtures() {
+    let dir = common::fixtures_dir();
+    for f in common::FIXTURES {
+        let outs = [dir.join(format!("{}.h264", f.name)), dir.join(format!("{}.yuv", f.name))];
+        filmcraft_testkit::fixtures::generate_and_report(&format!("h264/{}", f.name), &outs, || common::ensure(f));
+    }
+}

@@ -48,9 +48,17 @@ pub fn sniff(b: &[u8]) -> bool {
 
 fn color_from(entry: &filmcraft_isobmff::SampleEntry, w: u32, h: u32) -> ColorInfo {
     let mut c = ColorInfo { matrix: filmcraft_frame::default_matrix(w, h), transfer: Transfer::Bt709, primaries: Primaries::Bt709, range: Range::Limited };
-    if let Some(v) = &entry.video
-        && let Some(col) = &v.color
-    {
+    // VP9 carries its colour description in vpcC (used when there is no colr box).
+    let vpc = match &entry.codec {
+        CodecConfig::Vp9(v) => Some(filmcraft_isobmff::ColorInfo::Nclx {
+            primaries: v.colour_primaries as u16,
+            transfer: v.transfer_characteristics as u16,
+            matrix: v.matrix_coefficients as u16,
+            full_range: v.full_range,
+        }),
+        _ => None,
+    };
+    if let Some(col) = entry.video.as_ref().and_then(|v| v.color.as_ref()).or(vpc.as_ref()) {
         let (p, t, m, full) = match col {
             filmcraft_isobmff::ColorInfo::Nclx { primaries, transfer, matrix, full_range } => (*primaries, *transfer, *matrix, *full_range),
             filmcraft_isobmff::ColorInfo::Nclc { primaries, transfer, matrix } => (*primaries, *transfer, *matrix, false),
@@ -369,6 +377,7 @@ fn codec_label(c: &CodecConfig) -> String {
             }
         ),
         CodecConfig::Hevc(_) => "HEVC".into(),
+        CodecConfig::Vp9(c) => format!("VP9 (Profile {})", c.profile),
         CodecConfig::ProRes { fourcc } => match &fourcc.0 {
             b"apco" => "Apple ProRes 422 Proxy".into(),
             b"apcs" => "Apple ProRes 422 LT".into(),
@@ -399,6 +408,14 @@ fn pixfmt_label(c: &CodecConfig) -> String {
             244 => "YUV 4:4:4".into(),
             _ => "YUV 4:2:0 8-bit".into(),
         },
+        CodecConfig::Vp9(c) => {
+            let sub = match c.chroma_subsampling {
+                2 => "4:2:2",
+                3 => "4:4:4",
+                _ => "4:2:0",
+            };
+            format!("YUV {sub} {}-bit", c.bit_depth.max(8))
+        }
         CodecConfig::ProRes { fourcc } if fourcc.0[2] == b'4' => "YUVA 4:4:4 12-bit".into(),
         CodecConfig::ProRes { .. } => "YUV 4:2:2 10-bit".into(),
         CodecConfig::Jpeg { .. } => "YUV 4:2:x 8-bit".into(),

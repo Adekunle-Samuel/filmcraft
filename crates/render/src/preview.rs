@@ -247,10 +247,12 @@ pub fn audio_segments(project: &Project, seq_id: ItemId) -> Vec<AudioSegment> {
     cuts.dedup();
     let any_solo = seq.audio_tracks.iter().any(|t| t.solo);
     let mut global = Fnv128::new();
-    global.json(&(HASH_VERSION, "audio", sr, seq.master_volume_db, &seq.master_effects, any_solo));
+    global.json(&(HASH_VERSION, "audio", sr, seq.master_volume_db, &seq.master_effects, &seq.master_mixer, any_solo));
     for (ti, tr) in seq.audio_tracks.iter().enumerate() {
-        global.json(&(ti, tr.muted, tr.solo, tr.volume_db, tr.pan, tr.channels, &tr.effects));
+        global.json(&(ti, tr.muted, tr.solo, tr.volume_db, tr.pan, tr.channels, &tr.effects, &tr.mixer));
     }
+    // submixes (routing, inserts, automation) affect every segment
+    global.json(&seq.submix_tracks);
     let mut out = Vec::new();
     for w in cuts.windows(2) {
         let (a, b) = (w[0], w[1]);
@@ -339,6 +341,7 @@ fn hash_source(h: &mut Fnv128, project: &Project, id: ItemId, depth: u32) {
             hash_source(h, project, *parent, depth + 1);
         }
         ItemKind::AdjustmentLayer { .. } => h.json(&("adjustment", &pi.kind)),
+        ItemKind::Graphic { .. } => h.json(&("graphic", &pi.kind)),
         ItemKind::Sequence(s) => {
             h.json(&("sequence", &s.settings));
             for (ti, tr) in s.video_tracks.iter().enumerate() {
@@ -415,6 +418,8 @@ fn decode_cost_ms(project: &Project, id: ItemId, depth: u32) -> f64 {
         }
         ItemKind::Subclip { parent, .. } => decode_cost_ms(project, *parent, depth + 1),
         ItemKind::AdjustmentLayer { .. } => 0.0,
+        // vector layers are drawn on the CPU (cached while static)
+        ItemKind::Graphic { .. } => 1.5,
         ItemKind::Sequence(s) => {
             if depth > 8 {
                 return 0.0;

@@ -12,9 +12,13 @@ pub mod autosave;
 pub mod captions;
 pub mod commands;
 pub mod demo;
+pub mod graphics;
 pub mod interchange;
 pub mod media_pool;
+pub mod mixer;
 pub mod previews;
+pub mod shortcut_presets;
+pub mod shortcuts;
 pub mod trim;
 
 use std::sync::Arc;
@@ -77,6 +81,9 @@ pub struct History {
     pub redo: Vec<(String, Arc<Project>)>,
     /// Labels of all applied states, oldest first (History panel).
     pub limit: usize,
+    /// Key of the last [`Session::edit_merged`] step: a continuous gesture (a fader drag) with the
+    /// same key folds into that one undo step.
+    pub merge_key: Option<String>,
 }
 
 impl History {
@@ -124,9 +131,15 @@ pub struct EditorState {
     /// Selected edit points (trim mode).
     #[serde(default)]
     pub edit_points: Vec<trim::EditPoint>,
+    /// Trim Monitor Out/In shift counters for the selected edit point.
+    #[serde(default)]
+    pub trim_shift: trim::TrimShift,
     /// Selected captions (caption tracks / Captions panel).
     #[serde(default)]
     pub caption_selection: Vec<ClipId>,
+    /// Selected layers (indices among the graphic layers, 0 = back) of the selected graphic clip.
+    #[serde(default)]
+    pub graphic_layers: Vec<usize>,
 }
 
 /// Events for frontends (drained each frame).
@@ -162,6 +175,14 @@ pub struct Session {
     pub loaded_schema: u32,
     /// Render preview files + render-bar segments (shared with the frontend's frame workers).
     pub previews: Arc<previews::PreviewStore>,
+    /// Audio Track Mixer automation pass in progress.
+    pub mixrec: mixer::Recorder,
+    /// Dynamic (J/K/L) trimming and trim-mode loop playback in progress.
+    pub trim_play: trim::TrimPlayback,
+    /// Keyboard shortcuts (active bindings, presets; `shortcuts.*` commands).
+    pub shortcuts: shortcuts::Shortcuts,
+    /// Nesting depth of [`Session::execute`] (commands that run other commands).
+    exec_depth: u32,
 }
 
 /// A background job with shared progress.
@@ -221,6 +242,10 @@ impl Session {
             persistence: None,
             loaded_schema: filmcraft_format::SCHEMA_VERSION,
             previews: Arc::new(previews::PreviewStore::temp()),
+            mixrec: Default::default(),
+            trim_play: Default::default(),
+            shortcuts: shortcuts::Shortcuts::new(),
+            exec_depth: 0,
         }
     }
 
@@ -230,6 +255,7 @@ impl Session {
     pub fn start_autosave(&mut self, cfg: autosave::AutosaveConfig) -> std::io::Result<()> {
         let prefs_path = cfg.data_dir.join("preferences.json");
         self.prefs = autosave::Preferences::load(&prefs_path);
+        self.shortcuts.set_dir(&cfg.data_dir);
         self.prefs_path = Some(prefs_path);
         self.persistence = Some(autosave::Persistence::start(&cfg, self.prefs.auto_save.clone())?);
         self.sync_persistence();
@@ -311,9 +337,16 @@ impl Session {
     /// Run a command by id.
     pub fn execute(&mut self, id: &str, params: Value) -> Result<Value> {
         let spec = commands::find(id).ok_or_else(|| EngineError::UnknownCommand(id.to_string()))?;
+        if self.exec_depth == 0 && spec.journal && self.trim_play.active() {
+            self.settle_trim_playback(id);
+        }
         (spec.enabled)(self).map_err(|why| EngineError::Disabled(id.to_string(), why))?;
+        self.exec_depth += 1;
         let r = (spec.run)(self, &params);
+        self.exec_depth -= 1;
         self.sync_persistence();
+        // playback reads the newest snapshot (mixer moves, mutes… are heard while playing)
+        self.previews.live.publish_project(self.project.clone());
         if r.is_ok() && spec.journal {
             self.journal.push((id.to_string(), params));
             if self.journal.len() > 10_000 {
@@ -321,6 +354,21 @@ impl Session {
             }
         }
         r
+    }
+
+    /// Another command arrives while trim-mode playback runs: a dynamic trim is committed first
+    /// (so e.g. Undo undoes it as one step); loop playback stops unless it is a trim command.
+    fn settle_trim_playback(&mut self, id: &str) {
+        const LIVE: [&str; 5] = ["trim.shuttle", "trim.tick", "trim.shuttleStop", "trim.cancelDynamic", "trim.playAround"];
+        if LIVE.contains(&id) {
+            return;
+        }
+        if self.trim_play.dynamic.is_some() {
+            trim::commit(self);
+        }
+        if !id.starts_with("trim.") {
+            self.trim_play.around = None;
+        }
     }
 
     pub fn is_enabled(&self, id: &str) -> bool {
@@ -338,6 +386,25 @@ impl Session {
             self.history.undo.remove(0);
         }
         self.history.redo.clear();
+        self.history.merge_key = None;
+        self.state = st;
+        self.bump();
+        Ok(r)
+    }
+
+    /// Like [`Session::edit`], but consecutive calls with the same `key` (and no other edit in
+    /// between) share one undo step: dragging a control is one undoable change.
+    pub fn edit_merged<R>(&mut self, label: &str, key: &str, f: impl FnOnce(&mut Project, &mut EditorState) -> Result<R>) -> Result<R> {
+        let merge = self.history.merge_key.as_deref() == Some(key) && self.history.undo.last().is_some_and(|u| u.0 == label);
+        if !merge {
+            let r = self.edit(label, f)?;
+            self.history.merge_key = Some(key.to_string());
+            return Ok(r);
+        }
+        let mut p = (*self.project).clone();
+        let mut st = self.state.clone();
+        let r = f(&mut p, &mut st)?;
+        self.project = Arc::new(p);
         self.state = st;
         self.bump();
         Ok(r)
@@ -367,6 +434,7 @@ impl Session {
 
     pub fn undo(&mut self) -> Option<String> {
         let (label, prev) = self.history.undo.pop()?;
+        self.history.merge_key = None;
         let cur = std::mem::replace(&mut self.project, prev);
         self.history.redo.push((label.clone(), cur));
         self.fix_state();
@@ -376,6 +444,7 @@ impl Session {
 
     pub fn redo(&mut self) -> Option<String> {
         let (label, next) = self.history.redo.pop()?;
+        self.history.merge_key = None;
         let cur = std::mem::replace(&mut self.project, next);
         self.history.undo.push((label.clone(), cur));
         self.fix_state();
@@ -479,7 +548,7 @@ pub fn media_duration(p: &Project, _pool: &MediaPool, id: ItemId) -> Option<Tick
         },
         filmcraft_project::ItemKind::Sequence(s) => Some(s.duration()),
         filmcraft_project::ItemKind::Subclip { range, .. } => Some(range.end()),
-        filmcraft_project::ItemKind::AdjustmentLayer { .. } => None,
+        filmcraft_project::ItemKind::AdjustmentLayer { .. } | filmcraft_project::ItemKind::Graphic { .. } => None,
     }
 }
 
@@ -488,6 +557,12 @@ mod autosave_tests;
 #[cfg(test)]
 mod file_tests;
 #[cfg(test)]
+mod mixer_tests;
+#[cfg(test)]
 mod previews_tests;
 #[cfg(test)]
+mod shortcuts_tests;
+#[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod trim_tests;

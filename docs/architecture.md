@@ -23,10 +23,10 @@ Design principles:
  L6  apps/filmcraft · apps/filmcraft-cli
  L5  ui-egui · automation
  L4  engine
- L3  render · gpu · export
- L2  edit · codecs · interchange
- L1  frame · media · project · audio-dsp
- L0  foundation: time · geom · color · bitstream
+ L3  render · gpu · export · golden (test-only)
+ L2  edit · codecs · interchange · captions
+ L1  frame · media · project · audio-dsp · text
+ L0  foundation: time · geom · color · bitstream · testkit (dev-dependency only)
      codecs/containers: isobmff · matroska · h264 · h264enc · hevc · prores · aac
 ```
 
@@ -45,15 +45,18 @@ and `filmcraft-cli`.
 | `hevc` | L0 | H.265 Main/Main 10 decoder |
 | `prores` | L0 | ProRes decoder and encoder |
 | `aac` | L0 | AAC-LC decoder and encoder |
+| `testkit` | L0 | test-only helpers, used only as a dev-dependency: ffmpeg/ffprobe discovery, fixture dirs, golden images ([testing.md](testing.md)) |
 | `frame` | L1 | `VideoFrame` (planar YUV / RGBA8 / linear RGBA f32, colour metadata), `AudioBuffer` |
 | `media` | L1 | `MediaSource` trait, probing/openers, frame cache, generators, stills, WAV |
 | `project` | L1 | document model, effect definitions, keyframes |
 | `audio-dsp` | L1 | loudness metering (BS.1770 / R128) and audio effects; no dependencies |
+| `text` | L1 | text engine: font database (bundled OFL fonts + system fonts), shaping (harfrust), bidi, line breaking, paragraph layout, glyph/path rasteriser, strokes ([crates/text/README.md](../crates/text/README.md)) |
 | `edit` | L2 | pure edit algebra (insert, overwrite, razor, ripple, roll, slip, slide, rate stretch…) |
 | `codecs` | L2 | container + codec hub: MP4/MOV and MKV sources, GOP-aware seeking, decoder registry, audio decoding |
 | `interchange` | L2 | EDL, FCP7 XML, FCPXML and OTIO import/export (no file I/O) |
 | `render` | L3 | sequence evaluation, CPU compositor, video effects, transitions, audio mix |
 | `gpu` | L3 | wgpu compositor (WGSL) |
+| `golden` | L3 | test-only: golden-image tests of the CPU renderer and GPU-vs-CPU parity; empty library, dev-dependencies only |
 | `export` | L3 | render → encode → mux pipeline, progress/cancel |
 | `engine` | L4 | `Session`, command registry, undo history, media pool, jobs, interchange glue |
 | `ui-egui` | L5 | the egui frontend: docking, panels, timeline, monitors, playback, control-channel handlers |
@@ -72,7 +75,7 @@ are exempt):
 | Every crate has a layer | A new crate fails the check until it is added to `LAYERS`. |
 | Only downward edges | A crate may not depend on a crate in a higher layer. |
 | Same-layer edges are listed | From L1 up, a same-layer edge must be in `SAME_LAYER`: `media→frame`, `project→media`, `project→frame`, `gpu→render`, `export→render`, `cli→filmcraft`, plus a few reserved for planned crates. |
-| L0 codecs stay standalone | L0 crates other than `time`, `geom`, `color`, `bitstream` may depend on no workspace crate except `filmcraft-bitstream`. External crates such as `thiserror` and `rayon` are allowed. |
+| L0 codecs stay standalone | L0 crates other than `time`, `geom`, `color`, `bitstream`, `testkit` may depend on no workspace crate except `filmcraft-bitstream`. External crates such as `thiserror` and `rayon` are allowed. |
 | No UI/OS crates below L5 | `egui`, `eframe`, `egui-wgpu`, `winit`, `rfd`, `cpal`, `muda` are allowed only in L5 and L6. |
 
 `cargo xtask wasm` runs `cargo check --target wasm32-unknown-unknown` on every L0–L4 crate, so
@@ -103,7 +106,7 @@ the boundary.
 Project
 ├─ root: Bin                         tree of bins
 ├─ items: map ItemId → ProjectItem   flat
-│    kind: Media(MediaClip) | Sequence(Sequence) | Subclip{..} | AdjustmentLayer{..}
+│    kind: Media(MediaClip) | Sequence(Sequence) | Subclip{..} | AdjustmentLayer{..} | Graphic{..}
 └─ next_id
 
 Sequence
@@ -113,7 +116,10 @@ Sequence
 Track
 ├─ locked, sync lock, targeting, mute/solo/visibility
 ├─ items: Vec<TrackItem>             sorted, never overlapping
-└─ transitions: Vec<Transition>
+├─ transitions: Vec<Transition>
+└─ audio: volume_db, pan, effects (mixer inserts), mixer: MixerStrip
+     (automation mode + lanes, sends, output, record arm, solo safe, input map)
+Sequence (audio) ─ submix_tracks: Vec<Track>, master_volume_db / master_effects / master_mixer
 TrackItem (a clip instance)
 ├─ item: ItemId, start (timeline ticks), source_in (media ticks), duration, speed
 ├─ link group, label, enabled
@@ -122,6 +128,8 @@ EffectInstance
 └─ effect id, enabled, params: id → constant value or keyframe track
 ```
 
+- **Graphic clips** ([graphics.md](graphics.md)) reference a `Graphic` canvas item; their text and
+  shape layers are hidden `graphic_text` / `graphic_shape` effect instances on the track item.
 - Everything is plain serde data. `Sequence::check()` validates the invariants (no overlaps, unique
   ids), and the engine runs it after every sequence edit.
 - Timeline positions are sequence ticks; `source_in` and keyframes are in media time, so trims and
@@ -216,8 +224,50 @@ file ──► codecs (MP4/MOV, MKV, audio)        demux + decode, GOP-aware see
   frames: shown when the exact picture was on screen while due, dropped otherwise (including frames
   passed over without a refresh, not while the window is hidden). `cargo xtask bench-playback`
   measures the whole path headlessly ([testing.md](testing.md) §5).
-  Sequence audio is mixed in `render::audio`, and clip audio effects run on `audio-dsp` via
-  `render::audio_fx`.
+  Sequence audio goes through the mixer graph (`render::mixer`, §5.1); clip audio effects run on
+  `audio-dsp` via `render::audio_fx`.
+
+### 5.1 Audio mixer
+
+```text
+clip: gain → clip effects → Volume / Channel Volume / Panner (clip keyframes, media time)
+      → audio transitions → summed per track                           render::audio::track_input
+track / submix strip:  input map, mono fold → pre-fader inserts → pre-fader sends → mute
+      → fader (volume) → meter → post-fader inserts → post-fader sends → pan / balance → output
+Mix:  bus sum → pre-fader inserts → fader → meter → post-fader inserts → out    render::mixer
+```
+
+- **Model** (`project::mixer`). Every audio track, submix and the Mix has a `MixerStrip`. Static
+  values stay in `Track::volume_db`, `pan`, `muted` and the send/effect parameters; automation is
+  keyframes in sequence ticks: lanes `volume`, `pan`, `mute` (hold), `send.<i>.level` in
+  `MixerStrip::lanes`, and insert parameters (`fx.<slot>.<param>`) in the effect's own keyframes.
+  Up to 5 inserts (`EffectInstance::post_fader` picks the side) and 5 sends per strip. Submixes feed
+  the Mix or a submix after them (no feedback). All fields have serde defaults, so older projects
+  load unchanged.
+- **Graph** (`render::mixer::mix_graph`). Lanes are evaluated per sample; effect parameters update
+  on an absolute 64-sample grid, so the output does not depend on how callers cut the timeline into
+  requests (export batches and device callbacks give identical samples). Inserts that report
+  latency delay their strip; each route into a bus gets a compensation delay and the graph is read
+  ahead by its total latency. Graph state (DSP, delay lines) is cached per structure and continued by
+  sequential readers; other requests start fresh with a pre-roll (effect tails, ≤ 3 s). Tracks run
+  in parallel (rayon), buses in order. Mono tracks pan with the −3 dB constant-power law; stereo
+  tracks and sends use balance. Solo keeps soloed and solo-safe strips plus everything feeding them
+  or fed by them. 24 tracks × (EQ + Dynamics + Studio Reverb) + a compressed submix renders at
+  ~6× realtime on one core (release).
+- **Automation modes** (Premiere semantics). Off ignores lanes; Read plays them; Latch records from
+  the first touch and holds the last value until playback stops; Touch records while held and ramps
+  back to the existing automation over the **automatch time** (Preferences ▸ Audio, 1 s); Write
+  records every control from playback start (then switches to Touch unless "Switch to Touch after
+  Write" is off).
+- **Recording** (`engine::mixer`). Playback start runs `mixer.recordStart`, stop runs
+  `mixer.recordStop`. Fader and knob drags send `mixer.touch` (value, playhead) while held and
+  `mixer.release` when let go. Held values go to `render::mixer::LiveMix`, which the playing mix
+  reads, so moves are heard at once. At stop each gesture stream is thinned (linear keyframe
+  thinning, optional minimum time interval) and written over its time range as one undo step,
+  with boundary keyframes that keep the automation outside the range unchanged.
+- **Live state.** `PreviewStore::live` (`LiveMix`) also carries per-strip meter peaks posted by the
+  mix (Track Mixer and Audio Meters read them) and the newest project snapshot, which the audio
+  callback uses, so edits made during playback are heard.
 
 ## 6. Export jobs (`filmcraft-export`)
 
@@ -265,7 +315,7 @@ Protocol reference: [control-protocol.md](control-protocol.md). Agent guide: [ag
 ## 8. Not built yet
 
 The layer table reserves names for crates that don't exist yet: `riff`, `mjpeg`, `dnx`,
-`keyframe`, `effects`, `text`, `audio`, `captions`, `scopes`, `playback`, `format` and `platform`.
+`keyframe`, `effects`, `audio`, `scopes`, `playback`, `format` and `platform`.
 Until they exist, that work lives elsewhere: keyframes and effect definitions in `project`, effects
 and the audio mix in `render`, scopes and playback in `ui-egui`, and OS integration (cpal, rfd,
 native menus) in `apps/filmcraft`. [ROADMAP.md](../ROADMAP.md) has the milestone status.

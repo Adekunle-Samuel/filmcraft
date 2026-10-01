@@ -63,15 +63,98 @@ impl AutoSavePrefs {
     }
 }
 
+/// Preferences ▸ Playback (the parts trim-mode loop playback uses).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct PlaybackPrefs {
+    /// "Preroll: N seconds" (Play Around, trim-mode loop playback).
+    pub preroll_seconds: f64,
+    /// "Postroll: N seconds".
+    pub postroll_seconds: f64,
+}
+
+impl Default for PlaybackPrefs {
+    fn default() -> Self {
+        Self { preroll_seconds: 3.0, postroll_seconds: 2.0 }
+    }
+}
+
+/// Preferences ▸ Trim.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct TrimPrefs {
+    /// "Large Trim Offset: N frames" (Trim Forward/Backward Many, the Trim Monitor's ±N buttons).
+    pub large_trim_offset: u32,
+    /// "Playhead position determines trim monitor loop playback" (else the edit point does).
+    pub playhead_determines_loop: bool,
+}
+
+impl Default for TrimPrefs {
+    fn default() -> Self {
+        Self { large_trim_offset: 5, playhead_determines_loop: false }
+    }
+}
+
 /// User preferences (persisted as JSON in the per-user data directory). Keys are dotted camelCase
-/// paths: `autoSave.enabled`, `autoSave.intervalMinutes`, …
+/// paths: `autoSave.enabled`, `autoSave.intervalMinutes`, `playback.prerollSeconds`, …
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct Preferences {
     pub auto_save: AutoSavePrefs,
+    pub audio: AudioPrefs,
+    pub playback: PlaybackPrefs,
+    pub trim: TrimPrefs,
+}
+
+/// Preferences ▸ Audio (the mixer-automation part) and the Track Mixer panel-menu toggle.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct AudioPrefs {
+    /// "Automatch Time" (s): how long Touch takes to return to the existing automation.
+    pub automatch_time: f64,
+    /// "Large Volume Adjustment" (dB) for the Increase/Decrease Clip Volume Many commands.
+    pub large_volume_adjustment: f64,
+    /// Automation Keyframe Optimization: "Linear keyframe thinning".
+    pub linear_keyframe_thinning: bool,
+    /// "Minimum time interval thinning".
+    pub minimum_time_interval_thinning: bool,
+    /// "Minimum time" (ms).
+    pub minimum_time_ms: u32,
+    /// Track Mixer ▸ "Switch to Touch after Write".
+    pub switch_to_touch_after_write: bool,
+}
+
+impl Default for AudioPrefs {
+    fn default() -> Self {
+        Self {
+            automatch_time: 1.0,
+            large_volume_adjustment: 6.0,
+            linear_keyframe_thinning: true,
+            minimum_time_interval_thinning: false,
+            minimum_time_ms: 20,
+            switch_to_touch_after_write: true,
+        }
+    }
+}
+
+impl AudioPrefs {
+    fn clamp(&mut self) {
+        self.automatch_time = if self.automatch_time.is_finite() { self.automatch_time.clamp(0.0, 30.0) } else { 1.0 };
+        self.large_volume_adjustment = if self.large_volume_adjustment.is_finite() { self.large_volume_adjustment.clamp(0.0, 96.0) } else { 6.0 };
+        self.minimum_time_ms = self.minimum_time_ms.clamp(1, 10_000);
+    }
 }
 
 impl Preferences {
+    fn clamp(&mut self) {
+        self.auto_save.clamp();
+        self.audio.clamp();
+        let secs = |v: f64| if v.is_finite() { v.clamp(0.0, 60.0) } else { 0.0 };
+        self.playback.preroll_seconds = secs(self.playback.preroll_seconds);
+        self.playback.postroll_seconds = secs(self.playback.postroll_seconds);
+        self.trim.large_trim_offset = self.trim.large_trim_offset.clamp(1, 1000);
+    }
+
     pub fn to_value(&self) -> Value {
         serde_json::to_value(self).unwrap_or_default()
     }
@@ -117,14 +200,14 @@ impl Preferences {
         };
         *slot = value;
         let mut p: Preferences = serde_json::from_value(v).map_err(|e| format!("`{key}`: {e}"))?;
-        p.auto_save.clamp();
+        p.clamp();
         *self = p;
         Ok(())
     }
 
     pub fn load(path: &Path) -> Self {
         let mut p: Preferences = fs::read(path).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
-        p.auto_save.clamp();
+        p.clamp();
         p
     }
 

@@ -180,7 +180,7 @@ impl GopCache {
         if st.intra {
             return self.intra_frame(st, s, i, want_pts);
         }
-        let key = s.sync_before(i);
+        let mut key = s.sync_before(i);
         // Continue the running decoder when it has passed the wanted sample's sync sample and
         // either has not reached the sample yet or has been fed it without outputting it yet
         // (a frame-threaded decoder holds many pictures in flight). Otherwise the frame was
@@ -192,6 +192,15 @@ impl GopCache {
         let continuing = running && (st.next > key || near) && (i >= st.next || (st.start <= i && want_pts > st.out_max));
         if !continuing {
             SEEKS.fetch_add(1, Ordering::Relaxed);
+            // The container's sync flags may be wrong for the codec (an MP4 without `stss` marks
+            // every sample): step back to a sample the decoder can start from.
+            while key > 0 {
+                let data = s.read(key)?;
+                if st.decoder.as_ref().expect("decoder").is_random_access(&data) != Some(false) {
+                    break;
+                }
+                key = s.sync_before(key - 1);
+            }
             if let Some(d) = st.decoder.as_mut() {
                 d.reset();
             }

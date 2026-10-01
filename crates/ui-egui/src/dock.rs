@@ -100,10 +100,10 @@ impl PanelKind {
             PanelKind::Timeline => Some("Shift+3"),
             PanelKind::Program => Some("Shift+4"),
             PanelKind::EffectControls => Some("Shift+5"),
-            PanelKind::AudioClipMixer => Some("Shift+6"),
+            PanelKind::AudioClipMixer => Some("Shift+9"),
             PanelKind::Effects => Some("Shift+7"),
             PanelKind::MediaBrowser => Some("Shift+8"),
-            PanelKind::AudioTrackMixer => Some("Shift+9"),
+            PanelKind::AudioTrackMixer => Some("Shift+6"),
             _ => None,
         }
     }

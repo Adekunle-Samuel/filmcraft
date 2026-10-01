@@ -6,16 +6,21 @@ pub mod effect_controls;
 pub mod effects;
 pub mod export_mode;
 pub mod file_dialogs;
+pub mod graphics;
 pub mod import_mode;
 pub mod lumetri;
 pub mod meters;
 pub mod misc;
+pub mod mixer;
 pub mod monitor;
 pub mod project;
+pub mod shortcuts_dialog;
 pub mod text;
 pub mod timeline;
+pub mod timeline_automation;
 pub mod timeline_captions;
 pub mod tools;
+pub mod trim_monitor;
 
 use egui::{Align2, Color32, Rect};
 use filmcraft_project::ItemId;
@@ -26,6 +31,7 @@ use crate::theme::Tokens;
 
 pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, p: PanelKind, rect: Rect) {
     match p {
+        PanelKind::Program if !app.session.state.edit_points.is_empty() => trim_monitor::show(app, ui, rect),
         PanelKind::Program => monitor::show(app, ui, rect, monitor::Which::Program),
         PanelKind::Source => monitor::show(app, ui, rect, monitor::Which::Source),
         PanelKind::Timeline => timeline::show(app, ui, rect),
@@ -35,12 +41,15 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, p: PanelKind, rect: Rect)
         PanelKind::EffectControls => effect_controls::show(app, ui, rect),
         PanelKind::AudioMeters => meters::show(app, ui, rect),
         PanelKind::LumetriColor => lumetri::show(app, ui, rect),
+        PanelKind::Properties if graphics::graphic_selected(app) => graphics::properties(app, ui, rect),
         PanelKind::Properties => effect_controls::properties_panel(app, ui, rect),
+        PanelKind::EssentialGraphics => graphics::properties(app, ui, rect),
         PanelKind::History => misc::history(app, ui, rect),
         PanelKind::Markers => misc::markers(app, ui, rect),
         PanelKind::Info => misc::info(app, ui, rect),
         PanelKind::MediaBrowser => misc::media_browser(app, ui, rect),
-        PanelKind::AudioTrackMixer => meters::track_mixer(app, ui, rect),
+        PanelKind::AudioTrackMixer => mixer::track_mixer(app, ui, rect),
+        PanelKind::AudioClipMixer => mixer::clip_mixer(app, ui, rect),
         PanelKind::LumetriScopes => misc::scopes(app, ui, rect),
         PanelKind::Text => text::show(app, ui, rect),
         other => crate::dock::placeholder(ui, rect, &app.tokens, &format!("{} — coming in a later milestone", other.title())),

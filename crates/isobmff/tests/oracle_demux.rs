@@ -271,3 +271,13 @@ fn specific_properties() {
     let v = &f.tracks[f.track_of_kind(TrackKind::Video).unwrap()];
     assert!(v.references.iter().any(|(k, ids)| k.to_string() == "tmcd" && ids == &vec![t.id]));
 }
+
+/// Pre-generate every fixture (`cargo xtask fixtures`).
+#[test]
+#[ignore]
+fn generate_fixtures() {
+    for name in all_fixture_names() {
+        let out = [fixture_dir().join(name)];
+        filmcraft_testkit::fixtures::generate_and_report(&format!("isobmff/{name}"), &out, || fixture(name));
+    }
+}

@@ -65,7 +65,7 @@ fn mjpeg_mov_roundtrip() {
     let a = src.audio(0, 24_000, 48_000).unwrap();
     let pk = a.peaks()[0];
     assert!((pk - 0.5).abs() < 0.05, "tone at -6 dB: {pk}");
-    if let Some(ffprobe) = ["/opt/homebrew/bin/ffprobe", "/usr/bin/ffprobe"].into_iter().find(|p| std::path::Path::new(p).exists()) {
+    if let Some(ffprobe) = filmcraft_testkit::ffprobe_or_skip("export mjpeg frame count") {
         let out = std::process::Command::new(ffprobe)
             .args(["-v", "error", "-count_frames", "-select_streams", "v:0", "-show_entries", "stream=nb_read_frames", "-of", "csv=p=0", &path])
             .output()

@@ -50,6 +50,10 @@ pub struct HostHooks {
     pub pick_open_project: Option<Box<dyn FnMut() -> Option<String>>>,
     /// Save dialog with a filter: (filter name, extensions, suggested file name) → path.
     pub pick_save_as: Option<Box<dyn FnMut(&str, &[&str], &str) -> Option<String>>>,
+    /// The active keyboard shortcuts changed: update native menu key equivalents.
+    pub shortcuts_changed: Option<Box<dyn FnMut(&[menus::MenuItem])>>,
+    /// Open dialog for a JSON file (shortcut preset import): filter name, extensions → path.
+    pub pick_open_file: Option<Box<dyn FnMut(&str, &[&str]) -> Option<String>>>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -63,6 +67,8 @@ pub enum Dialog {
     Recovery,
     /// "Are you sure you want to discard your changes?" (File ▸ Revert).
     RevertConfirm,
+    /// Clip ▸ Audio Gain… (G).
+    AudioGain,
 }
 
 #[derive(Default)]
@@ -121,7 +127,11 @@ pub struct FilmcraftApp {
     pub last_timeline_width: f32,
     pub fps: f32,
     last_time: f64,
-    bindings: Vec<(egui::Modifiers, egui::Key, String)>,
+    bindings: Vec<menus::KeyBinding>,
+    /// Shortcut-set revision `bindings` (and the native menu) were built from.
+    bindings_rev: u64,
+    /// Keyboard Shortcuts dialog state.
+    pub shortcut_editor: panels::shortcuts_dialog::EditorState,
     pub toast: Option<(String, f64)>,
     pub tl: panels::timeline::TlState,
     /// Commands from outside the UI (native menu bar), invoked on the UI thread.
@@ -177,7 +187,8 @@ impl FilmcraftApp {
 }
 
 impl FilmcraftApp {
-    pub fn new(session: Session) -> Self {
+    pub fn new(mut session: Session) -> Self {
+        session.shortcuts.register_external(menus::external_commands());
         let recovery = !session.recovery_candidates().is_empty();
         let frames = Arc::new(FrameServer::new(session.media.clone(), session.services.clone(), session.previews.clone(), FrameServer::default_workers()));
         Self {
@@ -209,7 +220,9 @@ impl FilmcraftApp {
             last_timeline_width: 1000.0,
             fps: 60.0,
             last_time: 0.0,
-            bindings: menus::bindings(),
+            bindings: Vec::new(),
+            bindings_rev: 0,
+            shortcut_editor: Default::default(),
             toast: None,
             tl: Default::default(),
             command_inbox: None,
@@ -318,6 +331,11 @@ impl FilmcraftApp {
         self.playback.anchor_time = now;
         self.playback.anchor_tick = self.session.playhead();
         self.start_audio();
+        // Audio Track Mixer: an automation pass runs while playing forward in real time
+        if (self.playback.speed - 1.0).abs() < 1e-9 && !self.session.mixrec.active() {
+            let t = self.session.playhead();
+            let _ = self.session.execute("mixer.recordStart", json!({"time": t.0}));
+        }
     }
 
     pub fn stop(&mut self) {
@@ -329,6 +347,12 @@ impl FilmcraftApp {
             a.stop();
         }
         self.playback.audio_clock = false;
+        if self.session.mixrec.active() {
+            let t = self.session.playhead();
+            if let Err(e) = self.session.execute("mixer.recordStop", json!({"time": t.0})) {
+                self.ui.status = e.to_string();
+            }
+        }
     }
 
     fn start_audio(&mut self) {
@@ -347,7 +371,10 @@ impl FilmcraftApp {
         let Some(a) = self.audio.as_mut() else { return };
         let sr = a.sample_rate();
         let mut cursor = start_tick.to_units_floor(sr as i64);
+        previews.live.publish_project(project.clone());
         let fill = Box::new(move |buf: &mut [f32], ch: usize| {
+            // the newest project snapshot: mixer moves and other edits are heard while playing
+            let project = previews.live.project().filter(|p| p.sequence(seq_id).is_some()).unwrap_or_else(|| project.clone());
             let Some(seq) = project.sequence(seq_id) else { return };
             let n = buf.len() / ch.max(1);
             // Mix at the sequence rate; convert when the device rate differs (nearest sample).
@@ -553,12 +580,28 @@ impl FilmcraftApp {
     // ---------------------------------------------------------------- input
 
     fn handle_shortcuts(&mut self, ctx: &egui::Context) {
-        if ctx.egui_wants_keyboard_input() {
+        if self.bindings_rev != self.session.shortcuts.revision {
+            self.bindings = menus::bindings(self);
+            self.bindings_rev = self.session.shortcuts.revision;
+            if let Some(hook) = self.hooks.shortcuts_changed.as_mut() {
+                let items = menus::menu_items_for(&self.session);
+                hook(&items);
+            }
+        }
+        if ctx.egui_wants_keyboard_input() || self.dialog == Some(Dialog::Shortcuts) {
             return;
         }
+        // Esc cancels a dynamic trim in progress
+        if self.session.trim_play.dynamic.is_some() && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape)) {
+            let _ = self.session.execute("trim.cancelDynamic", json!({}));
+        }
+        // Panel shortcuts of the focused panel first: they override application shortcuts.
+        let focused = self.ui.focused.title();
         let mut fire = Vec::new();
         ctx.input_mut(|i| {
-            for (m, k, id) in &self.bindings {
+            let panel = self.bindings.iter().filter(|b| b.3.as_deref() == Some(focused));
+            let app_wide = self.bindings.iter().filter(|b| b.3.is_none());
+            for (m, k, id, _) in panel.chain(app_wide) {
                 if i.consume_key(*m, *k) {
                     fire.push(id.clone());
                 }
@@ -681,6 +724,7 @@ impl FilmcraftApp {
         self.auto.begin_frame();
         self.frames.set_context(&ctx);
         self.session.poll_persistence();
+        panels::trim_monitor::advance(self, &ctx);
         if self.session.persistence.is_some() && self.session.is_dirty() {
             // Keep polling the auto-save worker (status, "also save the project" results).
             ctx.request_repaint_after(std::time::Duration::from_secs(1));

@@ -1,6 +1,6 @@
 //! The container + codec hub.
 //!
-//! - [`VideoDecoder`]: the trait every video codec implements (our own H.264/ProRes/…, MJPEG, and
+//! - [`VideoDecoder`]: the trait every video codec implements (our own H.264/HEVC/VP9/ProRes/…, MJPEG, and
 //!   OS hardware decoders registered by the platform layer). Factories are tried in registration
 //!   order, so a hardware decoder can take precedence over the pure-Rust one.
 //! - [`Mp4Source`]: a [`MediaSource`](filmcraft_media::MediaSource) over MP4/MOV using
@@ -51,7 +51,7 @@ impl From<CodecError> for filmcraft_media::MediaError {
 
 fn factories() -> &'static RwLock<Vec<VideoDecoderFactory>> {
     static F: std::sync::OnceLock<RwLock<Vec<VideoDecoderFactory>>> = std::sync::OnceLock::new();
-    F.get_or_init(|| RwLock::new(vec![video::h264_factory, video::hevc_factory, video::prores_factory, video::mjpeg_factory]))
+    F.get_or_init(|| RwLock::new(vec![video::h264_factory, video::hevc_factory, video::vp9_factory, video::prores_factory, video::mjpeg_factory]))
 }
 
 /// Register a video decoder factory (tried before previously registered ones).

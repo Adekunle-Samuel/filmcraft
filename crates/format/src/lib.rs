@@ -19,6 +19,9 @@
 //! Schema history:
 //! - **v1** (M0–M11): the bare serialized `Project` object with a `"version": 1` field.
 //! - **v2** (M11.1): the envelope above; `Project.version` dropped (the envelope carries it).
+//! - **v3** (M10.2): graphic clips (`ItemKind::Graphic`, text/shape layers). The shape of older
+//!   data is unchanged (no-op step); the bump makes builds without graphics refuse such files
+//!   cleanly instead of failing to parse them.
 
 pub mod atomic;
 pub mod autosave;
@@ -37,7 +40,7 @@ pub type Migration = fn(Value) -> Result<Value, String>;
 
 /// `MIGRATIONS[i]` upgrades schema `i + 1` to `i + 2`. Append one function per schema bump; never
 /// edit a shipped one.
-pub const MIGRATIONS: &[Migration] = &[v1_to_v2];
+pub const MIGRATIONS: &[Migration] = &[v1_to_v2, v2_to_v3];
 
 /// The schema version this build writes (and the newest it reads).
 pub const SCHEMA_VERSION: u32 = MIGRATIONS.len() as u32 + 1;
@@ -211,13 +214,18 @@ fn v1_to_v2(doc: Value) -> Result<Value, String> {
     }))
 }
 
+/// v2 → v3: graphic clips added; existing data needs no change.
+fn v2_to_v3(doc: Value) -> Result<Value, String> {
+    Ok(doc)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn schema_version_matches_table() {
-        assert_eq!(SCHEMA_VERSION, 2);
+        assert_eq!(SCHEMA_VERSION, 3);
     }
 
     #[test]

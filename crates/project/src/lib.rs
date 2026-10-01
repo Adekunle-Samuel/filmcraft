@@ -9,7 +9,9 @@
 
 pub mod caption;
 pub mod effect;
+pub mod graphic;
 pub mod keyframe;
+pub mod mixer;
 
 use std::collections::BTreeMap;
 
@@ -21,6 +23,7 @@ use serde::{Deserialize, Serialize};
 pub use caption::{Caption, CaptionAlign, CaptionAnchor, CaptionFormat, CaptionStyle, CaptionTrack, plain_text};
 pub use effect::{EffectDef, EffectInstance, EffectKind, ParamDef, ParamKind, effect_defs, find_effect};
 pub use keyframe::{Interpolation, Keyframe, Param, ParamValue};
+pub use mixer::{AutomationMode, InputMap, MixerStrip, TrackSend};
 
 macro_rules! id_type {
     ($name:ident) => {
@@ -191,6 +194,14 @@ pub enum ItemKind {
         rate: FrameRate,
         duration: Tick,
     },
+    /// The source of graphic clips: a transparent canvas of the sequence frame size. The clip's
+    /// text and shape layers are effect instances on the track item (see [`graphic`]). Not shown
+    /// in the Project panel; unlimited duration.
+    Graphic {
+        width: u32,
+        height: u32,
+        rate: FrameRate,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -235,7 +246,7 @@ impl ProjectItem {
     pub fn has_video(&self) -> bool {
         match &self.kind {
             ItemKind::Media(m) => m.info.has_video(),
-            ItemKind::Sequence(_) | ItemKind::AdjustmentLayer { .. } => true,
+            ItemKind::Sequence(_) | ItemKind::AdjustmentLayer { .. } | ItemKind::Graphic { .. } => true,
             ItemKind::Subclip { .. } => true,
         }
     }
@@ -252,13 +263,14 @@ impl ProjectItem {
             ItemKind::Sequence(s) => s.duration(),
             ItemKind::Subclip { range, .. } => range.duration,
             ItemKind::AdjustmentLayer { duration, .. } => *duration,
+            ItemKind::Graphic { .. } => Tick(3600 * TICKS_PER_SECOND),
         }
     }
     pub fn frame_rate(&self) -> FrameRate {
         match &self.kind {
             ItemKind::Media(m) => m.frame_rate(),
             ItemKind::Sequence(s) => s.settings.frame_rate,
-            ItemKind::AdjustmentLayer { rate, .. } => *rate,
+            ItemKind::AdjustmentLayer { rate, .. } | ItemKind::Graphic { rate, .. } => *rate,
             ItemKind::Subclip { .. } => FrameRate::default(),
         }
     }
@@ -275,6 +287,7 @@ impl ProjectItem {
             ItemKind::Sequence(_) => "Sequence",
             ItemKind::Subclip { .. } => "Subclip",
             ItemKind::AdjustmentLayer { .. } => "Adjustment Layer",
+            ItemKind::Graphic { .. } => "Graphic",
         }
     }
 }
@@ -452,7 +465,11 @@ impl TrackItem {
     }
     /// Standard (non-intrinsic) effects applied, for the fx badge.
     pub fn has_standard_effects(&self) -> bool {
-        self.effects.iter().any(|e| e.def().is_some_and(|d| !d.intrinsic))
+        self.effects.iter().any(|e| e.def().is_some_and(|d| !d.intrinsic) && !graphic::is_layer(e))
+    }
+    /// The graphic layers (text / shape) of a graphic clip, in paint order (first = back).
+    pub fn graphic_layers(&self) -> impl Iterator<Item = &EffectInstance> {
+        self.effects.iter().filter(|e| graphic::is_layer(e))
     }
     pub fn has_modified_intrinsics(&self) -> bool {
         self.effects.iter().any(|e| {
@@ -528,9 +545,12 @@ pub struct Track {
     /// Audio track volume (dB) and pan (-100..100) for the Track Mixer.
     pub volume_db: f64,
     pub pan: f64,
-    /// Track-level audio effects (mixer inserts).
+    /// Track-level audio effects (mixer inserts, slots 1–5; `EffectInstance::post_fader` picks the side).
     #[serde(default)]
     pub effects: Vec<EffectInstance>,
+    /// Audio Track Mixer state: automation mode and lanes, sends, output, record arm.
+    #[serde(default)]
+    pub mixer: MixerStrip,
 }
 
 impl Track {
@@ -550,6 +570,7 @@ impl Track {
             volume_db: 0.0,
             pan: 0.0,
             effects: Vec::new(),
+            mixer: MixerStrip::default(),
         }
     }
     pub fn end(&self) -> Tick {
@@ -640,8 +661,16 @@ pub struct Sequence {
     /// Master audio volume (dB).
     #[serde(default)]
     pub master_volume_db: f64,
+    /// Mix track inserts (`EffectInstance::post_fader` picks the side).
     #[serde(default)]
     pub master_effects: Vec<EffectInstance>,
+    /// Mix track automation (`volume` lane) and mode.
+    #[serde(default)]
+    pub master_mixer: MixerStrip,
+    /// Audio submix tracks (no clips); tracks and sends route into them, they route to the Mix
+    /// or to a submix after them.
+    #[serde(default)]
+    pub submix_tracks: Vec<Track>,
     /// Caption tracks (drawn above the video tracks; first = top). Older files have none (serde default).
     #[serde(default)]
     pub caption_tracks: Vec<CaptionTrack>,
@@ -826,6 +855,8 @@ impl Project {
             start_timecode: 0,
             master_volume_db: 0.0,
             master_effects: Vec::new(),
+            master_mixer: MixerStrip::default(),
+            submix_tracks: Vec::new(),
             caption_tracks: Vec::new(),
         };
         for i in 0..v {

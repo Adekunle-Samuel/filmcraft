@@ -1,29 +1,14 @@
-//! Audio Meters (stereo peak meters with dB scale and peak hold) and a basic Audio Track Mixer.
-//! Levels are measured from the mixed sequence audio around the playhead.
+//! Audio Meters: stereo peak meters of the Mix (dB scale, peak hold) fed by the playing mixer
+//! graph, plus the BS.1770 loudness readout.
 
-use egui::{Align2, Rect, Sense, pos2, vec2};
-use serde_json::json;
+use egui::{Align2, Rect, pos2, vec2};
 
 use crate::FilmcraftApp;
 use crate::theme::Tokens;
 
-fn levels(app: &FilmcraftApp) -> [f32; 2] {
-    let Some(seq) = app.session.active_sequence() else { return [-90.0; 2] };
-    if !app.playback.playing {
-        return [-90.0; 2];
-    }
-    let sr = seq.settings.sample_rate as i64;
-    let s0 = app.session.playhead().to_units_floor(sr);
-    let provider = app.session.media.provider(app.session.project.clone(), app.session.services.clone());
-    let Some(seq_id) = app.session.state.active_sequence else { return [-90.0; 2] };
-    let buf = app.session.previews.mix(&app.session.project, seq_id, s0, 1024, &provider);
-    let p = buf.peaks();
-    [20.0 * p.first().copied().unwrap_or(0.0).max(1e-6).log10(), 20.0 * p.get(1).copied().unwrap_or(0.0).max(1e-6).log10()]
-}
-
 /// Feed the loudness meter with exactly the programme audio played since the last frame
 /// (consecutive, non-overlapping blocks, so gating and integration are correct). Seeks reset it.
-fn feed_loudness(app: &mut FilmcraftApp) {
+pub(crate) fn feed_loudness(app: &mut FilmcraftApp) {
     if !app.playback.playing {
         return;
     }
@@ -62,18 +47,8 @@ fn lufs_text(v: f64) -> String {
 
 pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let t = app.tokens;
-    feed_loudness(app);
-    let lv = levels(app);
-    let id = egui::Id::new("meter-state");
-    let now = ui.input(|i| i.time);
-    let mut st: [f32; 4] = ui.data(|d| d.get_temp(id)).unwrap_or([-90.0; 4]);
-    for c in 0..2 {
-        // fast attack, 20 dB/s release; peak hold decays after 1.5 s
-        st[c] = if lv[c] > st[c] { lv[c] } else { (st[c] - 20.0 * ui.input(|i| i.stable_dt)).max(-90.0) };
-        st[c + 2] = if lv[c] > st[c + 2] { lv[c] } else { st[c + 2] - 6.0 * ui.input(|i| i.stable_dt) };
-    }
-    ui.data_mut(|d| d.insert_temp(id, st));
-    let _ = now;
+    // levels of the Mix as it plays (fast attack, 20 dB/s release, peak hold)
+    let st = super::mixer::poll_meters(app, ui).get(&filmcraft_render::mixer::MASTER.0).copied().unwrap_or([-90.0; 4]);
     // Premiere: black meter area, scale 0 … −57 dB in 3 dB steps on the right, "dB" at the foot.
     // Loudness readout (BS.1770 / EBU R128) under the bars.
     let lufs_h = if rect.height() > 260.0 { 64.0 } else { 0.0 };
@@ -127,47 +102,4 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         ui.ctx().request_repaint();
     }
     app.auto.add("audioMeters", area, "Audio Meters");
-}
-
-pub fn track_mixer(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
-    let t = app.tokens;
-    let Some(seq) = app.session.active_sequence().cloned() else {
-        crate::dock::placeholder(ui, rect, &t, "(no sequence)");
-        return;
-    };
-    let strip_w = 86.0;
-    let mut actions = Vec::new();
-    for (i, tr) in seq.audio_tracks.iter().enumerate().chain(std::iter::empty()) {
-        let x = rect.min.x + 8.0 + i as f32 * (strip_w + 4.0);
-        if x + strip_w > rect.max.x {
-            break;
-        }
-        let strip = Rect::from_min_max(pos2(x, rect.min.y + 6.0), pos2(x + strip_w, rect.max.y - 6.0));
-        ui.painter().rect_filled(strip, 4.0, t.tl_header_bg);
-        ui.painter().text(pos2(strip.center().x, strip.min.y + 12.0), Align2::CENTER_CENTER, format!("A{}", i + 1), Tokens::semibold(11.0), t.text);
-        // pan knob as hot number
-        let mut pan_ui = ui.new_child(egui::UiBuilder::new().max_rect(Rect::from_min_size(pos2(strip.min.x + 20.0, strip.min.y + 26.0), vec2(60.0, 18.0))));
-        let (_, np) = crate::widgets::hot_number(&mut pan_ui, egui::Id::new(("pan", tr.id.0)), tr.pan, 1.0, (-100.0, 100.0), 0, "", &t);
-        if let Some(np) = np {
-            actions.push(json!({"track": tr.id.0, "pan": np}));
-        }
-        // fader
-        let fader = Rect::from_min_max(pos2(strip.center().x - 3.0, strip.min.y + 54.0), pos2(strip.center().x + 3.0, strip.max.y - 40.0));
-        ui.painter().rect_filled(fader, 3.0, t.field_bg);
-        let norm = ((tr.volume_db + 60.0) / 66.0).clamp(0.0, 1.0) as f32;
-        let ky = fader.max.y - norm * fader.height();
-        let knob = Rect::from_center_size(pos2(fader.center().x, ky), vec2(26.0, 10.0));
-        let resp = ui.interact(knob.expand(4.0), egui::Id::new(("fader", tr.id.0)), Sense::drag());
-        ui.painter().rect_filled(knob, 2.0, if resp.dragged() { t.accent } else { egui::Color32::from_rgb(160, 160, 160) });
-        if resp.dragged() {
-            let nn = (norm - resp.drag_delta().y / fader.height()).clamp(0.0, 1.0);
-            actions.push(json!({"track": tr.id.0, "volumeDb": nn as f64 * 66.0 - 60.0}));
-        }
-        app.auto.add(&format!("mixer.A{}.fader", i + 1), knob, "volume");
-        ui.painter().text(pos2(strip.center().x, strip.max.y - 26.0), Align2::CENTER_CENTER, format!("{:.1}", tr.volume_db), Tokens::ui(11.0), t.hot_text);
-        ui.painter().text(pos2(strip.center().x, strip.max.y - 10.0), Align2::CENTER_CENTER, &tr.name, Tokens::ui(10.0), t.text_dim);
-    }
-    for a in actions {
-        let _ = app.session.execute("timeline.setTrack", a);
-    }
 }

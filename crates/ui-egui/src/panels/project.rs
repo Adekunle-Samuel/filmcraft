@@ -21,7 +21,7 @@ fn item_icon(k: &ItemKind) -> Icon {
         },
         ItemKind::Sequence(_) => Icon::Sequence,
         ItemKind::Subclip { .. } => Icon::Film,
-        ItemKind::AdjustmentLayer { .. } => Icon::Adjust,
+        ItemKind::AdjustmentLayer { .. } | ItemKind::Graphic { .. } => Icon::Adjust,
     }
 }
 
@@ -166,7 +166,9 @@ fn columns(r: Rect) -> [f32; 4] {
 }
 
 fn matches(app: &FilmcraftApp, id: ItemId, filter: &str) -> bool {
-    filter.is_empty() || app.session.project.item(id).is_some_and(|i| i.name.to_ascii_lowercase().contains(filter))
+    // graphic clip sources are internal (Premiere doesn't list graphics in the Project panel)
+    app.session.project.item(id).is_some_and(|i| !matches!(i.kind, ItemKind::Graphic { .. }))
+        && (filter.is_empty() || app.session.project.item(id).is_some_and(|i| i.name.to_ascii_lowercase().contains(filter)))
 }
 
 #[allow(clippy::too_many_arguments)]

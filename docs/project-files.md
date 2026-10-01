@@ -8,7 +8,7 @@ writing them is `crates/format` (`filmcraft-format`); the engine's `file.*` comm
 ```json
 {
   "format": "filmcraft.project",
-  "schema_version": 2,
+  "schema_version": 3,
   "generator": "FilmCraft 0.1.0",
   "project": { "name": "…", "settings": { … }, "root": { … }, "items": { … }, "next_id": 48 }
 }
@@ -26,6 +26,7 @@ writing them is `crates/format` (`filmcraft-format`); the engine's `file.*` comm
 |---|---|---|
 | 1 | M0 | the bare `Project` object with a `"version": 1` field |
 | 2 | M11.1 | the envelope above; the project's own `version` field is gone |
+| 3 | M10.2 | graphic clips (`ItemKind::Graphic` with text/shape layers); a no-op step for older data |
 
 ### Migrations
 
@@ -40,6 +41,9 @@ document; after the last one the result is deserialized into the current model. 
 3. never edit a migration that has shipped.
 
 Fields added with `#[serde(default)]` don't need a migration: missing values take their defaults.
+But when new data would make the file unreadable to an older build (a new enum variant such as
+`ItemKind::Graphic`, a new required shape), bump the schema with a no-op step so older builds refuse
+the file with the message below instead of failing with a parse error.
 
 When you open an older file FilmCraft says so ("Upgraded project from schema v1 to v2"). The file
 on disk is unchanged until you save. The **first save over it** keeps the original next to it as
@@ -49,8 +53,8 @@ on disk is unchanged until you save. The **first save over it** keeps the origin
 
 A file with a `schema_version` newer than the build supports is **refused**, not half-read:
 
-> this project was saved by a newer version of FilmCraft (project schema v3); this build reads up to
-> v2. Update FilmCraft to open it.
+> this project was saved by a newer version of FilmCraft (project schema v4); this build reads up to
+> v3. Update FilmCraft to open it.
 
 Reading it partially and saving it back would silently drop whatever the newer version added.
 

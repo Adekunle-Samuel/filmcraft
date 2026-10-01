@@ -5,19 +5,13 @@ use std::process::Command;
 
 use filmcraft_aac::{Decoder, Encoder, EncoderConfig, EncoderStats, split_adts};
 
+/// ffmpeg (see `filmcraft_testkit::oracle`); `None` after printing `SKIPPED`.
 pub fn ffmpeg() -> Option<PathBuf> {
-    for p in ["/opt/homebrew/bin/ffmpeg", "/usr/local/bin/ffmpeg", "/usr/bin/ffmpeg"] {
-        if Path::new(p).exists() {
-            return Some(PathBuf::from(p));
-        }
-    }
-    None
+    filmcraft_testkit::ffmpeg_or_skip("aac oracle")
 }
 
 pub fn fixtures() -> PathBuf {
-    let d = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/fixtures/aac");
-    std::fs::create_dir_all(&d).unwrap();
-    d
+    filmcraft_testkit::fixtures_dir("aac")
 }
 
 pub struct Rng(pub u64);

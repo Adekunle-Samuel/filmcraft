@@ -7,7 +7,7 @@ default-members = ["crates/*", "apps/*", "xtask"]
 version = "0.1.0"
 edition = "2024"
 license = "MIT OR Apache-2.0"
-rust-version = "1.90"
+rust-version = "1.95"
 repository = "https://github.com/storytold/filmcraft"
 
 [workspace.dependencies]
@@ -20,6 +20,7 @@ filmcraft-isobmff = { path = "crates/isobmff" }
 filmcraft-matroska = { path = "crates/matroska" }
 filmcraft-h264 = { path = "crates/h264" }
 filmcraft-hevc = { path = "crates/hevc" }
+filmcraft-vp9 = { path = "crates/vp9" }
 filmcraft-prores = { path = "crates/prores" }
 filmcraft-aac = { path = "crates/aac" }
 filmcraft-opus = { path = "crates/opus" }
@@ -31,6 +32,7 @@ filmcraft-codecs = { path = "crates/codecs" }
 filmcraft-project = { path = "crates/project" }
 filmcraft-edit = { path = "crates/edit" }
 filmcraft-interchange = { path = "crates/interchange" }
+filmcraft-text = { path = "crates/text" }
 filmcraft-captions = { path = "crates/captions" }
 filmcraft-render = { path = "crates/render" }
 filmcraft-gpu = { path = "crates/gpu" }
@@ -39,6 +41,7 @@ filmcraft-format = { path = "crates/format" }
 filmcraft-engine = { path = "crates/engine" }
 filmcraft-ui-egui = { path = "crates/ui-egui" }
 filmcraft-automation = { path = "crates/automation" }
+filmcraft-testkit = { path = "crates/testkit" }
 
 # foundation
 thiserror = "2"
@@ -88,6 +91,9 @@ opt-level = 3
 opt-level = 3
 
 [profile.dev.package.filmcraft-opus]
+opt-level = 3
+
+[profile.dev.package.filmcraft-vp9]
 opt-level = 3
 
 [profile.release]

@@ -11,7 +11,10 @@ pub mod audio;
 pub mod audio_fx;
 pub mod blend;
 pub mod effects;
+pub mod graphic_clip;
+pub mod graphics;
 pub mod image;
+pub mod mixer;
 pub mod plan;
 pub mod preview;
 pub mod transitions;
@@ -172,7 +175,7 @@ pub(crate) fn source_size(project: &Project, item: ItemId) -> Option<(u32, u32)>
     match &project.item(item)?.kind {
         ItemKind::Media(m) => m.info.video.as_ref().map(|v| (v.width, v.height)),
         ItemKind::Sequence(s) => Some((s.settings.width, s.settings.height)),
-        ItemKind::AdjustmentLayer { width, height, .. } => Some((*width, *height)),
+        ItemKind::AdjustmentLayer { width, height, .. } | ItemKind::Graphic { width, height, .. } => Some((*width, *height)),
         ItemKind::Subclip { parent, .. } => source_size(project, *parent),
     }
 }
@@ -239,11 +242,26 @@ pub(crate) fn item_layer(
             render_seq(project, nested, mt, sub, sources)
         }
         ItemKind::AdjustmentLayer { .. } => return None,
+        ItemKind::Graphic { .. } => {
+            if !(opts.effects && item.has_standard_effects()) {
+                // vectors straight to the output: no resampling, crisp at any Motion scale
+                let m = Affine::scale(opts.scale as f64, opts.scale as f64).then_apply(&motion);
+                let mut canvas = Image::new(w, h);
+                graphic_clip::render_graphic(&item.effects, mt, src_size, &m, &mut canvas);
+                let (op, bl) = opacity_blend(item, mt);
+                return Some((canvas, op, bl));
+            }
+            // standard effects work on the graphic at source resolution, then Motion places it
+            let (gw, gh) = (((src_size.0 as f32 * want).ceil() as usize).max(1), ((src_size.1 as f32 * want).ceil() as usize).max(1));
+            let mut img = Image::new(gw, gh);
+            graphic_clip::render_graphic(&item.effects, mt, src_size, &Affine::scale(want as f64, want as f64), &mut img);
+            img
+        }
     };
     let px_scale = layer.w as f32 / src_size.0.max(1) as f32;
     if opts.effects {
         let cx = effects::FxCtx { t: mt, px_scale, seconds: (t - item.start).seconds(), timecode: tc, clip_name: &item.name };
-        for e in item.effects.iter().filter(|e| e.def().is_some_and(|d| !d.intrinsic)) {
+        for e in item.effects.iter().filter(|e| e.def().is_some_and(|d| !d.intrinsic) && !filmcraft_project::graphic::is_layer(e)) {
             if filmcraft_media::cancel::cancelled() {
                 return None;
             }
@@ -310,6 +328,10 @@ pub fn arc_source(s: impl filmcraft_media::MediaSource + 'static) -> SharedSourc
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+#[path = "mixer_tests.rs"]
+mod mixer_tests;
 
 #[cfg(test)]
 #[path = "preview_tests.rs"]

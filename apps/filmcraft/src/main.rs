@@ -111,12 +111,16 @@ fn main() -> eframe::Result {
             app.hooks.pick_save_as = Some(Box::new(|filter: &str, exts: &[&str], name: &str| {
                 rfd::FileDialog::new().add_filter(filter, exts).set_file_name(name).save_file().map(|p| p.to_string_lossy().to_string())
             }));
+            app.hooks.pick_open_file = Some(Box::new(|filter: &str, exts: &[&str]| {
+                rfd::FileDialog::new().add_filter(filter, exts).pick_file().map(|p| p.to_string_lossy().to_string())
+            }));
             app.hooks.pick_open_project =
                 Some(Box::new(|| rfd::FileDialog::new().add_filter("FilmCraft Project", &["fcproj"]).pick_file().map(|p| p.to_string_lossy().to_string())));
             #[cfg(target_os = "macos")]
             {
-                let rx = native_menu::install(&app, cc.egui_ctx.clone());
+                let (rx, update) = native_menu::install(&app, cc.egui_ctx.clone());
                 app.command_inbox = Some(rx);
+                app.hooks.shortcuts_changed = Some(update);
                 app.ui.show_menu_bar = false;
             }
             if let Some(port) = control_port {

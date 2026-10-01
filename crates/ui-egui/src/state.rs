@@ -185,6 +185,10 @@ pub struct TimelineView {
     /// Follow playhead during playback (page scroll).
     pub follow: bool,
     pub fit_pending: bool,
+    /// Audio tracks showing track keyframes instead of clip keyframes: track id → lane
+    /// (`volume`, `pan`, `mute`, `send.<i>.level`, `fx.<slot>.<param>`).
+    #[serde(default)]
+    pub track_lanes: std::collections::BTreeMap<u64, String>,
 }
 
 impl Default for TimelineView {
@@ -204,6 +208,7 @@ impl Default for TimelineView {
             show_waveforms: true,
             follow: true,
             fit_pending: true,
+            track_lanes: Default::default(),
         }
     }
 }
@@ -275,6 +280,40 @@ pub struct UiState {
     /// Preferences ▸ Playback: play the rendered range when a preview render finishes.
     #[serde(default = "yes")]
     pub play_after_render: bool,
+    /// Audio Track Mixer: effects and sends section expanded.
+    #[serde(default)]
+    pub mixer_fx_open: bool,
+    /// Audio Gain dialog draft (mode, dB values).
+    #[serde(default)]
+    pub audio_gain: AudioGainDraft,
+    /// On-monitor text editing (Type tool / double-click on a text layer).
+    #[serde(default)]
+    pub gfx_edit: Option<GfxEdit>,
+    /// Pen tool: path points placed so far (sequence pixels).
+    #[serde(default)]
+    pub pen_points: Vec<[f64; 2]>,
+}
+
+/// The Audio Gain dialog (Clip ▸ Audio Gain…, G).
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AudioGainDraft {
+    /// "set" | "adjust" | "normalizeMax" | "normalizeAll"
+    pub mode: String,
+    pub set_db: f64,
+    pub adjust_db: f64,
+    pub max_peak_db: f64,
+    pub all_peaks_db: f64,
+}
+
+/// The text layer being edited on the Program monitor: caret and selection anchor are byte
+/// offsets into the layer's text.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct GfxEdit {
+    pub clip: u64,
+    pub layer: usize,
+    pub caret: usize,
+    pub anchor: usize,
 }
 
 fn captions_tab() -> String {
@@ -313,6 +352,10 @@ impl Default for UiState {
             text_tab: captions_tab(),
             caption_search: String::new(),
             play_after_render: true,
+            mixer_fx_open: false,
+            audio_gain: AudioGainDraft::default(),
+            gfx_edit: None,
+            pen_points: vec![],
         }
     }
 }
