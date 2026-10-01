@@ -9,6 +9,7 @@ use crate::frame::FrameBuf;
 use crate::header::{FrameHeader, HeaderState, LoopFilterDeltas, RefInfo, SegmentationFeatures, SequenceHeader, default_gm_params};
 use crate::spec_tables::*;
 use crate::state::FrameState;
+use crate::stats::{DecodeStats, Stage, Timer};
 use crate::tile::TileDecoder;
 use crate::{Error, Picture, Result};
 
@@ -53,12 +54,25 @@ pub struct Decoder {
     seen_frame_header: bool,
     /// Apply film grain synthesis to output frames (default true).
     pub apply_film_grain: bool,
+    stats: DecodeStats,
+    threads: usize,
 }
 
 struct CurFrame {
     fs: FrameState,
     cdfs: Box<Cdfs>,
     saved_cdfs: Option<Box<Cdfs>>,
+}
+
+fn default_threads() -> usize {
+    #[cfg(all(feature = "threads", not(target_arch = "wasm32")))]
+    {
+        std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1).min(16)
+    }
+    #[cfg(not(all(feature = "threads", not(target_arch = "wasm32"))))]
+    {
+        1
+    }
 }
 
 impl Default for Decoder {
@@ -68,7 +82,13 @@ impl Default for Decoder {
 }
 
 impl Decoder {
+    /// A decoder using all available cores (with the `threads` feature).
     pub fn new() -> Decoder {
+        Decoder::with_threads(default_threads())
+    }
+
+    /// A decoder using up to `threads` worker threads (1 = decode on the calling thread).
+    pub fn with_threads(threads: usize) -> Decoder {
         Decoder {
             seq: None,
             refs: Default::default(),
@@ -80,7 +100,19 @@ impl Decoder {
             cur: None,
             seen_frame_header: false,
             apply_film_grain: true,
+            stats: DecodeStats::default(),
+            threads: threads.max(1),
         }
+    }
+
+    /// Output every picture still held by the decoder (end of stream / before a seek).
+    pub fn flush(&mut self) -> Vec<Picture> {
+        Vec::new()
+    }
+
+    /// Frame / tile counts and per-stage busy time accumulated so far.
+    pub fn stats(&self) -> DecodeStats {
+        self.stats
     }
 
     /// The active sequence header, once one has been decoded.
@@ -219,6 +251,7 @@ impl Decoder {
             let idx = fh.frame_to_show_map_idx;
             let rf = self.ref_frames[idx].clone().ok_or(Error::Invalid("show_existing_frame of an empty slot"))?;
             let info = self.refs[idx].clone();
+            let t = Timer::start();
             let pic = self.output_picture(&seq, &rf, info.upscaled_width as usize, info.frame_height as usize, &fh.film_grain);
             if fh.frame_type == KEY_FRAME as u8 {
                 // reference frame loading process (7.21) then refresh every slot (7.20)
@@ -229,6 +262,7 @@ impl Decoder {
                     self.ref_frames[i] = Some(rf.clone());
                 }
             }
+            self.stats.add(Stage::Output, t.secs());
             return Ok(Some(pic));
         }
         // Encoders exist that code frames slightly larger than the sequence maximum (e.g. a
@@ -236,6 +270,7 @@ impl Decoder {
         if fh.upscaled_width > 65536 || fh.frame_height > 65536 {
             return Err(Error::Invalid("frame size"));
         }
+        let t = Timer::start();
         let mut fs = FrameState::new(&seq, &fh);
         fs.refs = self.ref_frames.clone();
         fs.ref_info = self.refs.clone();
@@ -269,6 +304,7 @@ impl Decoder {
             c
         };
         self.cur = Some(Box::new(CurFrame { fs, cdfs, saved_cdfs: None }));
+        self.stats.add(Stage::Setup, t.secs());
         Ok(None)
     }
 
@@ -309,6 +345,7 @@ impl Decoder {
             let end = pos.checked_add(size).filter(|&e| e <= data.len()).ok_or(Error::Truncated)?;
             let tile_data = &data[pos..end];
             pos = end;
+            let t = Timer::start();
             let cdfs = cur.cdfs.clone();
             cur.fs.intra_frame_y_mode_cdf = DEFAULT_INTRA_FRAME_Y_MODE_CDF;
             let mut td = TileDecoder::new(&mut cur.fs, tile_data, cdfs, tile_row, tile_col);
@@ -316,6 +353,8 @@ impl Decoder {
             if !td.fs.fh.disable_frame_end_update_cdf && tile_num == ctx_tile {
                 cur.saved_cdfs = Some(td.cdf);
             }
+            self.stats.tiles += 1;
+            self.stats.add(Stage::Tiles, t.secs());
         }
         if tg_end != num_tiles - 1 {
             self.cur = Some(cur);
@@ -333,7 +372,9 @@ impl Decoder {
 
     fn decode_frame_wrapup(&mut self, cur: CurFrame) -> Result<Option<Picture>> {
         let CurFrame { mut fs, cdfs, .. } = cur;
-        crate::postfilter::apply(&mut fs);
+        crate::postfilter::apply(&mut fs, &mut self.stats);
+        let t = Timer::start();
+        self.stats.frames += 1;
         let seq = fs.seq.clone();
         let fh = fs.fh.clone();
         if fh.seg.enabled && !fh.seg.update_map {
@@ -378,7 +419,9 @@ impl Decoder {
                 self.ref_frames[i] = Some(rf.clone());
             }
         }
-        if fh.show_frame { Ok(Some(self.output_picture(&seq, &rf, fh.upscaled_width as usize, fh.frame_height as usize, &fh.film_grain))) } else { Ok(None) }
+        let pic = if fh.show_frame { Some(self.output_picture(&seq, &rf, fh.upscaled_width as usize, fh.frame_height as usize, &fh.film_grain)) } else { None };
+        self.stats.add(Stage::Output, t.secs());
+        Ok(pic)
     }
 
     fn output_picture(&self, seq: &SequenceHeader, rf: &RefFrame, w: usize, h: usize, grain: &crate::header::FilmGrainParams) -> Picture {

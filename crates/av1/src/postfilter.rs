@@ -4,13 +4,17 @@
 use crate::frame::Plane;
 use crate::spec_tables::*;
 use crate::state::FrameState;
+use crate::stats::{DecodeStats, Stage, Timer};
 
-pub(crate) fn apply(fs: &mut FrameState) {
+pub(crate) fn apply(fs: &mut FrameState, stats: &mut DecodeStats) {
+    let mut t = Timer::start();
     let lvl = fs.fh.lf.level;
     if lvl[0] != 0 || lvl[1] != 0 {
         loop_filter(fs);
     }
+    stats.add(Stage::LoopFilter, t.lap());
     let cdef = crate::cdef::apply(fs);
+    stats.add(Stage::Cdef, t.lap());
     let (up_cur, up_cdef) = if fs.fh.use_superres {
         let c = crate::restoration::upscale(fs, &fs.cur);
         let d = cdef.as_ref().map(|f| crate::restoration::upscale(fs, f));
@@ -18,7 +22,9 @@ pub(crate) fn apply(fs: &mut FrameState) {
     } else {
         (std::mem::take(&mut fs.cur), cdef)
     };
+    stats.add(Stage::Superres, t.lap());
     fs.cur = if fs.fh.lr.uses_lr { crate::restoration::loop_restoration(fs, &up_cur, up_cdef.as_ref().unwrap_or(&up_cur)) } else { up_cdef.unwrap_or(up_cur) };
+    stats.add(Stage::Restoration, t.lap());
 }
 
 // ---------------------------------------------------------------------------------------------

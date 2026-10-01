@@ -21,12 +21,14 @@ mod postfilter;
 mod restoration;
 mod spec_tables;
 mod state;
+mod stats;
 mod symbol;
 mod tile;
 mod transform;
 
 pub use decoder::Decoder;
 pub use header::{ColorConfig, FrameHeader, SequenceHeader};
+pub use stats::{DecodeStats, Stage};
 
 /// Decoder errors.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
