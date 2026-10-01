@@ -52,7 +52,15 @@ impl From<CodecError> for filmcraft_media::MediaError {
 fn factories() -> &'static RwLock<Vec<VideoDecoderFactory>> {
     static F: std::sync::OnceLock<RwLock<Vec<VideoDecoderFactory>>> = std::sync::OnceLock::new();
     F.get_or_init(|| {
-        RwLock::new(vec![video::h264_factory, video::hevc_factory, video::vp9_factory, video::prores_factory, video::dnx_factory, video::mjpeg_factory])
+        RwLock::new(vec![
+            video::h264_factory,
+            video::hevc_factory,
+            video::vp9_factory,
+            video::av1_factory,
+            video::prores_factory,
+            video::dnx_factory,
+            video::mjpeg_factory,
+        ])
     })
 }
 

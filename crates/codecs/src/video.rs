@@ -361,6 +361,97 @@ pub fn vp9_factory(e: &SampleEntry) -> Option<Result<Box<dyn VideoDecoder>>> {
     }
 }
 
+/// Our AV1 decoder. The `av1C` configuration OBUs (sequence header) are fed before the first
+/// sample and again after every reset.
+pub struct Av1Decoder {
+    dec: filmcraft_av1::Decoder,
+    config_obus: Vec<u8>,
+    primed: bool,
+}
+
+impl Av1Decoder {
+    pub fn new(config_obus: Vec<u8>) -> Av1Decoder {
+        Av1Decoder { dec: filmcraft_av1::Decoder::new(), config_obus, primed: false }
+    }
+
+    fn convert(p: filmcraft_av1::Picture, pts: i64) -> DecodedFrame {
+        use std::sync::Arc;
+        let w = p.width as usize;
+        let h = p.height as usize;
+        let mut color = filmcraft_color::ColorInfo::REC709;
+        if let Some(m) = filmcraft_color::Matrix::from_code(p.matrix_coefficients) {
+            color.matrix = m;
+        } else {
+            color.matrix = filmcraft_frame::default_matrix(p.width, p.height);
+        }
+        if let Some(t) = filmcraft_color::Transfer::from_code(p.transfer_characteristics) {
+            color.transfer = t;
+        }
+        color.primaries = match p.color_primaries {
+            9 => filmcraft_color::Primaries::Bt2020,
+            12 => filmcraft_color::Primaries::P3D65,
+            5 => filmcraft_color::Primaries::Bt601_625,
+            6 => filmcraft_color::Primaries::Bt601_525,
+            _ => filmcraft_color::Primaries::Bt709,
+        };
+        if p.full_range {
+            color.range = filmcraft_color::Range::Full;
+        }
+        let chroma = match (p.subsampling_x, p.subsampling_y) {
+            (1, 1) => filmcraft_frame::Chroma::C420,
+            (1, 0) => filmcraft_frame::Chroma::C422,
+            _ => filmcraft_frame::Chroma::C444,
+        };
+        let cw = (w + p.subsampling_x as usize) >> p.subsampling_x;
+        let ch = (h + p.subsampling_y as usize) >> p.subsampling_y;
+        let [y, mut u, mut v] = p.planes;
+        if p.mono_chrome {
+            u = vec![1u16 << (p.bit_depth - 1); cw * ch];
+            v = u.clone();
+        }
+        let data = if p.bit_depth == 8 {
+            let to8 = |p: Vec<u16>| Arc::new(p.into_iter().map(|v| v as u8).collect::<Vec<u8>>());
+            filmcraft_frame::PixelData::Yuv8 { planes: [to8(y), to8(u), to8(v)], chroma, alpha: None }
+        } else {
+            filmcraft_frame::PixelData::Yuv16 { planes: [Arc::new(y), Arc::new(u), Arc::new(v)], chroma, bits: p.bit_depth as u32, alpha: None }
+        };
+        DecodedFrame { pts, frame: VideoFrame { width: p.width, height: p.height, data, color, par: (1, 1), pts: filmcraft_time::Tick::ZERO } }
+    }
+}
+
+impl VideoDecoder for Av1Decoder {
+    fn decode(&mut self, sample: &[u8], pts: i64) -> Result<Vec<DecodedFrame>> {
+        if !self.primed {
+            self.primed = true;
+            if !self.config_obus.is_empty() {
+                self.dec.decode(&self.config_obus).map_err(|e| CodecError::Decode(e.to_string()))?;
+            }
+        }
+        let pics = self.dec.decode(sample).map_err(|e| CodecError::Decode(e.to_string()))?;
+        Ok(pics.into_iter().map(|p| Self::convert(p, pts)).collect())
+    }
+    fn flush(&mut self) -> Vec<DecodedFrame> {
+        Vec::new()
+    }
+    fn reset(&mut self) {
+        self.dec = filmcraft_av1::Decoder::new();
+        self.primed = false;
+    }
+    fn name(&self) -> &str {
+        "FilmCraft AV1"
+    }
+    fn is_random_access(&self, sample: &[u8]) -> Option<bool> {
+        Some(filmcraft_av1::is_key_frame_unit(sample))
+    }
+}
+
+pub fn av1_factory(e: &SampleEntry) -> Option<Result<Box<dyn VideoDecoder>>> {
+    match &e.codec {
+        CodecConfig::Av1(c) => Some(Ok(Box::new(Av1Decoder::new(c.config_obus.clone())) as Box<dyn VideoDecoder>)),
+        _ => None,
+    }
+}
+
 /// Our ProRes decoder (every frame is intra; slices decode in parallel).
 pub struct ProResDecoder;
 

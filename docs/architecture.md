@@ -181,7 +181,7 @@ pub struct CommandSpec {
 
 ```text
 file ──► codecs (MP4/MOV, MKV, audio)        demux + decode, GOP-aware seek
-          │   decoder registry: h264, hevc, vp9, prores, dnx, mjpeg (+ any registered first)
+          │   decoder registry: h264, hevc, vp9, av1, prores, dnx, mjpeg (+ any registered first)
           ▼
         media::MediaSource ──► frame cache (byte-budgeted LRU, shared)
           ▼

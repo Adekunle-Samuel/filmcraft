@@ -394,6 +394,7 @@ fn codec_label(c: &CodecConfig) -> String {
         ),
         CodecConfig::Hevc(_) => "HEVC".into(),
         CodecConfig::Vp9(c) => format!("VP9 (Profile {})", c.profile),
+        CodecConfig::Av1(c) => format!("AV1 ({} Profile)", ["Main", "High", "Professional"].get(c.seq_profile as usize).unwrap_or(&"Main")),
         CodecConfig::ProRes { fourcc } => match &fourcc.0 {
             b"apco" => "Apple ProRes 422 Proxy".into(),
             b"apcs" => "Apple ProRes 422 LT".into(),

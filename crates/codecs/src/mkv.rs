@@ -1,7 +1,7 @@
 //! Matroska/WebM media source (`filmcraft-matroska` demux, GOP-aware video via [`crate::gop`]).
 //!
 //! Video codecs are mapped onto ISO-BMFF sample entries so the same decoder factories serve both
-//! containers (H.264, HEVC, VP9, ProRes, MJPEG; AV1 once its decoder lands). Audio: AAC and Opus
+//! containers (H.264, HEVC, VP9, AV1, ProRes, MJPEG). Audio: AAC and Opus
 //! via our decoders, PCM directly, MP3/FLAC/Vorbis via the bootstrap decoders.
 //!
 //! Opus (`A_OPUS`): `CodecPrivate` is the `OpusHead`; output is always 48 kHz. The demuxer
@@ -141,6 +141,7 @@ fn vp9_config(private: &[u8], v: Option<&filmcraft_matroska::VideoInfo>) -> VpcC
 fn sample_entry(c: &Codec, v: Option<&filmcraft_matroska::VideoInfo>, w: u16, h: u16) -> Option<SampleEntry> {
     Some(match c {
         Codec::Vp9 { private } => SampleEntry::video(FourCc(*b"vp09"), CodecConfig::Vp9(vp9_config(private, v)), w, h),
+        Codec::Av1 { av1c } => SampleEntry::video(FourCc(*b"av01"), CodecConfig::Av1(filmcraft_isobmff::Av1Config::parse(av1c).unwrap_or_default()), w, h),
         Codec::Avc { avcc } => SampleEntry::avc(AvcConfig::parse(avcc).ok()?, w, h),
         Codec::Hevc { hvcc } => SampleEntry::hevc(HevcConfig::parse(hvcc).ok()?, w, h),
         Codec::ProRes { fourcc } => SampleEntry::prores(FourCc(fourcc.unwrap_or(*b"apcn")), w, h),

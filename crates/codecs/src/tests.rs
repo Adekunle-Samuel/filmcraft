@@ -270,6 +270,57 @@ fn check_vp9_seeks(name: &str, container: &str, pix_fmt: &str, extra: &[&str], f
     }
 }
 
+/// All-intra AV1 (libsvtav1) in MP4 / WebM: random access is sample-exact against libdav1d.
+fn check_av1_seeks(name: &str, container: &str, pix_fmt: &str, frames: usize) {
+    let n = frames.to_string();
+    let args = [
+        "-f",
+        "lavfi",
+        "-i",
+        "testsrc2=s=320x240:r=25,noise=alls=8:allf=t",
+        "-frames:v",
+        &n,
+        "-c:v",
+        "libsvtav1",
+        "-pix_fmt",
+        pix_fmt,
+        "-preset",
+        "8",
+        "-crf",
+        "40",
+        "-svtav1-params",
+        "keyint=1",
+    ];
+    let Some(path) = fixture_path(name, &args) else { return };
+    let ref_name = format!("{name}.{pix_fmt}.yuv");
+    let p = path.to_str().unwrap();
+    let Some(reference) = fixture(&ref_name, &["-c:v", "libdav1d", "-i", p, "-fps_mode", "passthrough", "-f", "rawvideo", "-pix_fmt", pix_fmt]) else { return };
+    let bytes: Arc<[u8]> = std::fs::read(&path).unwrap().into();
+    let src = crate::open_bytes(name, bytes).unwrap();
+    let info = src.info().clone();
+    assert_eq!(info.container, container);
+    let v = info.video.as_ref().unwrap();
+    assert!(v.codec.contains("AV1"), "{}", v.codec);
+    assert_eq!((v.width, v.height), (320, 240));
+    let frame_len = reference.len() / frames;
+    let rate = info.frame_rate();
+    for k in [frames - 1, 2, 7, 0, 5, 6, 3] {
+        let f = src.video_frame(FrameRequest::full(rate.tick_of(k as i64))).unwrap();
+        assert_eq!((f.width, f.height), (320, 240));
+        assert!(yuv_bytes(&f) == reference[k * frame_len..(k + 1) * frame_len], "{name}: frame {k} differs from libdav1d");
+    }
+}
+
+#[test]
+fn mp4_av1_intra_seeks_bit_exact() {
+    check_av1_seeks("noise_av1_intra.mp4", "MPEG-4", "yuv420p", 10);
+}
+
+#[test]
+fn webm_av1_intra_10bit_seeks_bit_exact() {
+    check_av1_seeks("noise_av1_intra_10bit.webm", "WebM", "yuv420p10le", 10);
+}
+
 #[test]
 fn webm_vp9_seeks_bit_exact() {
     check_vp9_seeks("noise_vp9.webm", "WebM", "yuv420p", &["-deadline", "realtime", "-speed", "8"], 60);

@@ -65,8 +65,8 @@ impl Picture {
     }
 }
 
-/// Whether a temporal unit starts a random access point: it contains a sequence header and a
-/// shown key frame (used for keyframe detection by demuxers without sync-sample tables).
+/// Whether a temporal unit starts a random access point: its first frame is a shown key frame
+/// (used for keyframe detection: containers may flag samples as sync that are not).
 pub fn is_key_frame_unit(data: &[u8]) -> bool {
     let mut pos = 0;
     let mut seq_seen = false;
@@ -98,7 +98,8 @@ pub fn is_key_frame_unit(data: &[u8]) -> bool {
                 let show_existing = b >> 7;
                 let frame_type = (b >> 5) & 3;
                 let show_frame = (b >> 4) & 1;
-                return seq_seen && show_existing == 0 && frame_type == 0 && show_frame == 1;
+                let _ = seq_seen;
+                return show_existing == 0 && frame_type == 0 && show_frame == 1;
             }
             _ => {}
         }
