@@ -454,10 +454,12 @@ impl FilmcraftApp {
                 }
                 r
             }
-            "file.saveAs" | "file.save" => {
-                let suggested = format!("{}.fcproj", self.session.project.name);
+            "file.saveAs" | "file.save" | "file.saveCopy" => {
+                let suggested =
+                    if id == "file.saveCopy" { format!("{} copy.fcproj", self.session.project.name) } else { format!("{}.fcproj", self.session.project.name) };
                 let Some(path) = self.hooks.pick_save.as_mut().and_then(|f| f(&suggested)) else { return Ok(Value::Null) };
-                self.session.execute("file.saveAs", json!({"path": path})).map_err(|e| e.to_string())
+                let cmd = if id == "file.saveCopy" { "file.saveCopy" } else { "file.saveAs" };
+                self.session.execute(cmd, json!({"path": path})).map_err(|e| e.to_string())
             }
             "file.open" => {
                 let Some(path) = self.hooks.pick_open_project.as_mut().and_then(|f| f()) else { return Ok(Value::Null) };

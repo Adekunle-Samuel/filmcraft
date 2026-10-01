@@ -65,6 +65,9 @@ fn has_edit_points(s: &Session) -> std::result::Result<(), String> {
     if s.state.edit_points.is_empty() { Err("no edit points selected".into()) } else { Ok(()) }
 }
 
+fn has_saved_path(s: &Session) -> std::result::Result<(), String> {
+    if s.path.is_some() { Ok(()) } else { Err("the project has not been saved yet".into()) }
+}
 fn has_seq(s: &Session) -> std::result::Result<(), String> {
     s.active_sequence().map(|_| ()).ok_or_else(|| "no sequence is open".into())
 }
@@ -547,36 +550,29 @@ fn build() -> Vec<CommandSpec> {
         }),
         cmd!("file.save", "Save", ["File"], Some("Cmd+S"), r#"{"path":str?}"#, always, |s, p| {
             let path = str_p(p, "path").map(str::to_string).or_else(|| s.path.clone()).ok_or_else(|| bad("file.save", "no path (use Save As)"))?;
-            let data = s.project.to_json();
-            s.services.write_file(&path, data.as_bytes()).map_err(|e| EngineError::Other(e.to_string()))?;
-            s.path = Some(path.clone());
-            s.saved_revision = s.revision;
-            Ok(json!({"path": path}))
+            write_project(s, &path, true)
         }),
         cmd!("file.saveAs", "Save As…", ["File"], Some("Cmd+Shift+S"), r#"{"path":str}"#, always, |s, p| {
             let path = str_p(p, "path").ok_or_else(|| bad("file.saveAs", "need `path`"))?.to_string();
-            s.services.write_file(&path, s.project.to_json().as_bytes()).map_err(|e| EngineError::Other(e.to_string()))?;
-            s.path = Some(path.clone());
-            s.saved_revision = s.revision;
-            Ok(json!({"path": path}))
+            write_project(s, &path, true)
+        }),
+        cmd!("file.saveCopy", "Save a Copy…", ["File"], Some("Cmd+Alt+S"), r#"{"path":str}"#, always, |s, p| {
+            let path = str_p(p, "path").ok_or_else(|| bad("file.saveCopy", "need `path`"))?.to_string();
+            write_project(s, &path, false)
+        }),
+        cmd!("file.revert", "Revert", ["File"], None, "{}", has_saved_path, |s, _| {
+            let path = s.path.clone().ok_or_else(|| bad("file.revert", "project was never saved"))?;
+            let keep = s.state.active_sequence;
+            let r = open_project(s, &path)?;
+            if let Some(k) = keep.filter(|k| s.project.sequence(*k).is_some()) {
+                s.state.active_sequence = Some(k);
+                s.state.open_sequences = vec![k];
+            }
+            Ok(r)
         }),
         cmd!("file.open", "Open Project…", ["File"], Some("Cmd+O"), r#"{"path":str}"#, always, |s, p| {
             let path = str_p(p, "path").ok_or_else(|| bad("file.open", "need `path`"))?.to_string();
-            let bytes = s.services.read_file(&path).map_err(|e| EngineError::Other(e.to_string()))?;
-            let proj = filmcraft_project::Project::from_json(&String::from_utf8_lossy(&bytes)).map_err(EngineError::Other)?;
-            s.media = std::sync::Arc::new(crate::MediaPool::default());
-            let first = proj.sequences().next().map(|i| i.id);
-            s.project = std::sync::Arc::new(proj);
-            s.history = Default::default();
-            s.history.limit = 200;
-            s.state = crate::Session::default().state;
-            s.state.active_sequence = first;
-            s.state.open_sequences = first.into_iter().collect();
-            s.path = Some(path);
-            s.revision += 1;
-            s.saved_revision = s.revision;
-            s.events.push(crate::Event::ProjectChanged { revision: s.revision });
-            Ok(Value::Null)
+            open_project(s, &path)
         }),
         cmd!(
             "file.exportMedia",
@@ -2110,4 +2106,67 @@ pub fn inspect_sequence(s: &Session, id: ItemId, q: &filmcraft_project::Sequence
 /// Seconds → ticks helper for callers.
 pub fn secs(s: f64) -> Tick {
     Tick((s * TICKS_PER_SECOND as f64).round() as i64)
+}
+
+// ---------- project files ----------
+
+/// Serialize the project in the current schema and write it (atomically) to `path`. `adopt` =
+/// Save / Save As (the file becomes the project's path and the project is clean); otherwise Save a
+/// Copy. The first save over a file upgraded from an older schema keeps the original as
+/// `<name> (schema vN backup).fcproj`.
+fn write_project(s: &mut Session, path: &str, adopt: bool) -> Result<Value> {
+    let t0 = std::time::Instant::now();
+    let bytes = filmcraft_format::encode(&s.project, false);
+    let mut backup = None;
+    if adopt && s.path.as_deref() == Some(path) && s.loaded_schema < filmcraft_format::SCHEMA_VERSION {
+        let b = schema_backup_path(path, s.loaded_schema);
+        if s.services.read_file(&b).is_err()
+            && let Ok(old) = s.services.read_file(path)
+        {
+            s.services.write_file(&b, &old).map_err(|e| EngineError::Other(format!("{b}: {e}")))?;
+            backup = Some(b);
+        }
+    }
+    s.services.write_file(path, &bytes).map_err(|e| EngineError::Other(format!("{path}: {e}")))?;
+    if adopt {
+        s.path = Some(path.to_string());
+        s.saved_revision = s.revision;
+        s.loaded_schema = filmcraft_format::SCHEMA_VERSION;
+    }
+    Ok(json!({"path": path, "bytes": bytes.len(), "ms": t0.elapsed().as_secs_f64() * 1000.0, "backup": backup}))
+}
+
+fn schema_backup_path(path: &str, schema: u32) -> String {
+    let stem = path.strip_suffix(".fcproj").unwrap_or(path);
+    format!("{stem} (schema v{schema} backup).fcproj")
+}
+
+/// Make `proj` the session's project (fresh history, media pool and editor state).
+fn install_project(s: &mut Session, proj: filmcraft_project::Project, path: Option<String>, clean: bool) {
+    s.media = std::sync::Arc::new(crate::MediaPool::default());
+    let first = proj.sequences().next().map(|i| i.id);
+    s.project = std::sync::Arc::new(proj);
+    s.history = Default::default();
+    s.history.limit = 200;
+    s.state = crate::Session::default().state;
+    s.state.active_sequence = first;
+    s.state.open_sequences = first.into_iter().collect();
+    s.path = path;
+    s.revision += 1;
+    // A recovered project is unsaved: its saved revision is one that never existed.
+    s.saved_revision = if clean { s.revision } else { 0 };
+    s.loaded_schema = filmcraft_format::SCHEMA_VERSION;
+    s.events.push(crate::Event::ProjectChanged { revision: s.revision });
+}
+
+fn open_project(s: &mut Session, path: &str) -> Result<Value> {
+    let bytes = s.services.read_file(path).map_err(|e| EngineError::Other(format!("{path}: {e}")))?;
+    let loaded = filmcraft_format::decode(&bytes).map_err(|e| EngineError::Other(format!("{path}: {e}")))?;
+    let (from, migrated) = (loaded.schema_version, loaded.migrated());
+    install_project(s, loaded.project, Some(path.to_string()), true);
+    s.loaded_schema = from;
+    if migrated {
+        s.toast(format!("Upgraded project from schema v{from} to v{}; the original is kept as a backup when you save", filmcraft_format::SCHEMA_VERSION));
+    }
+    Ok(json!({"path": path, "schemaVersion": from, "migrated": migrated}))
 }

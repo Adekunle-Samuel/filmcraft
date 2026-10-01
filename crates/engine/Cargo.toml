@@ -20,6 +20,7 @@ filmcraft-project = { workspace = true }
 filmcraft-edit = { workspace = true }
 filmcraft-render = { workspace = true }
 filmcraft-export = { workspace = true }
+filmcraft-format = { workspace = true }
 filmcraft-interchange = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

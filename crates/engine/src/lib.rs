@@ -62,10 +62,8 @@ impl Services for FsServices {
         std::fs::read(path)
     }
     fn write_file(&self, path: &str, data: &[u8]) -> std::io::Result<()> {
-        // Atomic save: write a sibling temp file then rename over the target.
-        let tmp = format!("{path}.fcsave~");
-        std::fs::write(&tmp, data)?;
-        std::fs::rename(&tmp, path)
+        // Atomic + durable: temp file in the same directory, fsync, rename, fsync the directory.
+        filmcraft_format::atomic_write(std::path::Path::new(path), data)
     }
 }
 
@@ -148,6 +146,9 @@ pub struct Session {
     pub journal: Vec<(String, Value)>,
     /// Background jobs (exports, …).
     pub jobs: Vec<Job>,
+    /// Schema version of the file at `path` as found on disk (older = upgraded on load; the first
+    /// save over it keeps a backup of the original).
+    pub loaded_schema: u32,
 }
 
 /// A background job with shared progress.
@@ -202,6 +203,7 @@ impl Session {
             events: Vec::new(),
             journal: Vec::new(),
             jobs: Vec::new(),
+            loaded_schema: filmcraft_format::SCHEMA_VERSION,
         }
     }
 
@@ -380,5 +382,7 @@ pub fn media_duration(p: &Project, _pool: &MediaPool, id: ItemId) -> Option<Tick
     }
 }
 
+#[cfg(test)]
+mod file_tests;
 #[cfg(test)]
 mod tests;

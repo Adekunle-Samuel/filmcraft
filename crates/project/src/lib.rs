@@ -730,11 +730,7 @@ pub struct Project {
     pub items: BTreeMap<ItemId, ProjectItem>,
     /// Monotonic id source for all id types.
     pub next_id: u64,
-    /// Format version of the serialized project.
-    pub version: u32,
 }
-
-pub const PROJECT_VERSION: u32 = 1;
 
 impl Default for Project {
     fn default() -> Self {
@@ -750,7 +746,6 @@ impl Project {
             root: Bin { id: BinId(0), name: name.into(), children: Vec::new() },
             items: BTreeMap::new(),
             next_id: 1,
-            version: PROJECT_VERSION,
         }
     }
 
@@ -856,15 +851,13 @@ impl Project {
         })
     }
 
+    /// The bare model as JSON. Project *files* add a schema-versioned envelope; read and write them
+    /// with `filmcraft-format`, not with these.
     pub fn to_json(&self) -> String {
         serde_json::to_string_pretty(self).unwrap_or_default()
     }
     pub fn from_json(s: &str) -> Result<Project, String> {
-        let p: Project = serde_json::from_str(s).map_err(|e| e.to_string())?;
-        if p.version > PROJECT_VERSION {
-            return Err(format!("project version {} is newer than this FilmCraft ({PROJECT_VERSION})", p.version));
-        }
-        Ok(p)
+        serde_json::from_str(s).map_err(|e| e.to_string())
     }
 }
 
