@@ -29,6 +29,7 @@ pub fn install(app: &FilmcraftApp, ctx: egui::Context) -> (Receiver<String>, Sho
     let app_menu = Submenu::new("FilmCraft", true);
     let _ = app_menu.append_items(&[
         &MenuItem::with_id("app.about", "About FilmCraft", true, None),
+        &MenuItem::with_id("help.discord", "Join the ArtCraft Discord…", true, None),
         &PredefinedMenuItem::separator(),
         &MenuItem::with_id("app.preferences.autoSave", "Settings…", true, None),
         &PredefinedMenuItem::separator(),
