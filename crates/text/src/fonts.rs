@@ -273,17 +273,16 @@ pub fn add_font_data(data: Vec<u8>) -> Vec<FaceId> {
 /// Scan the system font folders once (native only; a no-op on wasm). Returns the number of faces
 /// added by this call.
 pub fn scan_system() -> usize {
-    {
-        let mut d = db().write().unwrap_or_else(|e| e.into_inner());
-        if d.scanned {
-            return 0;
-        }
-        d.scanned = true;
-    }
-    if cfg!(target_arch = "wasm32") {
+    // Held for the whole scan: a concurrent caller waits for the complete list instead of
+    // returning early and resolving against a half-filled database.
+    static SCAN: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let _scan = SCAN.lock().unwrap_or_else(|e| e.into_inner());
+    if system_scanned() {
         return 0;
     }
-    add_source(&DirectorySource::system())
+    let n = if cfg!(target_arch = "wasm32") { 0 } else { add_source(&DirectorySource::system()) };
+    db().write().unwrap_or_else(|e| e.into_inner()).scanned = true;
+    n
 }
 
 pub fn system_scanned() -> bool {
