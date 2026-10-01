@@ -45,7 +45,7 @@ fn simple_transition(id: &str) -> bool {
 /// Whether a track item can be drawn by the GPU as-is (no standard effects, Normal blend).
 fn gpu_simple(project: &Project, item: &TrackItem, mt: Tick) -> bool {
     let is_media = project.item(item.item).is_some_and(|p| matches!(p.kind, ItemKind::Media(_) | ItemKind::Subclip { .. }));
-    let no_fx = !item.has_standard_effects();
+    let no_fx = !item.has_standard_effects() && !item.has_opacity_masks();
     let normal =
         item.effect("opacity").is_none_or(|e| !e.enabled || e.param("blend").is_none_or(|p| matches!(p.value, filmcraft_project::ParamValue::Choice(0))));
     let _ = mt;
@@ -149,6 +149,7 @@ fn push_item(
     // image the GPU places as a layer.
     if bl == Blend::Normal
         && !(opts.effects && item.has_standard_effects())
+        && !item.has_opacity_masks()
         && project.item(item.item).is_some_and(|p| matches!(p.kind, ItemKind::Graphic { .. }))
     {
         let Some(size) = crate::source_size(project, item.item) else { return };

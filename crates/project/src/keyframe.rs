@@ -18,6 +18,8 @@ pub enum ParamValue {
     Text(String),
     /// Curve control points (x, y) in 0..1, sorted by x (Lumetri curves).
     Curve(Vec<[f32; 2]>),
+    /// A mask path (Bézier vertices in clip pixels); interpolates vertex-wise.
+    Path(crate::mask::MaskPath),
 }
 
 impl ParamValue {
@@ -55,13 +57,20 @@ impl ParamValue {
     }
     /// Whether values of this kind can be interpolated (others hold).
     pub fn interpolates(&self) -> bool {
-        matches!(self, ParamValue::Float(_) | ParamValue::Vec2(_) | ParamValue::Color(_))
+        matches!(self, ParamValue::Float(_) | ParamValue::Vec2(_) | ParamValue::Color(_) | ParamValue::Path(_))
+    }
+    pub fn as_path(&self) -> Option<&crate::mask::MaskPath> {
+        match self {
+            ParamValue::Path(p) => Some(p),
+            _ => None,
+        }
     }
     fn components(&self) -> Vec<f64> {
         match self {
             ParamValue::Float(v) => vec![*v],
             ParamValue::Vec2(v) => vec![v.x, v.y],
             ParamValue::Color(c) => c.iter().map(|&x| x as f64).collect(),
+            ParamValue::Path(p) => p.components(),
             _ => vec![],
         }
     }
@@ -70,6 +79,7 @@ impl ParamValue {
             ParamValue::Float(_) => ParamValue::Float(c[0]),
             ParamValue::Vec2(_) => ParamValue::Vec2(Vec2::new(c[0], c[1])),
             ParamValue::Color(_) => ParamValue::Color([c[0] as f32, c[1] as f32, c[2] as f32, c[3] as f32]),
+            ParamValue::Path(p) => ParamValue::Path(p.with_components(c)),
             other => other.clone(),
         }
     }
@@ -236,6 +246,10 @@ impl Param {
         let e = ease(a, b, u);
         let ca = a.value.components();
         let cb = b.value.components();
+        if ca.len() != cb.len() {
+            // e.g. mask paths with different vertex counts: hold
+            return a.value.clone();
+        }
         let c: Vec<f64> = ca.iter().zip(&cb).map(|(x, y)| x + (y - x) * e).collect();
         ParamValue::from_components(&a.value, &c)
     }

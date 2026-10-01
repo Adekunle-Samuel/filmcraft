@@ -310,6 +310,31 @@ pub struct UiState {
     /// Open colour dialog (Interpret Footage ▸ Color Management, Sequence ▸ Color Management).
     #[serde(default)]
     pub color_dialog: Option<ColorDialog>,
+    /// Free-draw (pen) mask being placed on the Program monitor (Effect Controls ▸ pen icon).
+    #[serde(default)]
+    pub mask_pen: Option<MaskPenDraft>,
+    /// Effect presets: the preset being renamed / the Save Preset dialog (open when Some).
+    #[serde(default)]
+    pub save_preset: Option<SavePresetDraft>,
+}
+
+/// A pen mask in progress: vertices placed so far, in clip pixels (`[x, y, tangent x, tangent y]`).
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct MaskPenDraft {
+    pub clip: u64,
+    pub effect: usize,
+    pub points: Vec<[f64; 4]>,
+}
+
+/// Save Preset dialog (Effect Controls ▸ right-click an effect ▸ Save Preset…).
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct SavePresetDraft {
+    pub clip: u64,
+    pub effects: Vec<usize>,
+    pub name: String,
+    pub description: String,
+    /// "scale" | "anchorIn" | "anchorOut" | "none"
+    pub keyframes: String,
 }
 
 /// File ▸ Link Media… (shown automatically when a project opens with missing media).
@@ -481,6 +506,8 @@ impl Default for UiState {
             project_manager: None,
             make_offline: None,
             color_dialog: None,
+            mask_pen: None,
+            save_preset: None,
         }
     }
 }

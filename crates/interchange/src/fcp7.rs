@@ -564,7 +564,7 @@ impl<'a, 'i> Imp<'a, 'i, '_> {
                         ParamValue::Choice(_) => Param::new(ParamValue::Choice(child_i64(p, "value").unwrap_or(0).max(0) as u32)),
                         ParamValue::Color(_) => Param::new(ParamValue::Color(child(p, "value").map(read_color).unwrap_or([0.0, 0.0, 0.0, 1.0]))),
                         ParamValue::Text(_) => Param::new(ParamValue::Text(child_text(p, "value").unwrap_or("").to_string())),
-                        ParamValue::Curve(_) => continue,
+                        ParamValue::Curve(_) | ParamValue::Path(_) => continue,
                     };
                     inst.params.insert(pd.id.to_string(), pr);
                 }
@@ -1275,7 +1275,7 @@ impl Exp<'_, '_> {
                     write_color(&mut self.w, *c);
                     self.w.close();
                 }
-                ParamValue::Curve(_) => {
+                ParamValue::Curve(_) | ParamValue::Path(_) => {
                     self.report.warn(format!("curve parameters of \"{}\" are not supported by FCP7 XML", def.name));
                 }
             }

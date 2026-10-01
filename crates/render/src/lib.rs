@@ -17,6 +17,7 @@ pub mod graphic_clip;
 pub mod graphics;
 pub mod image;
 pub mod luts;
+pub mod mask;
 pub mod mixer;
 pub mod offline;
 pub mod plan;
@@ -134,13 +135,14 @@ fn render_seq(project: &Project, seq: &Sequence, t: Tick, opts: RenderOptions, s
                 project: Some(project),
             };
             for e in item.effects.iter().filter(|e| e.def().is_some_and(|d| !d.intrinsic)) {
-                effects::apply(&mut adjusted, e, &cx);
+                mask::apply_effect(&mut adjusted, e, &cx);
             }
             let (op, bl) = opacity_blend(item, mt);
-            // Adjustment layer opacity mixes adjusted over original.
+            // Adjustment layer opacity (and opacity masks, in sequence pixels) mix adjusted over original.
             let mut out = canvas.clone();
             let mut adj = adjusted;
             adj.scale_alpha(op);
+            mask::apply_opacity_masks(&mut adj, item, mt, opts.scale);
             blend::composite(&mut out, &adj, 1.0, bl);
             canvas = out;
             continue;
@@ -188,7 +190,7 @@ pub(crate) fn opacity_blend(item: &TrackItem, mt: Tick) -> (f32, Blend) {
 }
 
 /// Size of an item's source at full resolution.
-pub(crate) fn source_size(project: &Project, item: ItemId) -> Option<(u32, u32)> {
+pub fn source_size(project: &Project, item: ItemId) -> Option<(u32, u32)> {
     match &project.item(item)?.kind {
         ItemKind::Media(m) => m.info.video.as_ref().map(|v| (v.width, v.height)),
         ItemKind::Sequence(s) => Some((s.settings.width, s.settings.height)),
@@ -259,7 +261,7 @@ pub(crate) fn item_layer(
         }
         ItemKind::AdjustmentLayer { .. } => return None,
         ItemKind::Graphic { .. } => {
-            if !(opts.effects && item.has_standard_effects()) {
+            if !(item.has_opacity_masks() || opts.effects && item.has_standard_effects()) {
                 // vectors straight to the output: no resampling, crisp at any Motion scale
                 let m = Affine::scale(opts.scale as f64, opts.scale as f64).then_apply(&motion);
                 let mut canvas = Image::new(w, h);
@@ -281,9 +283,10 @@ pub(crate) fn item_layer(
             if filmcraft_media::cancel::cancelled() {
                 return None;
             }
-            effects::apply(&mut layer, e, &cx);
+            mask::apply_effect(&mut layer, e, &cx);
         }
     }
+    mask::apply_opacity_masks(&mut layer, item, mt, px_scale);
     // layer px → source px → sequence px → output px
     let m = Affine::scale(opts.scale as f64, opts.scale as f64).then_apply(&motion).then_apply(&Affine::scale(1.0 / px_scale as f64, 1.0 / px_scale as f64));
     let placed = if layer.w == w

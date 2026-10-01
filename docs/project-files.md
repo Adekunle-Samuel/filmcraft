@@ -8,7 +8,7 @@ writing them is `crates/format` (`filmcraft-format`); the engine's `file.*` comm
 ```json
 {
   "format": "filmcraft.project",
-  "schema_version": 6,
+  "schema_version": 7,
   "generator": "FilmCraft 0.1.0",
   "project": { "name": "…", "settings": { … }, "root": { … }, "items": { … }, "next_id": 48 }
 }
@@ -30,6 +30,7 @@ writing them is `crates/format` (`filmcraft-format`); the engine's `file.*` comm
 | 4 | M7.4 | Essential Sound: clip audio types and settings; no-op step |
 | 5 | M8.8 | colour management: working space, Interpret Footage colour space, LUT library; no-op step |
 | 6 | M11.7/M11.9 | media identity fingerprints, ingest settings; no-op step |
+| 7 | M5.5 | effect masks: `masks` on effect instances with keyframable Bézier `Path` values; no-op step |
 
 ### Migrations
 

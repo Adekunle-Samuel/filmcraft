@@ -12,6 +12,7 @@ pub mod effect;
 pub mod essential;
 pub mod graphic;
 pub mod keyframe;
+pub mod mask;
 pub mod mixer;
 
 use std::collections::BTreeMap;
@@ -25,6 +26,7 @@ pub use caption::{Caption, CaptionAlign, CaptionAnchor, CaptionFormat, CaptionSt
 pub use effect::{EffectDef, EffectInstance, EffectKind, ParamDef, ParamKind, effect_defs, find_effect};
 pub use essential::{AudioType, EssentialSound};
 pub use keyframe::{Interpolation, Keyframe, Param, ParamValue};
+pub use mask::{Mask, MaskMode, MaskPath, MaskVertex, TrackMethod};
 pub use mixer::{AutomationMode, InputMap, MixerStrip, TrackSend};
 
 macro_rules! id_type {
@@ -501,6 +503,10 @@ impl TrackItem {
         self.effects.iter_mut().find(|e| e.effect == id)
     }
     /// Standard (non-intrinsic) effects applied, for the fx badge.
+    /// The Opacity effect has masks (the layer is cut out before Motion).
+    pub fn has_opacity_masks(&self) -> bool {
+        self.effect("opacity").is_some_and(|e| e.enabled && e.masks.iter().any(|m| m.mode != mask::MaskMode::None))
+    }
     pub fn has_standard_effects(&self) -> bool {
         self.effects.iter().any(|e| e.def().is_some_and(|d| !d.intrinsic) && !graphic::is_layer(e))
     }
@@ -512,6 +518,7 @@ impl TrackItem {
         self.effects.iter().any(|e| {
             e.def().is_some_and(|d| d.intrinsic)
                 && (e.is_animated()
+                    || !e.masks.is_empty()
                     || e.def().is_some_and(|d| d.params.iter().any(|p| e.params.get(p.id).is_some_and(|v| !param_eq_default(&v.value, &p.default)))))
         })
     }

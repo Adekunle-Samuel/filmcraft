@@ -125,7 +125,8 @@ TrackItem (a clip instance)
 ├─ link group, label, enabled
 └─ effects: Vec<EffectInstance>      intrinsic Motion/Opacity/Volume… first, then standard effects
 EffectInstance
-└─ effect id, enabled, params: id → constant value or keyframe track
+├─ effect id, enabled, params: id → constant value or keyframe track
+└─ masks: Vec<Mask>                  path (keyframable Bézier), feather, opacity, expansion, inverted, mode
 ```
 
 - **Graphic clips** ([graphics.md](graphics.md)) reference a `Graphic` canvas item; their text and
@@ -314,7 +315,30 @@ essentialSound.generateDucking   trigger clips' summed level (10 ms hops) → ac
   DeepFilterNet (MIT/Apache-2.0, Rust inference via tract) is the candidate for a future optional
   integration behind a trait.
 
-### 5.3 Colour management
+### 5.3 Masks
+
+Every video effect and the intrinsic Opacity carry `EffectInstance::masks` (`project::mask`).
+A mask is a closed cubic Bézier `MaskPath` in clip pixels (ellipse = four smooth vertices with
+circular tangents, 4-point polygon = corner vertices, the pen draws arbitrary vertices), stored as a
+`ParamValue::Path` so the ordinary keyframe engine animates it (vertex-wise interpolation; paths
+with different vertex counts hold). Feather, Opacity and Expansion are ordinary float parameters.
+
+- **Coverage** (`render::mask`): the path is flattened (≤ 0.05 working px chord error); the
+  signed distance to the polygon (nonzero winding) plus Expansion goes through a falloff of width
+  max(Feather, 1) centred on the edge (linear = exact box-filtered antialiasing at Feather 0,
+  blending into smoothstep as Feather grows). Masks combine top to bottom with Add / Subtract /
+  Intersect / Lighten / Darken / Difference; Inverted and Opacity apply per mask.
+- **Semantics.** A masked effect is `lerp(original, effected, coverage)` per premultiplied channel
+  (the effect only applies inside); Opacity masks scale the clip's layer before Motion, so they
+  follow the clip's transform. Adjustment-layer masks are in sequence pixels.
+- **GPU.** `filmcraft-gpu::GpuMask` evaluates the same coverage and mix in WGSL (compute), tested
+  to agree with the CPU within 3·10⁻⁶. Layers with masks are CPU-rendered images in frame plans.
+- **Editing.** `masks.*` commands (add / remove / set / moveVertex / translate / addVertex /
+  removeVertex / toggleVertexSmooth / select / list); keyframe commands take `"mask": n`. The
+  Program monitor overlay drags vertices, Bézier handles, the whole mask and the feather /
+  expansion handles; drags merge into one undo step.
+
+### 5.4 Colour management
 
 ```text
 frame (Y'CbCr/RGB + metadata) ─► source colour space: Interpret Footage override, else VUI/colr/MKV Colour

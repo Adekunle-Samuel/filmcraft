@@ -151,6 +151,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, which: Which)
     app.auto.add(&format!("{prefix}.picture"), pic, "picture");
     if which == Which::Program && has_video {
         crate::panels::graphics::monitor_overlay(app, ui, pic, frame_size);
+        crate::panels::masks::monitor_overlay(app, ui, pic, frame_size);
     }
     if pic_resp.double_clicked() && which == Which::Source {
         // (Premiere opens the clip's settings; we show info)

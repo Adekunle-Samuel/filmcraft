@@ -16,6 +16,7 @@ pub mod demo;
 pub mod essential_sound;
 pub mod graphics;
 pub mod interchange;
+pub mod masks;
 pub mod media_pool;
 pub mod mixer;
 pub mod previews;
@@ -168,6 +169,9 @@ pub struct EditorState {
     /// Selected layers (indices among the graphic layers, 0 = back) of the selected graphic clip.
     #[serde(default)]
     pub graphic_layers: Vec<usize>,
+    /// The mask being edited on the Program monitor (Effect Controls selection).
+    #[serde(default)]
+    pub selected_mask: Option<masks::MaskSel>,
 }
 
 /// Events for frontends (drained each frame).
@@ -506,6 +510,13 @@ impl Session {
     /// Drop dangling references after undo/redo/delete.
     pub fn fix_state(&mut self) {
         let p = self.project.clone();
+        if let Some(m) = self.state.selected_mask {
+            let ok =
+                self.active_sequence().and_then(|q| q.find_item(m.clip)).and_then(|(_, it)| it.effects.get(m.effect)).is_some_and(|e| m.mask < e.masks.len());
+            if !ok {
+                self.state.selected_mask = None;
+            }
+        }
         if let Some(s) = self.state.active_sequence
             && p.sequence(s).is_none()
         {
@@ -620,6 +631,8 @@ mod color_tests;
 mod essential_sound_tests;
 #[cfg(test)]
 mod file_tests;
+#[cfg(test)]
+mod masks_tests;
 #[cfg(test)]
 mod media_test_util;
 #[cfg(test)]
