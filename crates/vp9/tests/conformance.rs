@@ -108,3 +108,34 @@ fn compare_detects_mismatch() {
     let err = common::compare(&pics, &reference, f.pix_fmt).unwrap_err();
     assert!(err.contains("plane V"), "{err}");
 }
+
+/// Key frame detection (random access points) and decoder reset: decoding again from the
+/// second key frame after `reset` gives the same pictures as the uninterrupted decode.
+#[test]
+fn keyframes_and_reset() {
+    let f = common::fixture("fade_intra_heavy");
+    let Some((ivf, _)) = common::ensure(f) else { return };
+    let data = std::fs::read(ivf).unwrap();
+    let chunks = common::ivf_frames(&data);
+    let keys: Vec<usize> = (0..chunks.len()).filter(|&i| filmcraft_vp9::is_keyframe(chunks[i])).collect();
+    assert_eq!(keys.first(), Some(&0));
+    assert!(keys.len() >= 2, "key frames {keys:?}");
+    let info = filmcraft_vp9::keyframe_info(chunks[0]).unwrap();
+    assert_eq!((info.width, info.height, info.bit_depth), (f.width, f.height, 8));
+    assert!(info.subsampling_x && info.subsampling_y);
+    let mut dec = filmcraft_vp9::Decoder::with_threads(1);
+    let mut all = Vec::new();
+    for (i, c) in chunks.iter().enumerate() {
+        all.extend(dec.decode(c, i as i64).unwrap());
+    }
+    // Garbage in between, then a reset and a restart at the second key frame.
+    let _ = dec.decode(&[0x82, 0x49, 0x83, 0x42, 0x00], 0);
+    dec.reset();
+    let k = keys[1];
+    for (i, c) in chunks.iter().enumerate().skip(k) {
+        for p in dec.decode(c, i as i64).unwrap() {
+            let want = all.iter().find(|q| q.pts == p.pts).unwrap();
+            assert!(p.y == want.y && p.u == want.u && p.v == want.v, "picture {} differs after reset", p.pts);
+        }
+    }
+}

@@ -39,6 +39,48 @@ mod transform;
 mod transform_gen;
 
 pub use decoder::{DecodeStats, Decoder};
+
+/// Stream parameters read from a key frame's uncompressed header (see [`keyframe_info`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct KeyframeInfo {
+    pub profile: u8,
+    pub width: u32,
+    pub height: u32,
+    pub render_width: u32,
+    pub render_height: u32,
+    pub bit_depth: u32,
+    pub subsampling_x: bool,
+    pub subsampling_y: bool,
+    pub color: ColorInfo,
+}
+
+/// If the first frame of `chunk` (one container sample: a frame or a superframe) is a key frame,
+/// i.e. a random access point, its stream parameters. Intra-only frames and show_existing_frame
+/// are not random access points.
+pub fn keyframe_info(chunk: &[u8]) -> Option<KeyframeInfo> {
+    let first = header::split_superframe(chunk).into_iter().find(|f| !f.is_empty())?;
+    let mut st = header::HeaderState::default();
+    let h = header::parse_uncompressed(first, &mut st, &[None; 8]).ok()?;
+    if h.show_existing_frame || h.frame_type != header::KEY_FRAME {
+        return None;
+    }
+    Some(KeyframeInfo {
+        profile: h.profile,
+        width: h.width,
+        height: h.height,
+        render_width: h.render_width,
+        render_height: h.render_height,
+        bit_depth: h.color.bit_depth as u32,
+        subsampling_x: h.color.subsampling_x,
+        subsampling_y: h.color.subsampling_y,
+        color: ColorInfo { color_space: h.color.color_space, full_range: h.color.color_range },
+    })
+}
+
+/// Whether `chunk` starts with a key frame (decoding can start there).
+pub fn is_keyframe(chunk: &[u8]) -> bool {
+    keyframe_info(chunk).is_some()
+}
 pub use error::{Error, Result};
 
 /// Colour information from the uncompressed header.

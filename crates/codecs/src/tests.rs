@@ -178,3 +178,166 @@ fn matroska_hevc_flac() {
 fn matroska_prores_pcm() {
     check_mkv("blue_prores_pcm.mkv", &["-c:v", "prores_ks", "-profile:v", "2"], &["-c:a", "pcm_s16le"]);
 }
+
+/// Path of a fixture under `target/fixtures/codecs/`, generated with ffmpeg when missing
+/// (`None` when ffmpeg or the encoder is unavailable).
+fn fixture_path(name: &str, args: &[&str]) -> Option<PathBuf> {
+    fixture(name, args)?;
+    Some(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/fixtures/codecs").join(name))
+}
+
+/// ffmpeg's decode of `src` as raw planar video (the oracle).
+fn reference_yuv(src: &std::path::Path, pix_fmt: &str) -> Option<Vec<u8>> {
+    let name = format!("{}.{pix_fmt}.yuv", src.file_name()?.to_str()?);
+    let path = src.to_str()?;
+    let b = fixture(&name, &["-i", path, "-fps_mode", "passthrough", "-f", "rawvideo", "-pix_fmt", pix_fmt])?;
+    Some(b.to_vec())
+}
+
+/// Planes of a decoded YUV frame as little-endian bytes (ffmpeg rawvideo layout).
+fn yuv_bytes(f: &filmcraft_frame::VideoFrame) -> Vec<u8> {
+    match &f.data {
+        filmcraft_frame::PixelData::Yuv8 { planes, .. } => planes.iter().flat_map(|p| p.iter().copied()).collect(),
+        filmcraft_frame::PixelData::Yuv16 { planes, .. } => planes.iter().flat_map(|p| p.iter().flat_map(|s| s.to_le_bytes())).collect(),
+        _ => panic!("not a YUV frame: {}", f.format_label()),
+    }
+}
+
+/// Random access into a VP9 file: frames requested out of order (seeks back and forth across key
+/// frames, then sequential playback) are sample-exact against ffmpeg's decode.
+fn check_vp9_seeks(name: &str, container: &str, pix_fmt: &str, extra: &[&str], frames: usize) {
+    let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/fixtures/codecs");
+    let log = dir.join(format!("{name}.passlog")).to_string_lossy().into_owned();
+    let mut args = vec!["-f", "lavfi", "-i", "testsrc2=s=352x288:r=25,noise=alls=8:allf=t", "-frames:v"];
+    let n = frames.to_string();
+    args.push(&n);
+    args.extend_from_slice(&["-c:v", "libvpx-vp9", "-pix_fmt", pix_fmt, "-g", "25", "-b:v", "600k"]);
+    args.extend_from_slice(extra);
+    if extra.contains(&"-auto-alt-ref") {
+        // libvpx only uses alternate reference frames in two-pass mode: run the first pass.
+        let Some(ff) = ffmpeg() else { return };
+        if !dir.join(name).exists() {
+            let _ = std::fs::create_dir_all(&dir);
+            let ok = Command::new(ff).args(["-y", "-v", "error"]).args(&args).args(["-pass", "1", "-passlogfile"]).arg(&log).args(["-f", "null", "-"]).status();
+            if !ok.is_ok_and(|s| s.success()) {
+                eprintln!("first pass for {name} failed; skipping");
+                return;
+            }
+        }
+        args.extend_from_slice(&["-pass", "2", "-passlogfile"]);
+        args.push(&log);
+    }
+    let Some(path) = fixture_path(name, &args) else { return };
+    let Some(reference) = reference_yuv(&path, pix_fmt) else { return };
+    let bytes: Arc<[u8]> = std::fs::read(&path).unwrap().into();
+    let src = crate::open_bytes(name, bytes).unwrap();
+    let info = src.info().clone();
+    assert_eq!(info.container, container);
+    let v = info.video.as_ref().unwrap();
+    assert!(v.codec.contains("VP9"), "{}", v.codec);
+    assert_eq!((v.width, v.height), (352, 288));
+    let frame_len = reference.len() / frames;
+    let rate = info.frame_rate();
+    let order: Vec<usize> = [frames - 3, 3, 40, 26, 24, frames - 1, 0, 12].into_iter().chain(30..45).filter(|&k| k < frames).collect();
+    for k in order {
+        let f = src.video_frame(FrameRequest::full(rate.tick_of(k as i64))).unwrap();
+        assert_eq!((f.width, f.height), (352, 288));
+        let got = yuv_bytes(&f);
+        assert!(got == reference[k * frame_len..(k + 1) * frame_len], "{name}: frame {k} differs from ffmpeg");
+    }
+}
+
+#[test]
+fn webm_vp9_seeks_bit_exact() {
+    check_vp9_seeks("noise_vp9.webm", "WebM", "yuv420p", &["-deadline", "realtime", "-speed", "8"], 60);
+}
+
+#[test]
+fn webm_vp9_altref_superframes_seek_bit_exact() {
+    // Good-quality encode with alternate reference frames: hidden frames packed into superframes.
+    check_vp9_seeks("noise_vp9_altref.webm", "WebM", "yuv420p", &["-speed", "4", "-auto-alt-ref", "1", "-lag-in-frames", "16"], 60);
+}
+
+#[test]
+fn mp4_vp9_10bit_seeks_bit_exact() {
+    check_vp9_seeks("noise_vp9_10bit.mp4", "MPEG-4", "yuv420p10le", &["-profile:v", "2", "-deadline", "realtime", "-speed", "8"], 50);
+}
+
+#[test]
+fn mkv_vp9_444_12bit_seeks_bit_exact() {
+    check_vp9_seeks("noise_vp9_444_12bit.mkv", "Matroska", "yuv444p12le", &["-profile:v", "3", "-deadline", "realtime", "-speed", "8"], 30);
+}
+
+#[test]
+fn mkv_vp9_422_seeks_bit_exact() {
+    check_vp9_seeks("noise_vp9_422.mkv", "Matroska", "yuv422p", &["-profile:v", "1", "-deadline", "realtime", "-speed", "8"], 30);
+}
+
+/// Every sample flagged as sync (as in an MP4 without `stss`): the GOP cache must still start
+/// decoding at a real VP9 key frame.
+#[test]
+fn vp9_random_access_ignores_bogus_sync_flags() {
+    use crate::gop::{GopCache, VideoSamples};
+    let Some(path) = fixture_path(
+        "noise_vp9_g20.ivf",
+        &["-f", "lavfi", "-i", "testsrc2=s=176x144:r=25", "-frames:v", "50", "-c:v", "libvpx-vp9", "-g", "20", "-deadline", "realtime", "-speed", "8"],
+    ) else {
+        return;
+    };
+    let Some(reference) = reference_yuv(&path, "yuv420p") else { return };
+    let data = std::fs::read(&path).unwrap();
+    let mut chunks = Vec::new();
+    let mut p = 32;
+    while p + 12 <= data.len() {
+        let sz = u32::from_le_bytes(data[p..p + 4].try_into().unwrap()) as usize;
+        chunks.push(data[p + 12..p + 12 + sz].to_vec());
+        p += 12 + sz;
+    }
+    struct AllSync(Vec<Vec<u8>>);
+    impl VideoSamples for AllSync {
+        fn count(&self) -> usize {
+            self.0.len()
+        }
+        fn pts(&self, i: usize) -> i64 {
+            i as i64
+        }
+        fn sync_before(&self, i: usize) -> usize {
+            i
+        }
+        fn sample_at(&self, t: i64) -> Option<usize> {
+            (t >= 0 && (t as usize) < self.0.len()).then_some(t as usize)
+        }
+        fn read(&self, i: usize) -> crate::Result<Vec<u8>> {
+            Ok(self.0[i].clone())
+        }
+        fn make_decoder(&self) -> crate::Result<Box<dyn crate::VideoDecoder>> {
+            Ok(Box::new(crate::video::Vp9Decoder::new(None)))
+        }
+    }
+    let s = AllSync(chunks);
+    let cache = GopCache::new(None);
+    let frame_len = 176 * 144 * 3 / 2;
+    for k in [37usize, 5, 49, 21, 20, 19] {
+        let f = cache.frame(&s, k as i64).unwrap();
+        assert!(yuv_bytes(&f) == reference[k * frame_len..(k + 1) * frame_len], "frame {k} differs from ffmpeg");
+    }
+}
+
+/// VP9 RGB (profile 1, colour space sRGB; planes G, B, R) decodes to RGBA in the right order.
+#[test]
+fn mkv_vp9_rgb() {
+    let Some(b) = fixture(
+        "orange_vp9_gbrp.mkv",
+        &["-f", "lavfi", "-i", "color=c=0xe08020:s=128x96:r=25:d=0.4", "-c:v", "libvpx-vp9", "-pix_fmt", "gbrp", "-deadline", "realtime", "-lossless", "1"],
+    ) else {
+        return;
+    };
+    let src = crate::open_bytes("orange_vp9_gbrp.mkv", b).unwrap();
+    let f = src.video_frame(FrameRequest::full(Tick(TICKS_PER_SECOND / 5))).unwrap();
+    let px = f.to_rgba8();
+    let c = &px[(48 * 128 + 64) * 4..][..3];
+    // (the lavfi colour source is converted to RGB by ffmpeg, which rounds by a level)
+    for (got, want) in c.iter().zip([0xe0u8, 0x80, 0x20]) {
+        assert!((*got as i32 - want as i32).abs() <= 2, "{c:?}");
+    }
+}

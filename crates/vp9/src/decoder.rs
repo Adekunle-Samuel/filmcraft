@@ -133,10 +133,20 @@ impl Decoder {
         Ok(out)
     }
 
-    /// End of stream. VP9 has no reordering delay, so this returns no pictures; it resets the
-    /// reference state so that a new stream can follow.
+    /// End of stream. VP9 has no reordering delay, so this always returns no pictures.
     pub fn flush(&mut self) -> Vec<Picture> {
         Vec::new()
+    }
+
+    /// Forget all decoding state (references, probability contexts, segmentation), e.g. before
+    /// decoding from another key frame after a seek. The thread pool and statistics are kept.
+    pub fn reset(&mut self) {
+        self.st = HeaderState::default();
+        self.slots = Default::default();
+        self.prev_mi = None;
+        self.prev_seg_ids = Vec::new();
+        self.last_size = None;
+        self.last_show_frame = false;
     }
 
     fn decode_frame(&mut self, data: &[u8]) -> Result<Option<Arc<Frame>>> {

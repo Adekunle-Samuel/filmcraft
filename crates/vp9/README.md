@@ -46,8 +46,18 @@ for (pts, chunk) in chunks {  // one IVF / WebM block / MP4 sample each (frame o
     }
 }
 let _ = dec.flush(); // VP9 has no reordering: always empty, kept for API symmetry
+dec.reset(); // forget references / contexts (seek), keeps the thread pool
 let stats = dec.stats(); // what the stream exercised (frame kinds, tiles, compound, scaling...)
+
+// Random access points: does a container sample start with a key frame (and its parameters)?
+let key: bool = filmcraft_vp9::is_keyframe(chunk);
+let info: Option<filmcraft_vp9::KeyframeInfo> = filmcraft_vp9::keyframe_info(chunk);
 ```
+
+`filmcraft-codecs` wires the decoder into Matroska / WebM (`V_VP9`, profile / bit depth from
+`CodecPrivate`, colour from `Colour`) and MP4 (`vp09` + `vpcC`) import; its GOP cache asks
+`is_keyframe` before starting a decode at a container sync sample, so wrongly flagged samples
+(e.g. an MP4 without `stss`) still seek correctly.
 
 A superframe produces every shown frame it contains (normally one); hidden frames produce none.
 
