@@ -36,9 +36,9 @@ reference) is used only as an external test oracle.
 | Output policy with scalability (highest spatial layer per temporal unit) | 7.18.1 | done, bit-exact |
 | Loop filter (all filter sizes, deltas, segment / ref / mode adjustments) | 7.14 | done, bit-exact |
 | CDEF | 7.15 | done, bit-exact |
-| Super-resolution upscaling | 7.16 | done, not yet oracle-tested (no fixture uses it yet) |
+| Super-resolution upscaling | 7.16 | done, bit-exact |
 | Loop restoration (Wiener, self-guided, switchable; stripes) | 7.17 | done, bit-exact |
-| Film grain synthesis | 7.18.3 | missing |
+| Film grain synthesis (output pictures only; `Decoder::apply_film_grain` turns it off) | 7.18.3 | done, bit-exact |
 | Large-scale tile / tile list OBUs | 7.3 | not planned |
 
 ## Accuracy
@@ -50,17 +50,18 @@ decoded frame with libdav1d: **bit-exact** on all 13 fixtures (8- and 10-bit 4:2
 
 `tests/conformance.rs` downloads libaom's conformance test vectors on first use
 (storage.googleapis.com/aom-test-data) and compares with libdav1d: `av1-1-b8-02-allintra`
-(39 frames, deblocking + CDEF + self-guided restoration), `05-mv`, `06-mfmv` and
-`24-monochrome` are **bit-exact** in the default run. The ignored
+(39 frames, deblocking + CDEF + self-guided restoration), `05-mv`, `06-mfmv`, `24-monochrome`
+and `b10-23-film_grain-50` are **bit-exact** in the default run. The ignored
 `conformance_vectors_extended` test covers the wider set; bit-exact today: `01-size-16x16`,
 `-66x66`, `-196x196`, `-226x226`, `00-quantizer-00/31/63` (8-bit) and `-00/40` (10-bit),
 `04-cdfupdate`, `05-mv`, `06-mfmv`, `22-svc-L1T2`, `22-svc-L2T1`, `22-svc-L2T2` (spatial layers
 with scaled inter-layer prediction), `24-monochrome` (8 and 10-bit) and
-`16-intra_only-intrabc-extreme-dv` (1080p intra block copy).
+`16-intra_only-intrabc-extreme-dv` (1080p intra block copy), `23-film_grain-50` (8 and 10-bit).
 
 `tests/oracle_inter.rs` encodes SVT-AV1 GOPs (hierarchical references, compound prediction,
 OBMC / warped motion, motion-field projection, all loop filters; presets 3–8, 8- and 10-bit, odd
-sizes) and compares every frame with libdav1d: **bit-exact** on all 4 fixtures.
+sizes), plus super-resolution (denominator 12) and film-grain streams, and compares every frame
+with libdav1d: **bit-exact** on all 6 fixtures.
 
 ## API
 

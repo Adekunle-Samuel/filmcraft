@@ -15,6 +15,23 @@ fn specs() -> Vec<Spec> {
     ]
 }
 
+/// Super-resolution (denominator 12 on the inter frames) and film grain synthesis.
+fn specs_tools() -> Vec<Spec> {
+    let p = |params: &'static str| -> Vec<&'static str> { vec!["-preset", "6", "-crf", "35", "-svtav1-params", params] };
+    vec![
+        Spec::new("inter_superres", "testsrc2=s=416x240:r=25", 8, "yuv420p", &p("superres-mode=1:superres-denom=12:superres-kf-denom=13")),
+        Spec::new("inter_film_grain", "testsrc2=s=352x288:r=25,noise=alls=20:allf=t", 8, "yuv420p", &p("film-grain=10")),
+    ]
+}
+
+#[test]
+fn inter_superres_and_grain() {
+    let Some(ff) = ffmpeg() else { return };
+    for s in specs_tools() {
+        check_bit_exact(&ff, &s);
+    }
+}
+
 #[test]
 fn inter_gops() {
     let Some(ff) = ffmpeg() else { return };
