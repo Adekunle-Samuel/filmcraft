@@ -25,6 +25,22 @@ fn write_subs(dir: &Path) {
     std::fs::write(dir.join("in.vtt"), vtt).unwrap();
 }
 
+/// Every fixture `spec`/`fixture` knows (for `cargo xtask fixtures`).
+pub const ALL_FIXTURES: &[&str] = &[
+    "h264_aac.mkv",
+    "vp9_opus.webm",
+    "flac.mkv",
+    "vorbis.mkv",
+    "subs.mkv",
+    "webvtt.webm",
+    "cues_front.mkv",
+    "hevc_hdr.mkv",
+    "prores_pcm.mkv",
+    "mjpeg_ac3.mkv",
+    "av1.mkv",
+    "live.mkv",
+];
+
 /// Fixture name → ffmpeg arguments (after `-y -v error`, before the output path).
 /// `None` for fixtures written through a pipe (no Cues, unknown sizes).
 pub fn spec(name: &str) -> Option<Vec<String>> {

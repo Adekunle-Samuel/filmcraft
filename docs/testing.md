@@ -5,6 +5,8 @@ cargo test --workspace                          # everything; oracle tests skip 
 cargo test -p filmcraft-h264                    # one crate
 cargo test --release -p filmcraft-hevc          # codec tests are much faster in release
 cargo xtask ci                                  # all gates (fmt, clippy, tests, layers, assets, wasm)
+cargo xtask fixtures                            # pre-generate the ffmpeg fixture matrix
+FILMCRAFT_REQUIRE_ORACLES=1 cargo test --workspace   # CI: missing ffmpeg fails instead of skipping
 ```
 
 ## 1. Kinds of tests
@@ -43,6 +45,12 @@ are never linked or shipped ([AGENTS.md](../AGENTS.md) §2).
 - Every crate's `tests/common/mod.rs` delegates discovery and fixture paths to testkit, except
   `crates/codecs/src/tests.rs`, which still has its own lookup (the crate was being edited
   concurrently; migrate it when convenient).
+- `cargo xtask fixtures [crate…]` pre-generates the whole fixture matrix up front (useful before a
+  parallel test run or on a fresh machine). It runs each crate's ignored `generate_fixtures` test —
+  the same generators the oracle tests call — for `h264`, `hevc`, `isobmff`, `matroska` and
+  `prores`, and prints one `made` / `cached` / `skipped` line per fixture plus a summary. The
+  `aac`, `opus` and `h264enc` oracles generate small per-test signals on demand and are not part of
+  the matrix.
 - Fixture sources are synthetic: `testsrc2`, `mandelbrot`, SMPTE bars, noise and fades, sine tones.
   H.264 and HEVC fixtures need ffmpeg built with libx264 and libx265. VideoToolbox fixtures are
   generated only on macOS.

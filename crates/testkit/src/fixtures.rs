@@ -65,6 +65,40 @@ pub fn generate(out: &Path, make: impl FnOnce(&Path) -> bool) -> Option<PathBuf>
     Some(out.to_path_buf())
 }
 
+/// Status of one fixture for `cargo xtask fixtures`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Status {
+    Made,
+    Cached,
+    Skipped,
+}
+
+/// Print a `FIXTURE <made|cached|skipped> <name>` line (parsed by `cargo xtask fixtures`).
+pub fn report(name: &str, status: Status) {
+    let s = match status {
+        Status::Made => "made",
+        Status::Cached => "cached",
+        Status::Skipped => "skipped",
+    };
+    println!("FIXTURE {s} {name}");
+}
+
+/// Run a fixture generator and [`report`] it: `cached` when every path in `outputs` existed
+/// before, `made` when `generate` succeeded, `skipped` otherwise.
+pub fn generate_and_report<T>(name: &str, outputs: &[PathBuf], generate: impl FnOnce() -> Option<T>) -> Option<T> {
+    let existed = !outputs.is_empty() && outputs.iter().all(|p| std::fs::metadata(p).is_ok_and(|m| m.len() > 0));
+    let r = generate();
+    report(
+        name,
+        match (&r, existed) {
+            (None, _) => Status::Skipped,
+            (Some(_), true) => Status::Cached,
+            (Some(_), false) => Status::Made,
+        },
+    );
+    r
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
