@@ -12,6 +12,7 @@ pub mod autosave;
 pub mod captions;
 pub mod commands;
 pub mod demo;
+pub mod graphics;
 pub mod interchange;
 pub mod media_pool;
 pub mod previews;
@@ -127,6 +128,9 @@ pub struct EditorState {
     /// Selected captions (caption tracks / Captions panel).
     #[serde(default)]
     pub caption_selection: Vec<ClipId>,
+    /// Selected layers (indices among the graphic layers, 0 = back) of the selected graphic clip.
+    #[serde(default)]
+    pub graphic_layers: Vec<usize>,
 }
 
 /// Events for frontends (drained each frame).
@@ -479,7 +483,7 @@ pub fn media_duration(p: &Project, _pool: &MediaPool, id: ItemId) -> Option<Tick
         },
         filmcraft_project::ItemKind::Sequence(s) => Some(s.duration()),
         filmcraft_project::ItemKind::Subclip { range, .. } => Some(range.end()),
-        filmcraft_project::ItemKind::AdjustmentLayer { .. } => None,
+        filmcraft_project::ItemKind::AdjustmentLayer { .. } | filmcraft_project::ItemKind::Graphic { .. } => None,
     }
 }
 

@@ -1436,6 +1436,7 @@ dependencies = [
  "filmcraft-media",
  "filmcraft-project",
  "filmcraft-render",
+ "filmcraft-text",
  "filmcraft-time",
  "log",
  "serde",

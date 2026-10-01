@@ -9,6 +9,7 @@
 
 pub mod caption;
 pub mod effect;
+pub mod graphic;
 pub mod keyframe;
 
 use std::collections::BTreeMap;
@@ -191,6 +192,14 @@ pub enum ItemKind {
         rate: FrameRate,
         duration: Tick,
     },
+    /// The source of graphic clips: a transparent canvas of the sequence frame size. The clip's
+    /// text and shape layers are effect instances on the track item (see [`graphic`]). Not shown
+    /// in the Project panel; unlimited duration.
+    Graphic {
+        width: u32,
+        height: u32,
+        rate: FrameRate,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -235,7 +244,7 @@ impl ProjectItem {
     pub fn has_video(&self) -> bool {
         match &self.kind {
             ItemKind::Media(m) => m.info.has_video(),
-            ItemKind::Sequence(_) | ItemKind::AdjustmentLayer { .. } => true,
+            ItemKind::Sequence(_) | ItemKind::AdjustmentLayer { .. } | ItemKind::Graphic { .. } => true,
             ItemKind::Subclip { .. } => true,
         }
     }
@@ -252,13 +261,14 @@ impl ProjectItem {
             ItemKind::Sequence(s) => s.duration(),
             ItemKind::Subclip { range, .. } => range.duration,
             ItemKind::AdjustmentLayer { duration, .. } => *duration,
+            ItemKind::Graphic { .. } => Tick(3600 * TICKS_PER_SECOND),
         }
     }
     pub fn frame_rate(&self) -> FrameRate {
         match &self.kind {
             ItemKind::Media(m) => m.frame_rate(),
             ItemKind::Sequence(s) => s.settings.frame_rate,
-            ItemKind::AdjustmentLayer { rate, .. } => *rate,
+            ItemKind::AdjustmentLayer { rate, .. } | ItemKind::Graphic { rate, .. } => *rate,
             ItemKind::Subclip { .. } => FrameRate::default(),
         }
     }
@@ -275,6 +285,7 @@ impl ProjectItem {
             ItemKind::Sequence(_) => "Sequence",
             ItemKind::Subclip { .. } => "Subclip",
             ItemKind::AdjustmentLayer { .. } => "Adjustment Layer",
+            ItemKind::Graphic { .. } => "Graphic",
         }
     }
 }
@@ -452,7 +463,11 @@ impl TrackItem {
     }
     /// Standard (non-intrinsic) effects applied, for the fx badge.
     pub fn has_standard_effects(&self) -> bool {
-        self.effects.iter().any(|e| e.def().is_some_and(|d| !d.intrinsic))
+        self.effects.iter().any(|e| e.def().is_some_and(|d| !d.intrinsic) && !graphic::is_layer(e))
+    }
+    /// The graphic layers (text / shape) of a graphic clip, in paint order (first = back).
+    pub fn graphic_layers(&self) -> impl Iterator<Item = &EffectInstance> {
+        self.effects.iter().filter(|e| graphic::is_layer(e))
     }
     pub fn has_modified_intrinsics(&self) -> bool {
         self.effects.iter().any(|e| {

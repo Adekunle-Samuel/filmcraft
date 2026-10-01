@@ -935,6 +935,7 @@ fn build_effects() -> Vec<EffectDef> {
             yuv: false,
         },
     ];
+    v.extend(crate::graphic::layer_defs());
     // YUV badge for the colour/intrinsic set
     for e in &mut v {
         if matches!(e.id, "brightness_contrast" | "proc_amp" | "crop" | "gaussian_blur" | "tint" | "lumetri") {

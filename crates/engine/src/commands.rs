@@ -1575,6 +1575,9 @@ fn build() -> Vec<CommandSpec> {
         cmd!("effects.apply", "Apply Effect", [], None, r#"{"clips":[id]?,"effect":"gaussian_blur|Gaussian Blur|…"}"#, has_seq, |s, p| {
             let name = str_p(p, "effect").ok_or_else(|| bad("effects.apply", "need `effect`"))?;
             let def = filmcraft_project::effect::find_effect_by_name(name).ok_or_else(|| bad("effects.apply", format!("unknown effect `{name}`")))?;
+            if filmcraft_project::graphic::is_layer_id(def.id) {
+                return Err(bad("effects.apply", "graphic layers are added with graphics.newText / graphics.newShape"));
+            }
             if matches!(def.kind, filmcraft_project::EffectKind::VideoTransition | filmcraft_project::EffectKind::AudioTransition) {
                 let mut q = p.clone();
                 q["effect"] = json!(def.id);
@@ -1814,6 +1817,7 @@ fn build() -> Vec<CommandSpec> {
         )),
     ];
     v.extend(crate::captions::commands());
+    v.extend(crate::graphics::commands());
     // Labels as individual commands (Edit ▸ Label ▸ <name>)
     for l in Label::ALL {
         let _ = l;
@@ -1982,7 +1986,7 @@ fn mark(s: &mut Session, p: &Value, is_in: bool) -> Result<Value> {
     Ok(Value::Null)
 }
 
-fn json_to_param(template: &ParamValue, v: &Value) -> Option<ParamValue> {
+pub(crate) fn json_to_param(template: &ParamValue, v: &Value) -> Option<ParamValue> {
     Some(match template {
         ParamValue::Float(_) => ParamValue::Float(v.as_f64()?),
         ParamValue::Vec2(_) => {
