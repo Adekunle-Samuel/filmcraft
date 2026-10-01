@@ -113,51 +113,78 @@ fn parse_size(data: &[u8]) -> Option<(usize, usize)> {
 }
 
 impl<'a> Packet<'a> {
-    /// Parses a packet (RFC 6716 §3.2), enforcing requirements R1–R7.
+    /// Parses a packet (RFC 6716 section 3.2), enforcing requirements R1 to R7.
     pub fn parse(data: &'a [u8]) -> Result<Packet<'a>, Error> {
+        Self::parse_impl(data, false).map(|(p, _)| p)
+    }
+
+    /// Parses a self-delimited packet (RFC 6716 Appendix B, used for all but the last stream of
+    /// a multistream packet); returns the packet and the number of bytes it occupies.
+    pub fn parse_self_delimited(data: &'a [u8]) -> Result<(Packet<'a>, usize), Error> {
+        Self::parse_impl(data, true)
+    }
+
+    fn parse_impl(data: &'a [u8], self_delimited: bool) -> Result<(Packet<'a>, usize), Error> {
         const BAD: Error = Error::InvalidPacket("malformed packet framing");
         if data.is_empty() {
             return Err(Error::InvalidPacket("empty packet"));
         }
         let toc = Toc::parse(data[0]);
         let fs = toc.frame_samples_48k();
-        let mut p = &data[1..];
-        let mut frames = Vec::new();
+        let mut pos = 1usize;
+        let mut len = data.len() as isize - 1;
+        let mut sizes: Vec<isize> = Vec::new();
         let mut padding = 0usize;
+        let mut cbr = false;
+        let count;
+        let mut last_size = len;
+        let read_size = |pos: &mut usize, len: &mut isize| -> Result<isize, Error> {
+            let avail = &data[*pos..(*pos + (*len).max(0) as usize).min(data.len())];
+            let (s, n) = parse_size(avail).ok_or(BAD)?;
+            *pos += n;
+            *len -= n as isize;
+            Ok(s as isize)
+        };
         match toc.code {
-            0 => frames.push(p),
+            0 => count = 1,
             1 => {
-                if !p.len().is_multiple_of(2) {
-                    return Err(BAD);
+                count = 2;
+                cbr = true;
+                if !self_delimited {
+                    if len & 1 != 0 {
+                        return Err(BAD);
+                    }
+                    last_size = len / 2;
+                    sizes.push(last_size);
                 }
-                let h = p.len() / 2;
-                frames.push(&p[..h]);
-                frames.push(&p[h..]);
             }
             2 => {
-                let (s, n) = parse_size(p).ok_or(BAD)?;
-                p = &p[n..];
-                if s > p.len() {
+                count = 2;
+                let s0 = read_size(&mut pos, &mut len)?;
+                if s0 > len {
                     return Err(BAD);
                 }
-                frames.push(&p[..s]);
-                frames.push(&p[s..]);
+                sizes.push(s0);
+                last_size = len - s0;
             }
             _ => {
-                let &ch = p.first().ok_or(BAD)?;
-                p = &p[1..];
-                let count = (ch & 0x3F) as usize;
+                if len < 1 {
+                    return Err(BAD);
+                }
+                let ch = data[pos];
+                pos += 1;
+                len -= 1;
+                count = (ch & 0x3F) as usize;
                 if count == 0 || fs * count > 5760 {
                     return Err(BAD);
                 }
-                let mut len = p.len() as isize;
                 if ch & 0x40 != 0 {
                     loop {
                         if len <= 0 {
                             return Err(BAD);
                         }
-                        let b = p[0];
-                        p = &p[1..];
+                        let b = data[pos];
+                        pos += 1;
                         len -= 1;
                         let tmp = if b == 255 { 254 } else { b as isize };
                         len -= tmp;
@@ -170,48 +197,66 @@ impl<'a> Packet<'a> {
                 if len < 0 {
                     return Err(BAD);
                 }
-                let len = len as usize;
-                // `p` still includes the padding at its end; only the first `len` bytes are frames.
-                let body = &p[..len.min(p.len())];
-                if ch & 0x80 != 0 {
-                    // VBR
-                    let mut q = body;
-                    let mut sizes = Vec::with_capacity(count);
-                    let mut remaining = len as isize;
+                cbr = ch & 0x80 == 0;
+                if !cbr {
+                    last_size = len;
                     for _ in 0..count - 1 {
-                        let (s, n) = parse_size(q).ok_or(BAD)?;
-                        q = &q[n..];
-                        remaining -= n as isize;
-                        if s as isize > remaining {
+                        let before = len;
+                        let s = read_size(&mut pos, &mut len)?;
+                        if s > len {
                             return Err(BAD);
                         }
-                        remaining -= s as isize;
                         sizes.push(s);
+                        last_size -= (before - len) + s;
                     }
-                    if remaining < 0 {
+                    if last_size < 0 {
                         return Err(BAD);
                     }
-                    sizes.push(remaining as usize);
-                    let mut off = 0;
-                    for s in sizes {
-                        frames.push(&q[off..off + s]);
-                        off += s;
-                    }
-                } else {
-                    let s = len / count;
-                    if s * count != len {
+                } else if !self_delimited {
+                    last_size = len / count as isize;
+                    if last_size * count as isize != len {
                         return Err(BAD);
                     }
-                    for i in 0..count {
-                        frames.push(&body[i * s..(i + 1) * s]);
+                    for _ in 0..count - 1 {
+                        sizes.push(last_size);
                     }
                 }
             }
         }
-        if frames.last().is_some_and(|f| f.len() > 1275) || frames.iter().any(|f| f.len() > 1275) {
+        if self_delimited {
+            let before = len;
+            let s = read_size(&mut pos, &mut len)?;
+            if s > len {
+                return Err(BAD);
+            }
+            if cbr {
+                if s * count as isize > len {
+                    return Err(BAD);
+                }
+                sizes = vec![s; count - 1];
+            } else if (before - len) + s > last_size {
+                return Err(BAD);
+            }
+            last_size = s;
+        }
+        if last_size > 1275 || sizes.iter().any(|&s| s > 1275) {
             return Err(BAD);
         }
-        Ok(Packet { toc, frames, padding })
+        sizes.push(last_size);
+        let mut frames = Vec::with_capacity(count);
+        for &s in &sizes {
+            let s = s as usize;
+            if pos + s > data.len() {
+                return Err(BAD);
+            }
+            frames.push(&data[pos..pos + s]);
+            pos += s;
+        }
+        let total = if self_delimited { pos + padding } else { data.len() };
+        if total > data.len() {
+            return Err(BAD);
+        }
+        Ok((Packet { toc, frames, padding }, total))
     }
 }
 
@@ -275,5 +320,21 @@ mod tests {
         let p = Packet::parse(&pkt).unwrap();
         assert_eq!(p.frames[0].len(), 256);
         assert_eq!(p.frames[1], &[1, 2]);
+    }
+
+    #[test]
+    fn self_delimited() {
+        // code 0 with explicit size, followed by trailing data of the next stream.
+        let (p, used) = Packet::parse_self_delimited(&[0x00, 2, 5, 6, 0xAA, 0xBB]).unwrap();
+        assert_eq!(p.frames, vec![&[5u8, 6][..]]);
+        assert_eq!(used, 4);
+        // code 1: one size for both frames.
+        let (p, used) = Packet::parse_self_delimited(&[0x01, 1, 5, 6, 9]).unwrap();
+        assert_eq!(p.frames, vec![&[5u8][..], &[6u8][..]]);
+        assert_eq!(used, 4);
+        // code 3 VBR, 2 frames: size of frame 0, then size of last frame.
+        let (p, used) = Packet::parse_self_delimited(&[0x03, 0x82, 1, 2, 7, 8, 9, 0xFF]).unwrap();
+        assert_eq!(p.frames, vec![&[7u8][..], &[8u8, 9][..]]);
+        assert_eq!(used, 7);
     }
 }

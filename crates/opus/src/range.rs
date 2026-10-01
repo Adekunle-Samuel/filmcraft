@@ -7,6 +7,7 @@
 const SYM_BITS: u32 = 8;
 const CODE_BITS: u32 = 32;
 const SYM_MAX: u32 = (1 << SYM_BITS) - 1;
+#[cfg(test)]
 const CODE_SHIFT: u32 = CODE_BITS - SYM_BITS - 1;
 const CODE_TOP: u32 = 1 << (CODE_BITS - 1);
 const CODE_BOT: u32 = CODE_TOP >> SYM_BITS;

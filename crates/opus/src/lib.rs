@@ -2,15 +2,20 @@
 //!
 //! Layer L0: no dependencies beyond `std`; no `unsafe`; builds for `wasm32-unknown-unknown`.
 
-#![allow(dead_code)] // WIP: top-level decoder not wired yet
 // The fixed-point parts mirror the normative integer arithmetic; keep C-like shift expressions.
 #![allow(clippy::precedence, clippy::int_plus_one)]
 
 pub(crate) mod celt;
+mod decoder;
+mod header;
+mod multistream;
 pub mod packet;
 pub(crate) mod range;
 pub(crate) mod silk;
 
+pub use decoder::{SAMPLE_RATES, StreamDecoder};
+pub use header::OpusHead;
+pub use multistream::Decoder;
 pub use packet::{Bandwidth, Mode, Packet, Toc};
 
 /// Errors from header parsing and decoding.
