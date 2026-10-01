@@ -12,6 +12,7 @@ pub mod commands;
 pub mod demo;
 pub mod interchange;
 pub mod media_pool;
+pub mod previews;
 pub mod trim;
 
 use std::sync::Arc;
@@ -146,8 +147,10 @@ pub struct Session {
     pub events: Vec<Event>,
     /// Commands executed (for macros/debugging): (id, params).
     pub journal: Vec<(String, Value)>,
-    /// Background jobs (exports, …).
+    /// Background jobs (exports, render previews…).
     pub jobs: Vec<Job>,
+    /// Render preview files + render-bar segments (shared with the frontend's frame workers).
+    pub previews: Arc<previews::PreviewStore>,
 }
 
 /// A background job with shared progress.
@@ -202,6 +205,16 @@ impl Session {
             events: Vec::new(),
             journal: Vec::new(),
             jobs: Vec::new(),
+            previews: Arc::new(previews::PreviewStore::temp()),
+        }
+    }
+
+    /// Keep render previews next to the saved project (moves an unsaved project's previews).
+    pub fn previews_follow_path(&mut self) {
+        if let Some(p) = &self.path
+            && !cfg!(target_arch = "wasm32")
+        {
+            self.previews.move_to(previews::dir_for_project(p));
         }
     }
 
@@ -380,5 +393,7 @@ pub fn media_duration(p: &Project, _pool: &MediaPool, id: ItemId) -> Option<Tick
     }
 }
 
+#[cfg(test)]
+mod previews_tests;
 #[cfg(test)]
 mod tests;

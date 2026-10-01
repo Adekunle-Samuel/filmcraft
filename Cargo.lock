@@ -1572,6 +1572,8 @@ dependencies = [
  "filmcraft-time",
  "image",
  "rayon",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
