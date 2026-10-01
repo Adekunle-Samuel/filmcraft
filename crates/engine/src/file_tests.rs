@@ -75,3 +75,21 @@ fn legacy_project_opens_and_first_save_keeps_a_backup() {
     assert!(e.contains("newer version of FilmCraft"), "{e}");
     let _ = std::fs::remove_dir_all(&d);
 }
+
+#[test]
+fn project_is_named_after_its_file() {
+    let d = temp_dir("name");
+    let mut s = demo();
+    let a = d.join("Apollo 11 - Tranquility.fcproj").to_string_lossy().to_string();
+    s.execute("file.saveAs", json!({"path": a})).unwrap();
+    assert_eq!(s.project.name, "Apollo 11 - Tranquility");
+    assert_eq!(s.project.root.name, "Apollo 11 - Tranquility");
+    assert!(!s.is_dirty(), "renaming on Save As is not an edit");
+    // Save a Copy keeps the current name.
+    let c = d.join("Backup copy.fcproj").to_string_lossy().to_string();
+    s.execute("file.saveCopy", json!({"path": c})).unwrap();
+    assert_eq!(s.project.name, "Apollo 11 - Tranquility");
+    s.execute("file.open", json!({"path": c})).unwrap();
+    assert_eq!(s.project.name, "Apollo 11 - Tranquility");
+    let _ = std::fs::remove_dir_all(&d);
+}

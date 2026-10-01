@@ -2299,8 +2299,26 @@ pub fn secs(s: f64) -> Tick {
 /// Save / Save As (the file becomes the project's path and the project is clean); otherwise Save a
 /// Copy. The first save over a file upgraded from an older schema keeps the original as
 /// `<name> (schema vN backup).fcproj`.
+/// A project is named after its file (as in Premiere): `/a/b/Trailer v2.fcproj` → `Trailer v2`.
+fn project_name_for(path: &str) -> Option<String> {
+    let stem = std::path::Path::new(path).file_stem()?.to_string_lossy().to_string();
+    (!stem.is_empty()).then_some(stem)
+}
+
+fn name_project(p: &mut filmcraft_project::Project, name: String) {
+    p.root.name.clone_from(&name);
+    p.name = name;
+}
+
 fn write_project(s: &mut Session, path: &str, adopt: bool) -> Result<Value> {
     let t0 = std::time::Instant::now();
+    // Save As renames the project after its new file (not an edit: no undo step, not dirty).
+    if adopt
+        && let Some(name) = project_name_for(path)
+        && s.project.name != name
+    {
+        name_project(std::sync::Arc::make_mut(&mut s.project), name);
+    }
     let bytes = filmcraft_format::encode(&s.project, false);
     let mut backup = None;
     if adopt && s.path.as_deref() == Some(path) && s.loaded_schema < filmcraft_format::SCHEMA_VERSION {
