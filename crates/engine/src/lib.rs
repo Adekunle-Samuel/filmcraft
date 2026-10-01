@@ -8,6 +8,7 @@
 //! The project is an `Arc<Project>` edited copy-on-write; undo keeps whole-project snapshots (cheap
 //! thanks to structural sharing of untouched items).
 
+pub mod captions;
 pub mod commands;
 pub mod demo;
 pub mod interchange;
@@ -123,6 +124,9 @@ pub struct EditorState {
     /// Selected edit points (trim mode).
     #[serde(default)]
     pub edit_points: Vec<trim::EditPoint>,
+    /// Selected captions (caption tracks / Captions panel).
+    #[serde(default)]
+    pub caption_selection: Vec<ClipId>,
 }
 
 /// Events for frontends (drained each frame).
@@ -299,8 +303,10 @@ impl Session {
         }
         if let Some(seq) = self.state.active_sequence.and_then(|s| p.sequence(s)) {
             self.state.selection.retain(|c| seq.find_item(*c).is_some());
+            self.state.caption_selection.retain(|c| seq.find_caption(*c).is_some());
         } else {
             self.state.selection.clear();
+            self.state.caption_selection.clear();
         }
         self.state.project_selection.retain(|i| p.item(*i).is_some());
     }
@@ -362,7 +368,8 @@ impl Session {
     pub fn render_program(&self, scale: f32) -> Option<filmcraft_render::Image> {
         let seq = self.state.active_sequence?;
         let provider = self.media.provider(self.project.clone(), self.services.clone());
-        Some(filmcraft_render::render_sequence(&self.project, seq, self.playhead(), filmcraft_render::RenderOptions { scale, ..Default::default() }, &provider))
+        let opts = filmcraft_render::RenderOptions { scale, captions: true, ..Default::default() };
+        Some(filmcraft_render::render_sequence(&self.project, seq, self.playhead(), opts, &provider))
     }
 }
 

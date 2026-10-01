@@ -116,6 +116,15 @@ pub fn plan_frame(project: &Project, seq_id: ItemId, t: Tick, opts: RenderOption
         }
         push_item(project, seq, item, t, opts, sources, 1.0, &mut layers);
     }
+    if opts.captions {
+        for o in crate::caption_overlays(seq, t, w, h) {
+            layers.push(PlanLayer {
+                frame: Arc::new(VideoFrame::rgba_f32(o.w as u32, o.h as u32, o.px)),
+                matrix: Affine::translate(o.x as f64, o.y as f64),
+                opacity: 1.0,
+            });
+        }
+    }
     FramePlan::Layers { width: w, height: h, layers }
 }
 

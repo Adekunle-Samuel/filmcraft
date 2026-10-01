@@ -1577,6 +1577,7 @@ name = "filmcraft-render"
 version = "0.1.0"
 dependencies = [
  "filmcraft-audio-dsp",
+ "filmcraft-captions",
  "filmcraft-color",
  "filmcraft-frame",
  "filmcraft-geom",

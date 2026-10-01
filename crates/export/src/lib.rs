@@ -94,11 +94,23 @@ pub struct ExportSettings {
     pub quality: u8,
     /// Target video bitrate (kbps) for bitrate-driven encoders.
     pub bitrate_kbps: u32,
+    /// Burn the visible caption tracks into the picture (Export ▸ Captions ▸ Burn Captions Into
+    /// Video).
+    pub burn_captions: bool,
 }
 
 impl Default for ExportSettings {
     fn default() -> Self {
-        Self { format: Format::H264, path: String::new(), range: None, scale: 1.0, include_audio: true, quality: 90, bitrate_kbps: 20_000 }
+        Self {
+            format: Format::H264,
+            path: String::new(),
+            range: None,
+            scale: 1.0,
+            include_audio: true,
+            quality: 90,
+            bitrate_kbps: 20_000,
+            burn_captions: false,
+        }
     }
 }
 
@@ -439,7 +451,7 @@ pub fn export(project: &Arc<Project>, seq: ItemId, settings: &ExportSettings, so
     let h = (((q.settings.height as f32 * settings.scale).round() as u32).max(2)) & !1;
     progress.total.store(if settings.format == Format::Wav { 1 } else { nframes }, Ordering::Relaxed);
     progress.set_status(format!("Exporting {} frames ({})", nframes, settings.format.label()));
-    let opts = RenderOptions { scale: w as f32 / q.settings.width as f32, ..Default::default() };
+    let opts = RenderOptions { scale: w as f32 / q.settings.width as f32, captions: settings.burn_captions, ..Default::default() };
     let render = |f: i64| -> Vec<u8> {
         let img = filmcraft_render::render_sequence(project, seq, rate.tick_of(f), opts, sources);
         let mut rgba = img.over_black_rgba8();
