@@ -156,6 +156,11 @@ pub struct EncoderConfig {
     pub slices: usize,
     /// Access unit delimiters in Annex-B output.
     pub aud: bool,
+    /// HDR static metadata sent in an SEI with the first access unit: the 24-byte SMPTE ST 2086
+    /// mastering display payload (payloadType 137) …
+    pub mastering_display: Option<[u8; 24]>,
+    /// … and (MaxCLL, MaxFALL) content light level (payloadType 144).
+    pub content_light: Option<(u16, u16)>,
 }
 
 impl EncoderConfig {
@@ -178,6 +183,8 @@ impl EncoderConfig {
             sar: (1, 1),
             scenecut: true,
             slices: 0,
+            mastering_display: None,
+            content_light: None,
             aud: true,
         }
     }
@@ -818,6 +825,9 @@ impl Encoder {
                 self.sei_sent = true;
                 let text = format!("filmcraft-h264enc {} - clean-room H.264 encoder", env!("CARGO_PKG_VERSION"));
                 nals.push(nal::nal(0, NAL_SEI, &nal::sei_user_data_rbsp(&text)));
+                if self.cfg.mastering_display.is_some() || self.cfg.content_light.is_some() {
+                    nals.push(nal::nal(0, NAL_SEI, &nal::sei_hdr_rbsp(self.cfg.mastering_display.as_ref(), self.cfg.content_light)));
+                }
             }
             for r in results {
                 nals.push(r.nal);

@@ -424,6 +424,7 @@ impl Builder {
             gain_db: 0.0,
             frame_hold: None,
             scale_to_frame: false,
+            essential: None,
         }
     }
 
@@ -607,6 +608,7 @@ pub(crate) fn transition_effect(name: &str, audio: bool, report: &mut Report) ->
         params: Default::default(),
         masks: vec![],
         post_fader: false,
+        essential: false,
     })
 }
 

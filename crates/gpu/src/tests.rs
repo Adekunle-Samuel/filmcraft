@@ -78,6 +78,54 @@ fn half_float_conversion() {
     }
 }
 
+#[test]
+fn prepared_upload_matches_inline_conversion() {
+    let Some((dev, q)) = device() else {
+        eprintln!("no GPU adapter; skipping");
+        return;
+    };
+    let (w, h) = (64u32, 36u32);
+    let yuv16 = Arc::new(VideoFrame {
+        width: w,
+        height: h,
+        data: PixelData::Yuv16 {
+            planes: [
+                Arc::new((0..w * h).map(|i| (64 + (i * 7) % 876) as u16).collect()),
+                Arc::new((0..w * h / 2).map(|i| (64 + (i * 13) % 896) as u16).collect()),
+                Arc::new((0..w * h / 2).map(|i| (960 - (i * 5) % 896) as u16).collect()),
+            ],
+            chroma: Chroma::C422,
+            bits: 10,
+            alpha: None,
+        },
+        color: filmcraft_color::ColorInfo::REC709,
+        par: (1, 1),
+        pts: Default::default(),
+    });
+    let f32_layer: Vec<f32> = (0..w * h * 4).map(|i| ((i * 37) % 1000) as f32 / 1000.0 * if i % 4 == 3 { 1.0 } else { 0.6 }).collect();
+    let rgbaf = Arc::new(VideoFrame::rgba_f32(w, h, f32_layer.clone()));
+    let layers = FramePlan::Layers {
+        width: w as usize,
+        height: h as usize,
+        layers: vec![
+            PlanLayer { frame: yuv16, matrix: Affine::IDENTITY, opacity: 1.0 },
+            PlanLayer { frame: rgbaf, matrix: Affine::scale(0.5, 0.5), opacity: 0.8 },
+        ],
+    };
+    let image = FramePlan::Image(filmcraft_render::Image { w: w as usize, h: h as usize, px: f32_layer });
+    for plan in [layers, image] {
+        let mut a = GpuCompositor::new(&dev, &q);
+        a.composite(&plan);
+        let inline = a.read_output().expect("readback");
+        let mut b = GpuCompositor::new(&dev, &q);
+        let prep = prepare(&plan);
+        assert!(prep.bytes() > 0);
+        b.composite_prepared(&plan, Some(&prep));
+        let prepared = b.read_output().expect("readback");
+        assert!(inline == prepared, "prepared upload differs");
+    }
+}
+
 /// The upload cache is keyed by pixel-buffer address, so it must keep the buffer alive: otherwise
 /// a new frame allocated at a freed frame's address is drawn with the stale texture (seen as
 /// whole frames from a previous composite in `crates/golden` GPU parity).
@@ -94,4 +142,44 @@ fn upload_cache_keeps_buffers_alive() {
     c.composite(&plan);
     drop(plan);
     assert!(Arc::strong_count(&px) > 1, "cached upload must own its pixel buffer");
+}
+
+/// The WGSL tetrahedral LUT matches `Lut3d::apply` on the CPU.
+#[test]
+fn gpu_lut_matches_cpu_tetrahedral() {
+    let Some((dev, q)) = device() else {
+        eprintln!("no GPU adapter; skipping");
+        return;
+    };
+    let g = GpuLut::new(&dev, &q);
+    for size in [2usize, 17, 33, 65] {
+        let mut lut = filmcraft_color::Lut3d::from_fn(size, |c| {
+            [(c[0] * c[1] + c[2] * c[2]).sin(), c[1].powf(0.45) * (1.0 - 0.3 * c[0]), (c[0] - c[2]).abs() + 0.1 * c[1]]
+        });
+        if size == 17 {
+            lut.domain_min = [-0.1, 0.0, 0.0];
+            lut.domain_max = [1.2, 1.0, 2.0];
+        }
+        let mut s = 99u64;
+        let mut px = Vec::new();
+        for _ in 0..70_000 {
+            for k in 0..4 {
+                s ^= s << 13;
+                s ^= s >> 7;
+                s ^= s << 17;
+                px.push(if k == 3 { 0.5 } else { (s % 10_001) as f32 / 10_000.0 * 1.2 - 0.1 });
+            }
+        }
+        let gpu = g.apply(&lut, &px).expect("gpu lut");
+        let mut worst = 0f32;
+        for (i, p) in px.chunks_exact(4).enumerate() {
+            let c = lut.apply([p[0], p[1], p[2]]);
+            for k in 0..3 {
+                worst = worst.max((c[k] - gpu[i * 4 + k]).abs());
+            }
+            assert_eq!(gpu[i * 4 + 3], 0.5);
+        }
+        eprintln!("LUT {size}³: max |cpu − gpu| = {worst:e}");
+        assert!(worst < 1e-4, "size {size}: max |cpu - gpu| = {worst}");
+    }
 }

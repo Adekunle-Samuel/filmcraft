@@ -29,6 +29,12 @@ serde_json = { workspace = true }
 log = { workspace = true }
 rayon = { workspace = true }
 
+# Thread/process CPU clocks for frame-job profiling (safe wrappers; see frames.rs).
+[target.'cfg(unix)'.dependencies]
+rustix = { version = "1", default-features = false, features = ["std", "time"] }
+
 [dev-dependencies]
+pollster = "0.4"
+filmcraft-codecs = { workspace = true }
 egui_kittest = { workspace = true, features = ["eframe", "wgpu"] }
 image = { version = "0.25", default-features = false, features = ["png"] }

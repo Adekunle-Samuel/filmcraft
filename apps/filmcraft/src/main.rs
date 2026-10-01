@@ -12,6 +12,7 @@
 //! asking, `--no-recover` starts without asking (the changes stay available via File ▸ Recover
 //! Unsaved Changes…).
 
+mod app_nap;
 mod audio;
 mod control_server;
 #[cfg(target_os = "macos")]
@@ -24,6 +25,7 @@ use filmcraft_ui_egui::FilmcraftApp;
 use serde_json::json;
 
 fn main() -> eframe::Result {
+    app_nap::disable();
     let mut control_port: Option<u16> = std::env::var("FILMCRAFT_CONTROL_PORT").ok().and_then(|p| p.parse().ok());
     let mut files = Vec::new();
     let mut demo = true;

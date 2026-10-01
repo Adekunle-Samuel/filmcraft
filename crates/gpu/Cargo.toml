@@ -16,6 +16,7 @@ filmcraft-geom = { workspace = true }
 filmcraft-render = { workspace = true }
 wgpu = { version = "30", default-features = false, features = ["wgsl"] }
 log = { workspace = true }
+rayon = { workspace = true }
 
 [dev-dependencies]
 pollster = "0.4"

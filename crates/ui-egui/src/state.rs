@@ -264,6 +264,9 @@ pub struct UiState {
     /// Transient status line shown in the footer.
     pub status: String,
     /// Export mode: chosen format id and output path.
+    /// Essential Sound sub-tab: "Edit" or "Browse".
+    #[serde(default)]
+    pub essential_sound_tab: String,
     #[serde(default)]
     pub export_format: String,
     #[serde(default)]
@@ -304,6 +307,9 @@ pub struct UiState {
     /// Make Offline dialog: Some(delete files?) while open.
     #[serde(default)]
     pub make_offline: Option<bool>,
+    /// Open colour dialog (Interpret Footage ▸ Color Management, Sequence ▸ Color Management).
+    #[serde(default)]
+    pub color_dialog: Option<ColorDialog>,
 }
 
 /// File ▸ Link Media… (shown automatically when a project opens with missing media).
@@ -398,6 +404,15 @@ impl Default for ProjectManagerDraft {
     }
 }
 
+/// Colour dialogs: drafts are applied with one engine command on OK.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub enum ColorDialog {
+    /// `clip.interpretFootage`: the media items and the chosen colour space id ("auto" = metadata).
+    Interpret { items: Vec<u64>, color_space: String },
+    /// `sequence.colorSettings`.
+    Sequence { working_space: String, wide_gamut: bool, auto_tone_map: bool },
+}
+
 /// The Audio Gain dialog (Clip ▸ Audio Gain…, G).
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -450,6 +465,7 @@ impl Default for UiState {
             dark: true,
             show_scopes: false,
             status: String::new(),
+            essential_sound_tab: "Edit".into(),
             export_format: "h264".into(),
             export_path: String::new(),
             export_burn_captions: false,
@@ -464,6 +480,7 @@ impl Default for UiState {
             create_proxies: None,
             project_manager: None,
             make_offline: None,
+            color_dialog: None,
         }
     }
 }

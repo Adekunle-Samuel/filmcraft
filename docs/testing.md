@@ -90,7 +90,10 @@ Each codec README has the full fixture matrix and the measured results.
   projects (demo-generator footage, bars, no media files) at 320×180 and renders one frame of each
   through the CPU compositor: Motion transform + opacity, four blend modes (Multiply, Screen,
   Overlay, Difference), Gaussian Blur, Lumetri basic correction, Crop, Cross Dissolve at 50 %, Dip
-  to Black at 25 %, Wipe at 50 %, and Timecode / Clip Name burn-in text. Each frame is compared
+  to Black at 25 %, Wipe at 50 %, Timecode / Clip Name burn-in text, graphic clips, and colour
+  management: S-Log3/S-Gamut3.Cine footage interpreted into Rec. 709 (`log_to_rec709`) and
+  Rec. 2100 PQ footage tone mapped into Rec. 709 (`hdr_tone_map`; the footage is demo frames
+  re-encoded by the test's `Encoded` source). Each frame is compared
   with `crates/golden/goldens/<scene>.png` by `filmcraft_testkit::golden`:
   **PSNR ≥ 45 dB, max abs ≤ 12, 99th-percentile per-pixel max channel difference ≤ 2** (8-bit
   sRGB levels; `Tolerance::RENDER`). On failure the actual frame and a ×8 difference image go to
@@ -133,6 +136,30 @@ keyframes and the Audio Gain dialog by automation id and with multi-frame pointe
 over several frames, release). With `FILMCRAFT_UI_SNAPSHOT_DIR=<dir>` it also renders the window
 offscreen through wgpu (`Harness::render`) and writes `mixer-*.png`; this works without a visible
 window (for example on a locked screen, where `ui.screenshot` cannot capture).
+`crates/ui-egui/tests/essential_sound_ui.rs` does the same for the Essential Sound panel (type buttons,
+switches, a slider drag as one undo step, section bypass, Auto-Match, ducking, Browse presets;
+`essential-sound-*.png`).
+
+Essential Sound engine tests (`crates/engine/src/essential_sound_tests.rs`) build projects from
+generated speech-like and tonal WAVs: Auto-Match lands within ±0.5 LU of the target (measured: 0.000 LU,
+with and without a repair/clarity chain); ducking on a dialogue + music project gives keyframes within
+60 ms of the expected times (measured 20 ms) and −15.00 dB in the mix; each repair stage improves its
+metric through the render path (hum −39 dB, rumble −22 dB, noise floor −13 dB, sibilance −19 dB,
+reverb tail −10 dB); the mix is bit-identical however requests are cut and the WAV export equals it.
+`perf_full_dialogue_chain_realtime_factor` (ignored; run with `--release`) prints the realtime factor of
+all nine Dialogue effects on one clip (22× on one core).
+
+`crates/ui-egui/tests/color_ui.rs` drives colour features the same way (`color-*.png` snapshots):
+Lumetri Input/Look LUT menus and section switches, the Interpret Footage ▸ Color Management and
+Sequence Color Management dialogs, and the HDR scopes of a PQ sequence.
+
+Colour science tests: `filmcraft-color` (curve round trips and published reference values per
+camera log curve, BT.709/BT.2087 matrices, BT.2390 EETF, gamut mapping, LUT tetrahedral vs a
+brute-force barycentric reference, `.cube`/`.3dl` round trips), `filmcraft-gpu`
+(`gpu_lut_matches_cpu_tetrahedral`: WGSL vs CPU, max |Δ| ≈ 2e-7), `render::colorman`,
+`render::color_match`, engine `color_tests.rs`, and `export::tests::hdr_exports_signal_pq_and_hlg`
+(PQ/HLG exports read back by our demuxer and by ffprobe: `color_transfer`, `color_primaries`,
+`color_space`, mastering display and content light side data).
 
 Not covered headless: `ui.screenshot` (needs a real viewport), the wgpu monitor path (the harness
 runs the CPU texture path), audio output, and wall-clock playback advance (kittest frames do not
@@ -167,3 +194,64 @@ engine behaviour without a window.
 The perf tests check bit-exactness before they time anything. Results go in the crate README's
 performance table, with machine and thread count. Headline numbers go in
 [ROADMAP.md](../ROADMAP.md). Measure on an idle machine: parallel agent builds distort timings.
+
+### Playback benchmark
+
+`cargo xtask bench-playback` (the example `crates/ui-egui/examples/bench_playback.rs`) plays
+sequences headlessly through the Program monitor's own frame scheduler: the `FrameServer` worker
+pool, `schedule_playback` (prefetch order and stale-job dropping), its caches, and the
+`PlaybackMeter` that counts shown/dropped frames in the app. On the GPU path it also composites
+each plan with `filmcraft-gpu`, as the monitor does on the UI thread.
+
+```sh
+cargo xtask bench-playback                                   # every scenario, GPU path, Full and Half
+cargo xtask bench-playback --scenario stack3 --res full --cpu
+cargo xtask bench-playback --json target/bench-playback.json # machine-readable results
+```
+
+| Scenario | What plays |
+|---|---|
+| `h264-1080` | one 1080p23.976 H.264 clip (testsrc2 + grain, ~45 Mbit/s, 250-frame GOP) |
+| `stack3` | three 1080p H.264 clips on V1–V3; V2/V3 scaled, positioned, rotated, 70–85 % opacity |
+| `h264-2160` | one 2160p23.976 H.264 clip |
+| `demo` | the built-in demo project (procedural footage, transitions, effects) |
+| `after-preview` | 1080p H.264 + Lumetri/Sharpen/Levels/Tint: a live play, Render Effects In to Out, then two plays of the green segment |
+| `seek-storm` | 40 jumps to random frames 150 ms apart (scrubbing), time until the exact frame shows |
+
+Options: `--res full,half,quarter`, `--cpu` (CPU compositor + texture conversion instead of the
+GPU path), `--seconds`, `--refresh` (display Hz), `--workers`, `--repeat`, `--json <file>`.
+Fixtures are made with ffmpeg in `target/fixtures/playback/` (set `FILMCRAFT_FIXTURES` to share one
+set between worktrees).
+
+Columns: **shown/drop** as counted in the app (a frame is shown when its exact picture was on
+screen at a refresh while it was due; frames passed over without a refresh count as dropped);
+**ontime** = due frames whose job finished before they were due; **lat** = queue→ready per job,
+**svc** = worker time per job; **cpu/j**, **src/j**, **srcC/j** = worker thread CPU, source fetch
+(decode) wall and thread CPU per job; **ui** = time on the UI thread to present a frame (GPU upload
+and draw, or texture conversion); **cpu ms/f** = process CPU per frame and **cores** = the cores that
+needs at the sequence frame rate; **seeks/dec** = decoder restarts and samples decoded; **waste** =
+jobs for frames that were never due.
+
+Wall-clock columns (shown/drop, ontime, latencies) depend on machine load, so each row prints the
+load average. CPU columns (thread and process CPU time) and the structural counters (seeks,
+samples decoded, wasted jobs) do not, and are what to compare between runs on a busy machine.
+
+Results on an M4 Pro (14 cores), GPU path, 8 s plays, median of 2 alternating runs of the M4.6
+baseline (commit `5170376`) and the result of M4.6, on a machine shared with parallel agent
+builds (**load average 86–207**, so wall-clock columns are pessimistic; CPU ms/frame is not):
+
+| Scenario | shown/dropped before | after | CPU ms/frame before → after | decoder seeks |
+|---|---|---|---|---|
+| h264-1080 Full / Half | 106/86, 118/74 | **192/0, 192/0** | 80 → 46, 95 → 46 | 3–4 → 1 |
+| stack3 (3 × 1080p) Full / Half | 185/7, 174/18 | **192/0, 192/0** | 136 → 109, 117 → 111 | 4 → 3 (one per source) |
+| h264-2160 Full / Half | 0/192, 0/192 | 5/187, 19/173 | 110 → 135, 170 → 145 | 4–5 → 1–2 |
+| demo Full / Half | 63/129, 124/68 | 97/95, 152/40 | 140 → 80, 93 → 40 | |
+| after-preview, 1st play after render (Full) | 80/112 | **190/2** | 119 → 26 | 104 → 0 |
+| after-preview, 2nd play (Full) | 145/47 | **192/0** | 76 → 26 | 132 → 0 |
+| after-preview, live effects (Half) | 18/174 | 69/123 (frames skipped evenly) | 109 → 95 | |
+| seek-storm (40 jumps, 150 ms each) | 0/40 shown | 6/40 | 827 → 666 per jump | |
+
+At load ~25–60 the same final build plays h264-1080, stack3 and h264-2160 at Full with 0 dropped
+in 3 of 3 runs (192/0) and render previews 192/0. The 4K fixture needs ~4 cores of decode per
+real-time second (≈160 ms CPU per frame at 170 Mbit/s); the demo project's procedural footage
+~190 ms per Full-resolution frame.

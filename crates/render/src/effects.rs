@@ -24,6 +24,8 @@ pub struct FxCtx<'a> {
     /// Formatted sequence timecode (for the Timecode effect).
     pub timecode: &'a str,
     pub clip_name: &'a str,
+    /// The project (LUT library for Lumetri); `None` in isolated effect tests.
+    pub project: Option<&'a filmcraft_project::Project>,
 }
 
 fn f(e: &EffectInstance, id: &str, cx: &FxCtx) -> f32 {
@@ -31,6 +33,16 @@ fn f(e: &EffectInstance, id: &str, cx: &FxCtx) -> f32 {
 }
 fn b(e: &EffectInstance, id: &str) -> bool {
     e.param(id).and_then(|p| p.value.as_bool()).unwrap_or(false)
+}
+/// A section switch (missing in older projects = on).
+fn on(e: &EffectInstance, id: &str) -> bool {
+    e.param(id).and_then(|p| p.value.as_bool()).unwrap_or(true)
+}
+fn text<'e>(e: &'e EffectInstance, id: &str) -> &'e str {
+    match e.param(id).map(|p| &p.value) {
+        Some(ParamValue::Text(s)) => s,
+        _ => "",
+    }
 }
 fn choice(e: &EffectInstance, id: &str) -> u32 {
     match e.param(id).map(|p| &p.value) {
@@ -828,28 +840,35 @@ fn key(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
 }
 
 fn lumetri(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
-    let temp = f(e, "temperature", cx) / 100.0;
-    let tint = f(e, "tint", cx) / 100.0;
-    let exposure = 2f32.powf(f(e, "exposure", cx));
-    let contrast = f(e, "contrast", cx) / 100.0;
-    let hl = f(e, "highlights", cx) / 100.0;
-    let sh = f(e, "shadows", cx) / 100.0;
-    let wh = f(e, "whites", cx) / 100.0;
-    let bl = f(e, "blacks", cx) / 100.0;
-    let sat = f(e, "saturation", cx) / 100.0 * f(e, "creative_sat", cx) / 100.0;
-    let vib = f(e, "vibrance", cx) / 100.0;
-    let faded = f(e, "faded_film", cx) / 100.0;
+    let (basic_on, creative_on, vignette_on) = (on(e, "basic_on"), on(e, "creative_on"), on(e, "vignette_on"));
+    let input_lut = if basic_on { crate::luts::resolve(cx.project, text(e, "input_lut")) } else { None };
+    let bf = |id: &str| if basic_on { f(e, id, cx) } else { 0.0 };
+    let temp = bf("temperature") / 100.0;
+    let tint = bf("tint") / 100.0;
+    let exposure = 2f32.powf(bf("exposure"));
+    let contrast = bf("contrast") / 100.0;
+    let hl = bf("highlights") / 100.0;
+    let sh = bf("shadows") / 100.0;
+    let wh = bf("whites") / 100.0;
+    let bl = bf("blacks") / 100.0;
+    let sat = if basic_on { f(e, "saturation", cx) / 100.0 } else { 1.0 } * if creative_on { f(e, "creative_sat", cx) / 100.0 } else { 1.0 };
+    let vib = if creative_on { f(e, "vibrance", cx) / 100.0 } else { 0.0 };
+    let faded = if creative_on { f(e, "faded_film", cx) / 100.0 } else { 0.0 };
     let st = color(e, "shadow_tint", cx);
     let ht = color(e, "highlight_tint", cx);
-    let va = f(e, "vignette_amount", cx);
+    let va = if vignette_on { f(e, "vignette_amount", cx) } else { 0.0 };
     let vmid = f(e, "vignette_midpoint", cx) / 100.0;
     let vround = f(e, "vignette_roundness", cx) / 100.0;
     let vfeather = f(e, "vignette_feather", cx) / 100.0;
-    let sharpen = f(e, "sharpen", cx) / 100.0;
+    let sharpen = if creative_on { f(e, "sharpen", cx) / 100.0 } else { 0.0 };
     let gains = [1.0 + 0.35 * temp, 1.0 - 0.3 * tint, 1.0 - 0.35 * temp];
     let (w, h) = (img.w as f32, img.h as f32);
     let aspect = w / h;
     img.map_rgb(|c, x, y| {
+        let c = match &input_lut {
+            Some(l) => dec(l.apply(enc(c))),
+            None => c,
+        };
         // white balance + exposure in linear light
         let lin = [c[0] * gains[0] * exposure, c[1] * gains[1] * exposure, c[2] * gains[2] * exposure];
         let mut v = enc(lin);
@@ -880,9 +899,11 @@ fn lumetri(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
             v = v.map(|q| q * (1.0 - 0.25 * faded) + 0.12 * faded);
         }
         // split tone
-        let l2 = (0.2126 * v[0] + 0.7152 * v[1] + 0.0722 * v[2]).clamp(0.0, 1.0);
-        for k in 0..3 {
-            v[k] += (st[k] - 0.5) * 0.3 * (1.0 - l2) + (ht[k] - 0.5) * 0.3 * l2;
+        if creative_on {
+            let l2 = (0.2126 * v[0] + 0.7152 * v[1] + 0.0722 * v[2]).clamp(0.0, 1.0);
+            for k in 0..3 {
+                v[k] += (st[k] - 0.5) * 0.3 * (1.0 - l2) + (ht[k] - 0.5) * 0.3 * l2;
+            }
         }
         // saturation & vibrance
         let l3 = 0.2126 * v[0] + 0.7152 * v[1] + 0.0722 * v[2];
@@ -1079,7 +1100,7 @@ mod tests {
     use filmcraft_project::find_effect;
 
     fn cx() -> FxCtx<'static> {
-        FxCtx { t: Tick::ZERO, px_scale: 1.0, seconds: 0.0, timecode: "00:00:01:00", clip_name: "x" }
+        FxCtx { t: Tick::ZERO, px_scale: 1.0, seconds: 0.0, timecode: "00:00:01:00", clip_name: "x", project: None }
     }
 
     #[test]
@@ -1229,7 +1250,7 @@ fn wheel_rgb(v: Vec2) -> [f32; 3] {
 }
 
 /// Looks: our own procedural grades (no third-party LUTs), applied on display-encoded colour.
-fn apply_look(look: u32, c: [f32; 3]) -> [f32; 3] {
+pub fn apply_look(look: u32, c: [f32; 3]) -> [f32; 3] {
     let l = 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
     let mix = |a: [f32; 3], b: [f32; 3], k: f32| [a[0] + (b[0] - a[0]) * k, a[1] + (b[1] - a[1]) * k, a[2] + (b[2] - a[2]) * k];
     let s_curve = |v: f32, k: f32| {
@@ -1260,16 +1281,19 @@ fn apply_look(look: u32, c: [f32; 3]) -> [f32; 3] {
 
 fn lumetri_advanced(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
     const N: usize = 1024;
-    let lut = |id: &str| curve_param(e, id).filter(|c| !is_identity_curve(c)).map(|c| curve_lut(&c, N));
+    let (creative_on, curves_on, wheels_on) = (on(e, "creative_on"), on(e, "curves_on"), on(e, "wheels_on"));
+    let lut = |id: &str| curve_param(e, id).filter(|c| curves_on && !is_identity_curve(c)).map(|c| curve_lut(&c, N));
     let (luma_c, red_c, green_c, blue_c) = (lut("curve_luma"), lut("curve_red"), lut("curve_green"), lut("curve_blue"));
-    let hue = |id: &str| curve_param(e, id).and_then(|c| hue_lut(&c, N));
+    let hue = |id: &str| curve_param(e, id).filter(|_| curves_on).and_then(|c| hue_lut(&c, N));
     let (hvs, hvh, hvl, lvs, svs) = (hue("hue_vs_sat"), hue("hue_vs_hue"), hue("hue_vs_luma"), hue("luma_vs_sat"), hue("sat_vs_sat"));
-    let look = choice(e, "look");
+    // Creative ▸ Look: a LUT ("Browse…" / built-in) takes precedence over the procedural menu
+    let look_lut = if creative_on { crate::luts::resolve(cx.project, text(e, "look_lut")) } else { None };
+    let look = if creative_on && look_lut.is_none() { choice(e, "look") } else { 0 };
     let look_k = f(e, "look_intensity", cx) / 100.0;
     let v2 = |id: &str| e.param(id).map(|p| p.vec2_at(cx.t)).unwrap_or_default();
     let (ws, wm, wh) = (wheel_rgb(v2("wheel_shadows")), wheel_rgb(v2("wheel_midtones")), wheel_rgb(v2("wheel_highlights")));
     let (ls, lm, lh) = (f(e, "wheel_shadows_l", cx) / 100.0, f(e, "wheel_midtones_l", cx) / 100.0, f(e, "wheel_highlights_l", cx) / 100.0);
-    let wheels = ws.iter().chain(&wm).chain(&wh).any(|v| v.abs() > 1e-5) || ls.abs() + lm.abs() + lh.abs() > 1e-5;
+    let wheels = wheels_on && (ws.iter().chain(&wm).chain(&wh).any(|v| v.abs() > 1e-5) || ls.abs() + lm.abs() + lh.abs() > 1e-5);
     let hsl_on = b(e, "hsl_on");
     let any = luma_c.is_some()
         || red_c.is_some()
@@ -1281,6 +1305,7 @@ fn lumetri_advanced(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
         || lvs.is_some()
         || svs.is_some()
         || look > 0
+        || look_lut.is_some()
         || wheels
         || hsl_on;
     if !any {
@@ -1300,7 +1325,10 @@ fn lumetri_advanced(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
     };
     img.map_rgb(|c, _, _| {
         let mut v = enc(c);
-        if look > 0 {
+        if let Some(l) = &look_lut {
+            let lk = l.apply(v);
+            v = [v[0] + (lk[0] - v[0]) * look_k, v[1] + (lk[1] - v[1]) * look_k, v[2] + (lk[2] - v[2]) * look_k];
+        } else if look > 0 {
             let lk = apply_look(look, v);
             v = [v[0] + (lk[0] - v[0]) * look_k, v[1] + (lk[1] - v[1]) * look_k, v[2] + (lk[2] - v[2]) * look_k];
         }

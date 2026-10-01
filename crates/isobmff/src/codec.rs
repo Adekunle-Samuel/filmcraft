@@ -41,6 +41,62 @@ pub struct VideoParams {
     pub field_info: Option<FieldInfo>,
     /// QuickTime `gama` (16.16 fixed point).
     pub gamma: Option<u32>,
+    /// `mdcv`: mastering display colour volume (SMPTE ST 2086).
+    pub mastering_display: Option<MasteringDisplay>,
+    /// `clli`: content light level (MaxCLL, MaxFALL in cd/m²; 0 = unknown).
+    pub content_light: Option<(u16, u16)>,
+}
+
+/// SMPTE ST 2086 mastering display metadata, in the units of the `mdcv` box and the H.264/HEVC
+/// SEI: chromaticities in 0.00002 steps (order G, B, R as the SEI), luminance in 0.0001 cd/m².
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MasteringDisplay {
+    pub primaries: [(u16, u16); 3],
+    pub white_point: (u16, u16),
+    pub max_luminance: u32,
+    pub min_luminance: u32,
+}
+
+impl MasteringDisplay {
+    /// BT.2020 primaries, D65, with the given peak and black in cd/m².
+    pub fn bt2020(max_nits: f64, min_nits: f64) -> Self {
+        let q = |v: f64| (v / 0.00002).round() as u16;
+        MasteringDisplay {
+            primaries: [(q(0.170), q(0.797)), (q(0.131), q(0.046)), (q(0.708), q(0.292))],
+            white_point: (q(0.3127), q(0.3290)),
+            max_luminance: (max_nits * 10_000.0).round() as u32,
+            min_luminance: (min_nits * 10_000.0).round() as u32,
+        }
+    }
+    pub fn max_nits(&self) -> f64 {
+        self.max_luminance as f64 / 10_000.0
+    }
+    /// The 24-byte payload shared by `mdcv` and the SEI message.
+    pub fn to_bytes(&self) -> Vec<u8> {
+        let mut v = Vec::with_capacity(24);
+        for (x, y) in self.primaries {
+            v.extend_from_slice(&x.to_be_bytes());
+            v.extend_from_slice(&y.to_be_bytes());
+        }
+        v.extend_from_slice(&self.white_point.0.to_be_bytes());
+        v.extend_from_slice(&self.white_point.1.to_be_bytes());
+        v.extend_from_slice(&self.max_luminance.to_be_bytes());
+        v.extend_from_slice(&self.min_luminance.to_be_bytes());
+        v
+    }
+    pub fn parse(p: &[u8]) -> Option<Self> {
+        if p.len() < 24 {
+            return None;
+        }
+        let u16_at = |i: usize| u16::from_be_bytes([p[i], p[i + 1]]);
+        let u32_at = |i: usize| u32::from_be_bytes([p[i], p[i + 1], p[i + 2], p[i + 3]]);
+        Some(MasteringDisplay {
+            primaries: [(u16_at(0), u16_at(2)), (u16_at(4), u16_at(6)), (u16_at(8), u16_at(10))],
+            white_point: (u16_at(12), u16_at(14)),
+            max_luminance: u32_at(16),
+            min_luminance: u32_at(20),
+        })
+    }
 }
 
 /// `colr` box contents.
@@ -779,6 +835,8 @@ pub(crate) fn parse_sample_entry(format: FourCc, payload: &[u8], handler: FourCc
                 b"av1C" if f == b"av01" => codec = Some(CodecConfig::Av1(Av1Config::parse(p)?)),
                 b"vpcC" if f == b"vp09" => codec = Some(CodecConfig::Vp9(VpcConfig::parse(p)?)),
                 b"colr" => v.color = parse_colr(p).ok(),
+                b"mdcv" => v.mastering_display = MasteringDisplay::parse(p),
+                b"clli" if p.len() >= 4 => v.content_light = Some((u16::from_be_bytes([p[0], p[1]]), u16::from_be_bytes([p[2], p[3]]))),
                 b"pasp" => {
                     let mut c = Cur::new(p, "pasp");
                     v.pixel_aspect = Some((c.u32()?, c.u32()?));
@@ -1216,6 +1274,14 @@ impl SampleEntry {
                 }
                 b.end(m);
             }
+            if let Some(md) = &v.mastering_display {
+                b.leaf(b"mdcv", &md.to_bytes());
+            }
+            if let Some((cll, fall)) = v.content_light {
+                let mut d = cll.to_be_bytes().to_vec();
+                d.extend_from_slice(&fall.to_be_bytes());
+                b.leaf(b"clli", &d);
+            }
             if let Some((h, vv)) = v.pixel_aspect {
                 let m = b.start(b"pasp");
                 b.u32(h);
@@ -1373,8 +1439,11 @@ mod tests {
         e.video.as_mut().unwrap().pixel_aspect = Some((4, 3));
         e.video.as_mut().unwrap().field_info = Some(FieldInfo { fields: 2, detail: 9 });
         e.video.as_mut().unwrap().clean_aperture = Some(CleanAperture { width: (1920, 1), height: (1080, 1), horiz_offset: (-2, 1), vert_offset: (0, 1) });
+        e.video.as_mut().unwrap().mastering_display = Some(MasteringDisplay::bt2020(1000.0, 0.0001));
+        e.video.as_mut().unwrap().content_light = Some((1000, 400));
         e.bitrate = Some(BitRate { buffer_size: 1, max_bitrate: 2, avg_bitrate: 3 });
         assert_eq!(roundtrip(&e, false, b"vide"), e);
+        assert_eq!(MasteringDisplay::bt2020(1000.0, 0.0001).max_nits(), 1000.0);
     }
 
     #[test]

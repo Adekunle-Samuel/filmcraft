@@ -93,9 +93,11 @@ fn mix_item(project: &Project, item: &TrackItem, start: i64, frames: usize, sr: 
     if a1 <= a0 {
         return;
     }
+    if item.essential.as_ref().is_some_and(|e| e.mute) {
+        return;
+    }
     let n = (a1 - a0) as usize;
-    let read = |x0: i64, len: usize| raw_stereo(item, src.as_ref(), x0, len, sr);
-    let buf = if crate::audio_fx::has_effects(item) { crate::audio_fx::process(item, a0, n, sr, &read) } else { read(a0, n) };
+    let buf = effected(item, src.as_ref(), a0, n, sr);
     // gains: clip gain × Volume (keyframed, per 64-sample block) × channel volume × panner
     let clip_gain = db_to_gain(item.gain_db);
     let vol = item.effect("volume").filter(|e| e.enabled && !e.param("bypass").and_then(|p| p.value.as_bool()).unwrap_or(false));
@@ -120,6 +122,39 @@ fn mix_item(project: &Project, item: &TrackItem, start: i64, frames: usize, sr: 
         }
         blk = end;
     }
+}
+
+/// The clip's audio after speed/reverse and clip effects (before clip gain, Volume and Panner) for
+/// timeline samples `[a0, a0 + n)`.
+fn effected(item: &TrackItem, src: &dyn filmcraft_media::MediaSource, a0: i64, n: usize, sr: u32) -> [Vec<f32>; 2] {
+    let read = |x0: i64, len: usize| raw_stereo(item, src, x0, len, sr);
+    if crate::audio_fx::has_effects(item) { crate::audio_fx::process(item, a0, n, sr, &read) } else { read(a0, n) }
+}
+
+/// One clip's own signal for timeline samples `[start, start + frames)` (sequence rate): clip gain
+/// and clip effects, without Volume / Channel Volume / Panner, transitions or Mute (silence outside
+/// the clip). Loudness Auto-Match and ducking analyse this. `None` when the clip has no audio
+/// source (nested sequences are not analysed).
+pub fn clip_signal(item: &TrackItem, start: i64, frames: usize, sr: u32, sources: &dyn SourceProvider) -> Option<[Vec<f32>; 2]> {
+    let src = sources.source(item.item)?;
+    if !src.info().has_audio() {
+        return None;
+    }
+    let mut out = [vec![0.0f32; frames], vec![0.0f32; frames]];
+    let a0 = start.max(item.start.to_units_floor(sr as i64));
+    let a1 = (start + frames as i64).min(item.end().to_units_floor(sr as i64));
+    if a1 > a0 {
+        let n = (a1 - a0) as usize;
+        let off = (a0 - start) as usize;
+        let g = db_to_gain(item.gain_db);
+        let buf = effected(item, src.as_ref(), a0, n, sr);
+        for (dst, b) in out.iter_mut().zip(&buf) {
+            for (d, x) in dst[off..off + n].iter_mut().zip(b) {
+                *d = x * g;
+            }
+        }
+    }
+    Some(out)
 }
 
 /// The clip's audio (after speed/reverse) for timeline samples `[x0, x0 + len)` as stereo, with

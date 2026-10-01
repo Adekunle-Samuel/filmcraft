@@ -19,6 +19,7 @@ pub mod video;
 use std::sync::{Arc, RwLock};
 
 pub use audio::AudioFileSource;
+pub use gop::{GopStats, gop_stats};
 pub use mkv::MkvSource;
 pub use mp4::Mp4Source;
 pub use video::{DecodedFrame, VideoDecoder, VideoDecoderFactory};
@@ -31,6 +32,9 @@ pub enum CodecError {
     Decode(String),
     #[error("container: {0}")]
     Container(String),
+    /// The frame is no longer wanted (`filmcraft_media::cancel`).
+    #[error("cancelled")]
+    Cancelled,
 }
 
 pub type Result<T> = std::result::Result<T, CodecError>;
@@ -39,6 +43,7 @@ impl From<CodecError> for filmcraft_media::MediaError {
     fn from(e: CodecError) -> Self {
         match e {
             CodecError::Unsupported(s) => filmcraft_media::MediaError::Unsupported(s),
+            CodecError::Cancelled => filmcraft_media::MediaError::Cancelled,
             other => filmcraft_media::MediaError::Decode(other.to_string()),
         }
     }

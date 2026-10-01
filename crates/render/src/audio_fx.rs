@@ -83,12 +83,43 @@ pub(crate) fn mapping(id: &str) -> Option<Mapping> {
         "highpass" => Mapping { dsp: "parametric_eq", preroll: |_, _| 0.05, apply: |d, e, t| band(d, 4.0, f(e, "cutoff", t), 0.707) },
         "lowpass" => Mapping { dsp: "parametric_eq", preroll: |_, _| 0.05, apply: |d, e, t| band(d, 3.0, f(e, "cutoff", t), 0.707) },
         "bandpass" => Mapping { dsp: "parametric_eq", preroll: |_, _| 0.05, apply: |d, e, t| band(d, 6.0, f(e, "center", t), f(e, "q", t)) },
-        "denoise" => Mapping { dsp: "denoise", preroll: |_, _| 1.0, apply: |d, e, t| ignore(d.set_param("amount", f(e, "amount", t))) },
+        // Amount 0…100 % → 0…40 dB of reduction.
+        "denoise" => Mapping { dsp: "denoise", preroll: |_, _| 1.0, apply: |d, e, t| ignore(d.set_param("reduction", f(e, "amount", t) * 0.4)) },
+        // Gain is the notch depth: the wet/dry amount that leaves 10^(gain/20) of the hum.
         "dehummer" => Mapping {
             dsp: "dehum",
             preroll: |_, _| 0.2,
-            apply: |d, e, t| ignore(d.set_param("frequency", e.param("freq").and_then(|p| p.value_at(t).as_f64()).unwrap_or(1.0) as f32)),
+            apply: |d, e, t| {
+                d.set_param("frequency", e.param("freq").and_then(|p| p.value_at(t).as_f64()).unwrap_or(1.0) as f32);
+                d.set_param("amount", (1.0 - 10f32.powf(f(e, "gain", t).min(0.0) / 20.0)) * 100.0);
+            },
         },
+        "deesser" => Mapping {
+            dsp: "deesser",
+            preroll: |_, _| 0.1,
+            apply: |d, e, t| {
+                d.set_param("frequency", f(e, "frequency", t));
+                d.set_param("threshold", f(e, "threshold", t));
+                d.set_param("reduction", f(e, "reduction", t));
+            },
+        },
+        "dereverb" => Mapping {
+            dsp: "dereverb",
+            preroll: |e, t| (f(e, "rt60", t) as f64 + 0.3).clamp(0.5, 3.0),
+            apply: |d, e, t| {
+                d.set_param("amount", f(e, "amount", t));
+                d.set_param("rt60", f(e, "rt60", t));
+            },
+        },
+        "speech_enhance" => Mapping {
+            dsp: "speech_enhance",
+            preroll: |_, _| 0.3,
+            apply: |d, e, t| {
+                d.set_param("mix", f(e, "mix", t));
+                d.set_param("tone", e.param("tone").and_then(|p| p.value_at(t).as_f64()).unwrap_or(0.0) as f32);
+            },
+        },
+        "stereo_width" => Mapping { dsp: "stereo_width", preroll: |_, _| 0.0, apply: |d, e, t| ignore(d.set_param("width", f(e, "width", t))) },
         "studio_reverb" => Mapping {
             dsp: "reverb",
             preroll: |e, t| 0.3 * 30f64.powf(f(e, "decay", t) as f64 / 100.0).min(8.0),

@@ -349,6 +349,10 @@ fn item_interactions(
             actions.push(("edit.duplicate".into(), json!({})));
             ui.close();
         }
+        if ui.button("Interpret Footage…").clicked() {
+            actions.push(("clip.interpretFootage".into(), json!({"items": [id.0]})));
+            ui.close();
+        }
         ui.menu_button("Label", |ui| {
             for l in filmcraft_project::Label::ALL {
                 if ui.button(l.name()).clicked() {

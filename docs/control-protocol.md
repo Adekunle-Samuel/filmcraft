@@ -2,7 +2,9 @@
 
 ## Desktop control channel
 `filmcraft --control 9876` (or `FILMCRAFT_CONTROL_PORT`) listens on `127.0.0.1:<port>` (loopback only).
-One JSON request per line → one JSON reply per line:
+One JSON request per line → one JSON reply per line. The app opts out of macOS App Nap
+(`apps/filmcraft/src/app_nap.rs`): a hidden window would otherwise drop the whole process to
+background priority, and on a busy machine it would stop answering.
 
 ```json
 {"id": 1, "method": "engine.execute", "params": {"command": "sequence.addEdit", "params": {"seconds": 3}}}
@@ -25,7 +27,7 @@ Methods (handlers in `crates/ui-egui/src/control.rs`):
 | `ui.key` / `ui.type` | `{key}` (`Cmd+K`, `Space`…) / `{text}` | keyboard |
 | `ui.timeline.hit` / `ui.timeline.locate` | `{x,y}` / `{clip, edge?}` | timeline hit-testing |
 | `ui.playback` | `{action: play|stop|toggle, speed?}` | |
-| `ui.screenshot` | `{path?, panel?}` | PNG of the window or one panel |
+| `ui.screenshot` | `{path?, panel?}` | PNG of the window or one panel; fails after 10 s when no frame is presented (window hidden, display asleep) |
 | `ui.resize`, `ui.focus`, `app.quit` | | |
 
 Element ids are stable, e.g. `timeline.clip.<id>`, `timeline.track.V1.lock`, `tools.Razor`,
@@ -45,6 +47,20 @@ record|soloSafe|output|input|fx.<n>|send.<n>|meter|name>` (popup entries below t
 `clipMixer.A1.<fader|pan|mute|solo|keyframe|value>`, `timeline.track.A1.keyframes[.<lane>|.clip]`,
 `timeline.track.A1.lane[.kf.<n>]`, `audioGain.<set|adjust|normalizeMax|normalizeAll|ok|cancel|peak>`.
 
+Essential Sound: `essentialSound.inspect`, `essentialSound.setType {type: dialogue|music|sfx|ambience}`,
+`essentialSound.clearType`, `essentialSound.set {key, value}` or `{values: {key: value}}` (keys such as
+`repair.noise.on`, `repair.noise.amount` (0–10), `repair.humHz`, `clarity.eqPreset`, `clarity.enhanceTone`,
+`creative.reverbPreset`, `ducking.against`, `ducking.reduceDb`, `ducking.fadeS`, `pan.value`,
+`volume.levelDb`, `mute`, section switches `<section>.enabled`), `essentialSound.applyPreset {preset, type?}`,
+`essentialSound.savePreset {name}`, `essentialSound.deletePreset {name}`, `essentialSound.autoMatch {target?}`,
+`essentialSound.generateDucking`; all take `clips` (default: the selected audio clips). UI ids:
+`essentialSound.tab.<Browse|Edit>`, `essentialSound.type.<Dialogue|Music|SFX|Ambience>`,
+`essentialSound.clearType`, `essentialSound.preset[.save|.delete|.name|.ok]`,
+`essentialSound.section.<Name>[.toggle]`, a row per setting key (`essentialSound.repair.noise.on`,
+`essentialSound.repair.noise.amount`, `essentialSound.repair.humHz.<i>`), `essentialSound.autoMatch`,
+`essentialSound.ducking.against.<Type>`, `essentialSound.generateDucking`, `essentialSound.volume.on`,
+`essentialSound.volume.levelDb`, `essentialSound.mute`, `essentialSound.browse.<Type>.<preset>`.
+
 Project files, auto-save, crash recovery and preferences commands (`file.recover`, `prefs.set`, …) and their
 automation ids are listed in [project-files.md](project-files.md). That file also lists the media
 management commands and dialog ids: offline media and relinking (`media.findMissing`,
@@ -57,6 +73,18 @@ mode (the Program monitor becomes the Trim Monitor, ids `trimMonitor.*`); `trim.
 it shows. Dynamic trimming takes an explicit clock (seconds) so it is deterministic: `trim.shuttle
 {direction, slow?, clock}` (J/L), `trim.tick {clock}`, `trim.shuttleStop {clock?}` (K, one undo step),
 `trim.cancelDynamic` (Esc), `trim.playAround {clock, loop?}` (Space / Shift+K).
+
+**Colour** (`crates/engine/src/color.rs`): `sequence.colorSettings {workingSpace: rec709|rec2100-pq|
+rec2100-hlg, wideGamut, autoToneMap}`, `clip.interpretFootage {items?, colorSpace: auto|<id>}`,
+`color.spaces`, `media.colorInfo {item}`; LUTs: `lut.import {path, name?}`, `lut.list`,
+`lut.remove {id}`, `lut.export {lut, path, format?}`, `lumetri.setInputLut` / `lumetri.setLook
+{clip?, lut: lib:<id>|builtin:<id>|"", path?}`, `lumetri.setSection {clip?, section, on?}`,
+`lumetri.applyMatch {clip?, referenceTime|referenceFrame|referenceTimecode, faceDetection?}`. Without
+params the menu entries open dialogs (ids `colorDialog.space.<id>`, `colorDialog.working.<id>`,
+`colorDialog.wideGamut`, `colorDialog.autoToneMap`, `colorDialog.ok|cancel`). Lumetri panel ids:
+`lumetri.input_lut`, `lumetri.look_lut`, `lumetri.switch.<section>`, `lumetri.section.<section>`,
+`lumetri.match.*`; HDR scopes: `scopes.hdrWaveform`. `file.exportMedia {sdr: true}` exports an HDR
+sequence as tone-mapped SDR.
 
 **Keyboard shortcuts** (`crates/engine/src/shortcuts.rs`): `shortcuts.list {query?, panel?}`,
 `shortcuts.get`, `shortcuts.set {command, keys, panel?, add?, keepConflicts?}`, `shortcuts.clear`,

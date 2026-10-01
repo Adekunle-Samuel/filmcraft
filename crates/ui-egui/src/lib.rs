@@ -83,10 +83,18 @@ pub struct Playback {
     anchor_tick: Tick,
     /// Audio frames played at anchor (when the audio clock drives).
     pub audio_clock: bool,
-    pub dropped: u64,
-    pub shown: u64,
-    last_frame: i64,
+    /// Shown / dropped frame accounting for the current (or last) play.
+    pub meter: frames::PlaybackMeter,
+    /// Waiting for the first frames before starting the clock: when the wait began (egui time,
+    /// s; negative = not yet stamped), and whether the Program monitor has them ready.
+    pub preroll: Option<f64>,
+    pub preroll_ready: bool,
+    /// The window was hidden (occluded/minimized) since the monitor last refreshed.
+    pub hidden: bool,
 }
+
+/// How long `ui.screenshot` waits for the window to present the frame.
+const SCREENSHOT_TIMEOUT_S: f64 = 10.0;
 
 pub struct FilmcraftApp {
     pub session: Session,
@@ -110,7 +118,8 @@ pub struct FilmcraftApp {
     pub(crate) loudness: Option<(filmcraft_audio_dsp::LoudnessMeter, i64)>,
     /// Status message last shown and when it first appeared (messages expire after a few seconds).
     status_seen: (String, f64),
-    pending_screenshots: Vec<(u64, Option<String>, Option<[f32; 4]>, Sender<Value>)>,
+    /// Screenshots waiting for their frame: (token, path, crop, reply, give-up time).
+    pending_screenshots: Vec<(u64, Option<String>, Option<[f32; 4]>, Sender<Value>, f64)>,
     queued_screenshots: Vec<(u64, f64, u32)>,
     input_waiters: Vec<Sender<Value>>,
     next_token: u64,
@@ -153,7 +162,7 @@ impl FilmcraftApp {
     }
 
     /// Composite a plan on the GPU and return the egui texture showing it.
-    pub fn gpu_present(&mut self, key: FrameKey, plan: &filmcraft_render::plan::FramePlan) -> Option<(egui::TextureId, (u32, u32))> {
+    pub fn gpu_present(&mut self, key: FrameKey, plan: &frames::GpuPlan) -> Option<(egui::TextureId, (u32, u32))> {
         let g = self.gpu.as_mut()?;
         if g.last_key == Some(key)
             && let Some(t) = g.texture
@@ -161,7 +170,7 @@ impl FilmcraftApp {
             return Some((t, g.size));
         }
         let t0 = std::time::Instant::now();
-        let (view, size) = g.compositor.composite(plan);
+        let (view, size) = g.compositor.composite_prepared(&plan.plan, Some(&plan.prepared));
         let view = view.clone();
         g.last_ms = t0.elapsed().as_secs_f32() * 1000.0;
         let mut renderer = g.render_state.renderer.write();
@@ -183,12 +192,7 @@ impl FilmcraftApp {
     pub fn new(mut session: Session) -> Self {
         session.shortcuts.register_external(menus::external_commands());
         let recovery = !session.recovery_candidates().is_empty();
-        let frames = Arc::new(FrameServer::new(
-            session.media.clone(),
-            session.services.clone(),
-            session.previews.clone(),
-            std::thread::available_parallelism().map(|n| n.get().clamp(2, 6)).unwrap_or(3),
-        ));
+        let frames = Arc::new(FrameServer::new(session.media.clone(), session.services.clone(), session.previews.clone(), FrameServer::default_workers()));
         Self {
             session,
             ui: UiState::default(),
@@ -245,7 +249,7 @@ impl FilmcraftApp {
                 self.session.media.clone(),
                 self.session.services.clone(),
                 self.session.previews.clone(),
-                std::thread::available_parallelism().map(|n| n.get().clamp(2, 6)).unwrap_or(3),
+                FrameServer::default_workers(),
             ));
             self.textures.clear();
         }
@@ -307,15 +311,30 @@ impl FilmcraftApp {
         if speed > 0.0 && self.session.playhead() >= dur - self.session.sequence_rate().frame_duration() {
             self.session.set_playhead(Tick::ZERO);
         }
+        // A loop restart keeps counting into the same meter.
+        if !self.playback.playing || self.playback.speed != speed {
+            self.playback.meter.start(speed);
+        }
         self.playback.playing = true;
         self.playback.speed = speed;
         self.playback.anchor_tick = self.session.playhead();
-        self.playback.anchor_time = -1.0; // set on next frame
-        self.playback.dropped = 0;
-        self.playback.shown = 0;
+        self.playback.anchor_time = -1.0; // set when the preroll ends
+        self.playback.preroll = Some(-1.0);
+        self.playback.preroll_ready = false;
+        if let Some(a) = self.audio.as_mut() {
+            a.stop();
+        }
+        self.playback.audio_clock = false;
+    }
+
+    /// Start the clock (and audio) once the first frames are ready or the preroll timed out.
+    fn end_preroll(&mut self, now: f64) {
+        self.playback.preroll = None;
+        self.playback.anchor_time = now;
+        self.playback.anchor_tick = self.session.playhead();
         self.start_audio();
         // Audio Track Mixer: an automation pass runs while playing forward in real time
-        if (speed - 1.0).abs() < 1e-9 && !self.session.mixrec.active() {
+        if (self.playback.speed - 1.0).abs() < 1e-9 && !self.session.mixrec.active() {
             let t = self.session.playhead();
             let _ = self.session.execute("mixer.recordStart", json!({"time": t.0}));
         }
@@ -323,6 +342,9 @@ impl FilmcraftApp {
 
     pub fn stop(&mut self) {
         self.playback.playing = false;
+        self.playback.preroll = None;
+        self.playback.meter.finish();
+        self.frames.stop_prefetch();
         if let Some(a) = self.audio.as_mut() {
             a.stop();
         }
@@ -395,6 +417,16 @@ impl FilmcraftApp {
             return;
         }
         let now = ctx.input(|i| i.time);
+        if let Some(since) = self.playback.preroll {
+            let since = if since < 0.0 { now } else { since };
+            self.playback.preroll = Some(since);
+            if self.playback.preroll_ready || now - since >= frames::PREROLL_TIMEOUT_S {
+                self.end_preroll(now);
+            } else {
+                ctx.request_repaint();
+                return;
+            }
+        }
         if self.playback.anchor_time < 0.0 {
             self.playback.anchor_time = now;
         }
@@ -644,7 +676,7 @@ impl FilmcraftApp {
                     self.next_token += 1;
                     let settle = ctx.input(|i| i.time) + 0.25;
                     self.queued_screenshots.push((token, settle, 0));
-                    self.pending_screenshots.push((token, path, crop, reply));
+                    self.pending_screenshots.push((token, path, crop, reply, settle + SCREENSHOT_TIMEOUT_S));
                 }
             }
         }
@@ -664,8 +696,20 @@ impl FilmcraftApp {
                 true
             }
         });
-        if any || !self.pending_screenshots.is_empty() {
+        // A hidden window (or a sleeping display) never presents, so its screenshot never
+        // arrives: give up instead of waiting (and repainting) forever.
+        self.pending_screenshots.retain(|(.., reply, deadline)| {
+            if now > *deadline {
+                let _ = reply.send(json!({"ok": false, "error": "no frame was presented (window hidden or display asleep)"}));
+                false
+            } else {
+                true
+            }
+        });
+        if any {
             ctx.request_repaint();
+        } else if !self.pending_screenshots.is_empty() {
+            ctx.request_repaint_after(std::time::Duration::from_millis(16));
         }
     }
 
@@ -688,7 +732,7 @@ impl FilmcraftApp {
         });
         for (token, image) in events {
             if let Some(i) = self.pending_screenshots.iter().position(|(t, ..)| *t == token) {
-                let (_, path, crop, reply) = self.pending_screenshots.remove(i);
+                let (_, path, crop, reply, _) = self.pending_screenshots.remove(i);
                 let r = control::save_screenshot(ctx, &image, path.as_deref(), crop);
                 let _ = reply.send(r);
             }
@@ -896,6 +940,10 @@ impl eframe::App for FilmcraftApp {
             self.fps = self.fps * 0.9 + (1.0 / dt).min(480.0) * 0.1;
         }
         self.last_time = now;
+        if self.playback.playing && ctx.input(|i| i.viewport().visible()) == Some(false) {
+            // Nothing is shown while the window is hidden: not a dropped frame.
+            self.playback.hidden = true;
+        }
         let had_synthetic = !self.synthetic.is_empty();
         self.drain_control(ctx);
         if !self.synthetic.is_empty() && !had_synthetic {

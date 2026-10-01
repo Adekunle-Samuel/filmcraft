@@ -10,10 +10,13 @@
 pub mod audio;
 pub mod audio_fx;
 pub mod blend;
+pub mod color_match;
+pub mod colorman;
 pub mod effects;
 pub mod graphic_clip;
 pub mod graphics;
 pub mod image;
+pub mod luts;
 pub mod mixer;
 pub mod offline;
 pub mod plan;
@@ -52,11 +55,14 @@ pub struct RenderOptions {
     /// Draw the sequence's visible caption tracks over the picture (Program monitor, burn-in on
     /// export). Never applies to nested sequences.
     pub captions: bool,
+    /// Return the image in the sequence's working space (HDR exports, scopes) instead of
+    /// converting it for an SDR monitor. Only matters for HDR / wide-gamut sequences.
+    pub working_output: bool,
 }
 
 impl Default for RenderOptions {
     fn default() -> Self {
-        Self { scale: 1.0, effects: true, depth: 0, captions: false }
+        Self { scale: 1.0, effects: true, depth: 0, captions: false, working_output: false }
     }
 }
 
@@ -79,6 +85,10 @@ fn render_seq(project: &Project, seq: &Sequence, t: Tick, opts: RenderOptions, s
     }
     let tc = format_time(t, seq.settings.frame_rate, seq.settings.drop_frame, TimeDisplay::Timecode, seq.settings.sample_rate as i64);
     for track in &seq.video_tracks {
+        // A cancelled frame job (playback moved on) stops here; its result is discarded.
+        if filmcraft_media::cancel::cancelled() {
+            return canvas;
+        }
         if !track.enabled {
             continue;
         }
@@ -115,7 +125,14 @@ fn render_seq(project: &Project, seq: &Sequence, t: Tick, opts: RenderOptions, s
             }
             let mt = item.source_time_at(t);
             let mut adjusted = canvas.clone();
-            let cx = effects::FxCtx { t: mt, px_scale: opts.scale, seconds: (t - item.start).seconds(), timecode: &tc, clip_name: &item.name };
+            let cx = effects::FxCtx {
+                t: mt,
+                px_scale: opts.scale,
+                seconds: (t - item.start).seconds(),
+                timecode: &tc,
+                clip_name: &item.name,
+                project: Some(project),
+            };
             for e in item.effects.iter().filter(|e| e.def().is_some_and(|d| !d.intrinsic)) {
                 effects::apply(&mut adjusted, e, &cx);
             }
@@ -131,6 +148,9 @@ fn render_seq(project: &Project, seq: &Sequence, t: Tick, opts: RenderOptions, s
         if let Some((layer, op, bl)) = item_layer(project, seq, item, t, opts, sources, &tc) {
             blend::composite(&mut canvas, &layer, op, bl);
         }
+    }
+    if opts.depth == 0 && !opts.working_output {
+        colorman::to_display(&mut canvas, &seq.settings.color);
     }
     if opts.captions && opts.depth == 0 {
         for o in caption_overlays(seq, t, w, h) {
@@ -231,11 +251,10 @@ pub(crate) fn item_layer(
             let src = sources.source(item.item)?;
             let frame = src.video_frame(FrameRequest { time: mt, scale: want }).ok()?;
             let n = decimation(frame.width as f32, src_size.0 as f32 * want);
-            let (w, h, px) = frame.to_linear_f32_decimated(n);
-            Image { w, h, px }
+            colorman::decode(project, item.item, &frame, n, &seq.settings.color)
         }
         ItemKind::Sequence(nested) => {
-            let sub = RenderOptions { scale: want, effects: opts.effects, depth: opts.depth + 1, captions: false };
+            let sub = RenderOptions { scale: want, effects: opts.effects, depth: opts.depth + 1, captions: false, working_output: true };
             render_seq(project, nested, mt, sub, sources)
         }
         ItemKind::AdjustmentLayer { .. } => return None,
@@ -257,8 +276,11 @@ pub(crate) fn item_layer(
     };
     let px_scale = layer.w as f32 / src_size.0.max(1) as f32;
     if opts.effects {
-        let cx = effects::FxCtx { t: mt, px_scale, seconds: (t - item.start).seconds(), timecode: tc, clip_name: &item.name };
+        let cx = effects::FxCtx { t: mt, px_scale, seconds: (t - item.start).seconds(), timecode: tc, clip_name: &item.name, project: Some(project) };
         for e in item.effects.iter().filter(|e| e.def().is_some_and(|d| !d.intrinsic) && !filmcraft_project::graphic::is_layer(e)) {
+            if filmcraft_media::cancel::cancelled() {
+                return None;
+            }
             effects::apply(&mut layer, e, &cx);
         }
     }
@@ -281,6 +303,22 @@ pub(crate) fn item_layer(
     Some((placed, op, bl))
 }
 
+/// The layer of one clip at timeline `t` with its effects applied, on a canvas the size of the
+/// sequence output (transparent elsewhere), before opacity and blending. Used by Apply Match.
+pub fn render_clip(
+    project: &Project,
+    seq_id: ItemId,
+    clip: filmcraft_project::ClipId,
+    t: Tick,
+    opts: RenderOptions,
+    sources: &dyn SourceProvider,
+) -> Option<Image> {
+    let seq = project.sequence(seq_id)?;
+    let (_, item) = seq.find_item(clip)?;
+    let tc = format_time(t, seq.settings.frame_rate, seq.settings.drop_frame, TimeDisplay::Timecode, seq.settings.sample_rate as i64);
+    item_layer(project, seq, item, t, opts, sources, &tc).map(|(img, _, _)| img)
+}
+
 /// Largest power-of-two box decimation that keeps at least `target_w` pixels of width.
 fn decimation(have_w: f32, target_w: f32) -> usize {
     let mut n = 1usize;
@@ -300,8 +338,8 @@ pub fn render_item(project: &Project, item: ItemId, t: Tick, scale: f32, sources
             let f = src.video_frame(FrameRequest { time: t, scale }).ok()?;
             let full_w = src.info().video.as_ref().map_or(f.width, |v| v.width) as f32;
             let n = decimation(f.width as f32, full_w * scale);
-            let (w, h, px) = f.to_linear_f32_decimated(n);
-            Some(Image { w, h, px })
+            // the Source monitor shows media as SDR Rec. 709 (log/HDR tone mapped per its colour space)
+            Some(colorman::decode(project, item, &f, n, &filmcraft_color::ColorPipeline::REC709))
         }
     }
 }

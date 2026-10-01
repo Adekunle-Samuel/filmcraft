@@ -3,7 +3,8 @@
 Real-time audio DSP for FilmCraft. Layer **L1**, **no dependencies**, compiles for
 `wasm32-unknown-unknown`, no `unsafe`. Clean-room: written from the public standards
 (ITU-R BS.1770-4, EBU R128 / Tech 3341 / Tech 3342) and textbook DSP (RBJ cookbook biquads,
-Householder FDN, phase vocoder).
+Householder FDN, phase vocoder, spectral subtraction with the statistical late-reverberation
+model).
 
 ## Conventions
 
@@ -50,6 +51,43 @@ id, name, range, default, `Unit`, log-scale hint and choice labels so UIs can be
 | `dehum` | 50/60 Hz notch comb with up to 10 harmonics |
 | `denoise` | STFT spectral gating, minimum-statistics noise floor (latency = FFT size) |
 | `pitch_shifter` | ±12 semitones, phase vocoder with peak shifting + phase locking (latency = FFT size) |
+| `deesser` | high-pass sidechain at `frequency` (2–12 kHz) detects sibilance relative to the broadband level (`threshold`); a dynamic high shelf cuts the band by up to `reduction` dB (1 ms / 60 ms, stereo-linked); exact identity when idle |
+| `dereverb` | STFT late-reverb suppression: λ_r(t) = e^{−2Δ·T_d}·λ_x(t − T_d) (Δ = 3 ln10 / `rt60`, T_d ≈ 50 ms), over-subtraction 1 + `amount`, gain floor down to −18 dB, smoothed gains (latency = FFT size) |
+| `speech_enhance` | Enhance Speech DSP chain: 80 Hz HPF, de-mud cut (250 / 350 Hz −3 dB), presence (2.5 / 4 kHz +4 dB) and air (+2 dB @ 10 kHz) boosts by `tone`, downward expander below −50 dBFS (3:1, ≤ 18 dB), 3:1 soft-knee compressor above −24 dBFS, +3 dB make-up, `mix` |
+| `stereo_width` | mid/side width 0–200 % (100 % = identity, 0 % = mono) |
+
+Essential Sound builds on these (Repair: `denoise`, high-pass via `parametric_eq`, `dehum`,
+`deesser`, `dereverb`; Clarity: `compressor`, `simple_eq`, `speech_enhance`; Creative: `reverb`,
+`stereo_width`).
+
+**Enhance Speech decision.** No machine-learning model is bundled: we found no openly licensed
+speech-enhancement model that is also practical to ship here (pure Rust, wasm, asset rules).
+DeepFilterNet (MIT/Apache-2.0, with a Rust implementation on `tract`) is the candidate for a future
+optional integration behind a trait outside this dependency-free crate, once its weights' licence and
+size are vetted as an asset. Until then `speech_enhance` is the DSP chain above.
+
+Measured on synthetic signals (`effects::essential::tests`, 48 kHz):
+
+| Effect | Signal | Result |
+|---|---|---|
+| `deesser` | 150 Hz harmonic voice + 5–10 kHz noise bursts | sibilance −5.1 dB (8 dB max) / −9.8 dB (16 dB max) during bursts; voice band ±0.01 dB; non-sibilant passages ±0.001 dB |
+| `dereverb` (100 %) | harmonic syllables (100 ms / 400 ms gaps) + Polack-model late reverb, RT60 0.8 s | tail-to-burst energy −5.0 → −10.1 dB (5.0 dB better); burst energy −1.7 dB |
+| `speech_enhance` | voice + fricative noise syllables over −60 dBFS noise | presence/mud tilt +5.5 dB; noise between syllables −8.7 dB; overall level +1.0 dB |
+| Dialogue chain | `denoise` + `parametric_eq` (2 HP bands) + `dehum` + `deesser` + `dereverb` + `compressor` + `simple_eq` + `speech_enhance` + `reverb`, 60 s stereo | 1.36 s = **44× realtime** on one core (release, Apple Silicon; `cargo test --release -p filmcraft-audio-dsp dialogue_chain_realtime -- --ignored --nocapture`) |
+
+## Ducking analysis (`ducking`)
+
+Pure functions for Essential Sound auto-ducking:
+
+- `envelope_db(channels, sample_rate, hop_s, window_s)`: centred-window RMS level per hop (dBFS,
+  channel-averaged power, floor −120).
+- `activity(env_db, hop_s, threshold_db, min_on_s, bridge_s)`: regions above the threshold; gaps
+  shorter than `bridge_s` are merged first, then regions shorter than `min_on_s` are dropped.
+- `sensitivity_threshold_db(s)`: Sensitivity 0–10 → −20 − 4·s dBFS.
+- `duck_keyframes(regions, clip_start, clip_end, base_db, reduce_db, fade_s)`: (time, dB) volume
+  keyframes — ramp down over `fade_s` before each region, hold, ramp up after; overlapping ramps
+  merge; clamped to the clip (a ramp cut by an edge gets the ramp's value at the edge); strictly
+  increasing times.
 
 ## Known limits
 

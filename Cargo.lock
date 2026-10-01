@@ -1314,6 +1314,7 @@ dependencies = [
  "filmcraft-ui-egui",
  "log",
  "muda",
+ "objc2-foundation 0.3.2",
  "rfd",
  "serde_json",
 ]
@@ -1429,6 +1430,7 @@ dependencies = [
 name = "filmcraft-engine"
 version = "0.1.0"
 dependencies = [
+ "filmcraft-audio-dsp",
  "filmcraft-captions",
  "filmcraft-codecs",
  "filmcraft-color",
@@ -1457,6 +1459,7 @@ version = "0.1.0"
 dependencies = [
  "filmcraft-aac",
  "filmcraft-codecs",
+ "filmcraft-color",
  "filmcraft-frame",
  "filmcraft-h264enc",
  "filmcraft-isobmff",
@@ -1507,6 +1510,8 @@ dependencies = [
 name = "filmcraft-golden"
 version = "0.1.0"
 dependencies = [
+ "filmcraft-color",
+ "filmcraft-frame",
  "filmcraft-geom",
  "filmcraft-gpu",
  "filmcraft-media",
@@ -1530,6 +1535,7 @@ dependencies = [
  "filmcraft-time",
  "log",
  "pollster 0.4.0",
+ "rayon",
  "wgpu",
 ]
 
@@ -1657,6 +1663,7 @@ dependencies = [
  "filmcraft-time",
  "image",
  "rayon",
+ "rustix 1.1.5",
  "serde",
  "serde_json",
 ]
@@ -1695,6 +1702,7 @@ dependencies = [
  "egui",
  "egui_kittest",
  "filmcraft-audio-dsp",
+ "filmcraft-codecs",
  "filmcraft-color",
  "filmcraft-edit",
  "filmcraft-engine",
@@ -1708,7 +1716,9 @@ dependencies = [
  "filmcraft-time",
  "image",
  "log",
+ "pollster 0.4.0",
  "rayon",
+ "rustix 1.1.5",
  "serde",
  "serde_json",
 ]

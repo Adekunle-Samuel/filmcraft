@@ -205,7 +205,14 @@ pub fn scopes(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let frame = rate.frame_at(app.session.playhead());
     let key = FrameKey { target: Target::Sequence(seq_id), frame, size: 250, revision: app.session.revision };
     let project = app.session.project.clone();
-    app.frames.request(key, rate.tick_of(frame), 0.25, &project, 2);
+    // While playing, scopes come after the Program monitor's prefetch.
+    let prio = if app.playback.playing { 40 } else { 2 };
+    app.frames.request(key, rate.tick_of(frame), 0.25, &project, prio);
+    let pipe = app.session.active_sequence().map(|q| q.settings.color).unwrap_or(filmcraft_color::ColorPipeline::REC709);
+    if pipe.working.is_hdr() {
+        hdr_scopes(app, ui, rect, (seq_id.0, frame, app.session.revision));
+        return;
+    }
     let Some(img) = app.frames.get(&key) else {
         crate::dock::placeholder(ui, rect, &t, "…");
         return;
@@ -241,5 +248,70 @@ pub fn scopes(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         ui.painter().line_segment([pos2(wf.min.x, y), pos2(wf.max.x, y)], egui::Stroke::new(0.5, Color32::from_white_alpha(30)));
         ui.painter().text(pos2(wf.min.x + 2.0, y - 6.0), Align2::LEFT_CENTER, v.to_string(), Tokens::ui(8.0), t.text_faint);
     }
+    ui.painter().circle_stroke(vs.center(), vs_size / 2.0, egui::Stroke::new(1.0, Color32::from_white_alpha(40)));
+}
+
+/// Nits → waveform height (0..1) on the PQ scale used by HDR waveforms.
+fn pq_axis(nits: f32) -> f32 {
+    filmcraft_color::pq_inverse_eotf((nits / 10_000.0).clamp(0.0, 1.0))
+}
+
+/// Scopes of an HDR (Rec. 2100 PQ/HLG) sequence: luminance waveform in cd/m² on a PQ-scaled
+/// axis (0–10 000 nits, reference white 203 marked) and a BT.2020 vectorscope. The frame is the
+/// sequence rendered in its working space (HDR values kept), small and cached per frame.
+fn hdr_scopes(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, key: (u64, i64, u64)) {
+    use std::sync::Mutex;
+    static CACHE: Mutex<Option<((u64, i64, u64), filmcraft_render::Image)>> = Mutex::new(None);
+    let t = app.tokens;
+    let img = {
+        let mut c = CACHE.lock().unwrap_or_else(|e| e.into_inner());
+        if c.as_ref().is_none_or(|(k, _)| *k != key)
+            && let Some(img) = app.session.render_program_working(0.125)
+        {
+            *c = Some((key, img));
+        }
+        c.as_ref().map(|(_, i)| i.clone())
+    };
+    let Some(img) = img else {
+        crate::dock::placeholder(ui, rect, &t, "…");
+        return;
+    };
+    let half = rect.width() / 2.0;
+    let wf = Rect::from_min_size(rect.min + vec2(34.0, 8.0), vec2(half - 38.0, rect.height() - 16.0));
+    let vs_size = (rect.height() - 16.0).min(half - 12.0);
+    let vs = Rect::from_center_size(pos2(rect.min.x + half + half / 2.0, rect.center().y), vec2(vs_size, vs_size));
+    ui.painter().rect_filled(wf, 0.0, Color32::BLACK);
+    ui.painter().rect_filled(vs, vs_size / 2.0, Color32::BLACK);
+    let luma = filmcraft_color::Gamut::Bt2020.luma();
+    let (w, h) = (img.w, img.h);
+    let mut mesh = egui::Mesh::default();
+    let mut peak = 0f32;
+    for y in 0..h {
+        for x in 0..w {
+            let p = img.get(x, y);
+            let a = p[3].max(1e-6);
+            let c = [p[0] / a, p[1] / a, p[2] / a];
+            let nits = (luma[0] as f32 * c[0] + luma[1] as f32 * c[1] + luma[2] as f32 * c[2]).max(0.0) * filmcraft_color::REFERENCE_WHITE_NITS as f32;
+            peak = peak.max(nits);
+            let px = wf.min.x + x as f32 / w as f32 * wf.width();
+            let py = wf.max.y - pq_axis(nits) * wf.height();
+            mesh.add_colored_rect(Rect::from_min_size(pos2(px, py), vec2(1.5, 1.0)), Color32::from_rgba_unmultiplied(120, 255, 140, 70));
+            // vectorscope on PQ-encoded BT.2020 Y'CbCr
+            let e = c.map(|v| pq_axis(v.max(0.0) * filmcraft_color::REFERENCE_WHITE_NITS as f32));
+            let ycc = filmcraft_color::rgb_to_ycbcr(e[0], e[1], e[2], filmcraft_color::Matrix::Bt2020Ncl);
+            let vx = vs.center().x + ycc[1] * vs_size;
+            let vy = vs.center().y - ycc[2] * vs_size;
+            mesh.add_colored_rect(Rect::from_min_size(pos2(vx, vy), vec2(1.0, 1.0)), Color32::from_rgba_unmultiplied(200, 255, 200, 60));
+        }
+    }
+    ui.painter().add(mesh);
+    for (nits, label) in [(0.0, "0"), (10.0, "10"), (100.0, "100"), (203.0, "203"), (1000.0, "1000"), (4000.0, "4000"), (10_000.0, "10000")] {
+        let y = wf.max.y - pq_axis(nits) * wf.height();
+        let col = if nits == 203.0 { Color32::from_rgba_unmultiplied(255, 200, 80, 90) } else { Color32::from_white_alpha(30) };
+        ui.painter().line_segment([pos2(wf.min.x, y), pos2(wf.max.x, y)], egui::Stroke::new(0.5, col));
+        ui.painter().text(pos2(wf.min.x - 3.0, y), Align2::RIGHT_CENTER, label, Tokens::ui(8.0), t.text_faint);
+    }
+    ui.painter().text(wf.left_top() + vec2(4.0, 4.0), Align2::LEFT_TOP, format!("HDR · cd/m² · peak {peak:.0}"), Tokens::ui(9.0), t.text_dim);
+    app.auto.add("scopes.hdrWaveform", wf, &format!("HDR waveform, peak {peak:.0} nits"));
     ui.painter().circle_stroke(vs.center(), vs_size / 2.0, egui::Stroke::new(1.0, Color32::from_white_alpha(40)));
 }

@@ -10,6 +10,7 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use filmcraft_color::{ColorInfo, ColorSpace, Gamut, Primaries, Transfer};
 use filmcraft_geom::Vec2;
 use filmcraft_media::generators::GeneratorSource;
 use filmcraft_media::{DemoScene, Generator, MediaSource, SharedSource};
@@ -73,6 +74,18 @@ impl Builder {
 
     fn demo(&mut self, scene: DemoScene) -> ItemId {
         self.media(Generator::Demo(scene))
+    }
+
+    /// Demo footage re-encoded as camera log / HDR (see [`Encoded`]), with an optional Interpret
+    /// Footage colour-space override.
+    fn encoded(&mut self, scene: DemoScene, target: ColorSpace, gain: f32, flag: Option<ColorInfo>, interpret: Option<ColorSpace>) -> ItemId {
+        let id = self.demo(scene);
+        let inner = self.map.0.remove(&id).unwrap();
+        self.map.0.insert(id, Arc::new(Encoded { inner, target, gain, flag }) as SharedSource);
+        if let ItemKind::Media(m) = &mut self.p.item_mut(id).unwrap().kind {
+            m.interpret.color_space = interpret;
+        }
+        id
     }
 
     /// Place `item` on video track `track` (frames), scaled to the frame size.
@@ -142,6 +155,46 @@ fn pt(x: f64, y: f64) -> ParamValue {
 
 fn blend(name: &str) -> ParamValue {
     ParamValue::Choice(filmcraft_project::effect::BLEND_MODES.iter().position(|b| *b == name).unwrap_or_else(|| panic!("blend {name}")) as u32)
+}
+
+/// A source that re-encodes another source's (sRGB) frames into a camera log or HDR colour space:
+/// linear BT.709 × `gain` → `target` gamut → `target` curve, stored as full-range RGBA8. `flag`
+/// replaces the frame's colour metadata (e.g. PQ/BT.2020, so auto-detection kicks in).
+struct Encoded {
+    inner: SharedSource,
+    target: ColorSpace,
+    gain: f32,
+    flag: Option<ColorInfo>,
+}
+
+impl MediaSource for Encoded {
+    fn info(&self) -> &filmcraft_media::MediaInfo {
+        self.inner.info()
+    }
+    fn video_frame(&self, req: filmcraft_media::FrameRequest) -> filmcraft_media::Result<Arc<filmcraft_frame::VideoFrame>> {
+        let f = self.inner.video_frame(req)?;
+        let rgba = f.to_rgba8();
+        let m = filmcraft_color::spaces::to_f32(&filmcraft_color::spaces::gamut_matrix(Gamut::Bt709, self.target.gamut()));
+        let curve = self.target.curve();
+        let out: Vec<u8> = rgba
+            .chunks_exact(4)
+            .flat_map(|p| {
+                let lin = [0, 1, 2].map(|k| filmcraft_color::srgb_to_linear(p[k] as f32 / 255.0) * self.gain);
+                let c = filmcraft_color::spaces::apply3(&m, lin);
+                let e = c
+                    .map(|v| (filmcraft_color::transform::encode_channel(v as f64, curve, filmcraft_color::Range::Full).clamp(0.0, 1.0) * 255.0).round() as u8);
+                [e[0], e[1], e[2], p[3]]
+            })
+            .collect();
+        let mut nf = filmcraft_frame::VideoFrame::rgba8(f.width, f.height, out);
+        if let Some(c) = self.flag {
+            nf.color = c;
+        }
+        Ok(Arc::new(nf))
+    }
+    fn audio(&self, start: i64, frames: usize, sample_rate: u32) -> filmcraft_media::Result<filmcraft_frame::AudioBuffer> {
+        self.inner.audio(start, frames, sample_rate)
+    }
 }
 
 // ---- scenes ----
@@ -328,6 +381,25 @@ fn graphic_shapes() -> Scene {
     graphic_scene(DemoScene::Aurora, vec![ell, poly, path, txt])
 }
 
+/// Camera log → Rec. 709: Ocean Sunset encoded as S-Log3 / S-Gamut3.Cine one stop over, then
+/// interpreted as such in a Rec. 709 sequence (decode, gamut compression, BT.2390 tone mapping).
+fn log_to_rec709() -> Scene {
+    let mut b = Builder::new(1);
+    let src = b.encoded(DemoScene::OceanSunset, ColorSpace::SLog3SGamut3Cine, 2.0, None, Some(ColorSpace::SLog3SGamut3Cine));
+    b.place(0, src, 0, 48);
+    b.at(12)
+}
+
+/// HDR → SDR: City Night as Rec. 2100 PQ with highlights up to ~1200 cd/m² (×6 over reference
+/// white), detected from the frame's metadata and tone mapped into a Rec. 709 sequence.
+fn hdr_tone_map() -> Scene {
+    let mut b = Builder::new(1);
+    let pq = ColorInfo { transfer: Transfer::Pq, primaries: Primaries::Bt2020, ..ColorInfo::SRGB_FULL };
+    let src = b.encoded(DemoScene::CityNight, ColorSpace::Rec2100Pq, 6.0, Some(pq), None);
+    b.place(0, src, 0, 48);
+    b.at(12)
+}
+
 /// (name, title, scene).
 fn scenes() -> Vec<(&'static str, &'static str, fn() -> Scene)> {
     vec![
@@ -342,6 +414,8 @@ fn scenes() -> Vec<(&'static str, &'static str, fn() -> Scene)> {
         ("text_burnin", "Timecode and Clip Name burn-in text", text_burnin),
         ("graphic_title", "Graphic clip: title text with stroke and shadow, lower-third bar", graphic_title),
         ("graphic_shapes", "Graphic clip: ellipse, polygon, path and rotated text with background", graphic_shapes),
+        ("log_to_rec709", "Colour management: S-Log3/S-Gamut3.Cine footage to Rec. 709 (tone mapped)", log_to_rec709),
+        ("hdr_tone_map", "Colour management: Rec. 2100 PQ footage tone mapped into a Rec. 709 sequence", hdr_tone_map),
     ]
 }
 
@@ -394,7 +468,9 @@ goldens!(
     transition_wipe,
     text_burnin,
     graphic_title,
-    graphic_shapes
+    graphic_shapes,
+    log_to_rec709,
+    hdr_tone_map
 );
 
 /// Sanity: the scenes are not trivially empty or identical to each other.

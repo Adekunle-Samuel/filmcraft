@@ -39,9 +39,11 @@ FilmCraft is a non-linear editor for people who know Premiere: the same panels, 
 **A timeline you already know.** Source and Program monitors, bins with thumbnails, a multi-track timeline with patch and target buttons, sync locks and linked selection. The Editing, Assembly, Color, Effects and Audio workspaces are all there, and every panel docks wherever you want it.
 
 - **Three-point editing.** Mark In and Out in the Source monitor, then insert (`,`) or overwrite (`.`) onto the patched tracks. Lift (`;`) and extract (`'`) take ranges back out.
-- **Every trim.** Ripple, roll, slip, slide, rate stretch and razor tools. Trim mode selects edit points as ripple, roll or trim, nudges them a frame at a time (`⌥←` `⌥→`, ×5 with `⇧`), toggles the trim type with `⌃T` and extends them to the playhead with `E`. `Q` and `W` ripple-trim to the playhead.
+- **Every trim.** Ripple, roll, slip, slide, rate stretch and razor tools. Trim mode selects edit points as ripple, roll or trim, nudges them a frame at a time (`⌥←` `⌥→`, ×5 with `⇧`), toggles the trim type with `⌃T` and extends them to the playhead with `E`. `Q` and `W` ripple-trim to the playhead. The **Trim Monitor** shows both sides of the edit, and **dynamic trimming** trims live while it plays: `L` forward, `J` back, `K` to stop and commit as one undo step.
 - **Exact time.** Every edit is computed on integer ticks: 254,016,000,000 per second, which divides evenly by every common frame rate and sample rate. 23.976, 29.97 drop-frame and 59.94 are exact, not approximate.
 - **The details pros rely on.** Markers with colours, names and durations; add edit (`⌘K`) on one or all tracks; nesting; copy, paste and paste insert; ripple delete and close gap; snapping; unlimited undo with a History panel.
+- **Your keys.** A Keyboard Shortcuts editor (`⌥⌘K`) with a drawn keyboard, panel-specific shortcuts, conflict warnings and presets for FilmCraft, Premiere Pro, Final Cut Pro and Avid key layouts.
+- **Never lose work.** Saves are atomic, auto-save keeps a rolling set of versions, and a crash-recovery journal written about a second after each edit brings back unsaved changes after a crash or power cut.
 
 <p align="center">
   <img src="docs/images/filmcraft-timeline.png" alt="Timeline detail: Night of the Living Dead shots with dissolves, a Carnival of Souls insert on V2, the Chopin score as a waveform on A2, markers and loudness meters" width="100%">
@@ -96,7 +98,8 @@ FilmCraft is a non-linear editor for people who know Premiere: the same panels, 
 
 - **Loudness meters to broadcast standards.** Momentary, short-term and integrated loudness and true peak to ITU-R BS.1770 and EBU R128, alongside the peak meters. Our integrated reading matches ffmpeg's `ebur128` filter to the tenth of a LU.
 - **Clip effects on our own DSP library:** parametric EQ, high-pass, low-pass and band-pass filters, dynamics, a true-peak limiter, delay, reverb, DeNoise, DeHummer, invert and pitch shift. Parameters can be keyframed. Effects stay continuous across scrubbing, playback and export, with latency compensated.
-- **Mixing:** clip gain, volume and channel volume with keyframes; track volume, pan, mute, solo and sync lock; constant-power crossfades; waveforms drawn on every clip.
+- **Audio Track Mixer and Audio Clip Mixer:** faders, pan, mute, solo, five insert slots per track (pre- or post-fader), sends, submixes and a Mix track, all sample-accurate and latency-compensated. 24 tracks with three effects each mix about six times faster than real time on one core.
+- **Automation like a console:** Read, Latch, Touch and Write modes recorded live from the mixer during playback, shown and edited as track keyframes on the timeline. Plus the Audio Gain dialog (set, adjust, normalize) and constant-power crossfades.
 - **Audio-clock playback.** The sound card is the master clock, so picture follows sound and never the other way round.
 
 <br>
@@ -111,6 +114,7 @@ No FFmpeg inside. The video codecs, AAC, Opus and the containers are our own Rus
 | **HEVC / H.265** | ✓ | | Main and Main 10, bit-exact on 41 streams (tiles, WPP, PCM, long-term references), about 225 fps at 1080p |
 | **Apple ProRes** | ✓ | ✓ | Decodes 422 Proxy to 4444 XQ; export writes 422 HQ |
 | **AAC-LC** | ✓ | ✓ | |
+| **VP9** | ✓ | | Profiles 0–3, 8/10/12-bit, 4:2:0 to 4:4:4, tiles and superframes; bit-exact on 50+ streams; in WebM/Matroska and MP4 |
 | **Opus** | ✓ | | SILK, CELT, hybrid and multistream surround; range-exact on every RFC 8251 conformance vector; in WebM/Matroska and MP4 |
 | **MJPEG, PCM** | ✓ | ✓ | |
 | **MP3, FLAC, ALAC, Vorbis** | ✓ | | Via the [symphonia](https://github.com/pdeljanov/Symphonia) crate (MPL-2.0) for now, to be replaced by our own |
@@ -119,6 +123,14 @@ No FFmpeg inside. The video codecs, AAC, Opus and the containers are our own Rus
 | **Stills** | ✓ | ✓ | Import PNG, JPEG, GIF, WebP, TIFF and BMP; export PNG sequences and animated GIF |
 
 VP9, AV1, DNxHR and MXF are next ([roadmap](ROADMAP.md)).
+
+<br>
+
+## Titles and captions
+
+- **A real text engine:** OpenType shaping with kerning and ligatures, bidirectional text, line breaking, tracking and leading, drawn in linear light and sharp at any scale or rotation.
+- **Type, Shape and Pen tools** on the Program monitor: click to type, edit with a caret and selection, drag out rectangles, ellipses and paths. Graphic clips hold text and shape layers with fill, strokes, background and shadow, all keyframable, and edited in the Properties panel.
+- **Captions:** caption tracks in Subtitle, CEA-608, CEA-708 and Teletext formats; import and export SRT, WebVTT and SCC with frame-exact timing; edit captions in the Text panel and burn them into exports.
 
 <br>
 
@@ -131,6 +143,7 @@ VP9, AV1, DNxHR and MXF are next ([roadmap](ROADMAP.md)).
 - **H.264 MP4 with AAC, using our own encoders.** A 6-second 960×540 render takes 1.3 seconds and decodes cleanly in ffmpeg with error concealment switched off.
 - **Also:** Apple ProRes 422 HQ and Motion JPEG in QuickTime, PNG sequences, animated GIF and WAV.
 - **Background jobs** with progress and cancel, so you keep editing while it renders.
+- **Render previews:** the render bar marks segments green, yellow or red; rendered previews are cached by content, so an edit only invalidates what it touches and undo brings the green back.
 
 <br>
 
@@ -193,11 +206,13 @@ The control protocol is documented in [docs/control-protocol.md](docs/control-pr
 | [docs/testing.md](docs/testing.md) | Unit, property and ffmpeg-oracle tests, accuracy criteria, benchmarks |
 | [docs/agents.md](docs/agents.md) | Driving FilmCraft over MCP and the control channel; how agents develop it |
 | [docs/control-protocol.md](docs/control-protocol.md) | Control-channel and MCP reference |
+| [docs/project-files.md](docs/project-files.md) | `.fcproj` format, schema migrations, auto-save and crash recovery |
+| [docs/graphics.md](docs/graphics.md) · [docs/captions.md](docs/captions.md) | Text engine, graphic clips and tools; caption tracks and formats |
 | [ROADMAP.md](ROADMAP.md) | Milestones and estimates |
 
 ## Status
 
-FilmCraft is young and moving fast: roughly 30% of the way to Premiere Pro parity, with editing, colour, keyframes, codecs and export working today. [ROADMAP.md](ROADMAP.md) tracks every milestone with estimates.
+FilmCraft is young and moving fast: roughly 45% of the way to Premiere Pro parity, with editing, trimming, colour, keyframes, titles, captions, mixing, codecs and export working today. [ROADMAP.md](ROADMAP.md) tracks every milestone with estimates.
 
 ## Architecture
 
@@ -205,12 +220,13 @@ A layered Cargo workspace:
 
 | Layer | Crates |
 |---|---|
-| Codecs and containers | `h264`, `h264enc`, `hevc`, `prores`, `aac`, `isobmff`, `matroska`, `bitstream` |
-| Foundations | `time`, `geom`, `color`, `frame`, `media`, `project`, `audio-dsp` |
-| Editing and interchange | `edit`, `codecs`, `interchange` |
+| Codecs and containers | `h264`, `h264enc`, `hevc`, `vp9`, `prores`, `aac`, `opus`, `isobmff`, `matroska`, `bitstream` |
+| Foundations | `time`, `geom`, `color`, `frame`, `media`, `text`, `project`, `audio-dsp` |
+| Editing and interchange | `edit`, `codecs`, `captions`, `format` (project files), `interchange` |
 | Rendering and output | `render`, `gpu`, `export` |
 | Engine | `engine`: command registry, session, undo, jobs |
 | Front ends | `ui-egui`, `automation` (MCP), `apps/filmcraft`, `apps/filmcraft-cli` |
+| Test support | `testkit` (ffmpeg oracles, fixtures), `golden` (golden-image tests) |
 
 Nothing below the front ends depends on a UI toolkit or OS API. `cargo xtask ci` checks formatting, lints, tests, the layering rules, asset attribution and the wasm build.
 

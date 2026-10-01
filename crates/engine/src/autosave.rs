@@ -105,6 +105,7 @@ pub struct Preferences {
     pub playback: PlaybackPrefs,
     pub trim: TrimPrefs,
     pub media: MediaPrefs,
+    pub essential_sound: EssentialSoundPrefs,
 }
 
 /// Preferences ▸ Media.
@@ -114,6 +115,20 @@ pub struct MediaPrefs {
     /// "Enable proxies": playback and monitors read attached proxies (the monitors' Toggle
     /// Proxies button). Export always uses full-resolution media.
     pub enable_proxies: bool,
+}
+
+/// Essential Sound: user presets saved from the panel (built-in presets live in
+/// `filmcraft_project::essential`).
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct EssentialSoundPrefs {
+    pub user_presets: Vec<UserSoundPreset>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct UserSoundPreset {
+    pub name: String,
+    pub settings: filmcraft_project::EssentialSound,
 }
 
 /// Preferences ▸ Audio (the mixer-automation part) and the Track Mixer panel-menu toggle.
@@ -132,6 +147,11 @@ pub struct AudioPrefs {
     pub minimum_time_ms: u32,
     /// Track Mixer ▸ "Switch to Touch after Write".
     pub switch_to_touch_after_write: bool,
+    /// Essential Sound Loudness Auto-Match targets (integrated LUFS) per audio type.
+    pub dialogue_target_lufs: f64,
+    pub music_target_lufs: f64,
+    pub sfx_target_lufs: f64,
+    pub ambience_target_lufs: f64,
 }
 
 impl Default for AudioPrefs {
@@ -143,15 +163,36 @@ impl Default for AudioPrefs {
             minimum_time_interval_thinning: false,
             minimum_time_ms: 20,
             switch_to_touch_after_write: true,
+            dialogue_target_lufs: -23.0,
+            music_target_lufs: -25.0,
+            sfx_target_lufs: -21.0,
+            ambience_target_lufs: -30.0,
         }
     }
 }
 
 impl AudioPrefs {
+    /// Auto-Match target for an audio type.
+    pub fn loudness_target(&self, t: filmcraft_project::AudioType) -> f64 {
+        match t {
+            filmcraft_project::AudioType::Dialogue => self.dialogue_target_lufs,
+            filmcraft_project::AudioType::Music => self.music_target_lufs,
+            filmcraft_project::AudioType::Sfx => self.sfx_target_lufs,
+            filmcraft_project::AudioType::Ambience => self.ambience_target_lufs,
+        }
+    }
     fn clamp(&mut self) {
         self.automatch_time = if self.automatch_time.is_finite() { self.automatch_time.clamp(0.0, 30.0) } else { 1.0 };
         self.large_volume_adjustment = if self.large_volume_adjustment.is_finite() { self.large_volume_adjustment.clamp(0.0, 96.0) } else { 6.0 };
         self.minimum_time_ms = self.minimum_time_ms.clamp(1, 10_000);
+        for (v, d) in [
+            (&mut self.dialogue_target_lufs, -23.0),
+            (&mut self.music_target_lufs, -25.0),
+            (&mut self.sfx_target_lufs, -21.0),
+            (&mut self.ambience_target_lufs, -30.0),
+        ] {
+            *v = if v.is_finite() { v.clamp(-60.0, 0.0) } else { d };
+        }
     }
 }
 

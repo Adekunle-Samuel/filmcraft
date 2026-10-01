@@ -188,6 +188,17 @@ pub fn invoke(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, params: Val
             app.dialog = Some(crate::Dialog::AudioGain);
             return Ok(json!({"dialog": "audioGain"}));
         }
+        // Colour dialogs from the menus; with params the engine command applies directly.
+        "clip.interpretFootage" if params.get("colorSpace").is_none() => {
+            filmcraft_engine::find_command(id).map_or(Ok(()), |c| (c.enabled)(&app.session))?;
+            crate::panels::color_dialogs::open_interpret(app, &params);
+            return Ok(json!({"dialog": "interpretFootage"}));
+        }
+        "sequence.colorSettings" if params.as_object().is_none_or(|m| m.is_empty()) => {
+            filmcraft_engine::find_command(id).map_or(Ok(()), |c| (c.enabled)(&app.session))?;
+            crate::panels::color_dialogs::open_sequence(app);
+            return Ok(json!({"dialog": "sequenceColor"}));
+        }
         // From menus/shortcuts (no params) these ask first; agents pass params to act directly.
         "file.revert" if params.as_object().is_none_or(|m| m.is_empty()) && app.session.is_dirty() => {
             if app.session.path.is_none() {

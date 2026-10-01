@@ -293,6 +293,13 @@ fn ci() -> Result<(), String> {
     wasm()
 }
 
+/// The headless playback benchmark (`crates/ui-egui/examples/bench_playback.rs`); extra
+/// arguments go to the benchmark (`cargo xtask bench-playback --scenario stack3 --res full`).
+fn bench_playback() -> Result<(), String> {
+    let extra: Vec<String> = std::env::args().skip(2).collect();
+    run(Command::new(env!("CARGO")).args(["run", "--release", "-p", "filmcraft-ui-egui", "--example", "bench_playback", "--"]).args(&extra))
+}
+
 fn main() -> ExitCode {
     let task = std::env::args().nth(1).unwrap_or_default();
     let r = match task.as_str() {
@@ -301,7 +308,8 @@ fn main() -> ExitCode {
         "assets" => assets(),
         "fixtures" => fixtures(&std::env::args().skip(2).collect::<Vec<_>>()),
         "ci" => ci(),
-        _ => Err("usage: cargo xtask <layers|assets|wasm|fixtures [crate…]|ci>".into()),
+        "bench-playback" => bench_playback(),
+        _ => Err("usage: cargo xtask <layers|assets|wasm|fixtures [crate…]|ci|bench-playback [args]>".into()),
     };
     match r {
         Ok(()) => ExitCode::SUCCESS,

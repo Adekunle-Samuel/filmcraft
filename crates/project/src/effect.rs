@@ -86,6 +86,7 @@ impl EffectDef {
             params: self.params.iter().map(|p| (p.id.to_string(), Param::new(p.default.clone()))).collect(),
             masks: Vec::new(),
             post_fader: false,
+            essential: false,
         }
     }
 }
@@ -117,6 +118,9 @@ pub struct EffectInstance {
     /// Track/Mix inserts only: process after the fader instead of before it.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub post_fader: bool,
+    /// Managed by the Essential Sound panel (see [`crate::essential`]).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub essential: bool,
 }
 
 impl EffectInstance {
@@ -212,6 +216,9 @@ fn curve(id: &'static str, label: &'static str, hue: bool) -> ParamDef {
 fn wheel(id: &'static str, label: &'static str) -> ParamDef {
     ParamDef { id, label, kind: ParamKind::Wheel, default: ParamValue::Vec2(Vec2::new(0.0, 0.0)), animatable: true, group: None }
 }
+fn txt(id: &'static str, label: &'static str) -> ParamDef {
+    ParamDef { id, label, kind: ParamKind::Text, default: ParamValue::Text(String::new()), animatable: false, group: None }
+}
 fn grp(mut p: ParamDef, g: &'static str) -> ParamDef {
     p.group = Some(g);
     p
@@ -252,6 +259,7 @@ const A_FILTER: &[&str] = &["Audio Effects", "Filter and EQ"];
 const A_NOISE: &[&str] = &["Audio Effects", "Noise Reduction/Restoration"];
 const A_REVERB: &[&str] = &["Audio Effects", "Reverb"];
 const A_SPECIAL: &[&str] = &["Audio Effects", "Special"];
+const A_STEREO: &[&str] = &["Audio Effects", "Stereo Imagery"];
 const A_TIME: &[&str] = &["Audio Effects", "Time and Pitch"];
 const A_TRANS: &[&str] = &["Audio Transitions", "Crossfade"];
 
@@ -399,6 +407,8 @@ fn build_effects() -> Vec<EffectDef> {
             "Lumetri Color",
             COLOR_CORR,
             vec![
+                grp(b("basic_on", "Basic Correction", true), "Basic Correction"),
+                grp(txt("input_lut", "Input LUT"), "Basic Correction"),
                 grp(f("temperature", "Temperature", 0.0, -100.0, 100.0, ""), "Basic Correction"),
                 grp(f("tint", "Tint", 0.0, -100.0, 100.0, ""), "Basic Correction"),
                 grp(fs("exposure", "Exposure", 0.0, (-5.0, 5.0), (-5.0, 5.0), "", 1), "Basic Correction"),
@@ -408,6 +418,7 @@ fn build_effects() -> Vec<EffectDef> {
                 grp(f("whites", "Whites", 0.0, -100.0, 100.0, ""), "Basic Correction"),
                 grp(f("blacks", "Blacks", 0.0, -100.0, 100.0, ""), "Basic Correction"),
                 grp(fs("saturation", "Saturation", 100.0, (0.0, 200.0), (0.0, 200.0), "", 1), "Basic Correction"),
+                grp(b("creative_on", "Creative", true), "Creative"),
                 grp(
                     ch(
                         "look",
@@ -417,6 +428,7 @@ fn build_effects() -> Vec<EffectDef> {
                     ),
                     "Creative",
                 ),
+                grp(txt("look_lut", "Look LUT"), "Creative"),
                 grp(fs("look_intensity", "Intensity", 100.0, (0.0, 200.0), (0.0, 200.0), "", 1), "Creative"),
                 grp(f("faded_film", "Faded Film", 0.0, 0.0, 100.0, ""), "Creative"),
                 grp(f("sharpen", "Sharpen", 0.0, -100.0, 100.0, ""), "Creative"),
@@ -424,6 +436,7 @@ fn build_effects() -> Vec<EffectDef> {
                 grp(fs("creative_sat", "Saturation", 100.0, (0.0, 200.0), (0.0, 200.0), "", 1), "Creative"),
                 grp(col("shadow_tint", "Shadow Tint", [0.5, 0.5, 0.5, 1.0]), "Creative"),
                 grp(col("highlight_tint", "Highlight Tint", [0.5, 0.5, 0.5, 1.0]), "Creative"),
+                grp(b("curves_on", "Curves", true), "Curves"),
                 grp(curve("curve_luma", "Luma Curve", false), "Curves"),
                 grp(curve("curve_red", "Red Curve", false), "Curves"),
                 grp(curve("curve_green", "Green Curve", false), "Curves"),
@@ -433,6 +446,7 @@ fn build_effects() -> Vec<EffectDef> {
                 grp(curve("hue_vs_luma", "Hue vs Luma", true), "Curves"),
                 grp(curve("luma_vs_sat", "Luma vs Sat", true), "Curves"),
                 grp(curve("sat_vs_sat", "Sat vs Sat", true), "Curves"),
+                grp(b("wheels_on", "Color Wheels & Match", true), "Color Wheels & Match"),
                 grp(wheel("wheel_shadows", "Shadows"), "Color Wheels & Match"),
                 grp(f("wheel_shadows_l", "Shadows Lightness", 0.0, -100.0, 100.0, ""), "Color Wheels & Match"),
                 grp(wheel("wheel_midtones", "Midtones"), "Color Wheels & Match"),
@@ -451,6 +465,7 @@ fn build_effects() -> Vec<EffectDef> {
                 grp(f("hsl_tint", "Tint", 0.0, -100.0, 100.0, ""), "HSL Secondary"),
                 grp(fs("hsl_sat", "Saturation", 100.0, (0.0, 200.0), (0.0, 200.0), "", 1), "HSL Secondary"),
                 grp(f("hsl_hue_shift", "Hue Shift", 0.0, -180.0, 180.0, "°"), "HSL Secondary"),
+                grp(b("vignette_on", "Vignette", true), "Vignette"),
                 grp(f("vignette_amount", "Amount", 0.0, -5.0, 5.0, ""), "Vignette"),
                 grp(f("vignette_midpoint", "Midpoint", 50.0, 0.0, 100.0, ""), "Vignette"),
                 grp(f("vignette_roundness", "Roundness", 0.0, -100.0, 100.0, ""), "Vignette"),
@@ -882,7 +897,24 @@ fn build_effects() -> Vec<EffectDef> {
         audio("denoise", "DeNoise", A_NOISE, vec![f("amount", "Amount", 40.0, 0.0, 100.0, "%")]),
         audio("dehummer", "DeHummer", A_NOISE, vec![ch("freq", "Frequency", &["50 Hz", "60 Hz"], 1), f("gain", "Gain", -40.0, -80.0, 0.0, "dB")]),
         audio("declicker", "Automatic Click Remover", A_NOISE, vec![]),
-        audio("dereverb", "DeReverb", A_NOISE, vec![]),
+        audio(
+            "dereverb",
+            "DeReverb",
+            A_NOISE,
+            vec![f("amount", "Amount", 50.0, 0.0, 100.0, "%"), fs("rt60", "Decay Time (RT60)", 0.8, (0.1, 5.0), (0.1, 3.0), "s", 2)],
+        ),
+        audio(
+            "deesser",
+            "DeEsser",
+            A_AMP,
+            vec![
+                fs("frequency", "Frequency", 6000.0, (2000.0, 12000.0), (2000.0, 12000.0), "Hz", 0),
+                fs("threshold", "Threshold", -12.0, (-40.0, 0.0), (-40.0, 0.0), "dB", 1),
+                fs("reduction", "Maximum Reduction", 8.0, (0.0, 24.0), (0.0, 24.0), "dB", 1),
+            ],
+        ),
+        audio("speech_enhance", "Enhance Speech", A_NOISE, vec![f("mix", "Mix", 100.0, 0.0, 100.0, "%"), ch("tone", "Voice", &["Low Tone", "High Tone"], 0)]),
+        audio("stereo_width", "Stereo Width", A_STEREO, vec![fs("width", "Width", 100.0, (0.0, 200.0), (0.0, 200.0), "%", 0)]),
         audio(
             "studio_reverb",
             "Studio Reverb",

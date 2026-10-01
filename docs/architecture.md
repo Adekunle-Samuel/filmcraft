@@ -219,9 +219,19 @@ file ──► codecs (MP4/MOV, MKV, audio)        demux + decode, GOP-aware see
 - **Frame scheduling.** `crates/ui-egui/src/frames.rs` runs a small pool of worker threads with
   prioritised jobs: the frame on screen first, then playback prefetch, then thumbnails. The UI never
   decodes. It shows the exact frame when it is ready and holds the nearest cached frame meanwhile.
+  Play waits for the first frames (`PREROLL_FRAMES`, at most 0.5 s) before starting the clock.
+  Every refresh, `schedule_playback` asks for the next frames and drops (or cancels, through
+  `filmcraft_media::cancel`) jobs for frames the playhead has passed; a new on-screen frame
+  replaces the one asked for before (scrubbing); Stop cancels the prefetch. When frames cost more
+  than the workers can render in real time (CPU effects), it starts only frames that can still be
+  on time and spaces them evenly (`playback_plan`). GPU plans carry their texels already
+  converted for upload (`filmcraft_gpu::prepare`), so the UI thread only copies them.
 - **Audio clock.** The desktop app passes a cpal output (`apps/filmcraft/src/audio.rs`) to the UI as
   `AudioOut`. While playing, the samples played by the sound card drive the playhead and video follows.
-  Without an audio device, playback falls back to the wall clock. Dropped frames are counted.
+  Without an audio device, playback falls back to the wall clock. `PlaybackMeter` counts timeline
+  frames: shown when the exact picture was on screen while due, dropped otherwise (including frames
+  passed over without a refresh, not while the window is hidden). `cargo xtask bench-playback`
+  measures the whole path headlessly ([testing.md](testing.md) §5).
   Sequence audio goes through the mixer graph (`render::mixer`, §5.1); clip audio effects run on
   `audio-dsp` via `render::audio_fx`.
 
@@ -266,6 +276,83 @@ Mix:  bus sum → pre-fader inserts → fader → meter → post-fader inserts �
 - **Live state.** `PreviewStore::live` (`LiveMix`) also carries per-strip meter peaks posted by the
   mix (Track Mixer and Audio Meters read them) and the newest project snapshot, which the audio
   callback uses, so edits made during playback are heard.
+
+### 5.2 Essential Sound
+
+```text
+clip.essential (type + settings)  ──apply()──►  clip effects marked `essential`, clip gain, Volume, Panner
+essentialSound.autoMatch   BS.1770 integrated loudness of render::audio::clip_signal → match gain (clip gain)
+essentialSound.generateDucking   trigger clips' summed level (10 ms hops) → activity regions → Volume keyframes
+```
+
+- **Model** (`project::essential`). A clip's `essential: Option<EssentialSound>` holds its audio type
+  (Dialogue / Music / SFX / Ambience) and per-type sections: Loudness (match gain, measured and target
+  LUFS), Repair (Reduce Noise, Reduce Rumble, DeHum 50/60 Hz, DeEss, Reduce Reverb), Clarity
+  (Dynamics, EQ preset + amount, Enhance Speech), Creative (Reverb preset + amount, Stereo Width for
+  Ambience), Ducking (against types, sensitivity, reduce by, fades), Pan, Clip Volume and Mute.
+- **Effects under the hood.** `essential::apply(item, old, t)` turns the settings into ordinary clip
+  effects (Highpass, DeNoise, DeHummer, DeEsser, DeReverb, Dynamics Processing, Parametric Equalizer,
+  Enhance Speech, Stereo Width, Studio Reverb) flagged `EffectInstance::essential`, in that order, ahead
+  of the user's own effects. Only parameters whose derived value changed are written (at the playhead),
+  so keyframes added in Effect Controls survive. A section switch bypasses its effects, a slot switch
+  removes its effect, clearing the type removes them all. Auto-match gain, Clip Volume (an offset on
+  the Volume level or on all its keyframes) and Pan are applied as deltas, so clearing restores the
+  clip. Because these are normal effects, playback, the mixer and export need nothing special.
+- **Loudness.** The clip signal (clip gain + effects, before Volume) is measured with the BS.1770
+  meter; the gain is linear after the effects, so one measurement hits the target exactly. Targets are
+  preferences (`audio.dialogueTargetLufs` −23, `musicTargetLufs` −25, `sfxTargetLufs` −21,
+  `ambienceTargetLufs` −30).
+- **Ducking.** Sensitivity 0…10 maps to a threshold −20 − 4·s dBFS on the summed trigger signal (50 ms
+  window); regions shorter than 100 ms are dropped and pauses under 250 ms bridged; each region gets a
+  fade-down before it and a fade-up after it (`audio_dsp::ducking::duck_keyframes`), written as Volume
+  level keyframes that replace earlier ones.
+- **Presets** (our own names and values) per type; user presets are saved in preferences
+  (`essentialSound.userPresets`). Music remixing to a duration is out of scope (the Duration section
+  says so).
+- **Enhance Speech** is a DSP chain (high-pass, de-mud, presence and air EQ, expander, compressor), not a
+  model: no speech-enhancement model with an open licence that we could ship and verify is bundled.
+  DeepFilterNet (MIT/Apache-2.0, Rust inference via tract) is the candidate for a future optional
+  integration behind a trait.
+
+### 5.3 Colour management
+
+```text
+frame (Y'CbCr/RGB + metadata) ─► source colour space: Interpret Footage override, else VUI/colr/MKV Colour
+  ─► decode table (sRGB/BT.709, PQ, HLG scene light, camera log) ─► HLG OOTF ─► 3×3 to working gamut
+  ─► BT.2390 tone map (HDR/log into an SDR sequence, Auto Tone Map Media) ─► gamut compression
+  ─► effects + compositing in working linear (1.0 = reference white = SDR white = 203 cd/m²)
+  ─► monitors: working → SDR BT.709 (tone map from HDR, gamut map from BT.2020)
+  ─► HDR export: working → PQ/HLG BT.2020 R'G'B' → Y'CbCr (BT.2020 NCL) + VUI/colr/mdcv/clli/SEI
+```
+
+- **Model.** `SequenceSettings::color` (`ColorPipeline`: working space Rec. 709 / Rec. 2100 PQ /
+  Rec. 2100 HLG, wide gamut, auto tone map) and `Interpretation::color_space` (per media item;
+  `None` = from metadata). Commands: `sequence.colorSettings`, `clip.interpretFootage`,
+  `color.spaces`, `media.colorInfo`.
+- **Maths** in `filmcraft-color` (`transform`, `log`, `spaces`; formulas and sources in
+  [crates/color/README.md](../crates/color/README.md)); the renderer side is `render::colorman`.
+- **Fast path.** A Rec. 709 sequence without wide gamut and media whose metadata says Rec. 709 /
+  sRGB decodes exactly as before, and its layers stay on the GPU. Log, HDR or wide-gamut media,
+  and every layer of an HDR/wide-gamut sequence, are converted on the CPU (the GPU path draws them
+  as pre-rendered images, like layers with effects).
+- **Outputs.** `RenderOptions::working_output` returns working-space pixels (HDR exports,
+  scopes); otherwise the top-level render is converted for an SDR monitor. Lumetri and the other
+  colour effects work on display-encoded values clamped to 0..1, so in an HDR sequence they clip
+  highlights above reference white (HDR-aware grading is future work).
+- **HDR export.** H.264 and ProRes exports of a PQ/HLG sequence encode BT.2020 PQ/HLG (ProRes
+  10-bit; our H.264 encoder is 8-bit, so H.264 HDR is 8-bit) and signal it in the VUI / ProRes
+  frame header, `colr`, and for PQ `mdcv` (BT.2020 / D65, 1000 / 0.0001 cd/m²) and `clli`
+  (MaxCLL/MaxFALL 0 = unknown, they are not measured) plus the matching H.264 SEI. `sdr: true`
+  exports the tone-mapped SDR picture instead; render previews always do.
+- **Monitors / display colour management.** The monitors are SDR (sRGB-encoded RGBA8 textures):
+  HDR sequences are shown tone mapped. macOS EDR (extended-range `CAMetalLayer` output) is not
+  wired up: there is no `platform` crate yet and eframe/wgpu do not expose an EDR surface, so HDR
+  values above SDR white are never sent to the display. The scopes of an HDR sequence show the
+  working-space values (waveform in cd/m² on a PQ scale, BT.2020 vectorscope).
+- **LUTs.** Lumetri Input LUT and Creative Look reference `lib:<id>` (the project's LUT library,
+  `Project::luts`, embedded `.cube`/`.3dl` text) or `builtin:<id>` (code-generated camera
+  conversions and looks). `filmcraft-gpu::GpuLut` is the WGSL tetrahedral counterpart, tested for
+  parity.
 
 ## 6. Export jobs (`filmcraft-export`)
 

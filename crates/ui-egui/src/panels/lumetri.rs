@@ -51,8 +51,11 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         });
     });
     let set = |actions: &mut Actions, param: &str, v: Value| actions.push(json!({"clip": clip.0, "effect": idx, "param": param, "value": v}));
+    let mut sections: Vec<&'static str> = Vec::new();
+    let mut lut_actions: Vec<(&'static str, Value)> = Vec::new();
     egui::ScrollArea::vertical().auto_shrink([false, false]).show(&mut bui, |ui| {
-        if section(ui, app, "Basic Correction") {
+        if open_section(ui, app, &e, "Basic Correction", "basic_on", "basic", &mut sections) {
+            lut_combo(ui, app, &e, "input_lut", "Input LUT", true, &mut lut_actions);
             sub(ui, &t, "Color");
             slider(ui, &e, mt, "temperature", "Temperature", Some(Gradient::Temp), &t, &mut actions, clip, idx);
             slider(ui, &e, mt, "tint", "Tint", Some(Gradient::Tint), &t, &mut actions, clip, idx);
@@ -69,7 +72,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                 slider(ui, &e, mt, id, label, None, &t, &mut actions, clip, idx);
             }
         }
-        if section(ui, app, "Creative") {
+        if open_section(ui, app, &e, "Creative", "creative_on", "creative", &mut sections) {
             let look = match e.param("look").map(|p| &p.value) {
                 Some(ParamValue::Choice(c)) => *c as usize,
                 _ => 0,
@@ -83,7 +86,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                 let mut sel = look;
                 egui::ComboBox::from_id_salt("lumetri-look")
                     .selected_text(opts.get(look).copied().unwrap_or("None"))
-                    .width(ui.available_width() - 8.0)
+                    .width((ui.available_width() - 40.0).max(60.0))
                     .show_ui(ui, |ui| {
                         for (i, o) in opts.iter().enumerate() {
                             if ui.selectable_value(&mut sel, i, *o).changed() {
@@ -92,13 +95,14 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                         }
                     });
             });
+            lut_combo(ui, app, &e, "look_lut", "Look LUT", false, &mut lut_actions);
             slider(ui, &e, mt, "look_intensity", "Intensity", None, &t, &mut actions, clip, idx);
             sub(ui, &t, "Adjustments");
             for (id, label) in [("faded_film", "Faded Film"), ("sharpen", "Sharpen"), ("vibrance", "Vibrance"), ("creative_sat", "Saturation")] {
                 slider(ui, &e, mt, id, label, None, &t, &mut actions, clip, idx);
             }
         }
-        if section(ui, app, "Curves") {
+        if open_section(ui, app, &e, "Curves", "curves_on", "curves", &mut sections) {
             sub(ui, &t, "RGB Curves");
             let key = egui::Id::new("lumetri-curve-channel");
             let mut ch: usize = ui.data(|d| d.get_temp(key)).unwrap_or(0);
@@ -136,7 +140,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                 curve_editor(ui, &e, id, true, Color32::WHITE, &t, &mut actions, clip, idx);
             }
         }
-        if section(ui, app, "Color Wheels & Match") {
+        if open_section(ui, app, &e, "Color Wheels & Match", "wheels_on", "wheels", &mut sections) {
             let w = ((ui.available_width() - 24.0) / 3.0).min(120.0);
             ui.horizontal(|ui| {
                 for (id, lid, label) in [
@@ -150,13 +154,9 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                     });
                 }
             });
+            match_controls(ui, app, &mut lut_actions);
         }
-        if section(ui, app, "HSL Secondary") {
-            let on = e.param("hsl_on").and_then(|p| p.value.as_bool()).unwrap_or(false);
-            let mut v = on;
-            if ui.checkbox(&mut v, "Enable key").changed() {
-                set(&mut actions, "hsl_on", json!(v));
-            }
+        if open_section(ui, app, &e, "HSL Secondary", "hsl_on", "hsl", &mut sections) {
             sub(ui, &t, "Key");
             slider(ui, &e, mt, "hsl_hue", "Hue", Some(Gradient::Hue), &t, &mut actions, clip, idx);
             for (id, label) in [
@@ -189,7 +189,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
             slider(ui, &e, mt, "hsl_sat", "Saturation", None, &t, &mut actions, clip, idx);
             slider(ui, &e, mt, "hsl_hue_shift", "Hue Shift", Some(Gradient::Hue), &t, &mut actions, clip, idx);
         }
-        if section(ui, app, "Vignette") {
+        if open_section(ui, app, &e, "Vignette", "vignette_on", "vignette", &mut sections) {
             for (id, label) in
                 [("vignette_amount", "Amount"), ("vignette_midpoint", "Midpoint"), ("vignette_roundness", "Roundness"), ("vignette_feather", "Feather")]
             {
@@ -203,9 +203,81 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
             app.ui.status = err.to_string();
         }
     }
+    for sec in sections {
+        if let Err(err) = app.session.execute("lumetri.setSection", json!({"clip": clip.0, "section": sec})) {
+            app.ui.status = err.to_string();
+        }
+    }
+    for (cmd, mut p) in lut_actions {
+        if p.get("browse").is_some() {
+            let Some(path) = app.hooks.pick_open_file.as_mut().and_then(|f| f("LUT", &["cube", "3dl"])) else { continue };
+            p = json!({"path": path});
+        }
+        p["clip"] = json!(clip.0);
+        if let Err(err) = app.session.execute(cmd, p) {
+            app.ui.status = err.to_string();
+        }
+    }
 }
 
-fn section(ui: &mut egui::Ui, app: &mut FilmcraftApp, name: &str) -> bool {
+fn open_section(
+    ui: &mut egui::Ui,
+    app: &mut FilmcraftApp,
+    e: &EffectInstance,
+    name: &str,
+    param: &str,
+    sec: &'static str,
+    out: &mut Vec<&'static str>,
+) -> bool {
+    let on = e.param(param).and_then(|p| p.value.as_bool()).unwrap_or(param != "hsl_on");
+    let (open, toggled) = section(ui, app, name, on);
+    if toggled {
+        out.push(sec);
+    }
+    open
+}
+
+/// LUT menu: None, built-ins, the project's LUT library, Browse… (file dialog → `lut.import`).
+fn lut_combo(ui: &mut egui::Ui, app: &mut FilmcraftApp, e: &EffectInstance, param: &str, label: &str, input: bool, out: &mut Vec<(&'static str, Value)>) {
+    let t = app.tokens;
+    let cur = match e.param(param).map(|p| &p.value) {
+        Some(ParamValue::Text(s)) => s.clone(),
+        _ => String::new(),
+    };
+    let cmd: &'static str = if input { "lumetri.setInputLut" } else { "lumetri.setLook" };
+    let shown = filmcraft_render::luts::label(Some(&app.session.project), &cur);
+    let mut entries: Vec<(String, String)> = vec![(String::new(), "None".into())];
+    let builtins: Vec<&filmcraft_render::luts::Builtin> = if input {
+        filmcraft_render::luts::input_builtins().collect()
+    } else {
+        filmcraft_render::luts::builtins().iter().filter(|b| b.id.starts_with("look-")).collect()
+    };
+    entries.extend(builtins.into_iter().map(|b| (format!("builtin:{}", b.id), b.label.clone())));
+    entries.extend(app.session.project.luts.iter().map(|l| (format!("lib:{}", l.id), l.name.clone())));
+    let mut rect = Rect::NOTHING;
+    ui.horizontal(|ui| {
+        ui.add_sized(vec2(110.0, 20.0), egui::Label::new(egui::RichText::new(label).color(t.text_dim)));
+        let r = egui::ComboBox::from_id_salt(("lumetri-lut", param)).selected_text(shown).truncate().width((ui.available_width() - 40.0).max(60.0)).show_ui(
+            ui,
+            |ui| {
+                for (r, name) in &entries {
+                    if ui.selectable_label(*r == cur, name).clicked() && *r != cur {
+                        out.push((cmd, json!({"lut": r})));
+                    }
+                }
+                ui.separator();
+                if ui.selectable_label(false, "Browse…").clicked() {
+                    out.push((cmd, json!({"browse": true})));
+                }
+            },
+        );
+        rect = r.response.rect;
+    });
+    app.auto.add(&format!("lumetri.{param}"), rect, label);
+}
+
+/// A section header; returns (expanded, switch clicked). `on` is the section's enable switch.
+fn section(ui: &mut egui::Ui, app: &mut FilmcraftApp, name: &str, on: bool) -> (bool, bool) {
     let t = app.tokens;
     let key = format!("lumetri2:{name}");
     let open = !app.ui.collapsed_fx.contains(&key) && (name == "Basic Correction" || app.ui.expanded_fx.contains(&key));
@@ -219,11 +291,16 @@ fn section(ui: &mut egui::Ui, app: &mut FilmcraftApp, name: &str) -> bool {
         t.text_dim,
     );
     ui.painter().text(pos2(r.min.x + 20.0, r.center().y), Align2::LEFT_CENTER, name, Tokens::semibold(13.0), t.text);
-    // toggle switch (visual; section bypass lands with per-section enables)
+    // enable switch (section bypass)
     let sw = Rect::from_center_size(pos2(r.max.x - 18.0, r.center().y), vec2(26.0, 14.0));
-    ui.painter().rect_filled(sw, 7.0, t.accent);
-    ui.painter().circle_filled(pos2(sw.max.x - 7.0, sw.center().y), 5.0, Color32::WHITE);
+    let sw_resp = ui.interact(sw.expand(3.0), egui::Id::new(("lumetri-switch", name)), Sense::click());
+    ui.painter().rect_filled(sw, 7.0, if on { t.accent } else { Color32::from_rgb(0x55, 0x55, 0x55) });
+    ui.painter().circle_filled(pos2(if on { sw.max.x - 7.0 } else { sw.min.x + 7.0 }, sw.center().y), 5.0, Color32::WHITE);
+    app.auto.add(&format!("lumetri.switch.{name}"), sw.expand(3.0), &format!("{name} on/off"));
     app.auto.add(&format!("lumetri.section.{name}"), r, name);
+    if sw_resp.clicked() {
+        return (open, true);
+    }
     if resp.clicked() {
         if open {
             app.ui.collapsed_fx.push(key.clone());
@@ -233,7 +310,7 @@ fn section(ui: &mut egui::Ui, app: &mut FilmcraftApp, name: &str) -> bool {
             app.ui.expanded_fx.push(key);
         }
     }
-    open
+    (open, false)
 }
 
 fn sub(ui: &mut egui::Ui, t: &Tokens, name: &str) {
@@ -490,4 +567,31 @@ fn color_wheel(ui: &mut egui::Ui, e: &EffectInstance, mt: Tick, id: &str, lid: &
         actions.push(json!({"clip": clip.0, "effect": idx, "param": lid, "value": nv}));
     }
     let _ = StrokeKind::Inside;
+}
+
+/// Color Match: reference frame (sequence timecode), Face Detection (skin-tone protection),
+/// Apply Match (`lumetri.applyMatch`).
+fn match_controls(ui: &mut egui::Ui, app: &mut FilmcraftApp, out: &mut Vec<(&'static str, Value)>) {
+    let t = app.tokens;
+    sub(ui, &t, "Color Match");
+    let key = egui::Id::new("lumetri-match-ref");
+    let fd_key = egui::Id::new("lumetri-match-face");
+    let mut tc: String = ui.data(|d| d.get_temp(key)).unwrap_or_else(|| "00:00:00:00".to_string());
+    let mut face: bool = ui.data(|d| d.get_temp(fd_key)).unwrap_or(true);
+    ui.horizontal(|ui| {
+        ui.add_sized(vec2(110.0, 20.0), egui::Label::new(egui::RichText::new("Reference").color(t.text_dim)));
+        let r = ui.add(egui::TextEdit::singleline(&mut tc).desired_width(96.0));
+        app.auto.add("lumetri.match.reference", r.rect, "Reference timecode");
+    });
+    let r = ui.checkbox(&mut face, "Face Detection (protect skin tones)");
+    app.auto.add("lumetri.match.faceDetection", r.rect, "Face Detection");
+    let b = ui.button("Apply Match");
+    app.auto.add("lumetri.match.apply", b.rect, "Apply Match");
+    if b.clicked() {
+        out.push(("lumetri.applyMatch", json!({"referenceTimecode": tc, "faceDetection": face})));
+    }
+    ui.data_mut(|d| {
+        d.insert_temp(key, tc);
+        d.insert_temp(fd_key, face);
+    });
 }

@@ -104,6 +104,59 @@ pub struct ExportSettings {
     /// ProRes flavour: `proxy`, `lt`, `standard` or `hq` (empty = HQ).
     #[serde(default)]
     pub prores_profile: String,
+    /// Encode display-referred SDR (Rec. 709, tone mapped) even when the sequence works in
+    /// Rec. 2100 PQ/HLG. Otherwise H.264 and ProRes exports of an HDR sequence are encoded in the
+    /// sequence's HDR space and signal it (VUI / `colr` / `mdcv` / `clli` / SEI).
+    #[serde(default)]
+    pub sdr: bool,
+    /// Colour signalling chosen by [`export`] for the encoders (not set by callers).
+    #[serde(skip)]
+    pub signal: ColorSignal,
+}
+
+/// Colour description of the encoded stream (ITU-T H.273 code points).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ColorSignal {
+    pub primaries: u8,
+    pub transfer: u8,
+    pub matrix: u8,
+}
+
+impl Default for ColorSignal {
+    fn default() -> Self {
+        ColorSignal { primaries: 1, transfer: 1, matrix: 1 }
+    }
+}
+
+impl ColorSignal {
+    pub const PQ: ColorSignal = ColorSignal { primaries: 9, transfer: 16, matrix: 9 };
+    pub const HLG: ColorSignal = ColorSignal { primaries: 9, transfer: 18, matrix: 9 };
+    pub fn is_hdr(&self) -> bool {
+        matches!(self.transfer, 16 | 18)
+    }
+    /// (Kr, Kb) of the matrix.
+    pub fn kr_kb(&self) -> (f32, f32) {
+        if self.matrix == 9 { (0.2627, 0.0593) } else { (0.2126, 0.0722) }
+    }
+    /// Sample-entry boxes: `colr` (nclx for MP4, nclc for MOV) plus `mdcv`/`clli` for PQ
+    /// (mastering display BT.2020/D65, 1000/0.0001 cd/m²; MaxCLL/MaxFALL 0 = unknown).
+    pub fn apply_to(&self, e: &mut SampleEntry, mov: bool) {
+        if !self.is_hdr() {
+            return;
+        }
+        if let Some(v) = e.video.as_mut() {
+            let (p, t, m) = (self.primaries as u16, self.transfer as u16, self.matrix as u16);
+            v.color = Some(if mov {
+                filmcraft_isobmff::ColorInfo::Nclc { primaries: p, transfer: t, matrix: m }
+            } else {
+                filmcraft_isobmff::ColorInfo::Nclx { primaries: p, transfer: t, matrix: m, full_range: false }
+            });
+            if self.transfer == 16 {
+                v.mastering_display = Some(filmcraft_isobmff::MasteringDisplay::bt2020(1000.0, 0.0001));
+                v.content_light = Some((0, 0));
+            }
+        }
+    }
 }
 
 impl Default for ExportSettings {
@@ -119,6 +172,8 @@ impl Default for ExportSettings {
             burn_captions: false,
             part_of_batch: false,
             prores_profile: String::new(),
+            sdr: false,
+            signal: ColorSignal::default(),
         }
     }
 }
@@ -163,11 +218,13 @@ pub struct EncodedPacket {
     pub composition_offset: i32,
 }
 
-/// Input picture for encoders: straight sRGB RGBA8 (encoders convert to their own YUV).
+/// Input picture for encoders: straight sRGB RGBA8 (encoders convert to their own YUV), or for
+/// HDR exports the encoded R'G'B' (PQ/HLG, BT.2020; 3 floats per pixel, 0..1) in `hdr`.
 pub struct EncoderFrame<'a> {
     pub width: u32,
     pub height: u32,
     pub rgba: &'a [u8],
+    pub hdr: Option<&'a [f32]>,
     pub index: u64,
 }
 
@@ -290,18 +347,27 @@ struct ProResEncoder {
     w: u32,
     h: u32,
     rate: FrameRate,
+    signal: ColorSignal,
 }
 
 impl VideoEncoder for ProResEncoder {
     fn sample_entry(&self) -> SampleEntry {
-        SampleEntry::prores(filmcraft_isobmff::FourCc(self.profile.fourcc()), self.w as u16, self.h as u16)
+        let mut e = SampleEntry::prores(filmcraft_isobmff::FourCc(self.profile.fourcc()), self.w as u16, self.h as u16);
+        self.signal.apply_to(&mut e, true);
+        e
     }
     fn timescale(&self) -> u32 {
         self.rate.num as u32
     }
     fn encode(&mut self, f: &EncoderFrame) -> Result<Vec<EncodedPacket>> {
         let mut fr = filmcraft_prores::Frame::new(f.width, f.height, filmcraft_prores::ChromaFormat::Yuv422, 10, false);
-        rgba_to_yuv422_10(f.rgba, f.width as usize, f.height as usize, &mut fr.y, &mut fr.cb, &mut fr.cr);
+        match f.hdr {
+            Some(rgb) => {
+                let (kr, kb) = self.signal.kr_kb();
+                rgbf_to_yuv422_10(rgb, f.width as usize, f.height as usize, kr, kb, &mut fr.y, &mut fr.cb, &mut fr.cr)
+            }
+            None => rgba_to_yuv422_10(f.rgba, f.width as usize, f.height as usize, &mut fr.y, &mut fr.cb, &mut fr.cr),
+        }
         let data = self.enc.encode(&fr).map_err(|e| ExportError::Encode(e.to_string()))?;
         Ok(vec![EncodedPacket { data, key: true, duration: self.rate.den as u32, composition_offset: 0 }])
     }
@@ -347,10 +413,42 @@ pub fn prores_profile(name: &str) -> filmcraft_prores::Profile {
     }
 }
 
+/// Limited-range 10-bit 4:2:2 from encoded R'G'B' floats with matrix (Kr, Kb).
+#[allow(clippy::too_many_arguments)]
+pub fn rgbf_to_yuv422_10(rgb: &[f32], w: usize, h: usize, kr: f32, kb: f32, y: &mut [u16], cb: &mut [u16], cr: &mut [u16]) {
+    let cw = w.div_ceil(2);
+    debug_assert!(rgb.len() >= w * h * 3 && y.len() >= w * h);
+    let kg = 1.0 - kr - kb;
+    let (sb, sr) = (2.0 * (1.0 - kb), 2.0 * (1.0 - kr));
+    y.par_chunks_mut(w).zip(cb.par_chunks_mut(cw).zip(cr.par_chunks_mut(cw))).enumerate().for_each(|(row, (yr, (cbr, crr)))| {
+        let src = &rgb[row * w * 3..(row + 1) * w * 3];
+        let mut us = vec![0f32; w];
+        let mut vs = vec![0f32; w];
+        for x in 0..w {
+            let (r, g, b) = (src[x * 3], src[x * 3 + 1], src[x * 3 + 2]);
+            let yy = kr * r + kg * g + kb * b;
+            yr[x] = (64.0 + 876.0 * yy).round().clamp(4.0, 1019.0) as u16;
+            us[x] = (b - yy) / sb;
+            vs[x] = (r - yy) / sr;
+        }
+        for cx in 0..cw {
+            let a = cx * 2;
+            let b2 = (a + 1).min(w - 1);
+            cbr[cx] = (512.0 + 896.0 * (us[a] + us[b2]) * 0.5).round().clamp(4.0, 1019.0) as u16;
+            crr[cx] = (512.0 + 896.0 * (vs[a] + vs[b2]) * 0.5).round().clamp(4.0, 1019.0) as u16;
+        }
+    });
+}
+
 fn prores_factory(format: Format, w: u32, h: u32, rate: FrameRate, s: &ExportSettings) -> Option<Result<Box<dyn VideoEncoder>>> {
-    let profile = prores_profile(&s.prores_profile);
-    (format == Format::ProRes)
-        .then(|| Ok(Box::new(ProResEncoder { enc: filmcraft_prores::Encoder::new(profile, w, h), profile, w, h, rate }) as Box<dyn VideoEncoder>))
+    (format == Format::ProRes).then(|| {
+        let profile = prores_profile(&s.prores_profile);
+        let mut cfg = filmcraft_prores::EncoderConfig::new(profile, w, h);
+        if s.signal.is_hdr() {
+            cfg.color = filmcraft_prores::ColorInfo { primaries: s.signal.primaries, transfer: s.signal.transfer, matrix: s.signal.matrix };
+        }
+        Ok(Box::new(ProResEncoder { enc: filmcraft_prores::Encoder::with_config(cfg), profile, w, h, rate, signal: s.signal }) as Box<dyn VideoEncoder>)
+    })
 }
 
 /// H.264 High (our encoder): sRGB/709 RGBA8 → 8-bit limited-range BT.709 4:2:0, VBR at the
@@ -363,6 +461,7 @@ struct H264Encoder {
     y: Vec<u8>,
     u: Vec<u8>,
     v: Vec<u8>,
+    signal: ColorSignal,
 }
 
 impl H264Encoder {
@@ -379,13 +478,21 @@ impl VideoEncoder for H264Encoder {
             let (sps, pps) = self.enc.sps_pps();
             filmcraft_isobmff::AvcConfig::new(vec![sps], vec![pps], 4)
         });
-        SampleEntry::avc(cfg, self.w as u16, self.h as u16)
+        let mut e = SampleEntry::avc(cfg, self.w as u16, self.h as u16);
+        self.signal.apply_to(&mut e, false);
+        e
     }
     fn timescale(&self) -> u32 {
         self.rate.num as u32
     }
     fn encode(&mut self, f: &EncoderFrame) -> Result<Vec<EncodedPacket>> {
-        rgba_to_yuv420_8(f.rgba, f.width as usize, f.height as usize, &mut self.y, &mut self.u, &mut self.v);
+        match f.hdr {
+            Some(rgb) => {
+                let (kr, kb) = self.signal.kr_kb();
+                rgbf_to_yuv420_8(rgb, f.width as usize, f.height as usize, kr, kb, &mut self.y, &mut self.u, &mut self.v)
+            }
+            None => rgba_to_yuv420_8(f.rgba, f.width as usize, f.height as usize, &mut self.y, &mut self.u, &mut self.v),
+        }
         let cw = (f.width as usize).div_ceil(2);
         let frame = filmcraft_h264enc::YuvFrame { y: &self.y, u: &self.u, v: &self.v, y_stride: f.width as usize, uv_stride: cw };
         let ps = self.enc.try_encode(&frame, f.index as i64 * self.rate.den).map_err(|e| ExportError::Encode(e.to_string()))?;
@@ -431,6 +538,39 @@ pub fn rgba_to_yuv420_8(rgba: &[u8], w: usize, h: usize, y: &mut Vec<u8>, u: &mu
     });
 }
 
+/// Limited-range 8-bit 4:2:0 from encoded R'G'B' floats with matrix (Kr, Kb).
+#[allow(clippy::too_many_arguments)]
+pub fn rgbf_to_yuv420_8(rgb: &[f32], w: usize, h: usize, kr: f32, kb: f32, y: &mut Vec<u8>, u: &mut Vec<u8>, v: &mut Vec<u8>) {
+    let (cw, ch) = (w.div_ceil(2), h.div_ceil(2));
+    let kg = 1.0 - kr - kb;
+    let (sb, sr) = (2.0 * (1.0 - kb), 2.0 * (1.0 - kr));
+    y.resize(w * h, 0);
+    u.resize(cw * ch, 0);
+    v.resize(cw * ch, 0);
+    y.par_chunks_mut(w * 2).zip(u.par_chunks_mut(cw).zip(v.par_chunks_mut(cw))).enumerate().for_each(|(cy, (yr, (ur, vr)))| {
+        let rows = yr.len() / w;
+        let mut us = vec![0f32; cw];
+        let mut vs = vec![0f32; cw];
+        let mut cnt = vec![0f32; cw];
+        for dy in 0..rows {
+            let row = cy * 2 + dy;
+            let src = &rgb[row * w * 3..(row + 1) * w * 3];
+            for x in 0..w {
+                let (r, g, b) = (src[x * 3], src[x * 3 + 1], src[x * 3 + 2]);
+                let yy = kr * r + kg * g + kb * b;
+                yr[dy * w + x] = (16.0 + 219.0 * yy).round().clamp(1.0, 254.0) as u8;
+                us[x / 2] += (b - yy) / sb;
+                vs[x / 2] += (r - yy) / sr;
+                cnt[x / 2] += 1.0;
+            }
+        }
+        for cx in 0..cw {
+            ur[cx] = (128.0 + 224.0 * us[cx] / cnt[cx]).round().clamp(1.0, 254.0) as u8;
+            vr[cx] = (128.0 + 224.0 * vs[cx] / cnt[cx]).round().clamp(1.0, 254.0) as u8;
+        }
+    });
+}
+
 fn h264_factory(format: Format, w: u32, h: u32, rate: FrameRate, s: &ExportSettings) -> Option<Result<Box<dyn VideoEncoder>>> {
     if format != Format::H264 {
         return None;
@@ -441,9 +581,19 @@ fn h264_factory(format: Format, w: u32, h: u32, rate: FrameRate, s: &ExportSetti
     cfg.keyint = (rate.num as f64 / rate.den as f64 * 2.0).round().max(1.0) as u32;
     let kbps = s.bitrate_kbps.max(100);
     cfg.rate = filmcraft_h264enc::RateControl::Vbr { target_kbps: kbps, max_kbps: kbps * 3 / 2 };
+    if s.signal.is_hdr() {
+        cfg.color = filmcraft_h264enc::ColorConfig { primaries: s.signal.primaries, transfer: s.signal.transfer, matrix: s.signal.matrix, full_range: false };
+        if s.signal.transfer == 16 {
+            let md = filmcraft_isobmff::MasteringDisplay::bt2020(1000.0, 0.0001).to_bytes();
+            let mut b = [0u8; 24];
+            b.copy_from_slice(&md);
+            cfg.mastering_display = Some(b);
+            cfg.content_light = Some((0, 0));
+        }
+    }
     Some(
         filmcraft_h264enc::Encoder::new(cfg)
-            .map(|enc| Box::new(H264Encoder { enc, w, h, rate, y: Vec::new(), u: Vec::new(), v: Vec::new() }) as Box<dyn VideoEncoder>)
+            .map(|enc| Box::new(H264Encoder { enc, w, h, rate, y: Vec::new(), u: Vec::new(), v: Vec::new(), signal: s.signal }) as Box<dyn VideoEncoder>)
             .map_err(|e| ExportError::Encode(e.to_string())),
     )
 }
@@ -464,6 +614,17 @@ pub fn export_range(project: &Project, seq: ItemId, settings: &ExportSettings) -
 pub fn export(project: &Arc<Project>, seq: ItemId, settings: &ExportSettings, sources: &dyn SourceProvider, progress: &Progress) -> Result<Report> {
     let t0 = std::time::Instant::now();
     let q = project.sequence(seq).ok_or(ExportError::NoSequence)?;
+    // HDR sequences export HDR (H.264 / ProRes) unless SDR is asked for
+    let pipe = q.settings.color;
+    let hdr_out = pipe.working.is_hdr() && !settings.sdr && matches!(settings.format, Format::H264 | Format::ProRes);
+    let mut settings = settings.clone();
+    settings.signal = match (hdr_out, pipe.working) {
+        (true, filmcraft_color::WorkingSpace::Rec2100Pq) => ColorSignal::PQ,
+        (true, _) => ColorSignal::HLG,
+        _ => ColorSignal::default(),
+    };
+    let settings = &settings;
+    let out_tf = hdr_out.then(|| filmcraft_color::OutputTransform::new(&pipe, pipe.working.output_space()));
     let rate = q.settings.frame_rate;
     let range = export_range(project, seq, settings)?;
     let f0 = rate.frame_at(range.start);
@@ -475,7 +636,26 @@ pub fn export(project: &Arc<Project>, seq: ItemId, settings: &ExportSettings, so
         progress.total.store(if settings.format == Format::Wav { 1 } else { nframes }, Ordering::Relaxed);
         progress.set_status(format!("Exporting {} frames ({})", nframes, settings.format.label()));
     }
-    let opts = RenderOptions { scale: w as f32 / q.settings.width as f32, captions: settings.burn_captions, ..Default::default() };
+    let opts = RenderOptions { scale: w as f32 / q.settings.width as f32, captions: settings.burn_captions, working_output: hdr_out, ..Default::default() };
+    // HDR: encoded R'G'B' floats over black, padded/cropped to the even output size
+    let render_hdr = |f: i64| -> Vec<f32> {
+        let img = filmcraft_render::render_sequence(project, seq, rate.tick_of(f), opts, sources);
+        let tf = out_tf.as_ref().expect("hdr transform");
+        let mut out = vec![0f32; (w * h * 3) as usize];
+        let black = tf.encode([0.0; 3]);
+        for (y, row) in out.chunks_exact_mut(w as usize * 3).enumerate() {
+            for (x, o) in row.chunks_exact_mut(3).enumerate() {
+                let c = if x < img.w && y < img.h {
+                    let i = (y * img.w + x) * 4;
+                    tf.encode([img.px[i], img.px[i + 1], img.px[i + 2]])
+                } else {
+                    black
+                };
+                o.copy_from_slice(&c);
+            }
+        }
+        out
+    };
     let render = |f: i64| -> Vec<u8> {
         let img = filmcraft_render::render_sequence(project, seq, rate.tick_of(f), opts, sources);
         let mut rgba = img.over_black_rgba8();
@@ -561,9 +741,10 @@ pub fn export(project: &Arc<Project>, seq: ItemId, settings: &ExportSettings, so
             // Encode the first batch before creating tracks (encoders may finalise codec config then).
             let mut pending: Vec<EncodedPacket> = Vec::new();
             let first_end = (f0 + batch).min(f1);
-            let first: Vec<Vec<u8>> = (f0..first_end).into_par_iter().map(render).collect();
-            for (k, rgba) in first.iter().enumerate() {
-                pending.extend(venc.encode(&EncoderFrame { width: w, height: h, rgba, index: k as u64 })?);
+            let frame = |fi: i64| -> (Vec<u8>, Vec<f32>) { if hdr_out { (Vec::new(), render_hdr(fi)) } else { (render(fi), Vec::new()) } };
+            let first: Vec<(Vec<u8>, Vec<f32>)> = (f0..first_end).into_par_iter().map(frame).collect();
+            for (k, (rgba, hdr)) in first.iter().enumerate() {
+                pending.extend(venc.encode(&EncoderFrame { width: w, height: h, rgba, hdr: hdr_out.then_some(hdr.as_slice()), index: k as u64 })?);
             }
             progress.done.fetch_add((first_end - f0) as u64, Ordering::Relaxed);
             let mut mux = Mp4Writer::new(std::io::BufWriter::new(file), WriterOptions::new(brand)).map_err(|e| ExportError::Io(e.to_string()))?;
@@ -631,9 +812,11 @@ pub fn export(project: &Arc<Project>, seq: ItemId, settings: &ExportSettings, so
                     return Err(ExportError::Cancelled);
                 }
                 let end = (f + batch).min(f1);
-                let frames: Vec<Vec<u8>> = (f..end).into_par_iter().map(render).collect();
-                for (k, rgba) in frames.iter().enumerate() {
-                    for p in venc.encode(&EncoderFrame { width: w, height: h, rgba, index: (f - f0) as u64 + k as u64 })? {
+                let frames: Vec<(Vec<u8>, Vec<f32>)> = (f..end).into_par_iter().map(frame).collect();
+                for (k, (rgba, hdr)) in frames.iter().enumerate() {
+                    for p in
+                        venc.encode(&EncoderFrame { width: w, height: h, rgba, hdr: hdr_out.then_some(hdr.as_slice()), index: (f - f0) as u64 + k as u64 })?
+                    {
                         mux.write_sample(vt, WriteSample { data: &p.data, duration: p.duration, composition_offset: p.composition_offset, is_sync: p.key })
                             .map_err(|e| ExportError::Io(e.to_string()))?;
                     }
