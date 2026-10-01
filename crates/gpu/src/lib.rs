@@ -7,10 +7,16 @@
 //! registers as a native texture. Uploads are cached by pixel-buffer identity, so a paused frame or
 //! a still costs nothing.
 //!
+//! Layers that need converting before upload (linear f32 RGBA from CPU-rendered layers, 16-bit
+//! YUV such as ProRes) are converted to half floats by [`prepare`], which frame workers run off the
+//! UI thread; [`GpuCompositor::composite_prepared`] then only copies bytes into textures.
+//!
 //! The CPU plan executor (`filmcraft_render::plan::execute_cpu`) is the oracle; tests compare.
 
 use std::collections::HashMap;
 use std::sync::Arc;
+
+use rayon::prelude::*;
 
 use filmcraft_color::{Matrix, Range, Transfer};
 use filmcraft_frame::{Chroma, PixelData, VideoFrame};
@@ -86,6 +92,85 @@ pub fn f32_to_f16(v: f32) -> u16 {
         h += 1;
     }
     h as u16
+}
+
+/// Half-float texel data for one frame (one byte vector per plane), converted off the UI thread.
+/// 8-bit frames need no conversion and have none.
+#[derive(Clone, Debug, Default)]
+pub struct Prepared {
+    planes: Vec<Vec<u8>>,
+}
+
+impl Prepared {
+    pub fn bytes(&self) -> usize {
+        self.planes.iter().map(Vec::len).sum()
+    }
+}
+
+/// [`Prepared`] data for every layer of a plan (index-aligned with its layers), or for the
+/// fallback image of a [`FramePlan::Image`].
+#[derive(Clone, Debug, Default)]
+pub struct PreparedPlan {
+    layers: Vec<Option<Prepared>>,
+    image: Option<Prepared>,
+}
+
+impl PreparedPlan {
+    pub fn bytes(&self) -> usize {
+        self.layers.iter().flatten().chain(&self.image).map(Prepared::bytes).sum()
+    }
+}
+
+/// Values per parallel chunk when converting.
+const CHUNK: usize = 1 << 15;
+
+fn f32_to_f16_bytes(v: &[f32]) -> Vec<u8> {
+    let mut out = vec![0u8; v.len() * 2];
+    out.par_chunks_mut(CHUNK * 2).zip(v.par_chunks(CHUNK)).for_each(|(o, s)| {
+        for (o, x) in o.chunks_exact_mut(2).zip(s) {
+            o.copy_from_slice(&f32_to_f16(*x).to_le_bytes());
+        }
+    });
+    out
+}
+
+/// Half floats of `code / 2^bits` for every 16-bit code (built once per bit depth).
+fn code_table(bits: u32) -> &'static [[u8; 2]] {
+    static TABLES: [std::sync::OnceLock<Vec<[u8; 2]>>; 17] = [const { std::sync::OnceLock::new() }; 17];
+    let bits = bits.min(16);
+    TABLES[bits as usize].get_or_init(|| {
+        let scale = (1u32 << bits) as f32;
+        (0..=u16::MAX as u32).map(|c| f32_to_f16(c as f32 / scale).to_le_bytes()).collect()
+    })
+}
+
+/// `code / 2^bits` as half floats, through a per-code table (same values as converting each sample).
+fn codes_to_f16_bytes(v: &[u16], bits: u32) -> Vec<u8> {
+    let table = code_table(bits);
+    let mut out = vec![0u8; v.len() * 2];
+    out.par_chunks_mut(CHUNK * 2).zip(v.par_chunks(CHUNK)).for_each(|(o, s)| {
+        for (o, c) in o.chunks_exact_mut(2).zip(s) {
+            o.copy_from_slice(&table[*c as usize]);
+        }
+    });
+    out
+}
+
+/// Convert a frame's texels for upload (None when it uploads as it is).
+pub fn prepare_frame(f: &VideoFrame) -> Option<Prepared> {
+    match &f.data {
+        PixelData::RgbaF32(d) => Some(Prepared { planes: vec![f32_to_f16_bytes(d)] }),
+        PixelData::Yuv16 { planes, bits, .. } => Some(Prepared { planes: planes.iter().map(|p| codes_to_f16_bytes(p, *bits)).collect() }),
+        PixelData::Rgba8(_) | PixelData::Yuv8 { .. } => None,
+    }
+}
+
+/// Convert every layer of a plan for upload. Thread-safe and GPU-free: run it on a worker.
+pub fn prepare(plan: &FramePlan) -> PreparedPlan {
+    match plan {
+        FramePlan::Layers { layers, .. } => PreparedPlan { layers: layers.iter().map(|l| prepare_frame(&l.frame)).collect(), image: None },
+        FramePlan::Image(img) => PreparedPlan { layers: Vec::new(), image: Some(Prepared { planes: vec![f32_to_f16_bytes(&img.px)] }) },
+    }
 }
 
 impl GpuCompositor {
@@ -225,8 +310,8 @@ impl GpuCompositor {
         t.create_view(&Default::default())
     }
 
-    /// Upload (or reuse) the textures of a frame.
-    fn upload(&mut self, f: &VideoFrame) -> (usize, u32, u32) {
+    /// Upload (or reuse) the textures of a frame, using `prep` when it was converted beforehand.
+    fn upload(&mut self, f: &VideoFrame, prep: Option<&Prepared>) -> (usize, u32, u32) {
         let id = match &f.data {
             PixelData::Rgba8(d) => Arc::as_ptr(d) as *const u8 as usize,
             PixelData::RgbaF32(d) => Arc::as_ptr(d) as *const u8 as usize,
@@ -248,8 +333,15 @@ impl GpuCompositor {
                 Uploaded { views: [v, dummy(), dummy()], kind: 0, code_scale: 1.0, chroma: (w, h), last_used: self.clock }
             }
             PixelData::RgbaF32(d) => {
-                let half: Vec<u8> = d.iter().flat_map(|v| f32_to_f16(*v).to_le_bytes()).collect();
-                let v = self.plane_texture(w, h, wgpu::TextureFormat::Rgba16Float, &half, 8);
+                let owned;
+                let half = match prep {
+                    Some(p) => &p.planes[0],
+                    None => {
+                        owned = f32_to_f16_bytes(d);
+                        &owned
+                    }
+                };
+                let v = self.plane_texture(w, h, wgpu::TextureFormat::Rgba16Float, half, 8);
                 Uploaded { views: [v, dummy(), dummy()], kind: 1, code_scale: 1.0, chroma: (w, h), last_used: self.clock }
             }
             PixelData::Yuv8 { planes, chroma, .. } => {
@@ -264,11 +356,17 @@ impl GpuCompositor {
                 let (sx, sy) = chroma.shifts();
                 let (cw, ch) = (w.div_ceil(1 << sx), h.div_ceil(1 << sy));
                 let scale = (1u32 << bits) as f32;
-                let conv = |p: &[u16]| -> Vec<u8> { p.iter().flat_map(|v| f32_to_f16(*v as f32 / scale).to_le_bytes()).collect() };
-                let (py, pu, pv) = (conv(&planes[0]), conv(&planes[1]), conv(&planes[2]));
-                let y = self.plane_texture(w, h, wgpu::TextureFormat::R16Float, &py, 2);
-                let u = self.plane_texture(cw, ch, wgpu::TextureFormat::R16Float, &pu, 2);
-                let v = self.plane_texture(cw, ch, wgpu::TextureFormat::R16Float, &pv, 2);
+                let owned;
+                let p = match prep {
+                    Some(p) => p,
+                    None => {
+                        owned = Prepared { planes: planes.iter().map(|p| codes_to_f16_bytes(p, *bits)).collect() };
+                        &owned
+                    }
+                };
+                let y = self.plane_texture(w, h, wgpu::TextureFormat::R16Float, &p.planes[0], 2);
+                let u = self.plane_texture(cw, ch, wgpu::TextureFormat::R16Float, &p.planes[1], 2);
+                let v = self.plane_texture(cw, ch, wgpu::TextureFormat::R16Float, &p.planes[2], 2);
                 let _ = Chroma::C420;
                 Uploaded { views: [y, u, v], kind: 2, code_scale: scale, chroma: (cw, ch), last_used: self.clock }
             }
@@ -338,22 +436,41 @@ impl GpuCompositor {
 
     /// Composite a plan; returns the output view (sRGB, over black) and its size.
     pub fn composite(&mut self, plan: &FramePlan) -> (&wgpu::TextureView, (u32, u32)) {
+        self.composite_prepared(plan, None)
+    }
+
+    /// [`composite`](Self::composite) with texel conversions already done by [`prepare`] (the
+    /// result is identical; only the upload work on this thread differs).
+    pub fn composite_prepared(&mut self, plan: &FramePlan, prep: Option<&PreparedPlan>) -> (&wgpu::TextureView, (u32, u32)) {
         let owned;
         let (w, h, layers): (u32, u32, &[PlanLayer]) = match plan {
             FramePlan::Layers { width, height, layers } => (*width as u32, *height as u32, layers.as_slice()),
             FramePlan::Image(img) => {
-                owned = [PlanLayer {
-                    frame: Arc::new(VideoFrame::rgba_f32(img.w as u32, img.h as u32, img.px.clone())),
-                    matrix: filmcraft_geom::Affine::IDENTITY,
-                    opacity: 1.0,
-                }];
+                let frame = match prep.and_then(|p| p.image.as_ref()) {
+                    // The texels come from `prep`; the frame only carries size and colour.
+                    Some(_) => VideoFrame {
+                        width: img.w as u32,
+                        height: img.h as u32,
+                        data: PixelData::RgbaF32(Arc::new(Vec::new())),
+                        ..VideoFrame::rgba_f32(1, 1, vec![0.0; 4])
+                    },
+                    None => VideoFrame::rgba_f32(img.w as u32, img.h as u32, img.px.clone()),
+                };
+                owned = [PlanLayer { frame: Arc::new(frame), matrix: filmcraft_geom::Affine::IDENTITY, opacity: 1.0 }];
                 (img.w as u32, img.h as u32, &owned[..])
             }
         };
         let (w, h) = (w.max(1), h.max(1));
         Self::target(&self.device, &mut self.accum, w, h, ACCUM_FORMAT, wgpu::TextureUsages::empty());
         Self::target(&self.device, &mut self.output, w, h, OUTPUT_FORMAT, wgpu::TextureUsages::COPY_SRC);
-        let keys: Vec<(usize, u32, u32)> = layers.iter().map(|l| self.upload(&l.frame)).collect();
+        let keys: Vec<(usize, u32, u32)> = layers
+            .iter()
+            .enumerate()
+            .map(|(i, l)| {
+                let p = prep.and_then(|p| if matches!(plan, FramePlan::Image(_)) { p.image.as_ref() } else { p.layers.get(i).and_then(Option::as_ref) });
+                self.upload(&l.frame, p)
+            })
+            .collect();
         let mut bind_groups = Vec::with_capacity(layers.len());
         for (l, k) in layers.iter().zip(&keys) {
             let u = self.uniforms(l, *k, (w, h));

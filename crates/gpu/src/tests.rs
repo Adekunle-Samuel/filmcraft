@@ -77,3 +77,51 @@ fn half_float_conversion() {
         assert!((d - v).abs() <= v.abs() * 1e-3 + 1e-6, "{v} → {d}");
     }
 }
+
+#[test]
+fn prepared_upload_matches_inline_conversion() {
+    let Some((dev, q)) = device() else {
+        eprintln!("no GPU adapter; skipping");
+        return;
+    };
+    let (w, h) = (64u32, 36u32);
+    let yuv16 = Arc::new(VideoFrame {
+        width: w,
+        height: h,
+        data: PixelData::Yuv16 {
+            planes: [
+                Arc::new((0..w * h).map(|i| (64 + (i * 7) % 876) as u16).collect()),
+                Arc::new((0..w * h / 2).map(|i| (64 + (i * 13) % 896) as u16).collect()),
+                Arc::new((0..w * h / 2).map(|i| (960 - (i * 5) % 896) as u16).collect()),
+            ],
+            chroma: Chroma::C422,
+            bits: 10,
+            alpha: None,
+        },
+        color: filmcraft_color::ColorInfo::REC709,
+        par: (1, 1),
+        pts: Default::default(),
+    });
+    let f32_layer: Vec<f32> = (0..w * h * 4).map(|i| ((i * 37) % 1000) as f32 / 1000.0 * if i % 4 == 3 { 1.0 } else { 0.6 }).collect();
+    let rgbaf = Arc::new(VideoFrame::rgba_f32(w, h, f32_layer.clone()));
+    let layers = FramePlan::Layers {
+        width: w as usize,
+        height: h as usize,
+        layers: vec![
+            PlanLayer { frame: yuv16, matrix: Affine::IDENTITY, opacity: 1.0 },
+            PlanLayer { frame: rgbaf, matrix: Affine::scale(0.5, 0.5), opacity: 0.8 },
+        ],
+    };
+    let image = FramePlan::Image(filmcraft_render::Image { w: w as usize, h: h as usize, px: f32_layer });
+    for plan in [layers, image] {
+        let mut a = GpuCompositor::new(&dev, &q);
+        a.composite(&plan);
+        let inline = a.read_output().expect("readback");
+        let mut b = GpuCompositor::new(&dev, &q);
+        let prep = prepare(&plan);
+        assert!(prep.bytes() > 0);
+        b.composite_prepared(&plan, Some(&prep));
+        let prepared = b.read_output().expect("readback");
+        assert!(inline == prepared, "prepared upload differs");
+    }
+}

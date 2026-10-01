@@ -144,7 +144,7 @@ impl FilmcraftApp {
     }
 
     /// Composite a plan on the GPU and return the egui texture showing it.
-    pub fn gpu_present(&mut self, key: FrameKey, plan: &filmcraft_render::plan::FramePlan) -> Option<(egui::TextureId, (u32, u32))> {
+    pub fn gpu_present(&mut self, key: FrameKey, plan: &frames::GpuPlan) -> Option<(egui::TextureId, (u32, u32))> {
         let g = self.gpu.as_mut()?;
         if g.last_key == Some(key)
             && let Some(t) = g.texture
@@ -152,7 +152,7 @@ impl FilmcraftApp {
             return Some((t, g.size));
         }
         let t0 = std::time::Instant::now();
-        let (view, size) = g.compositor.composite(plan);
+        let (view, size) = g.compositor.composite_prepared(&plan.plan, Some(&plan.prepared));
         let view = view.clone();
         g.last_ms = t0.elapsed().as_secs_f32() * 1000.0;
         let mut renderer = g.render_state.renderer.write();

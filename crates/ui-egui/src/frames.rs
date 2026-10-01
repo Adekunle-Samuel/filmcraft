@@ -61,7 +61,7 @@ struct Shared {
     queue: Mutex<VecDeque<Job>>,
     cv: Condvar,
     done: Mutex<Cache>,
-    plans: Mutex<HashMap<FrameKey, (Arc<filmcraft_render::plan::FramePlan>, u64)>>,
+    plans: Mutex<PlanCache>,
     /// Running jobs: key, cancel flag, prefetch.
     in_flight: Mutex<Vec<(FrameKey, Arc<std::sync::atomic::AtomicBool>, bool)>>,
     /// Per-job timings, collected while profiling is on (benchmarks, `ui.inspect`).
@@ -160,6 +160,65 @@ impl filmcraft_render::SourceProvider for JobProvider {
     }
 }
 
+/// A GPU frame plan with its layers' texel conversions already done (off the UI thread).
+pub struct GpuPlan {
+    pub plan: filmcraft_render::plan::FramePlan,
+    pub prepared: filmcraft_gpu::PreparedPlan,
+}
+
+impl GpuPlan {
+    /// Bytes this plan keeps alive (layer frames + converted texels).
+    fn bytes(&self) -> usize {
+        let frames = match &self.plan {
+            filmcraft_render::plan::FramePlan::Layers { layers, .. } => layers.iter().map(|l| l.frame.byte_size()).sum(),
+            filmcraft_render::plan::FramePlan::Image(img) => img.px.len() * 4,
+        };
+        frames + self.prepared.bytes()
+    }
+}
+
+/// Finished plans, bounded by count and bytes (oldest use evicted first).
+#[derive(Default)]
+struct PlanCache {
+    map: HashMap<FrameKey, (Arc<GpuPlan>, u64, usize)>,
+    clock: u64,
+    bytes: usize,
+}
+
+impl PlanCache {
+    const MAX: usize = 96;
+    const BUDGET: usize = 1 << 30;
+
+    fn get(&mut self, k: &FrameKey) -> Option<Arc<GpuPlan>> {
+        self.clock += 1;
+        let clock = self.clock;
+        self.map.get_mut(k).map(|(p, used, _)| {
+            *used = clock;
+            p.clone()
+        })
+    }
+
+    fn insert(&mut self, k: FrameKey, p: GpuPlan) {
+        self.clock += 1;
+        let b = p.bytes();
+        self.bytes += b;
+        if let Some((_, _, old)) = self.map.insert(k, (Arc::new(p), self.clock, b)) {
+            self.bytes -= old;
+        }
+        if self.map.len() > Self::MAX || self.bytes > Self::BUDGET {
+            let mut v: Vec<(u64, FrameKey, usize)> = self.map.iter().map(|(k, v)| (v.1, *k, v.2)).collect();
+            v.sort_unstable_by_key(|x| x.0);
+            for (_, k, b) in v {
+                if self.map.len() <= Self::MAX && self.bytes <= Self::BUDGET {
+                    break;
+                }
+                self.map.remove(&k);
+                self.bytes -= b;
+            }
+        }
+    }
+}
+
 struct Cache {
     map: HashMap<FrameKey, (Arc<Rgba>, u64)>,
     bytes: usize,
@@ -208,7 +267,7 @@ impl FrameServer {
             queue: Mutex::new(VecDeque::new()),
             cv: Condvar::new(),
             done: Mutex::new(Cache { map: HashMap::new(), bytes: 0, budget: 768 << 20, clock: 0 }),
-            plans: Mutex::new(HashMap::new()),
+            plans: Mutex::new(PlanCache::default()),
             in_flight: Mutex::new(Vec::new()),
             profiling: AtomicBool::new(false),
             records: Mutex::new(Vec::new()),
@@ -260,24 +319,24 @@ impl FrameServer {
         })
     }
 
-    pub fn get_plan(&self, k: &FrameKey) -> Option<Arc<filmcraft_render::plan::FramePlan>> {
-        self.shared.plans.lock().unwrap_or_else(|e| e.into_inner()).get(k).map(|(p, _)| p.clone())
+    pub fn get_plan(&self, k: &FrameKey) -> Option<Arc<GpuPlan>> {
+        self.shared.plans.lock().unwrap_or_else(|e| e.into_inner()).get(k)
     }
 
     /// Whether the exact frame (image or plan) is ready.
     pub fn is_ready(&self, k: &FrameKey) -> bool {
         match k.target {
-            Target::SequencePlan(_) => self.shared.plans.lock().unwrap_or_else(|e| e.into_inner()).contains_key(k),
+            Target::SequencePlan(_) => self.shared.plans.lock().unwrap_or_else(|e| e.into_inner()).map.contains_key(k),
             _ => self.shared.done.lock().unwrap_or_else(|e| e.into_inner()).map.contains_key(k),
         }
     }
 
     /// Nearest cached plan at or before `frame`.
-    pub fn nearest_plan(&self, key: FrameKey, max_back: i64) -> Option<(FrameKey, Arc<filmcraft_render::plan::FramePlan>)> {
-        let g = self.shared.plans.lock().unwrap_or_else(|e| e.into_inner());
+    pub fn nearest_plan(&self, key: FrameKey, max_back: i64) -> Option<(FrameKey, Arc<GpuPlan>)> {
+        let mut g = self.shared.plans.lock().unwrap_or_else(|e| e.into_inner());
         (0..=max_back).find_map(|d| {
             let k = FrameKey { frame: key.frame - d, ..key };
-            g.get(&k).map(|(p, _)| (k, p.clone()))
+            g.get(&k).map(|p| (k, p))
         })
     }
 
@@ -288,7 +347,7 @@ impl FrameServer {
 
     fn request_job(&self, key: FrameKey, time: Tick, scale: f32, project: &Arc<Project>, prio: u32, prefetch: bool) {
         if self.shared.done.lock().unwrap_or_else(|e| e.into_inner()).map.contains_key(&key)
-            || self.shared.plans.lock().unwrap_or_else(|e| e.into_inner()).contains_key(&key)
+            || self.shared.plans.lock().unwrap_or_else(|e| e.into_inner()).map.contains_key(&key)
         {
             return;
         }
@@ -369,7 +428,8 @@ impl FrameServer {
         if let Some(job) = job {
             if let Target::SequencePlan(seq) = job.key.target {
                 let (plan, _) = plan_job(&job, seq, &self.pool, &self.services, &self.previews, false);
-                self.shared.plans.lock().unwrap_or_else(|e| e.into_inner()).insert(job.key, (Arc::new(plan), 0));
+                let prepared = filmcraft_gpu::prepare(&plan);
+                self.shared.plans.lock().unwrap_or_else(|e| e.into_inner()).insert(job.key, GpuPlan { plan, prepared });
             } else {
                 let (img, _) = render_job(&job, &self.pool, &self.services, &self.previews, false);
                 self.shared.done.lock().unwrap_or_else(|e| e.into_inner()).insert(job.key, Arc::new(img));
@@ -471,16 +531,9 @@ fn worker(
             if let Target::SequencePlan(seq) = job.key.target {
                 let (plan, pv) = plan_job(&job, seq, &pool, &services, &previews, profiling);
                 if !job.cancel.load(Ordering::Relaxed) {
-                    let mut g = sh.plans.lock().unwrap_or_else(|e| e.into_inner());
-                    let clock = g.values().map(|v| v.1).max().unwrap_or(0) + 1;
-                    g.insert(job.key, (Arc::new(plan), clock));
-                    if g.len() > 96 {
-                        let mut v: Vec<(u64, FrameKey)> = g.iter().map(|(k, v)| (v.1, *k)).collect();
-                        v.sort_unstable_by_key(|x| x.0);
-                        for (_, k) in v.into_iter().take(g.len() - 96) {
-                            g.remove(&k);
-                        }
-                    }
+                    // Convert texels for upload here, not on the UI thread when the frame is shown.
+                    let prepared = filmcraft_gpu::prepare(&plan);
+                    sh.plans.lock().unwrap_or_else(|e| e.into_inner()).insert(job.key, GpuPlan { plan, prepared });
                 }
                 pv
             } else {

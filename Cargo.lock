@@ -1489,6 +1489,7 @@ dependencies = [
  "filmcraft-time",
  "log",
  "pollster 0.4.0",
+ "rayon",
  "wgpu",
 ]
 
