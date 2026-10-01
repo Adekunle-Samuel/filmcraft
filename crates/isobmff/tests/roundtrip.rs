@@ -204,3 +204,20 @@ fn large_offsets_use_co64_and_largesize_mdat() {
     z.extend_from_slice(&[0, 0, 0, 0, b'f', b'r', b'e', b'e', 1, 2, 3]);
     assert!(open(z.as_slice()).is_ok());
 }
+
+/// Found by `progressive_roundtrip`: only zero-byte samples must not be written as uniform
+/// `stsz` size 0, which readers take to mean "a size table follows".
+#[test]
+fn all_empty_samples_roundtrip() {
+    for n in [1usize, 3] {
+        let mut w = Mp4Writer::new(Cursor::new(Vec::new()), WriterOptions::new(Brand::Mp4)).unwrap();
+        w.add_track(TrackConfig::new(entry(0), 1000)).unwrap();
+        for _ in 0..n {
+            w.write_sample(0, WriteSample { data: &[], duration: 1, composition_offset: 0, is_sync: false }).unwrap();
+        }
+        let out = w.finish().unwrap().into_inner();
+        let f = open(out.as_slice()).unwrap();
+        assert_eq!(f.tracks[0].samples.len(), n);
+        assert!(f.tracks[0].samples.iter().all(|s| s.size == 0));
+    }
+}

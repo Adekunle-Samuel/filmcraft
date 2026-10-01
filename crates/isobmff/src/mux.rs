@@ -423,7 +423,9 @@ fn write_trak(b: &mut BoxBuf, t: &WTrack, movie_ts: u32, qt: bool, shift: u64, f
         }
         None => {
             let first = tb.sizes.first().copied().unwrap_or(0);
-            if !tb.sizes.is_empty() && tb.sizes.iter().all(|&s| s == first) {
+            // A uniform size of 0 would mean "table follows" (ISO/IEC 14496-12 §8.7.3), so
+            // all-empty samples must still be written as a table.
+            if first != 0 && !tb.sizes.is_empty() && tb.sizes.iter().all(|&s| s == first) {
                 b.u32(first);
                 b.u32(tb.sizes.len() as u32);
             } else {
