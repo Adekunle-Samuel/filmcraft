@@ -100,49 +100,32 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, which: Which)
         let key = FrameKey { target, frame, size: size_key, revision: rev };
         let project = app.session.project.clone();
         let playing = which == Which::Program && app.playback.playing;
-        app.frames.request(key, rate.tick_of(frame), scale, &project, 0);
         if playing {
-            let dir = if app.playback.speed < 0.0 { -1 } else { 1 };
-            let ahead = if app.playback.speed.abs() > 1.5 { 24 } else { 14 };
-            for i in 1..=ahead {
-                let f = frame + i * dir * (app.playback.speed.abs().max(1.0) as i64);
-                if f >= 0 {
-                    app.frames.request(FrameKey { frame: f, ..key }, rate.tick_of(f), scale, &project, i as u32);
-                }
-            }
-            // drop stale prefetch jobs
-            let cur = frame;
-            app.frames.retain_queue(|k| k.target != target || (k.revision == rev && (k.frame - cur) * dir >= 0 && (k.frame - cur).abs() < 40));
+            app.frames.schedule_playback(key, rate, scale, &project, app.playback.speed);
+        } else {
+            app.frames.request(key, rate.tick_of(frame), scale, &project, 0);
         }
         let tex_name = format!("monitor-{prefix}");
-        let shown = if use_gpu {
+        let (shown, exact) = if use_gpu {
             let exact = app.frames.get_plan(&key).map(|p| (key, p));
-            if exact.is_some() {
-                if playing {
-                    app.playback.shown += 1;
-                }
-            } else if playing && app.playback.last_frame_shown() != frame {
-                app.playback.dropped += 1;
-            }
-            match exact.or_else(|| app.frames.nearest_plan(key, 6)) {
+            let is_exact = exact.is_some();
+            let tex = match exact.or_else(|| app.frames.nearest_plan(key, 6)) {
                 Some((k, plan)) => app.gpu_present(k, &plan).map(|(id, _)| id),
                 None => app.gpu.as_ref().and_then(|g| g.texture),
-            }
+            };
+            (tex, is_exact)
         } else if let Some(img) = app.frames.get(&key) {
-            if playing {
-                app.playback.shown += 1;
-            }
-            Some(app.texture_for(&ctx, &tex_name, key, &img))
+            (Some(app.texture_for(&ctx, &tex_name, key, &img)), true)
         } else {
-            if playing && app.playback.last_frame_shown() != frame {
-                app.playback.dropped += 1;
-            }
-            match app.frames.nearest(target, frame, size_key, rev, 6) {
+            let tex = match app.frames.nearest(target, frame, size_key, rev, 6) {
                 Some(img) => Some(app.texture_for(&ctx, &tex_name, FrameKey { frame: frame - 1, ..key }, &img)),
                 None => app.texture_existing(&tex_name).map(|(id, _)| id),
-            }
+            };
+            (tex, false)
         };
-        app.playback.set_last_frame(frame);
+        if playing {
+            app.playback.meter.refresh(frame, exact);
+        }
         if let Some(tex) = shown {
             ui.painter().image(tex, pic, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
         }
@@ -162,7 +145,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, which: Which)
     }
     // Dropped-frame indicator (Program only)
     if which == Which::Program && app.playback.playing {
-        let c = if app.playback.dropped > 0 { t.render_yellow } else { t.render_green };
+        let c = if app.playback.meter.counts().1 > 0 { t.render_yellow } else { t.render_green };
         ui.painter().circle_filled(pos2(video_area.min.x + 10.0, video_area.min.y + 10.0), 4.0, c);
     }
     // Click/drag in the picture: the Hand tool pans, otherwise focus.
@@ -403,13 +386,4 @@ fn source_nav(app: &mut FilmcraftApp, cmd: &str) {
         _ => cur + rate.frame_duration(),
     };
     let _ = app.session.execute("source.setPlayhead", json!({"time": t.0}));
-}
-
-impl crate::Playback {
-    pub fn last_frame_shown(&self) -> i64 {
-        self.last_frame
-    }
-    pub fn set_last_frame(&mut self, f: i64) {
-        self.last_frame = f;
-    }
 }

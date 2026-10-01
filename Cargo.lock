@@ -1610,6 +1610,7 @@ dependencies = [
  "eframe",
  "egui",
  "filmcraft-audio-dsp",
+ "filmcraft-codecs",
  "filmcraft-color",
  "filmcraft-edit",
  "filmcraft-engine",
@@ -1621,7 +1622,9 @@ dependencies = [
  "filmcraft-render",
  "filmcraft-time",
  "log",
+ "pollster 0.4.0",
  "rayon",
+ "rustix 1.1.5",
  "serde",
  "serde_json",
 ]

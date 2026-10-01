@@ -69,9 +69,8 @@ pub struct Playback {
     anchor_tick: Tick,
     /// Audio frames played at anchor (when the audio clock drives).
     pub audio_clock: bool,
-    pub dropped: u64,
-    pub shown: u64,
-    last_frame: i64,
+    /// Shown / dropped frame accounting for the current (or last) play.
+    pub meter: frames::PlaybackMeter,
 }
 
 pub struct FilmcraftApp {
@@ -162,12 +161,7 @@ impl FilmcraftApp {
 
 impl FilmcraftApp {
     pub fn new(session: Session) -> Self {
-        let frames = Arc::new(FrameServer::new(
-            session.media.clone(),
-            session.services.clone(),
-            session.previews.clone(),
-            std::thread::available_parallelism().map(|n| n.get().clamp(2, 6)).unwrap_or(3),
-        ));
+        let frames = Arc::new(FrameServer::new(session.media.clone(), session.services.clone(), session.previews.clone(), FrameServer::default_workers()));
         Self {
             session,
             ui: UiState::default(),
@@ -220,7 +214,7 @@ impl FilmcraftApp {
                 self.session.media.clone(),
                 self.session.services.clone(),
                 self.session.previews.clone(),
-                std::thread::available_parallelism().map(|n| n.get().clamp(2, 6)).unwrap_or(3),
+                FrameServer::default_workers(),
             ));
             self.textures.clear();
         }
@@ -282,17 +276,20 @@ impl FilmcraftApp {
         if speed > 0.0 && self.session.playhead() >= dur - self.session.sequence_rate().frame_duration() {
             self.session.set_playhead(Tick::ZERO);
         }
+        // A loop restart keeps counting into the same meter.
+        if !self.playback.playing || self.playback.speed != speed {
+            self.playback.meter.start(speed);
+        }
         self.playback.playing = true;
         self.playback.speed = speed;
         self.playback.anchor_tick = self.session.playhead();
         self.playback.anchor_time = -1.0; // set on next frame
-        self.playback.dropped = 0;
-        self.playback.shown = 0;
         self.start_audio();
     }
 
     pub fn stop(&mut self) {
         self.playback.playing = false;
+        self.playback.meter.finish();
         if let Some(a) = self.audio.as_mut() {
             a.stop();
         }

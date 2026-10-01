@@ -5,6 +5,7 @@
 //! for the next frames therefore hit the cache or continue the running decoder without re-seeking.
 
 use std::collections::BTreeMap;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use filmcraft_color::ColorInfo;
@@ -12,6 +13,51 @@ use filmcraft_frame::VideoFrame;
 
 use crate::CodecError;
 use crate::video::VideoDecoder;
+
+/// Process-wide decode counters of every [`GopCache`] (benchmarks and diagnostics).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct GopStats {
+    /// Requests answered from the decoded-frame cache.
+    pub hits: u64,
+    /// Requests that had to decode.
+    pub misses: u64,
+    /// Decoder restarts at a sync sample (seeks).
+    pub seeks: u64,
+    /// Samples fed to decoders.
+    pub decoded: u64,
+    /// Decoded frames evicted from the cache.
+    pub evicted: u64,
+}
+
+static HITS: AtomicU64 = AtomicU64::new(0);
+static MISSES: AtomicU64 = AtomicU64::new(0);
+static SEEKS: AtomicU64 = AtomicU64::new(0);
+static DECODED: AtomicU64 = AtomicU64::new(0);
+static EVICTED: AtomicU64 = AtomicU64::new(0);
+
+/// The counters so far (they only grow; subtract two snapshots to measure an interval).
+pub fn gop_stats() -> GopStats {
+    GopStats {
+        hits: HITS.load(Ordering::Relaxed),
+        misses: MISSES.load(Ordering::Relaxed),
+        seeks: SEEKS.load(Ordering::Relaxed),
+        decoded: DECODED.load(Ordering::Relaxed),
+        evicted: EVICTED.load(Ordering::Relaxed),
+    }
+}
+
+impl std::ops::Sub for GopStats {
+    type Output = GopStats;
+    fn sub(self, o: GopStats) -> GopStats {
+        GopStats {
+            hits: self.hits - o.hits,
+            misses: self.misses - o.misses,
+            seeks: self.seeks - o.seeks,
+            decoded: self.decoded - o.decoded,
+            evicted: self.evicted - o.evicted,
+        }
+    }
+}
 
 /// A container's video sample table, in decode (file) order.
 pub trait VideoSamples {
@@ -63,6 +109,7 @@ impl GopCache {
             let victim = if pts - first > last - pts { first } else { last };
             if let Some(v) = st.frames.remove(&victim) {
                 st.bytes -= v.byte_size();
+                EVICTED.fetch_add(1, Ordering::Relaxed);
             }
         }
     }
@@ -74,8 +121,10 @@ impl GopCache {
         let want_pts = s.pts(i);
         let mut st = self.state.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(f) = st.frames.get(&want_pts) {
+            HITS.fetch_add(1, Ordering::Relaxed);
             return Ok(f.clone());
         }
+        MISSES.fetch_add(1, Ordering::Relaxed);
         if st.decoder.is_none() {
             st.decoder = Some(s.make_decoder()?);
             st.next = usize::MAX;
@@ -84,6 +133,7 @@ impl GopCache {
         // Continue the running decoder when the wanted sample is ahead within this GOP run.
         let continuing = st.next != usize::MAX && st.next > key && st.next <= i + 16 && st.next <= n;
         if !continuing {
+            SEEKS.fetch_add(1, Ordering::Relaxed);
             if let Some(d) = st.decoder.as_mut() {
                 d.reset();
             }
@@ -95,6 +145,7 @@ impl GopCache {
             let data = s.read(k)?;
             let out = st.decoder.as_mut().expect("decoder").decode(&data, s.pts(k))?;
             st.next += 1;
+            DECODED.fetch_add(1, Ordering::Relaxed);
             for d in out {
                 self.store(&mut st, d.pts, d.frame);
             }

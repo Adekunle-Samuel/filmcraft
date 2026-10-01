@@ -94,3 +94,44 @@ engine behaviour without a window.
 The perf tests check bit-exactness before they time anything. Results go in the crate README's
 performance table, with machine and thread count. Headline numbers go in
 [ROADMAP.md](../ROADMAP.md). Measure on an idle machine: parallel agent builds distort timings.
+
+### Playback benchmark
+
+`cargo xtask bench-playback` (the example `crates/ui-egui/examples/bench_playback.rs`) plays
+sequences headlessly through the Program monitor's own frame scheduler: the `FrameServer` worker
+pool, `schedule_playback` (prefetch order and stale-job dropping), its caches, and the
+`PlaybackMeter` that counts shown/dropped frames in the app. On the GPU path it also composites
+each plan with `filmcraft-gpu`, as the monitor does on the UI thread.
+
+```sh
+cargo xtask bench-playback                                   # every scenario, GPU path, Full and Half
+cargo xtask bench-playback --scenario stack3 --res full --cpu
+cargo xtask bench-playback --json target/bench-playback.json # machine-readable results
+```
+
+| Scenario | What plays |
+|---|---|
+| `h264-1080` | one 1080p23.976 H.264 clip (testsrc2 + grain, ~45 Mbit/s, 250-frame GOP) |
+| `stack3` | three 1080p H.264 clips on V1–V3; V2/V3 scaled, positioned, rotated, 70–85 % opacity |
+| `h264-2160` | one 2160p23.976 H.264 clip |
+| `demo` | the built-in demo project (procedural footage, transitions, effects) |
+| `after-preview` | 1080p H.264 + Lumetri/Sharpen/Levels/Tint: a live play, Render Effects In to Out, then two plays of the green segment |
+| `seek-storm` | 40 jumps to random frames 150 ms apart (scrubbing), time until the exact frame shows |
+
+Options: `--res full,half,quarter`, `--cpu` (CPU compositor + texture conversion instead of the
+GPU path), `--seconds`, `--refresh` (display Hz), `--workers`, `--repeat`, `--json <file>`.
+Fixtures are made with ffmpeg in `target/fixtures/playback/` (set `FILMCRAFT_FIXTURES` to share one
+set between worktrees).
+
+Columns: **shown/drop** as counted in the app (a frame is shown when its exact picture was on
+screen at a refresh while it was due; frames passed over without a refresh count as dropped);
+**ontime** = due frames whose job finished before they were due; **lat** = queue→ready per job,
+**svc** = worker time per job; **cpu/j**, **src/j**, **srcC/j** = worker thread CPU, source fetch
+(decode) wall and thread CPU per job; **ui** = time on the UI thread to present a frame (GPU upload
+and draw, or texture conversion); **cpu ms/f** = process CPU per frame and **cores** = the cores that
+needs at the sequence frame rate; **seeks/dec** = decoder restarts and samples decoded; **waste** =
+jobs for frames that were never due.
+
+Wall-clock columns (shown/drop, ontime, latencies) depend on machine load, so each row prints the
+load average. CPU columns (thread and process CPU time) and the structural counters (seeks,
+samples decoded, wasted jobs) do not, and are what to compare between runs on a busy machine.
