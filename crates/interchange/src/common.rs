@@ -425,6 +425,7 @@ impl Builder {
             frame_hold: None,
             scale_to_frame: false,
             essential: None,
+            multicam: None,
         }
     }
 
@@ -483,6 +484,8 @@ pub(crate) fn empty_sequence(settings: SequenceSettings) -> Sequence {
         master_mixer: Default::default(),
         submix_tracks: Vec::new(),
         caption_tracks: Vec::new(),
+        multicam: None,
+        merged: None,
     }
 }
 

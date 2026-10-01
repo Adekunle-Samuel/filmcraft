@@ -18,12 +18,14 @@ pub mod graphics;
 pub mod interchange;
 pub mod media_pool;
 pub mod mixer;
+pub mod multicam;
 pub mod previews;
 pub mod project_manager;
 pub mod proxies;
 pub mod relink;
 pub mod shortcut_presets;
 pub mod shortcuts;
+pub mod sync;
 pub mod trim;
 
 use std::sync::Arc;
@@ -168,6 +170,10 @@ pub struct EditorState {
     /// Selected layers (indices among the graphic layers, 0 = back) of the selected graphic clip.
     #[serde(default)]
     pub graphic_layers: Vec<usize>,
+    /// Multi-Camera Audio Follows Video: switching a multi-camera clip's angle switches its linked
+    /// audio clips too.
+    #[serde(default)]
+    pub multicam_audio_follows_video: bool,
 }
 
 /// Events for frontends (drained each frame).
@@ -205,6 +211,8 @@ pub struct Session {
     pub previews: Arc<previews::PreviewStore>,
     /// Audio Track Mixer automation pass in progress.
     pub mixrec: mixer::Recorder,
+    /// Multi-camera live switching pass in progress.
+    pub mcrec: multicam::Recorder,
     /// Dynamic (J/K/L) trimming and trim-mode loop playback in progress.
     pub trim_play: trim::TrimPlayback,
     /// Keyboard shortcuts (active bindings, presets; `shortcuts.*` commands).
@@ -275,6 +283,7 @@ impl Session {
             loaded_schema: filmcraft_format::SCHEMA_VERSION,
             previews: Arc::new(previews::PreviewStore::temp()),
             mixrec: Default::default(),
+            mcrec: Default::default(),
             trim_play: Default::default(),
             shortcuts: shortcuts::Shortcuts::new(),
             offline: Default::default(),
@@ -624,6 +633,8 @@ mod file_tests;
 mod media_test_util;
 #[cfg(test)]
 mod mixer_tests;
+#[cfg(test)]
+mod multicam_tests;
 #[cfg(test)]
 mod previews_tests;
 #[cfg(test)]

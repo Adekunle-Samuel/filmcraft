@@ -27,6 +27,8 @@
 //! - **v5** (M8.8): colour management (sequence working space, Interpret Footage colour space,
 //!   project LUT library). No-op step, for the same reason.
 //! - **v6** (M11.7/M11.9): media identity fingerprints and ingest settings. No-op step.
+//! - **v7** (M12): multi-camera source sequences, multi-camera clips and merged clips. No-op step;
+//!   older builds would drop the camera data when saving.
 
 pub mod atomic;
 pub mod autosave;
@@ -45,7 +47,7 @@ pub type Migration = fn(Value) -> Result<Value, String>;
 
 /// `MIGRATIONS[i]` upgrades schema `i + 1` to `i + 2`. Append one function per schema bump; never
 /// edit a shipped one.
-pub const MIGRATIONS: &[Migration] = &[v1_to_v2, v2_to_v3, v3_to_v4, v4_to_v5, v5_to_v6];
+pub const MIGRATIONS: &[Migration] = &[v1_to_v2, v2_to_v3, v3_to_v4, v4_to_v5, v5_to_v6, v6_to_v7];
 
 /// The schema version this build writes (and the newest it reads).
 pub const SCHEMA_VERSION: u32 = MIGRATIONS.len() as u32 + 1;
@@ -239,13 +241,19 @@ fn v5_to_v6(doc: Value) -> Result<Value, String> {
     Ok(doc)
 }
 
+/// v6 → v7: multi-camera source sequences / clips and merged clips added; existing data needs no
+/// change.
+fn v6_to_v7(doc: Value) -> Result<Value, String> {
+    Ok(doc)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn schema_version_matches_table() {
-        assert_eq!(SCHEMA_VERSION, 6);
+        assert_eq!(SCHEMA_VERSION, 7);
     }
 
     #[test]

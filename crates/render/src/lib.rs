@@ -18,6 +18,7 @@ pub mod graphics;
 pub mod image;
 pub mod luts;
 pub mod mixer;
+pub mod multicam;
 pub mod offline;
 pub mod plan;
 pub mod preview;
@@ -78,18 +79,24 @@ pub fn render_sequence(project: &Project, seq_id: ItemId, t: Tick, opts: RenderO
 }
 
 fn render_seq(project: &Project, seq: &Sequence, t: Tick, opts: RenderOptions, sources: &dyn SourceProvider) -> Image {
+    render_seq_tracks(project, seq, t, opts, sources, None)
+}
+
+/// Render a sequence, or only its video track `only` (a multi-camera angle; drawn even when the
+/// track's output is off).
+pub(crate) fn render_seq_tracks(project: &Project, seq: &Sequence, t: Tick, opts: RenderOptions, sources: &dyn SourceProvider, only: Option<usize>) -> Image {
     let (w, h) = output_size(seq, opts.scale);
     let mut canvas = Image::new(w, h);
     if opts.depth > 8 {
         return canvas;
     }
     let tc = format_time(t, seq.settings.frame_rate, seq.settings.drop_frame, TimeDisplay::Timecode, seq.settings.sample_rate as i64);
-    for track in &seq.video_tracks {
+    for (ti, track) in seq.video_tracks.iter().enumerate() {
         // A cancelled frame job (playback moved on) stops here; its result is discarded.
         if filmcraft_media::cancel::cancelled() {
             return canvas;
         }
-        if !track.enabled {
+        if only.is_some_and(|o| o != ti) || (!track.enabled && only.is_none()) {
             continue;
         }
         // transition covering t?
@@ -255,7 +262,17 @@ pub(crate) fn item_layer(
         }
         ItemKind::Sequence(nested) => {
             let sub = RenderOptions { scale: want, effects: opts.effects, depth: opts.depth + 1, captions: false, working_output: true };
-            render_seq(project, nested, mt, sub, sources)
+            match item.multicam_angle(nested) {
+                // a multi-camera clip shows its angle's track only (nothing for an audio-only angle)
+                Some(angle) => match nested.angle_video_track_index(angle) {
+                    Some(ti) => render_seq_tracks(project, nested, mt, sub, sources, Some(ti)),
+                    None => {
+                        let (nw, nh) = output_size(nested, want);
+                        Image::new(nw, nh)
+                    }
+                },
+                None => render_seq(project, nested, mt, sub, sources),
+            }
         }
         ItemKind::AdjustmentLayer { .. } => return None,
         ItemKind::Graphic { .. } => {
