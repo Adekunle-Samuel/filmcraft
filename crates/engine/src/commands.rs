@@ -916,7 +916,7 @@ fn build() -> Vec<CommandSpec> {
             s.events.push(crate::Event::OpenSequence(id));
             Ok(Value::Null)
         }),
-        cmd!("sequence.close", "Close Sequence", [], None, r#"{"item":id}"#, has_seq, |s, p| {
+        cmd!("sequence.close", "Close Sequence", [], None, r#"{"item":id?}"#, has_seq, |s, p| {
             let id = item_p(p, "item").or(s.state.active_sequence).ok_or(EngineError::NoSequence)?;
             s.state.open_sequences.retain(|x| *x != id);
             if s.state.active_sequence == Some(id) {
@@ -1252,8 +1252,10 @@ fn build() -> Vec<CommandSpec> {
             Ok(Value::Null)
         }),
         // ================= Source monitor =================
-        cmd!("source.open", "Open in Source Monitor", [], None, r#"{"item":id}"#, always, |s, p| {
-            let id = item_p(p, "item").ok_or_else(|| bad("source.open", "need `item`"))?;
+        cmd!("source.open", "Open in Source Monitor", [], None, r#"{"item":id?}"#, always, |s, p| {
+            let id = item_p(p, "item")
+                .or(s.state.project_selection.first().copied())
+                .ok_or_else(|| bad("source.open", "need `item` (or a Project panel selection)"))?;
             s.project.item(id).ok_or_else(|| bad("source.open", "no such item"))?;
             s.state.source_item = Some(id);
             s.state.source_playhead = Tick::ZERO;
@@ -1313,6 +1315,9 @@ fn build() -> Vec<CommandSpec> {
             let clips: Vec<ClipId> =
                 p.get("clips").and_then(Value::as_array).map(|a| a.iter().filter_map(|v| v.as_u64().map(ClipId)).collect()).unwrap_or_default();
             let clips = with_links(s, &clips);
+            // selecting clips leaves trim mode (Premiere: clip and edit point selections are exclusive)
+            s.state.edit_points.clear();
+            s.state.trim_shift = Default::default();
             if bool_p(p, "toggle").unwrap_or(false) {
                 for c in clips {
                     if let Some(i) = s.state.selection.iter().position(|x| *x == c) {
@@ -1404,16 +1409,43 @@ fn build() -> Vec<CommandSpec> {
         }),
         cmd!("trim.clear", "Clear Edit Point Selection", [], None, "{}", has_edit_points, |s, _| {
             s.state.edit_points.clear();
+            s.state.trim_shift = Default::default();
+            s.trim_play.around = None;
             Ok(Value::Null)
         }),
         cmd!("trim.toggleType", "Toggle Trim Type", [], Some("Ctrl+T"), "{}", has_edit_points, |s, _| crate::trim::toggle_type(s)),
         cmd!("trim.backward", "Trim Backward", [], Some("Alt+Left"), "{}", has_edit_points, |s, _| crate::trim::nudge(s, &json!({"frames": -1}))),
         cmd!("trim.forward", "Trim Forward", [], Some("Alt+Right"), "{}", has_edit_points, |s, _| crate::trim::nudge(s, &json!({"frames": 1}))),
-        cmd!("trim.backwardMany", "Trim Backward Many", [], Some("Alt+Shift+Left"), "{}", has_edit_points, |s, _| crate::trim::nudge(
-            s,
-            &json!({"frames": -5})
-        )),
-        cmd!("trim.forwardMany", "Trim Forward Many", [], Some("Alt+Shift+Right"), "{}", has_edit_points, |s, _| crate::trim::nudge(s, &json!({"frames": 5}))),
+        cmd!("trim.backwardMany", "Trim Backward Many", [], Some("Alt+Shift+Left"), "{}", has_edit_points, |s, _| {
+            let n = -(s.prefs.trim.large_trim_offset as i64);
+            crate::trim::nudge(s, &json!({"frames": n}))
+        }),
+        cmd!("trim.forwardMany", "Trim Forward Many", [], Some("Alt+Shift+Right"), "{}", has_edit_points, |s, _| {
+            let n = s.prefs.trim.large_trim_offset as i64;
+            crate::trim::nudge(s, &json!({"frames": n}))
+        }),
+        cmd!("trim.applyDefaultTransition", "Apply Default Transitions to Selection", ["Sequence"], None, "{}", has_edit_points, |s, _| {
+            crate::trim::apply_default_transitions(s)
+        }),
+        cmd!("trim.shuttle", "Dynamic Trim (Shuttle)", [], None, r#"{"direction":"forward|reverse","slow":bool?,"clock":seconds}"#, has_edit_points, |s, p| {
+            crate::trim::shuttle(s, p)
+        }),
+        cmd!("trim.shuttleStop", "Dynamic Trim Stop", [], None, r#"{"clock":seconds?}"#, has_seq, |s, p| crate::trim::stop(s, p)),
+        cmd!("trim.cancelDynamic", "Cancel Dynamic Trim", [], None, "{}", has_seq, |s, _| crate::trim::cancel(s)),
+        cmd!("trim.playAround", "Play Around Edit", [], None, r#"{"clock":seconds,"loop":bool=true,"toggle":bool?}"#, has_seq, |s, p| {
+            crate::trim::play_around(s, p)
+        }),
+        CommandSpec {
+            id: "trim.tick",
+            label: "Advance Trim Playback",
+            menu: &[],
+            shortcut: None,
+            params: r#"{"clock":seconds}"#,
+            enabled: has_seq,
+            run: |s, p| crate::trim::tick(s, p.get("clock").and_then(Value::as_f64).unwrap_or(0.0)),
+            journal: false,
+        },
+        query!("trim.monitor", "Trim Monitor State", "{}", |s, _| Ok(crate::trim::monitor_info(s))),
         cmd!("trim.nudge", "Trim by Frames", [], None, r#"{"frames":i64}"#, has_edit_points, |s, p| crate::trim::nudge(s, p)),
         cmd!("trim.extendToPlayhead", "Extend Selected Edit to Playhead", [], Some("E"), "{}", has_edit_points, |s, _| { crate::trim::extend_to_playhead(s) }),
         cmd!("trim.ripplePrevious", "Ripple Trim Previous Edit to Playhead", [], Some("Q"), "{}", has_seq, |s, _| crate::trim::to_playhead(
@@ -1798,7 +1830,10 @@ fn build() -> Vec<CommandSpec> {
             Ok(Value::Array(
                 command_specs()
                     .iter()
-                    .map(|c| json!({"id": c.id, "label": c.label, "menu": c.menu, "shortcut": c.shortcut, "params": c.params, "enabled": (c.enabled)(s).is_ok()}))
+                    .map(|c| {
+                        let all: Vec<&str> = s.shortcuts.for_command(c.id).iter().map(|b| b.keys.as_str()).collect();
+                        json!({"id": c.id, "label": c.label, "menu": c.menu, "shortcut": s.shortcuts.primary(c.id), "shortcuts": all, "defaultShortcut": c.shortcut, "params": c.params, "enabled": (c.enabled)(s).is_ok()})
+                    })
                     .collect(),
             ))
         }),
@@ -1818,6 +1853,7 @@ fn build() -> Vec<CommandSpec> {
     ];
     v.extend(crate::captions::commands());
     v.extend(crate::graphics::commands());
+    v.extend(crate::shortcuts::commands());
     // Labels as individual commands (Edit ▸ Label ▸ <name>)
     for l in Label::ALL {
         let _ = l;

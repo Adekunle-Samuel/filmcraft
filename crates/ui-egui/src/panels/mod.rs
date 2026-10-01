@@ -13,10 +13,12 @@ pub mod meters;
 pub mod misc;
 pub mod monitor;
 pub mod project;
+pub mod shortcuts_dialog;
 pub mod text;
 pub mod timeline;
 pub mod timeline_captions;
 pub mod tools;
+pub mod trim_monitor;
 
 use egui::{Align2, Color32, Rect};
 use filmcraft_project::ItemId;
@@ -27,6 +29,7 @@ use crate::theme::Tokens;
 
 pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, p: PanelKind, rect: Rect) {
     match p {
+        PanelKind::Program if !app.session.state.edit_points.is_empty() => trim_monitor::show(app, ui, rect),
         PanelKind::Program => monitor::show(app, ui, rect, monitor::Which::Program),
         PanelKind::Source => monitor::show(app, ui, rect, monitor::Which::Source),
         PanelKind::Timeline => timeline::show(app, ui, rect),

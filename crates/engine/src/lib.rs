@@ -16,6 +16,8 @@ pub mod graphics;
 pub mod interchange;
 pub mod media_pool;
 pub mod previews;
+pub mod shortcut_presets;
+pub mod shortcuts;
 pub mod trim;
 
 use std::sync::Arc;
@@ -125,6 +127,9 @@ pub struct EditorState {
     /// Selected edit points (trim mode).
     #[serde(default)]
     pub edit_points: Vec<trim::EditPoint>,
+    /// Trim Monitor Out/In shift counters for the selected edit point.
+    #[serde(default)]
+    pub trim_shift: trim::TrimShift,
     /// Selected captions (caption tracks / Captions panel).
     #[serde(default)]
     pub caption_selection: Vec<ClipId>,
@@ -166,6 +171,12 @@ pub struct Session {
     pub loaded_schema: u32,
     /// Render preview files + render-bar segments (shared with the frontend's frame workers).
     pub previews: Arc<previews::PreviewStore>,
+    /// Dynamic (J/K/L) trimming and trim-mode loop playback in progress.
+    pub trim_play: trim::TrimPlayback,
+    /// Keyboard shortcuts (active bindings, presets; `shortcuts.*` commands).
+    pub shortcuts: shortcuts::Shortcuts,
+    /// Nesting depth of [`Session::execute`] (commands that run other commands).
+    exec_depth: u32,
 }
 
 /// A background job with shared progress.
@@ -225,6 +236,9 @@ impl Session {
             persistence: None,
             loaded_schema: filmcraft_format::SCHEMA_VERSION,
             previews: Arc::new(previews::PreviewStore::temp()),
+            trim_play: Default::default(),
+            shortcuts: shortcuts::Shortcuts::new(),
+            exec_depth: 0,
         }
     }
 
@@ -234,6 +248,7 @@ impl Session {
     pub fn start_autosave(&mut self, cfg: autosave::AutosaveConfig) -> std::io::Result<()> {
         let prefs_path = cfg.data_dir.join("preferences.json");
         self.prefs = autosave::Preferences::load(&prefs_path);
+        self.shortcuts.set_dir(&cfg.data_dir);
         self.prefs_path = Some(prefs_path);
         self.persistence = Some(autosave::Persistence::start(&cfg, self.prefs.auto_save.clone())?);
         self.sync_persistence();
@@ -315,8 +330,13 @@ impl Session {
     /// Run a command by id.
     pub fn execute(&mut self, id: &str, params: Value) -> Result<Value> {
         let spec = commands::find(id).ok_or_else(|| EngineError::UnknownCommand(id.to_string()))?;
+        if self.exec_depth == 0 && spec.journal && self.trim_play.active() {
+            self.settle_trim_playback(id);
+        }
         (spec.enabled)(self).map_err(|why| EngineError::Disabled(id.to_string(), why))?;
+        self.exec_depth += 1;
         let r = (spec.run)(self, &params);
+        self.exec_depth -= 1;
         self.sync_persistence();
         if r.is_ok() && spec.journal {
             self.journal.push((id.to_string(), params));
@@ -325,6 +345,21 @@ impl Session {
             }
         }
         r
+    }
+
+    /// Another command arrives while trim-mode playback runs: a dynamic trim is committed first
+    /// (so e.g. Undo undoes it as one step); loop playback stops unless it is a trim command.
+    fn settle_trim_playback(&mut self, id: &str) {
+        const LIVE: [&str; 5] = ["trim.shuttle", "trim.tick", "trim.shuttleStop", "trim.cancelDynamic", "trim.playAround"];
+        if LIVE.contains(&id) {
+            return;
+        }
+        if self.trim_play.dynamic.is_some() {
+            trim::commit(self);
+        }
+        if !id.starts_with("trim.") {
+            self.trim_play.around = None;
+        }
     }
 
     pub fn is_enabled(&self, id: &str) -> bool {
@@ -494,4 +529,8 @@ mod file_tests;
 #[cfg(test)]
 mod previews_tests;
 #[cfg(test)]
+mod shortcuts_tests;
+#[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod trim_tests;

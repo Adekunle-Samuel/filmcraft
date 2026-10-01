@@ -1,4 +1,5 @@
-//! Modal dialogs (About, Keyboard Shortcuts; Preferences/Recovery/Revert in `file_dialogs`).
+//! Modal dialogs (About; Keyboard Shortcuts in `shortcuts_dialog`; Preferences/Recovery/Revert in
+//! `file_dialogs`).
 
 use crate::{Dialog, FilmcraftApp};
 
@@ -21,22 +22,10 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
             });
         }
         Dialog::Shortcuts => {
-            egui::Window::new("Keyboard Shortcuts").open(&mut open).default_size([520.0, 520.0]).show(ctx, |ui| {
-                egui::ScrollArea::vertical().show(ui, |ui| {
-                    egui::Grid::new("shortcuts").striped(true).show(ui, |ui| {
-                        for c in filmcraft_engine::command_specs().iter().filter(|c| c.shortcut.is_some()) {
-                            ui.label(c.label);
-                            ui.monospace(crate::menus::shortcut_text(c.shortcut.unwrap_or("")));
-                            ui.end_row();
-                        }
-                        for c in crate::menus::UI_COMMANDS.iter().filter(|c| c.shortcut.is_some()) {
-                            ui.label(c.label);
-                            ui.monospace(crate::menus::shortcut_text(c.shortcut.unwrap_or("")));
-                            ui.end_row();
-                        }
-                    });
-                });
-            });
+            if !crate::panels::shortcuts_dialog::show(app, ctx) && app.dialog == Some(d) {
+                app.dialog = None;
+            }
+            return;
         }
         Dialog::NewSequence | Dialog::Preferences | Dialog::Recovery | Dialog::RevertConfirm => {}
     }
