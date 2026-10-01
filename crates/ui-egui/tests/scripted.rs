@@ -24,11 +24,20 @@ struct Driver {
 impl Driver {
     /// The app with the demo project open, after its first frames (theme and fonts installed).
     fn demo() -> Self {
+        Self::demo_with(false)
+    }
+
+    /// `render`: with a wgpu renderer so `Harness::render` can take screenshots (needs a GPU).
+    fn demo_with(render: bool) -> Self {
         let mut session = Session::default();
         session.execute("file.openDemoProject", json!({})).expect("demo project");
         let (tx, rx) = channel();
         let app = FilmcraftApp::new(session).with_control(rx);
-        let harness = Harness::builder().with_size(egui::vec2(1600.0, 980.0)).with_max_steps(10_000).build_eframe(move |_cc| app);
+        let mut b = Harness::builder().with_size(egui::vec2(1600.0, 980.0)).with_max_steps(10_000);
+        if render {
+            b = b.wgpu();
+        }
+        let harness = b.build_eframe(move |_cc| app);
         let mut d = Driver { harness, tx };
         d.frames(4);
         d
@@ -209,4 +218,122 @@ fn unknown_methods_and_commands_fail_cleanly() {
     assert_eq!(v["ok"], json!(false));
     let v = d.call("engine.execute", json!({"command": "no.such.command"}));
     assert_eq!(v["ok"], json!(false));
+}
+
+/// End of the first V1 clip (ticks).
+fn first_cut(d: &mut Driver) -> (u64, i64) {
+    let c = &track_clips(&d.sequence(), 0)[0];
+    (c["clip"].as_u64().unwrap(), c["start"].as_i64().unwrap() + c["duration"].as_i64().unwrap())
+}
+
+#[test]
+fn trim_monitor_buttons_and_dynamic_jkl_trimming() {
+    let mut d = Driver::demo();
+    for t in ["V2", "V3", "A2", "A3"] {
+        d.exec("timeline.setTrack", json!({"track": t, "syncLock": false}));
+    }
+    let (clip, cut) = first_cut(&mut d);
+    let fd = {
+        let rate = &d.sequence()["settings"]["frame_rate"];
+        254_016_000_000 * rate["den"].as_i64().unwrap() / rate["num"].as_i64().unwrap()
+    };
+    // Selecting an edit point turns the Program monitor into the Trim Monitor.
+    assert!(d.element_ids("trimMonitor.").is_empty());
+    d.exec("trim.selectEditPoint", json!({"clip": clip, "edge": "out", "kind": "roll"}));
+    d.frames(3);
+    let ids = d.element_ids("trimMonitor.");
+    for id in [
+        "trimMonitor.outgoing",
+        "trimMonitor.incoming",
+        "trimMonitor.outShift",
+        "trimMonitor.inShift",
+        "trimMonitor.forward",
+        "trimMonitor.backwardMany",
+        "trimMonitor.applyTransition",
+    ] {
+        assert!(ids.iter().any(|x| x == id), "{id} missing from {ids:?}");
+    }
+    // +1 button rolls the cut one frame
+    d.ok("ui.click", json!({"id": "trimMonitor.forward"}));
+    d.frames(2);
+    assert_eq!(first_cut(&mut d).1, cut + fd);
+    let info = d.exec("trim.monitor", json!({}));
+    assert_eq!(info["outShift"], json!(1), "{info}");
+    let undo0 = d.exec("history.list", json!({}))["undo"].as_array().unwrap().len();
+
+    // L starts a dynamic trim; the edit moves while frames run; K commits one undo step.
+    d.ok("ui.key", json!({"key": "L"}));
+    d.frames(4);
+    let live = d.exec("trim.monitor", json!({}));
+    assert!(live["dynamic"]["offsetFrames"].as_i64().unwrap() > 0, "trimming live: {live}");
+    assert_eq!(d.exec("history.list", json!({}))["undo"].as_array().unwrap().len(), undo0, "no undo steps while trimming");
+    d.ok("ui.key", json!({"key": "K"}));
+    d.frames(2);
+    let after = first_cut(&mut d).1;
+    assert!(after > cut + fd, "the cut moved later: {cut} -> {after}");
+    let hist = d.exec("history.list", json!({}));
+    let undo = hist["undo"].as_array().unwrap();
+    assert_eq!(undo.len(), undo0 + 1, "{hist}");
+    assert_eq!(undo.last().unwrap(), &json!("Dynamic Rolling Edit"));
+    assert!(d.exec("trim.monitor", json!({}))["dynamic"].is_null());
+    // J trims backward
+    d.ok("ui.key", json!({"key": "J"}));
+    d.frames(2);
+    d.ok("ui.key", json!({"key": "K"}));
+    d.frames(1);
+    assert!(first_cut(&mut d).1 < after, "J trimmed backward");
+    // Undo twice: back to the +1 state, then Space loops around the edit
+    d.ok("ui.menu.invoke", json!({"id": "edit.undo"}));
+    d.ok("ui.menu.invoke", json!({"id": "edit.undo"}));
+    assert_eq!(first_cut(&mut d).1, cut + fd);
+    d.ok("ui.key", json!({"key": "Space"}));
+    d.frames(2);
+    assert!(d.exec("trim.monitor", json!({}))["playAround"].is_object());
+    d.ok("ui.key", json!({"key": "Space"}));
+    d.frames(1);
+    assert!(d.exec("trim.monitor", json!({}))["playAround"].is_null());
+    // exit trim mode: the normal Program monitor returns
+    d.ok("ui.click", json!({"id": "trimMonitor.exit"}));
+    d.frames(2);
+    assert!(d.element_ids("trimMonitor.").is_empty());
+    assert!(d.element_ids("program.").iter().any(|x| x == "program.picture"));
+}
+
+impl Driver {
+    /// Let background frame workers deliver, then render the window to `<tmp>/<name>.png`.
+    fn screenshot(&mut self, name: &str) -> std::path::PathBuf {
+        for _ in 0..30 {
+            std::thread::sleep(std::time::Duration::from_millis(40));
+            self.frames(1);
+        }
+        let img = self.harness.render().expect("render");
+        let png = filmcraft_ui_egui::control::encode_png(img.as_raw(), img.width(), img.height()).expect("png");
+        let dir = std::path::PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("ui-screenshots");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join(format!("{name}.png"));
+        std::fs::write(&path, png).unwrap();
+        eprintln!("screenshot: {}", path.display());
+        path
+    }
+}
+
+/// Renders the Trim Monitor and the Keyboard Shortcuts dialog to PNGs for visual review (needs a
+/// GPU): `cargo test -p filmcraft-ui-egui --test scripted -- --ignored screenshots`.
+#[test]
+#[ignore]
+fn screenshots() {
+    let mut d = Driver::demo_with(true);
+    for t in ["V2", "V3", "A2", "A3"] {
+        d.exec("timeline.setTrack", json!({"track": t, "syncLock": false}));
+    }
+    d.exec("playhead.set", json!({"seconds": 4.5}));
+    d.exec("trim.selectNearest", json!({"kind": "rippleOut"}));
+    d.exec("trim.forwardMany", json!({}));
+    d.screenshot("trim-monitor-ripple");
+    d.exec("trim.toggleType", json!({}));
+    d.ok("ui.key", json!({"key": "L"}));
+    d.frames(3);
+    d.screenshot("trim-monitor-dynamic-roll");
+    d.ok("ui.key", json!({"key": "K"}));
+    d.frames(2);
 }

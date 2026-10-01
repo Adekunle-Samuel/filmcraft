@@ -26,6 +26,9 @@ pub const UI_COMMANDS: &[UiCommand] = &[
     uic!("playback.forward", "Shuttle Right", [], Some("L")),
     uic!("playback.stop", "Shuttle Stop", [], Some("K")),
     uic!("playback.reverse", "Shuttle Left", [], Some("J")),
+    uic!("playback.slowForward", "Shuttle Slow Right", [], Some("Shift+L")),
+    uic!("playback.slowReverse", "Shuttle Slow Left", [], Some("Shift+J")),
+    uic!("playback.playAround", "Play Around", [], Some("Shift+K")),
     uic!("playback.inToOut", "Play In to Out", [], Some("Shift+Space")),
     uic!("playback.loop", "Loop", [], None),
     uic!("view.zoomIn", "Zoom In", ["View"], Some("=")),
@@ -94,7 +97,14 @@ pub fn invoke(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, params: Val
         app.ui.tool = tool;
         return Ok(json!({"tool": tool}));
     }
+    if let Some(r) = crate::panels::trim_monitor::route_transport(app, ctx, id) {
+        return r;
+    }
     match id {
+        "playback.slowForward" | "playback.slowReverse" => {
+            app.play(if id == "playback.slowForward" { 0.25 } else { -0.25 });
+            return Ok(json!({"speed": app.playback.speed}));
+        }
         "playback.toggle" => {
             app.toggle_play(1.0);
             return Ok(json!({"playing": app.playback.playing}));

@@ -524,6 +524,10 @@ impl FilmcraftApp {
         if ctx.egui_wants_keyboard_input() {
             return;
         }
+        // Esc cancels a dynamic trim in progress
+        if self.session.trim_play.dynamic.is_some() && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape)) {
+            let _ = self.session.execute("trim.cancelDynamic", json!({}));
+        }
         let mut fire = Vec::new();
         ctx.input_mut(|i| {
             for (m, k, id) in &self.bindings {
@@ -637,6 +641,7 @@ impl FilmcraftApp {
         self.auto.begin_frame();
         self.frames.set_context(&ctx);
         self.session.poll_persistence();
+        panels::trim_monitor::advance(self, &ctx);
         if self.session.persistence.is_some() && self.session.is_dirty() {
             // Keep polling the auto-save worker (status, "also save the project" results).
             ctx.request_repaint_after(std::time::Duration::from_secs(1));
