@@ -11,6 +11,7 @@
 pub mod commands;
 pub mod demo;
 pub mod media_pool;
+pub mod trim;
 
 use std::sync::Arc;
 
@@ -118,6 +119,9 @@ pub struct EditorState {
     pub clipboard: Vec<(TrackKind, usize, filmcraft_project::TrackItem)>,
     pub default_video_transition: String,
     pub default_audio_transition: String,
+    /// Selected edit points (trim mode).
+    #[serde(default)]
+    pub edit_points: Vec<trim::EditPoint>,
 }
 
 /// Events for frontends (drained each frame).
