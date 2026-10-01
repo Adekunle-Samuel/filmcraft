@@ -2,7 +2,7 @@
 
 Progress toward feature parity with Adobe Premiere Pro, with estimates. Updated as milestones land.
 
-**Last updated:** 2026-10-01 · **Overall parity:** ~45% · **Code:** ~125k lines of Rust in 31 crates, 800+ tests
+**Last updated:** 2026-10-01 (evening) · **Overall parity:** ~50% · **Code:** ~134k lines of Rust in 31 crates, 901 tests
 
 ## Estimate to parity
 
@@ -44,7 +44,7 @@ Status: ✅ done · 🟡 in progress · ⬜ not started. Estimates are remaining
 
 ## Running now
 
-- Playback: fix a UI hang after preview renders, then a load-robust playback benchmark and profiling (target: 3 × 1080p streams with 0 dropped frames)
+- README hero: a real documentary edit (NASA Apollo 11 footage, public domain) replacing the trailer demo
 
 ## Log
 
