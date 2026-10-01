@@ -469,6 +469,7 @@ pub(crate) fn empty_sequence(settings: SequenceSettings) -> Sequence {
         start_timecode: 0,
         master_volume_db: 0.0,
         master_effects: Vec::new(),
+        caption_tracks: Vec::new(),
     }
 }
 

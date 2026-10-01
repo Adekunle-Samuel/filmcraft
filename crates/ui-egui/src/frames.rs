@@ -193,7 +193,7 @@ impl FrameServer {
                     &job.project,
                     seq,
                     job.time,
-                    filmcraft_render::RenderOptions { scale: job.scale, ..Default::default() },
+                    filmcraft_render::RenderOptions { scale: job.scale, captions: true, ..Default::default() },
                     &provider,
                 );
                 self.shared.plans.lock().unwrap_or_else(|e| e.into_inner()).insert(job.key, (Arc::new(plan), 0));
@@ -226,7 +226,7 @@ fn worker(sh: Arc<Shared>, pool: Arc<MediaPool>, services: Arc<dyn Services>, re
                 &job.project,
                 seq,
                 job.time,
-                filmcraft_render::RenderOptions { scale: job.scale, ..Default::default() },
+                filmcraft_render::RenderOptions { scale: job.scale, captions: true, ..Default::default() },
                 &provider,
             );
             let mut g = sh.plans.lock().unwrap_or_else(|e| e.into_inner());
@@ -257,7 +257,7 @@ fn render_job(job: &Job, pool: &Arc<MediaPool>, services: &Arc<dyn Services>) ->
             &job.project,
             seq,
             job.time,
-            filmcraft_render::RenderOptions { scale: job.scale, ..Default::default() },
+            filmcraft_render::RenderOptions { scale: job.scale, captions: true, ..Default::default() },
             &provider,
         )),
         Target::Item(item) => filmcraft_render::render_item(&job.project, item, job.time, job.scale, &provider),
@@ -265,7 +265,7 @@ fn render_job(job: &Job, pool: &Arc<MediaPool>, services: &Arc<dyn Services>) ->
             &job.project,
             seq,
             job.time,
-            filmcraft_render::RenderOptions { scale: job.scale, ..Default::default() },
+            filmcraft_render::RenderOptions { scale: job.scale, captions: true, ..Default::default() },
             &provider,
         )),
     };

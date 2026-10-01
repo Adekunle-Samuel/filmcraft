@@ -48,6 +48,8 @@ pub struct HostHooks {
     pub pick_files: Option<Box<dyn FnMut(&[&str]) -> Vec<String>>>,
     pub pick_save: Option<Box<dyn FnMut(&str) -> Option<String>>>,
     pub pick_open_project: Option<Box<dyn FnMut() -> Option<String>>>,
+    /// Save dialog with a filter: (filter name, extensions, suggested file name) → path.
+    pub pick_save_as: Option<Box<dyn FnMut(&str, &[&str], &str) -> Option<String>>>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -432,13 +434,14 @@ impl FilmcraftApp {
 
     // ---------------------------------------------------------------- files
 
-    pub fn file_dialog(&mut self, id: &str) -> Result<Value, String> {
+    pub fn file_dialog(&mut self, id: &str, params: &Value) -> Result<Value, String> {
         match id {
             "file.import" => {
                 let exts: Vec<&str> = filmcraft_media::VIDEO_EXTENSIONS
                     .iter()
                     .chain(filmcraft_media::AUDIO_EXTENSIONS)
                     .chain(filmcraft_media::STILL_EXTENSIONS)
+                    .chain(&["srt", "vtt", "scc", "edl", "xml", "fcpxml", "otio"])
                     .copied()
                     .collect();
                 let paths = self.hooks.pick_files.as_mut().map(|f| f(&exts)).unwrap_or_default();
@@ -462,6 +465,21 @@ impl FilmcraftApp {
             "file.open" => {
                 let Some(path) = self.hooks.pick_open_project.as_mut().and_then(|f| f()) else { return Ok(Value::Null) };
                 self.session.execute("file.open", json!({"path": path})).map_err(|e| e.to_string())
+            }
+            "captions.import" => {
+                let paths = self.hooks.pick_files.as_mut().map(|f| f(&["srt", "vtt", "scc"])).unwrap_or_default();
+                let Some(path) = paths.into_iter().next() else { return Ok(Value::Null) };
+                self.session.execute("captions.import", json!({"path": path})).map_err(|e| e.to_string())
+            }
+            "captions.export" => {
+                let name = self.session.state.active_sequence.and_then(|s| self.session.project.item(s)).map(|i| i.name.clone()).unwrap_or_default();
+                let suggested = format!("{}.srt", name.replace(' ', "_"));
+                let Some(path) = self.hooks.pick_save_as.as_mut().and_then(|f| f("Captions (SRT, WebVTT, SCC)", &["srt", "vtt", "scc"], &suggested)) else {
+                    return Ok(Value::Null);
+                };
+                let mut p = params.clone();
+                p["path"] = json!(path);
+                self.session.execute("captions.export", p).map_err(|e| e.to_string())
             }
             _ => Err(format!("no dialog for {id}")),
         }

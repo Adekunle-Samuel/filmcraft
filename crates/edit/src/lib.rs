@@ -15,6 +15,8 @@
 //!
 //! Keyframes are stored in media time, so trims and splits never need to move them.
 
+pub mod captions;
+
 use std::collections::HashMap;
 
 use filmcraft_project::{ClipId, ItemId, Sequence, Track, TrackId, TrackItem, Transition, TransitionId};
@@ -222,6 +224,9 @@ pub fn insert(seq: &mut Sequence, placements: Vec<(TrackId, TrackItem)>, ctx: &m
             insert_track_gap(t, at, dur, ctx, &mut links);
         }
     }
+    for ct in seq.caption_tracks.iter_mut().filter(|c| !c.locked && c.sync_lock) {
+        captions::insert_gap(ct, at, dur, ctx);
+    }
     let mut ids = Vec::new();
     for (tid, item) in placements {
         let t = track_mut(seq, tid)?;
@@ -287,6 +292,9 @@ pub fn extract(seq: &mut Sequence, tracks: &[TrackId], range: TimeRange, ctx: &m
         }
         removed.extend(clear_track_range(tr, range, ctx, &mut links));
         shift_track_from(tr, range.end(), -range.duration);
+    }
+    for ct in seq.caption_tracks.iter_mut().filter(|c| !c.locked && c.sync_lock) {
+        captions::extract_range(ct, range);
     }
     removed
 }

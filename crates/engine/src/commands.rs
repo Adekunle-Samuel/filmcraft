@@ -57,7 +57,7 @@ pub fn find(id: &str) -> Option<&'static CommandSpec> {
 
 // ---------- enablement ----------
 
-fn always(_: &Session) -> std::result::Result<(), String> {
+pub(crate) fn always(_: &Session) -> std::result::Result<(), String> {
     Ok(())
 }
 fn has_edit_points(s: &Session) -> std::result::Result<(), String> {
@@ -65,12 +65,17 @@ fn has_edit_points(s: &Session) -> std::result::Result<(), String> {
     if s.state.edit_points.is_empty() { Err("no edit points selected".into()) } else { Ok(()) }
 }
 
-fn has_seq(s: &Session) -> std::result::Result<(), String> {
+pub(crate) fn has_seq(s: &Session) -> std::result::Result<(), String> {
     s.active_sequence().map(|_| ()).ok_or_else(|| "no sequence is open".into())
 }
 fn has_selection(s: &Session) -> std::result::Result<(), String> {
     has_seq(s)?;
     if s.state.selection.is_empty() { Err("no clips selected".into()) } else { Ok(()) }
+}
+/// Clips or captions selected (Clear / Ripple Delete work on either).
+fn has_any_selection(s: &Session) -> std::result::Result<(), String> {
+    has_seq(s)?;
+    if s.state.selection.is_empty() && s.state.caption_selection.is_empty() { Err("nothing selected".into()) } else { Ok(()) }
 }
 fn has_source(s: &Session) -> std::result::Result<(), String> {
     has_seq(s)?;
@@ -96,24 +101,24 @@ fn has_clipboard(s: &Session) -> std::result::Result<(), String> {
 
 // ---------- param helpers ----------
 
-fn bad(cmd: &str, msg: impl Into<String>) -> EngineError {
+pub(crate) fn bad(cmd: &str, msg: impl Into<String>) -> EngineError {
     EngineError::BadParams { cmd: cmd.into(), msg: msg.into() }
 }
-fn str_p<'a>(p: &'a Value, k: &str) -> Option<&'a str> {
+pub(crate) fn str_p<'a>(p: &'a Value, k: &str) -> Option<&'a str> {
     p.get(k).and_then(Value::as_str)
 }
-fn f64_p(p: &Value, k: &str) -> Option<f64> {
+pub(crate) fn f64_p(p: &Value, k: &str) -> Option<f64> {
     p.get(k).and_then(Value::as_f64)
 }
-fn bool_p(p: &Value, k: &str) -> Option<bool> {
+pub(crate) fn bool_p(p: &Value, k: &str) -> Option<bool> {
     p.get(k).and_then(Value::as_bool)
 }
-fn u64_p(p: &Value, k: &str) -> Option<u64> {
+pub(crate) fn u64_p(p: &Value, k: &str) -> Option<u64> {
     p.get(k).and_then(|v| v.as_u64().or_else(|| v.as_f64().map(|f| f as u64)))
 }
 
 /// Parse a time from params: `time` (ticks), `frame`, `seconds` or `timecode`, with `prefix`.
-fn time_p(s: &Session, p: &Value, prefix: &str) -> Option<Tick> {
+pub(crate) fn time_p(s: &Session, p: &Value, prefix: &str) -> Option<Tick> {
     let rate = s.sequence_rate();
     let k = |n: &str| if prefix.is_empty() { n.to_string() } else { format!("{prefix}{}{}", n[..1].to_uppercase(), &n[1..]) };
     if let Some(t) = p.get(k("time")).and_then(Value::as_i64) {
@@ -496,6 +501,13 @@ fn build() -> Vec<CommandSpec> {
             let mut reports = Vec::new();
             for path in paths {
                 match s.services.read_file(&path) {
+                    Ok(b) if crate::captions::detect(&path, &b).is_some() => {
+                        let fmt = crate::captions::detect(&path, &b).expect("detected");
+                        match crate::captions::import(s, &path, &b, fmt, None) {
+                            Ok(r) => reports.push(r),
+                            Err(e) => errors.push(format!("{path}: {e}")),
+                        }
+                    }
                     Ok(b) if crate::interchange::detect(&path, &b).is_some() => {
                         let fmt = crate::interchange::detect(&path, &b).expect("detected");
                         match crate::interchange::import(s, &path, &b, fmt) {
@@ -513,7 +525,7 @@ fn build() -> Vec<CommandSpec> {
                     Err(e) => errors.push(format!("{path}: {e}")),
                 }
             }
-            if ids.is_empty() && sequences.is_empty() && !errors.is_empty() {
+            if ids.is_empty() && sequences.is_empty() && reports.is_empty() && !errors.is_empty() {
                 return Err(EngineError::Other(errors.join("; ")));
             }
             if reports.is_empty() {
@@ -583,7 +595,7 @@ fn build() -> Vec<CommandSpec> {
             "Media…",
             ["File", "Export"],
             None,
-            r#"{"path":str,"format":"h264|prores|mjpeg|png|gif|wav","scale":f32=1,"audio":bool=true,"quality":0..100}"#,
+            r#"{"path":str,"format":"h264|prores|mjpeg|png|gif|wav","scale":f32=1,"audio":bool=true,"quality":0..100,"burnCaptions":bool=false}"#,
             has_seq,
             |s, p| export_media(s, p)
         ),
@@ -613,7 +625,11 @@ fn build() -> Vec<CommandSpec> {
         }),
         cmd!("edit.paste", "Paste", ["Edit"], Some("Cmd+V"), "{}", has_clipboard, |s, _| paste(s, false)),
         cmd!("edit.pasteInsert", "Paste Insert", ["Edit"], Some("Cmd+Shift+V"), "{}", has_clipboard, |s, _| paste(s, true)),
-        cmd!("edit.clear", "Clear", ["Edit"], Some("Backspace"), r#"{"clips":[id]?}"#, has_selection, |s, p| {
+        cmd!("edit.clear", "Clear", ["Edit"], Some("Backspace"), r#"{"clips":[id]?}"#, has_any_selection, |s, p| {
+            if p.get("clips").is_none() && p.get("clip").is_none() && s.state.selection.is_empty() {
+                let caps = s.state.caption_selection.clone();
+                return crate::captions::delete(s, &caps, false);
+            }
             let sel = with_links(s, &clips_p(s, p));
             s.edit_sequence("Clear", |q, _, st| {
                 edit::delete_items(q, &sel);
@@ -622,7 +638,11 @@ fn build() -> Vec<CommandSpec> {
             })?;
             Ok(Value::Null)
         }),
-        cmd!("edit.rippleDelete", "Ripple Delete", ["Edit"], Some("Shift+Delete"), r#"{"clips":[id]?}"#, has_selection, |s, p| {
+        cmd!("edit.rippleDelete", "Ripple Delete", ["Edit"], Some("Shift+Delete"), r#"{"clips":[id]?}"#, has_any_selection, |s, p| {
+            if p.get("clips").is_none() && p.get("clip").is_none() && s.state.selection.is_empty() {
+                let caps = s.state.caption_selection.clone();
+                return crate::captions::delete(s, &caps, true);
+            }
             let sel = with_links(s, &clips_p(s, p));
             s.edit_sequence("Ripple Delete", |q, _, st| {
                 edit::ripple_delete_items(q, &sel)?;
@@ -638,6 +658,7 @@ fn build() -> Vec<CommandSpec> {
         }),
         cmd!("edit.deselectAll", "Deselect All", ["Edit"], Some("Cmd+Shift+A"), "{}", always, |s, _| {
             s.state.selection.clear();
+            s.state.caption_selection.clear();
             Ok(Value::Null)
         }),
         cmd!("edit.duplicate", "Duplicate", ["Edit"], Some("Cmd+Shift+/"), "{}", has_project_selection, |s, _| {
@@ -834,7 +855,11 @@ fn build() -> Vec<CommandSpec> {
         }),
         cmd!("sequence.addEditAllTracks", "Add Edit to All Tracks", ["Sequence"], Some("Cmd+Shift+K"), r#"{"time":ticks?}"#, has_seq, |s, p| {
             let t = time_p(s, p, "").unwrap_or(s.playhead());
-            let n = s.edit_sequence("Add Edit to All Tracks", |q, ctx, _| Ok(edit::razor(q, &[], t, ctx)))?;
+            let n = s.edit_sequence("Add Edit to All Tracks", |q, ctx, _| {
+                let mut n = edit::razor(q, &[], t, ctx);
+                n.extend(edit::captions::split_captions_at(q, &[], t, ctx));
+                Ok(n)
+            })?;
             Ok(json!({"cuts": n.len()}))
         }),
         cmd!("sequence.lift", "Lift", ["Sequence"], Some(";"), "{}", has_in_out, |s, _| {
@@ -1212,6 +1237,7 @@ fn build() -> Vec<CommandSpec> {
                 }
             } else {
                 s.state.selection = clips;
+                s.state.caption_selection.clear();
             }
             Ok(json!({"selection": s.state.selection.iter().map(|c| c.0).collect::<Vec<_>>()}))
         }),
@@ -1695,6 +1721,7 @@ fn build() -> Vec<CommandSpec> {
             json!({"undo": s.history.undo.iter().map(|h| &h.0).collect::<Vec<_>>(), "redo": s.history.redo.iter().map(|h| &h.0).collect::<Vec<_>>()})
         )),
     ];
+    v.extend(crate::captions::commands());
     // Labels as individual commands (Edit ▸ Label ▸ <name>)
     for l in Label::ALL {
         let _ = l;
@@ -1718,6 +1745,7 @@ fn export_media(s: &mut Session, p: &Value) -> Result<Value> {
         include_audio: bool_p(p, "audio").unwrap_or(true),
         quality: u64_p(p, "quality").unwrap_or(90).min(100) as u8,
         bitrate_kbps: u64_p(p, "bitrateKbps").unwrap_or(20_000) as u32,
+        burn_captions: bool_p(p, "burnCaptions").unwrap_or(false),
     };
     let id = s.jobs.len() as u64 + 1;
     let job = crate::Job {

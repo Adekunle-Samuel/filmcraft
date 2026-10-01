@@ -17,6 +17,7 @@ filmcraft-frame = { workspace = true }
 filmcraft-media = { workspace = true }
 filmcraft-project = { workspace = true }
 filmcraft-audio-dsp = { workspace = true }
+filmcraft-captions = { workspace = true }
 rayon = { workspace = true }
 
 [dev-dependencies]

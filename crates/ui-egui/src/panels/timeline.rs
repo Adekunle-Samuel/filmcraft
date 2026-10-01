@@ -162,7 +162,11 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let scroll = app.ui.timeline.scroll;
 
     // ---- rows
-    let tracks_area = Rect::from_min_max(content.min, content.max);
+    // caption tracks sit in their own area above the video tracks
+    let cap_n = seq.caption_tracks.len();
+    let caption_area = Rect::from_min_max(pos2(rect.min.x, content.min.y), pos2(content.max.x, content.min.y + cap_n as f32 * super::timeline_captions::ROW_H));
+    let cap_h = if cap_n > 0 { caption_area.height() + DIVIDER_H } else { 0.0 };
+    let tracks_area = Rect::from_min_max(pos2(content.min.x, content.min.y + cap_h), content.max);
     let split_y = tracks_area.min.y + (tracks_area.height() - DIVIDER_H) * app.ui.timeline.split;
     let video_area = Rect::from_min_max(pos2(rect.min.x, tracks_area.min.y), pos2(content.max.x, split_y));
     let audio_area = Rect::from_min_max(pos2(rect.min.x, split_y + DIVIDER_H), pos2(content.max.x, tracks_area.max.y - MASTER_H));
@@ -284,6 +288,12 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         t.hot_text,
     );
 
+    // ---- caption tracks
+    if cap_n > 0 {
+        painter.rect_filled(Rect::from_min_max(pos2(rect.min.x, caption_area.max.y), pos2(content.max.x, caption_area.max.y + DIVIDER_H)), 0.0, t.app_bg);
+        super::timeline_captions::paint(app, ui, &seq, caption_area, &layout, &t);
+    }
+
     // ---- top block: timecode + toggles, ruler
     draw_top(app, ui, rect, &seq, &layout, &t, seq_id);
 
@@ -333,6 +343,9 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
 
     // ---- interaction
     interact(app, ui, &seq, &layout, rect);
+    if cap_n > 0 {
+        super::timeline_captions::interact(app, ui, &seq, caption_area, &layout);
+    }
     let _ = (visible, TICKS_PER_SECOND);
 }
 
