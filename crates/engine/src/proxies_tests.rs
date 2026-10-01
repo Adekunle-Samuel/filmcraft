@@ -204,3 +204,25 @@ fn proxy_playback_perf_4k() {
     }
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// Render previews are cached by content and reused whether proxies are on or off, so they are
+/// always rendered from full-resolution media (like export).
+#[test]
+fn render_previews_ignore_proxies() {
+    let root = tmp_dir("proxy-previews");
+    let a = root.join("a.mov");
+    make_movie(&a, DemoScene::Aurora, W, H, 12);
+    let other = root.join("other.mp4");
+    make_movie(&other, DemoScene::Plasma, W / 4, H / 4, 12);
+    let (mut s, items, _) = session_with(&[&a]);
+    add_effects(&mut s);
+    let full = frame_rgba(&mut s, 4, 1.0);
+    s.execute("media.attachProxies", json!({"item": items[0].0, "path": other.to_string_lossy()})).unwrap();
+    s.execute("media.toggleProxies", json!({"enabled": true})).unwrap();
+    s.execute("sequence.renderInToOut", json!({"wait": true})).unwrap();
+    let seq = s.state.active_sequence.unwrap();
+    let f = s.previews.frame(&s.media, &s.project, seq, 4, 1.0).expect("frame 4 has a preview");
+    let q = psnr(&f.to_rgba8(), &full.2);
+    assert!(q > 30.0, "preview rendered from full-resolution media, not the (different) proxy: {q:.1} dB");
+    let _ = std::fs::remove_dir_all(&root);
+}
