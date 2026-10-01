@@ -144,6 +144,11 @@ fn render_seq(project: &Project, seq: &Sequence, t: Tick, opts: RenderOptions, s
             let mut adj = adjusted;
             adj.scale_alpha(op);
             mask::apply_opacity_masks(&mut adj, item, mt, opts.scale);
+            // Motion moves / scales the adjustment layer's frame: it only applies inside it.
+            if let Some(region) = adjustment_region(seq, item, project, mt, opts.scale, w, h) {
+                let cov: Vec<f32> = region.px.chunks_exact(4).map(|p| p[3]).collect();
+                mask::scale_by(&mut adj, &cov);
+            }
             blend::composite(&mut out, &adj, 1.0, bl);
             canvas = out;
             continue;
@@ -161,6 +166,28 @@ fn render_seq(project: &Project, seq: &Sequence, t: Tick, opts: RenderOptions, s
         }
     }
     canvas
+}
+
+/// Coverage of an adjustment layer's (Motion-transformed) frame in output pixels, or `None` when
+/// it covers the whole output.
+fn adjustment_region(seq: &Sequence, item: &TrackItem, project: &Project, mt: Tick, scale: f32, w: usize, h: usize) -> Option<Image> {
+    let size = source_size(project, item.item).unwrap_or((seq.settings.width, seq.settings.height));
+    let motion = motion_matrix(seq, item, size, mt);
+    let s = scale as f64;
+    let (fw, fh) = (((size.0 as f64 * s).round() as usize).max(1), ((size.1 as f64 * s).round() as usize).max(1));
+    let m = Affine::scale(s, s).then_apply(&motion).then_apply(&Affine::scale(1.0 / s, 1.0 / s));
+    let full = fw == w
+        && fh == h
+        && (m.a - 1.0).abs() < 1e-9
+        && (m.d - 1.0).abs() < 1e-9
+        && m.b.abs() < 1e-12
+        && m.c.abs() < 1e-12
+        && m.e.abs() < 1e-9
+        && m.f.abs() < 1e-9;
+    if full {
+        return None;
+    }
+    Some(Image::filled(fw, fh, [1.0; 4]).transformed(w, h, &m))
 }
 
 /// Rendered captions of the visible caption tracks at `t` for a `w`×`h` output.
@@ -364,6 +391,10 @@ pub fn arc_source(s: impl filmcraft_media::MediaSource + 'static) -> SharedSourc
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+#[path = "adjustment_tests.rs"]
+mod adjustment_tests;
 
 #[cfg(test)]
 #[path = "mixer_tests.rs"]
