@@ -1361,6 +1361,7 @@ dependencies = [
  "filmcraft-isobmff",
  "filmcraft-matroska",
  "filmcraft-media",
+ "filmcraft-opus",
  "filmcraft-prores",
  "filmcraft-time",
  "image",

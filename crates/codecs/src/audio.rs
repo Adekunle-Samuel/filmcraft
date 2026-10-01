@@ -17,8 +17,49 @@ use crate::{CodecError, Result};
 enum Inner {
     /// Our own AAC-LC decoder.
     Aac { dec: Box<filmcraft_aac::Decoder>, asc: Vec<u8> },
+    /// Our own Opus decoder (always 48 kHz output; pre-skip is left to container timestamps).
+    /// `order` maps output channel → decoded channel (Vorbis → WAV/SMPTE order for surround).
+    Opus { dec: Box<filmcraft_opus::Decoder>, order: Option<&'static [usize]> },
     /// Bootstrap decoders (MP3, ALAC, FLAC, HE-AAC…) via symphonia.
     Symphonia(Box<dyn Decoder>),
+}
+
+/// Opus always decodes at 48 kHz (RFC 7845 §5.1: the input rate in the header is informational).
+pub const OPUS_RATE: u32 = 48_000;
+
+/// Opus pre-roll decoded before a random-access target, in 48 kHz frames: 320 ms.
+///
+/// The containers' 80 ms (RFC 7845 §4.6, Matroska `SeekPreRoll`) is enough to sound right, but the
+/// CELT energy predictor converges only ~24 dB per 80 ms: measured against a continuous decode, a
+/// cold start 80 ms early is ~26 dB off, 320 ms early ~89 dB (float-exact). Seeking must give the
+/// same samples as playback (render caches, scrubbing), so we pay the extra few packets.
+pub const OPUS_PRE_ROLL: u32 = 4 * 3840;
+
+/// Channel order for Vorbis-ordered surround (Opus mapping family 1, RFC 7845 §5.1.1.2): output
+/// channel → decoded channel, giving the WAV/SMPTE order (L R C LFE back… side…) used elsewhere.
+fn vorbis_to_wav_order(channels: usize) -> Option<&'static [usize]> {
+    Some(match channels {
+        3 => &[0, 2, 1],
+        5 => &[0, 2, 1, 3, 4],
+        6 => &[0, 2, 1, 5, 3, 4],
+        7 => &[0, 2, 1, 6, 5, 3, 4],
+        8 => &[0, 2, 1, 7, 5, 6, 3, 4],
+        _ => return None,
+    })
+}
+
+/// Duration of an Opus packet in 48 kHz samples from its TOC and frame count (RFC 6716 §3.1),
+/// without parsing frame lengths. For a multistream packet this is the first stream's TOC, which
+/// every stream shares. `None` for an empty or invalid (> 120 ms) packet.
+pub fn opus_packet_samples(data: &[u8]) -> Option<usize> {
+    let toc = filmcraft_opus::Toc::parse(*data.first()?);
+    let frames = match data[0] & 3 {
+        0 => 1,
+        1 | 2 => 2,
+        _ => (*data.get(1)? & 0x3F) as usize,
+    };
+    let n = toc.frame_samples_48k() * frames;
+    (n > 0 && n <= 5760).then_some(n)
 }
 
 /// A packet decoder producing planar f32.
@@ -45,6 +86,18 @@ impl PacketDecoder {
         }
         Self::new(CODEC_TYPE_AAC, sample_rate, Some(asc.to_vec()))
     }
+    /// Opus from an `OpusHead` (Matroska `CodecPrivate`, Ogg) or a `dOps` box payload. Output is
+    /// 48 kHz; pre-skip is *not* trimmed here (Matroska `CodecDelay` / MP4 edit lists do that).
+    pub fn opus(head: filmcraft_opus::OpusHead) -> Result<Self> {
+        let dec = filmcraft_opus::Decoder::from_head(head, OPUS_RATE).map_err(|e| CodecError::Unsupported(format!("Opus: {e}")))?;
+        let channels = dec.channels();
+        let order = if dec.head().mapping_family == 1 { vorbis_to_wav_order(channels) } else { None };
+        Ok(Self { inner: Inner::Opus { dec: Box::new(dec), order }, channels })
+    }
+    /// Whether this decodes Opus (which needs [`OPUS_PRE_ROLL`] of pre-roll after a seek).
+    pub fn is_opus(&self) -> bool {
+        matches!(self.inner, Inner::Opus { .. })
+    }
     pub fn for_isobmff(c: &filmcraft_isobmff::CodecConfig, rate: u32) -> Result<Self> {
         use filmcraft_isobmff::CodecConfig as C;
         match c {
@@ -52,6 +105,7 @@ impl PacketDecoder {
             C::Mp3 => Self::new(CODEC_TYPE_MP3, rate, None),
             C::Alac { cookie } => Self::new(CODEC_TYPE_ALAC, rate, Some(cookie.clone())),
             C::Flac(_) => Self::new(CODEC_TYPE_FLAC, rate, None),
+            C::Opus(o) => Self::opus(filmcraft_opus::OpusHead::from_dops(&o.to_bytes()).map_err(|e| CodecError::Unsupported(format!("Opus: {e}")))?),
             other => Err(CodecError::Unsupported(format!("{} audio", other.name()))),
         }
     }
@@ -60,6 +114,18 @@ impl PacketDecoder {
         let dec = match &mut self.inner {
             Inner::Aac { dec, .. } => {
                 let out = dec.decode(data).map_err(|e| CodecError::Decode(e.to_string()))?;
+                self.channels = out.len();
+                return Ok(out);
+            }
+            Inner::Opus { dec, order } => {
+                // A corrupt packet is concealed like a lost one (keeps timing and decoder state).
+                let mut out = match dec.decode(Some(data)) {
+                    Ok(o) => o,
+                    Err(_) => dec.decode(None).map_err(|e| CodecError::Decode(e.to_string()))?,
+                };
+                if let Some(order) = order {
+                    out = order.iter().map(|&c| std::mem::take(&mut out[c])).collect();
+                }
                 self.channels = out.len();
                 return Ok(out);
             }
@@ -89,6 +155,7 @@ impl PacketDecoder {
                     **dec = d;
                 }
             }
+            Inner::Opus { dec, .. } => dec.reset(),
             Inner::Symphonia(d) => d.reset(),
         }
     }
