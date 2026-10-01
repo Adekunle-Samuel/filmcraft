@@ -110,6 +110,11 @@ pub(crate) fn mapping(id: &str) -> Option<Mapping> {
     })
 }
 
+/// Whether a project audio effect has a DSP implementation (clip effects and mixer inserts).
+pub fn supported(effect_id: &str) -> bool {
+    mapping(effect_id).is_some()
+}
+
 fn band(d: &mut dyn AudioEffect, kind: f32, freq: f32, q: f32) {
     d.set_param("b1.on", 1.0);
     d.set_param("b1.type", kind);

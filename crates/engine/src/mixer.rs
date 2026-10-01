@@ -837,6 +837,38 @@ fn write_automation(s: &mut Session, p: &Value) -> Result<Value> {
     Ok(json!({"keyframes": n, "points": pts.len()}))
 }
 
+/// Audio Clip Mixer: set the clip's Volume level / Panner balance (or any scalar clip effect
+/// parameter) at the playhead. With `keyframe` (or when already animated) it writes a keyframe at the
+/// playhead; a drag (same clip and parameter, no other edit between) is one undo step.
+fn clip_set(s: &mut Session, p: &Value) -> Result<Value> {
+    let clip = filmcraft_project::ClipId(u64_p(p, "clip").ok_or_else(|| bad("clipMixer.set", "need `clip`"))?);
+    let effect = str_p(p, "effect").unwrap_or("volume").to_string();
+    let param = str_p(p, "param").unwrap_or("level").to_string();
+    let v = f64_p(p, "value").ok_or_else(|| bad("clipMixer.set", "need `value`"))?;
+    let kf = bool_p(p, "keyframe").unwrap_or(false);
+    let t = time_p(s, p, "").unwrap_or(s.playhead());
+    let seq_id = s.state.active_sequence.ok_or(EngineError::NoSequence)?;
+    let key = format!("clipMixer:{}:{effect}:{param}", clip.0);
+    if bool_p(p, "begin").unwrap_or(false) {
+        s.history.merge_key = None;
+    }
+    s.edit_merged("Audio Clip Mixer", &key, |pr, _| {
+        let seq = pr.sequence_mut(seq_id).ok_or(EngineError::NoSequence)?;
+        let (_, it) = seq.find_item_mut(clip).ok_or_else(|| bad("clipMixer.set", "no such clip"))?;
+        let mt = it.source_time_at(t.clamp(it.start, it.end()));
+        let e = it.effect_mut(&effect).ok_or_else(|| bad("clipMixer.set", format!("the clip has no `{effect}` effect")))?;
+        let par = e.param_mut(&param).ok_or_else(|| bad("clipMixer.set", format!("no parameter `{param}`")))?;
+        let v = if param == "level" { v.clamp(FADER_MIN_DB, FADER_MAX_DB) } else { v.clamp(-100.0, 100.0) };
+        if kf || par.is_animated() {
+            par.put_keyframe(mt, ParamValue::Float(v));
+        } else {
+            par.value = ParamValue::Float(v);
+        }
+        Ok(())
+    })?;
+    Ok(Value::Null)
+}
+
 fn not_recording(s: &Session) -> std::result::Result<(), String> {
     has_seq(s)?;
     if s.mixrec.active() { Err("an automation pass is already recording".into()) } else { Ok(()) }
@@ -944,6 +976,16 @@ pub fn commands() -> Vec<CommandSpec> {
                 let t = time_p(s, p, "").unwrap_or(s.playhead());
                 record_stop(s, t)
             },
+            true,
+        ),
+        spec(
+            "clipMixer.set",
+            "Audio Clip Mixer Adjust",
+            &[],
+            None,
+            r#"{"clip":id,"effect":"volume"|"panner","param":"level"|"balance","value":f64,"keyframe":bool?,"time":ticks?,"begin":bool?}"#,
+            has_seq,
+            clip_set,
             true,
         ),
         spec("mixer.addSubmix", "Add Audio Submix Track", &["Sequence"], None, r#"{"name":str?,"channels":"Mono|Stereo|5.1"?}"#, has_seq, add_submix, true),

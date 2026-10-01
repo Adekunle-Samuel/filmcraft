@@ -78,6 +78,9 @@ pub struct History {
     pub redo: Vec<(String, Arc<Project>)>,
     /// Labels of all applied states, oldest first (History panel).
     pub limit: usize,
+    /// Key of the last [`Session::edit_merged`] step: a continuous gesture (a fader drag) with the
+    /// same key folds into that one undo step.
+    pub merge_key: Option<String>,
 }
 
 impl History {
@@ -344,6 +347,25 @@ impl Session {
             self.history.undo.remove(0);
         }
         self.history.redo.clear();
+        self.history.merge_key = None;
+        self.state = st;
+        self.bump();
+        Ok(r)
+    }
+
+    /// Like [`Session::edit`], but consecutive calls with the same `key` (and no other edit in
+    /// between) share one undo step: dragging a control is one undoable change.
+    pub fn edit_merged<R>(&mut self, label: &str, key: &str, f: impl FnOnce(&mut Project, &mut EditorState) -> Result<R>) -> Result<R> {
+        let merge = self.history.merge_key.as_deref() == Some(key) && self.history.undo.last().is_some_and(|u| u.0 == label);
+        if !merge {
+            let r = self.edit(label, f)?;
+            self.history.merge_key = Some(key.to_string());
+            return Ok(r);
+        }
+        let mut p = (*self.project).clone();
+        let mut st = self.state.clone();
+        let r = f(&mut p, &mut st)?;
+        self.project = Arc::new(p);
         self.state = st;
         self.bump();
         Ok(r)
@@ -373,6 +395,7 @@ impl Session {
 
     pub fn undo(&mut self) -> Option<String> {
         let (label, prev) = self.history.undo.pop()?;
+        self.history.merge_key = None;
         let cur = std::mem::replace(&mut self.project, prev);
         self.history.redo.push((label.clone(), cur));
         self.fix_state();
@@ -382,6 +405,7 @@ impl Session {
 
     pub fn redo(&mut self) -> Option<String> {
         let (label, next) = self.history.redo.pop()?;
+        self.history.merge_key = None;
         let cur = std::mem::replace(&mut self.project, next);
         self.history.undo.push((label.clone(), cur));
         self.fix_state();

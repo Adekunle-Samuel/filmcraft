@@ -299,6 +299,11 @@ impl FilmcraftApp {
         self.playback.dropped = 0;
         self.playback.shown = 0;
         self.start_audio();
+        // Audio Track Mixer: an automation pass runs while playing forward in real time
+        if (speed - 1.0).abs() < 1e-9 && !self.session.mixrec.active() {
+            let t = self.session.playhead();
+            let _ = self.session.execute("mixer.recordStart", json!({"time": t.0}));
+        }
     }
 
     pub fn stop(&mut self) {
@@ -307,6 +312,12 @@ impl FilmcraftApp {
             a.stop();
         }
         self.playback.audio_clock = false;
+        if self.session.mixrec.active() {
+            let t = self.session.playhead();
+            if let Err(e) = self.session.execute("mixer.recordStop", json!({"time": t.0})) {
+                self.ui.status = e.to_string();
+            }
+        }
     }
 
     fn start_audio(&mut self) {
@@ -325,7 +336,10 @@ impl FilmcraftApp {
         let Some(a) = self.audio.as_mut() else { return };
         let sr = a.sample_rate();
         let mut cursor = start_tick.to_units_floor(sr as i64);
+        previews.live.publish_project(project.clone());
         let fill = Box::new(move |buf: &mut [f32], ch: usize| {
+            // the newest project snapshot: mixer moves and other edits are heard while playing
+            let project = previews.live.project().filter(|p| p.sequence(seq_id).is_some()).unwrap_or_else(|| project.clone());
             let Some(seq) = project.sequence(seq_id) else { return };
             let n = buf.len() / ch.max(1);
             // Mix at the sequence rate; convert when the device rate differs (nearest sample).

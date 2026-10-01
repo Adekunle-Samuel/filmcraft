@@ -343,6 +343,8 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
 
     // ---- interaction
     interact(app, ui, &seq, &layout, rect);
+    // track keyframes (drawn and edited on top of the clips)
+    super::timeline_automation::show(app, ui, &seq, &layout, aclip);
     if cap_n > 0 {
         super::timeline_captions::interact(app, ui, &seq, caption_area, &layout);
     }
@@ -744,6 +746,8 @@ fn draw_headers(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, rows:
             }
             let vr = small(x + 42.0, upper_y);
             crate::widgets::icon_toggle(ui, vr.intersect(visible), Icon::Mic, true, t, egui::Id::new(("vo", r.track.0)), Some(t.text_dim));
+            let kr = small(x + 64.0, upper_y);
+            super::timeline_automation::header_button(app, ui, seq, r, kr, visible, &label, t);
         }
         // 5. name on the lower line (or inline when short)
         if hrect.height() >= 40.0 {

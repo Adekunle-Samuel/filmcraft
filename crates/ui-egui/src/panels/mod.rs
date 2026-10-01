@@ -10,10 +10,12 @@ pub mod import_mode;
 pub mod lumetri;
 pub mod meters;
 pub mod misc;
+pub mod mixer;
 pub mod monitor;
 pub mod project;
 pub mod text;
 pub mod timeline;
+pub mod timeline_automation;
 pub mod timeline_captions;
 pub mod tools;
 
@@ -40,7 +42,8 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, p: PanelKind, rect: Rect)
         PanelKind::Markers => misc::markers(app, ui, rect),
         PanelKind::Info => misc::info(app, ui, rect),
         PanelKind::MediaBrowser => misc::media_browser(app, ui, rect),
-        PanelKind::AudioTrackMixer => meters::track_mixer(app, ui, rect),
+        PanelKind::AudioTrackMixer => mixer::track_mixer(app, ui, rect),
+        PanelKind::AudioClipMixer => mixer::clip_mixer(app, ui, rect),
         PanelKind::LumetriScopes => misc::scopes(app, ui, rect),
         PanelKind::Text => text::show(app, ui, rect),
         other => crate::dock::placeholder(ui, rect, &app.tokens, &format!("{} — coming in a later milestone", other.title())),

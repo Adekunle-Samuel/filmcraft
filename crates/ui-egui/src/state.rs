@@ -185,6 +185,10 @@ pub struct TimelineView {
     /// Follow playhead during playback (page scroll).
     pub follow: bool,
     pub fit_pending: bool,
+    /// Audio tracks showing track keyframes instead of clip keyframes: track id → lane
+    /// (`volume`, `pan`, `mute`, `send.<i>.level`, `fx.<slot>.<param>`).
+    #[serde(default)]
+    pub track_lanes: std::collections::BTreeMap<u64, String>,
 }
 
 impl Default for TimelineView {
@@ -204,6 +208,7 @@ impl Default for TimelineView {
             show_waveforms: true,
             follow: true,
             fit_pending: true,
+            track_lanes: Default::default(),
         }
     }
 }
@@ -275,6 +280,9 @@ pub struct UiState {
     /// Preferences ▸ Playback: play the rendered range when a preview render finishes.
     #[serde(default = "yes")]
     pub play_after_render: bool,
+    /// Audio Track Mixer: effects and sends section expanded.
+    #[serde(default)]
+    pub mixer_fx_open: bool,
 }
 
 fn captions_tab() -> String {
@@ -313,6 +321,7 @@ impl Default for UiState {
             text_tab: captions_tab(),
             caption_search: String::new(),
             play_after_render: true,
+            mixer_fx_open: false,
         }
     }
 }
