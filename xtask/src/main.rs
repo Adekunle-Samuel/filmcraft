@@ -31,6 +31,7 @@ const LAYERS: &[(&str, u8)] = &[
     ("prores", 0),
     ("mjpeg", 0),
     ("dnx", 0),
+    ("av1", 0),
     ("aac", 0),
     ("opus", 0),
     ("frame", 1),

@@ -23,6 +23,7 @@ filmcraft-hevc = { path = "crates/hevc" }
 filmcraft-vp9 = { path = "crates/vp9" }
 filmcraft-prores = { path = "crates/prores" }
 filmcraft-dnx = { path = "crates/dnx" }
+filmcraft-av1 = { path = "crates/av1" }
 filmcraft-aac = { path = "crates/aac" }
 filmcraft-opus = { path = "crates/opus" }
 filmcraft-h264enc = { path = "crates/h264enc" }
@@ -89,6 +90,9 @@ opt-level = 3
 opt-level = 3
 
 [profile.dev.package.filmcraft-dnx]
+opt-level = 3
+
+[profile.dev.package.filmcraft-av1]
 opt-level = 3
 
 [profile.dev.package.filmcraft-aac]

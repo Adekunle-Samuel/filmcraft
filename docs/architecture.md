@@ -27,7 +27,7 @@ Design principles:
  L2  edit · codecs · interchange · captions
  L1  frame · media · project · audio-dsp · text
  L0  foundation: time · geom · color · bitstream · testkit (dev-dependency only)
-     codecs/containers: isobmff · matroska · h264 · h264enc · hevc · vp9 · prores · dnx · aac · opus
+     codecs/containers: isobmff · matroska · h264 · h264enc · hevc · vp9 · av1 · prores · dnx · aac · opus
 ```
 
 Crates are named `filmcraft-<dir>` (`crates/time` is `filmcraft-time`). The apps are `filmcraft`
@@ -45,6 +45,7 @@ and `filmcraft-cli`.
 | `hevc` | L0 | H.265 Main/Main 10 decoder |
 | `prores` | L0 | ProRes decoder and encoder |
 | `dnx` | L0 | DNxHD / DNxHR (SMPTE ST 2019-1 VC-3) decoder and DNxHR encoder |
+| `av1` | L0 | AV1 decoder (in progress; see its README for the stage table) |
 | `aac` | L0 | AAC-LC decoder and encoder |
 | `testkit` | L0 | test-only helpers, used only as a dev-dependency: ffmpeg/ffprobe discovery, fixture dirs, golden images ([testing.md](testing.md)) |
 | `frame` | L1 | `VideoFrame` (planar YUV / RGBA8 / linear RGBA f32, colour metadata), `AudioBuffer` |
