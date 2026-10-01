@@ -101,7 +101,11 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, which: Which)
         let project = app.session.project.clone();
         let playing = which == Which::Program && app.playback.playing;
         if playing {
-            app.frames.schedule_playback(key, rate, scale, &project, app.playback.speed);
+            let preroll = app.playback.preroll.is_some();
+            app.frames.schedule_playback(key, rate, scale, &project, app.playback.speed, preroll);
+            if preroll {
+                app.playback.preroll_ready = app.frames.preroll_ready(key, app.playback.speed, rate.frame_at(duration) - 1);
+            }
         } else {
             app.frames.request(key, rate.tick_of(frame), scale, &project, 0);
         }
@@ -124,7 +128,11 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, which: Which)
             (tex, false)
         };
         if playing {
-            app.playback.meter.refresh(frame, exact);
+            if std::mem::take(&mut app.playback.hidden) {
+                app.playback.meter.resync(frame, exact);
+            } else {
+                app.playback.meter.refresh(frame, exact);
+            }
         }
         if let Some(tex) = shown {
             ui.painter().image(tex, pic, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);

@@ -205,7 +205,9 @@ pub fn scopes(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let frame = rate.frame_at(app.session.playhead());
     let key = FrameKey { target: Target::Sequence(seq_id), frame, size: 250, revision: app.session.revision };
     let project = app.session.project.clone();
-    app.frames.request(key, rate.tick_of(frame), 0.25, &project, 2);
+    // While playing, scopes come after the Program monitor's prefetch.
+    let prio = if app.playback.playing { 40 } else { 2 };
+    app.frames.request(key, rate.tick_of(frame), 0.25, &project, prio);
     let Some(img) = app.frames.get(&key) else {
         crate::dock::placeholder(ui, rect, &t, "…");
         return;

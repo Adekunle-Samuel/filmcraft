@@ -203,9 +203,19 @@ file ──► codecs (MP4/MOV, MKV, audio)        demux + decode, GOP-aware see
 - **Frame scheduling.** `crates/ui-egui/src/frames.rs` runs a small pool of worker threads with
   prioritised jobs: the frame on screen first, then playback prefetch, then thumbnails. The UI never
   decodes. It shows the exact frame when it is ready and holds the nearest cached frame meanwhile.
+  Play waits for the first frames (`PREROLL_FRAMES`, at most 0.5 s) before starting the clock.
+  Every refresh, `schedule_playback` asks for the next frames and drops (or cancels, through
+  `filmcraft_media::cancel`) jobs for frames the playhead has passed; a new on-screen frame
+  replaces the one asked for before (scrubbing); Stop cancels the prefetch. When frames cost more
+  than the workers can render in real time (CPU effects), it starts only frames that can still be
+  on time and spaces them evenly (`playback_plan`). GPU plans carry their texels already
+  converted for upload (`filmcraft_gpu::prepare`), so the UI thread only copies them.
 - **Audio clock.** The desktop app passes a cpal output (`apps/filmcraft/src/audio.rs`) to the UI as
   `AudioOut`. While playing, the samples played by the sound card drive the playhead and video follows.
-  Without an audio device, playback falls back to the wall clock. Dropped frames are counted.
+  Without an audio device, playback falls back to the wall clock. `PlaybackMeter` counts timeline
+  frames: shown when the exact picture was on screen while due, dropped otherwise (including frames
+  passed over without a refresh, not while the window is hidden). `cargo xtask bench-playback`
+  measures the whole path headlessly ([testing.md](testing.md) §5).
   Sequence audio is mixed in `render::audio`, and clip audio effects run on `audio-dsp` via
   `render::audio_fx`.
 

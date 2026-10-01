@@ -77,6 +77,12 @@ pub struct Playback {
     pub audio_clock: bool,
     /// Shown / dropped frame accounting for the current (or last) play.
     pub meter: frames::PlaybackMeter,
+    /// Waiting for the first frames before starting the clock: when the wait began (egui time,
+    /// s; negative = not yet stamped), and whether the Program monitor has them ready.
+    pub preroll: Option<f64>,
+    pub preroll_ready: bool,
+    /// The window was hidden (occluded/minimized) since the monitor last refreshed.
+    pub hidden: bool,
 }
 
 /// How long `ui.screenshot` waits for the window to present the frame.
@@ -297,12 +303,26 @@ impl FilmcraftApp {
         self.playback.playing = true;
         self.playback.speed = speed;
         self.playback.anchor_tick = self.session.playhead();
-        self.playback.anchor_time = -1.0; // set on next frame
+        self.playback.anchor_time = -1.0; // set when the preroll ends
+        self.playback.preroll = Some(-1.0);
+        self.playback.preroll_ready = false;
+        if let Some(a) = self.audio.as_mut() {
+            a.stop();
+        }
+        self.playback.audio_clock = false;
+    }
+
+    /// Start the clock (and audio) once the first frames are ready or the preroll timed out.
+    fn end_preroll(&mut self, now: f64) {
+        self.playback.preroll = None;
+        self.playback.anchor_time = now;
+        self.playback.anchor_tick = self.session.playhead();
         self.start_audio();
     }
 
     pub fn stop(&mut self) {
         self.playback.playing = false;
+        self.playback.preroll = None;
         self.playback.meter.finish();
         self.frames.stop_prefetch();
         if let Some(a) = self.audio.as_mut() {
@@ -368,6 +388,16 @@ impl FilmcraftApp {
             return;
         }
         let now = ctx.input(|i| i.time);
+        if let Some(since) = self.playback.preroll {
+            let since = if since < 0.0 { now } else { since };
+            self.playback.preroll = Some(since);
+            if self.playback.preroll_ready || now - since >= frames::PREROLL_TIMEOUT_S {
+                self.end_preroll(now);
+            } else {
+                ctx.request_repaint();
+                return;
+            }
+        }
         if self.playback.anchor_time < 0.0 {
             self.playback.anchor_time = now;
         }
@@ -844,6 +874,10 @@ impl eframe::App for FilmcraftApp {
             self.fps = self.fps * 0.9 + (1.0 / dt).min(480.0) * 0.1;
         }
         self.last_time = now;
+        if self.playback.playing && ctx.input(|i| i.viewport().visible()) == Some(false) {
+            // Nothing is shown while the window is hidden: not a dropped frame.
+            self.playback.hidden = true;
+        }
         let had_synthetic = !self.synthetic.is_empty();
         self.drain_control(ctx);
         if !self.synthetic.is_empty() && !had_synthetic {

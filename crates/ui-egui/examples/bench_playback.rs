@@ -22,7 +22,7 @@ use std::time::{Duration, Instant};
 use filmcraft_engine::Session;
 use filmcraft_project::{ItemId, ParamValue, Project, SequenceSettings, TrackKind, find_effect, resolve_auto_points};
 use filmcraft_time::{FrameRate, Tick, TimeRange};
-use filmcraft_ui_egui::frames::{FrameKey, FrameServer, JobRecord, PlaybackMeter, Target, process_cpu_time, thread_cpu_time};
+use filmcraft_ui_egui::frames::{FrameKey, FrameServer, JobRecord, PREROLL_TIMEOUT_S, PlaybackMeter, Target, process_cpu_time, thread_cpu_time};
 use serde_json::{Value, json};
 
 // ------------------------------------------------------------------------------------ fixtures
@@ -235,6 +235,7 @@ struct PlayReport {
     gop: filmcraft_codecs::GopStats,
     uploaded_mb: f64,
     load: String,
+    preroll_ms: f64,
 }
 
 fn pct(v: &[f64], p: f64) -> f64 {
@@ -281,6 +282,22 @@ impl Bench {
         let (p0, ui0, up0) = (process_cpu_time().unwrap_or_default(), display.ui_cpu, display.uploaded);
         display.present.clear();
         let period = Duration::from_secs_f64(1.0 / self.refresh_hz);
+        // Preroll as the app does: refresh without moving the playhead until the first frames are
+        // ready (or the timeout), then start the clock.
+        let first = rate.frame_at(start);
+        let last_frame = rate.frame_at(q.duration()) - 1;
+        let t_pre = Instant::now();
+        loop {
+            let key = FrameKey { target, frame: first, size, revision: s.revision };
+            self.server.schedule_playback(key, rate, scale, &project, 1.0, true);
+            let exact = display.refresh(&self.server, key);
+            meter.refresh(first, exact);
+            if self.server.preroll_ready(key, 1.0, last_frame) || t_pre.elapsed().as_secs_f64() >= PREROLL_TIMEOUT_S {
+                break;
+            }
+            std::thread::sleep(period);
+        }
+        let preroll_ms = ms(t_pre.elapsed());
         let anchor = Instant::now();
         let mut due_at: HashMap<i64, Instant> = HashMap::new();
         let mut next = anchor;
@@ -294,7 +311,7 @@ impl Bench {
             frame = rate.frame_at(t);
             due_at.entry(frame).or_insert(now);
             let key = FrameKey { target, frame, size, revision: s.revision };
-            self.server.schedule_playback(key, rate, scale, &project, 1.0);
+            self.server.schedule_playback(key, rate, scale, &project, 1.0, false);
             let exact = display.refresh(&self.server, key);
             meter.refresh(frame, exact);
             next += period;
@@ -330,9 +347,9 @@ impl Bench {
             gop: filmcraft_codecs::gop_stats() - gop0,
             uploaded_mb: (display.uploaded - up0) as f64 / 1e6,
             load: load_avg(),
+            preroll_ms,
             ..Default::default()
         };
-        let first = rate.frame_at(start);
         let last = rate.frame_at(end - Tick(1));
         for f in first..=last {
             let Some(due) = due_at.get(&f) else { continue };
@@ -497,7 +514,7 @@ fn to_json(r: &PlayReport, scenario: &str, res: &str, path: &str) -> Value {
         "ui_cpu_ms": r.ui_cpu, "process_cpu_ms": r.process_cpu, "cpu_ms_per_frame": r.process_cpu / frames,
         "jobs": r.jobs, "wasted_jobs": r.wasted_jobs, "cancelled_jobs": r.cancelled_jobs, "preview_jobs": r.preview_jobs, "uploaded_mb": r.uploaded_mb,
         "gop": {"hits": r.gop.hits, "misses": r.gop.misses, "seeks": r.gop.seeks, "decoded": r.gop.decoded, "evicted": r.gop.evicted},
-        "loadavg": r.load,
+        "loadavg": r.load, "preroll_ms": r.preroll_ms,
     })
 }
 
