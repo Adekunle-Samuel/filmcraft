@@ -48,7 +48,15 @@ pub const HASH_VERSION: &str = "filmcraft-preview-v1";
 
 /// Multiple of the frame duration a frame may take before a segment is marked red. Playback
 /// renders ahead on several worker threads (2–6), so a frame can take somewhat longer than its
-/// display duration and still keep up; measured on M4 Pro (see the crate's STATUS notes).
+/// display duration and still keep up.
+///
+/// Calibration (M4 Pro, shared with other jobs; 1080p 23.976 sequence, Full playback resolution,
+/// 8 s of playback ≈ 192 frames, counted by the Program monitor's dropped-frame stats):
+/// * 1080p H.264 High clip, no effects (no bar, est. 3.5 ms): 11 dropped;
+/// * same clip + Lumetri, Sharpen, Levels, Tint (red, est. 183 ms): 189–191 dropped, ≤ 17 on time;
+/// * after Render Effects In to Out (green; ProRes preview rendered at ~3 fps): 25–46 dropped on
+///   the first play right after the render (frame workers still busy with live renders queued
+///   before it), then 0–1 dropped on every later play.
 pub const REALTIME_BUDGET: f64 = 1.5;
 
 const HD_PIXELS: f64 = 1920.0 * 1080.0;

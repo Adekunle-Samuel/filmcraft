@@ -431,6 +431,7 @@ pub fn render(s: &mut Session, mode: RenderMode, p: &Value) -> Result<Value> {
     let provider = s.media.provider(project.clone(), s.services.clone());
     let (prog, res) = (job.progress.clone(), job.result.clone());
     let nseg = todo.len();
+    let pool = s.media.clone();
     let run = move || {
         let t0 = std::time::Instant::now();
         let mut bytes = 0u64;
@@ -463,6 +464,8 @@ pub fn render(s: &mut Session, mode: RenderMode, p: &Value) -> Result<Value> {
                         break;
                     }
                     store.add(&g.hash);
+                    // open it now so the first playback doesn't wait for the file read
+                    let _ = store.open(&pool, &g.hash);
                 }
                 Err(e) => {
                     let _ = std::fs::remove_file(&part);

@@ -876,18 +876,29 @@ fn draw_top(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, seq: &Sequenc
         f += minor;
     }
     // render bar
+    // Per segment (engine `previews`): green = rendered preview, yellow = should play in real time,
+    // red = needs rendering, nothing = plays natively.
     let rb = Rect::from_min_max(pos2(ruler.min.x, ruler.max.y - 2.0), ruler.max);
-    for tr in &seq.video_tracks {
-        for it in &tr.items {
-            if !(it.has_standard_effects() || it.has_modified_intrinsics()) {
-                continue;
-            }
-            let r = Rect::from_min_max(pos2(layout.x_of(it.start), rb.min.y), pos2(layout.x_of(it.end()), rb.max.y)).intersect(ruler);
-            clip.rect_filled(r, 0.0, t.render_yellow);
+    let bar = app.session.previews.bar(&app.session.project, seq_id);
+    for (i, span) in bar.iter().enumerate() {
+        use filmcraft_engine::previews::BarState;
+        let (c, what) = match span.state {
+            BarState::None => continue,
+            BarState::Yellow => (t.render_yellow, "Unrendered: should play back in real time"),
+            BarState::Red => (t.render_red, "Unrendered: render to play back in real time"),
+            BarState::Green => (t.render_green, "Rendered preview"),
+        };
+        let r = Rect::from_min_max(pos2(layout.x_of(span.start), rb.min.y), pos2(layout.x_of(span.end), rb.max.y)).intersect(ruler);
+        if r.width() <= 0.0 {
+            continue;
         }
-        for trn in &tr.transitions {
-            let r = Rect::from_min_max(pos2(layout.x_of(trn.start), rb.min.y), pos2(layout.x_of(trn.end()), rb.max.y)).intersect(ruler);
-            clip.rect_filled(r, 0.0, t.render_yellow);
+        clip.rect_filled(r, 0.0, c);
+        let hit = r.expand2(vec2(0.0, 2.0));
+        app.auto.add(&format!("timeline.renderBar.{i}"), hit, what);
+        if ui.rect_contains_pointer(hit) {
+            egui::Tooltip::always_open(ui.ctx().clone(), ui.layer_id(), egui::Id::new(("rb", i)), egui::PopupAnchor::Pointer).show(|ui| {
+                ui.label(what);
+            });
         }
     }
     // markers: 8 × 12 pt pentagons in the marker colour, on the top row
@@ -909,7 +920,6 @@ fn draw_top(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, seq: &Sequenc
             });
         }
     }
-    let _ = seq_id;
     app.auto.add("timeline.ruler", ruler, "time ruler");
 }
 

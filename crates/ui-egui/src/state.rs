@@ -263,6 +263,13 @@ pub struct UiState {
     pub export_format: String,
     #[serde(default)]
     pub export_path: String,
+    /// Preferences ▸ Playback: play the rendered range when a preview render finishes.
+    #[serde(default = "yes")]
+    pub play_after_render: bool,
+}
+
+fn yes() -> bool {
+    true
 }
 
 impl Default for UiState {
@@ -289,6 +296,7 @@ impl Default for UiState {
             status: String::new(),
             export_format: "h264".into(),
             export_path: String::new(),
+            play_after_render: true,
         }
     }
 }
