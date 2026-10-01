@@ -211,6 +211,26 @@ pub fn import_bytes(s: &mut Session, path: &str, bytes: std::sync::Arc<[u8]>, bi
     let name = std::path::Path::new(path).file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| path.to_string());
     let identity = crate::relink::identity_of_bytes(&bytes);
     let src = s.media.open_bytes(&name, bytes)?;
+    import_source(s, path, name, src, identity, bin)
+}
+
+/// Import a media file through the host's random-access reader ([`crate::Services::reader`]):
+/// only the container index is read now (web `Blob`s are never copied whole for containers).
+pub fn import_streamed(s: &mut Session, path: &str, bin: Option<filmcraft_project::BinId>) -> Result<ItemId> {
+    let name = std::path::Path::new(path).file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| path.to_string());
+    let identity = crate::relink::identity_of(&*s.services, path).map_err(|e| EngineError::Other(format!("{path}: {e}")))?;
+    let src = s.media.open_file(path, &*s.services)?;
+    import_source(s, path, name, src, identity, bin)
+}
+
+fn import_source(
+    s: &mut Session,
+    path: &str,
+    name: String,
+    src: filmcraft_media::SharedSource,
+    identity: filmcraft_project::MediaIdentity,
+    bin: Option<filmcraft_project::BinId>,
+) -> Result<ItemId> {
     let info = src.info().clone();
     let label = match info.kind {
         filmcraft_media::MediaKind::AudioOnly => Label::Caribbean,
@@ -516,7 +536,14 @@ fn build() -> Vec<CommandSpec> {
             let mut sequences = Vec::new();
             let mut reports = Vec::new();
             for path in paths {
-                match s.services.read_file(&path) {
+                // Media files through the host's reader (no whole-file read) when it has one.
+                let streamed = filmcraft_media::is_importable(std::path::Path::new(&path)) && s.services.reader(&path).is_some();
+                let read = if streamed { Ok(Vec::new()) } else { s.services.read_file(&path) };
+                match read {
+                    Ok(_) if streamed => match import_streamed(s, &path, bin) {
+                        Ok(id) => ids.push(id.0),
+                        Err(e) => errors.push(format!("{path}: {e}")),
+                    },
                     Ok(b) if crate::captions::detect(&path, &b).is_some() => {
                         let fmt = crate::captions::detect(&path, &b).expect("detected");
                         match crate::captions::import(s, &path, &b, fmt, None) {
@@ -1927,6 +1954,10 @@ fn export_media(s: &mut Session, p: &Value) -> Result<Value> {
         prores_profile: str_p(p, "proresProfile").unwrap_or_default().to_string(),
         dnx_profile: str_p(p, "dnxProfile").unwrap_or_default().to_string(),
         sdr: bool_p(p, "sdr").unwrap_or(false),
+        sink: s.services.export_in_memory().then(|| {
+            let services = s.services.clone();
+            filmcraft_export::OutputSink(std::sync::Arc::new(move |path: &str, data: Vec<u8>| services.write_file(path, &data)))
+        }),
         ..Default::default()
     };
     let id = s.jobs.len() as u64 + 1;
@@ -1940,6 +1971,15 @@ fn export_media(s: &mut Session, p: &Value) -> Result<Value> {
     // Export always renders full-resolution media, whatever the proxy toggle says.
     let provider = s.media.full_res_provider(project.clone(), s.services.clone());
     let (prog, res) = (job.progress.clone(), job.result.clone());
+    let wait = bool_p(p, "wait").unwrap_or(false);
+    if cfg!(target_arch = "wasm32") && !wait && filmcraft_export::stepped(format) {
+        // No threads: the host advances the export between UI frames (`Session::pump_jobs`).
+        let mut exporter = filmcraft_export::Exporter::new(project, seq, &settings, &prog).map_err(|e| EngineError::Other(e.to_string()))?;
+        exporter.set_batch(1);
+        s.jobs.push(job);
+        s.stepped.push(crate::SteppedJob { job: id, exporter, provider, progress: prog, result: res });
+        return Ok(json!({"job": id}));
+    }
     let run = move || {
         let r = filmcraft_export::export(&project, seq, &settings, &provider, &prog).map_err(|e| e.to_string());
         if let Err(e) = &r {
@@ -1948,7 +1988,7 @@ fn export_media(s: &mut Session, p: &Value) -> Result<Value> {
         *res.lock().unwrap_or_else(|x| x.into_inner()) = Some(r);
     };
     s.jobs.push(job);
-    if bool_p(p, "wait").unwrap_or(false) || cfg!(target_arch = "wasm32") {
+    if wait || cfg!(target_arch = "wasm32") {
         run();
     } else {
         std::thread::Builder::new().name("filmcraft-export".into()).spawn(run).map_err(|e| EngineError::Other(e.to_string()))?;
@@ -2342,7 +2382,7 @@ fn name_project(p: &mut filmcraft_project::Project, name: String) {
 }
 
 fn write_project(s: &mut Session, path: &str, adopt: bool) -> Result<Value> {
-    let t0 = std::time::Instant::now();
+    let t0 = web_time::Instant::now();
     // Save As renames the project after its new file (not an edit: no undo step, not dirty).
     if adopt
         && let Some(name) = project_name_for(path)

@@ -28,6 +28,7 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 log = { workspace = true }
 rayon = { workspace = true }
+web-time = "1"
 
 # Thread/process CPU clocks for frame-job profiling (safe wrappers; see frames.rs).
 [target.'cfg(unix)'.dependencies]

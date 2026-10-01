@@ -30,10 +30,12 @@ fn parent_dir(path: &Path) -> PathBuf {
 pub fn atomic_write(path: &Path, data: &[u8]) -> io::Result<()> {
     let tmp = temp_path(path);
     let r = (|| {
-        let mut f = OpenOptions::new().write(true).create_new(true).open(&tmp)?;
-        f.write_all(data)?;
-        f.sync_all()?;
-        drop(f);
+        {
+            // closed before the rename
+            let mut f = OpenOptions::new().write(true).create_new(true).open(&tmp)?;
+            f.write_all(data)?;
+            f.sync_all()?;
+        }
         fs::rename(&tmp, path)
     })();
     if let Err(e) = r {

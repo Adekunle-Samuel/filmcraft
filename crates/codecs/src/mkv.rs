@@ -37,7 +37,7 @@ struct AudioState {
 
 pub struct MkvSource {
     info: MediaInfo,
-    bytes: Arc<[u8]>,
+    bytes: crate::Src,
     file: MkvFile,
     vtrack: Option<usize>,
     atrack: Option<usize>,
@@ -57,7 +57,7 @@ pub struct MkvSource {
 /// rounded `CodecDelay`, so they are only accurate to a tick. Starts are therefore accumulated from
 /// each packet's TOC duration, resynchronising to the timestamp only across real gaps (more than
 /// two ticks off). Pre-skip is the exact `CodecDelay` (or the header's pre-skip when it is absent).
-fn opus_starts(file: &MkvFile, bytes: &[u8], ti: usize, head: &filmcraft_opus::OpusHead, rate: i64) -> Vec<i64> {
+fn opus_starts(file: &MkvFile, bytes: &crate::Src, ti: usize, head: &filmcraft_opus::OpusHead, rate: i64) -> Vec<i64> {
     let t = &file.tracks[ti];
     let (n, d) = tb(t);
     let scale_ns = (n as i128 * 1_000_000_000 / d as i128).max(1);
@@ -199,7 +199,13 @@ fn codec_label(c: &Codec) -> String {
 
 impl MkvSource {
     pub fn open(name: &str, bytes: Arc<[u8]>) -> crate::Result<Self> {
-        let file = filmcraft_matroska::open(&bytes[..]).map_err(|e| CodecError::Container(e.to_string()))?;
+        Self::open_reader(name, Arc::new(filmcraft_media::reader::MemReader(bytes)))
+    }
+
+    /// Open from a random-access reader: only the index is read now, samples on demand.
+    pub fn open_reader(name: &str, reader: filmcraft_media::SharedReader) -> crate::Result<Self> {
+        let bytes = crate::Src(reader);
+        let file = filmcraft_matroska::open(&bytes).map_err(|e| CodecError::Container(e.to_string()))?;
         let vtrack = file.tracks.iter().position(|t| t.kind == TrackKind::Video && !t.samples.is_empty());
         let atrack = file.tracks.iter().position(|t| t.kind == TrackKind::Audio && !t.samples.is_empty());
         if vtrack.is_none() && atrack.is_none() {
@@ -270,7 +276,7 @@ impl MkvSource {
             audio,
             container: if file.is_webm() { "WebM".into() } else { "Matroska".into() },
             start_timecode: None,
-            file_size: Some(bytes.len() as u64),
+            file_size: Some(bytes.0.len()),
         };
         let audio_starts = atrack
             .map(|i| {
@@ -312,7 +318,7 @@ impl MkvSource {
     }
 
     fn read(&self, track: usize, i: usize) -> crate::Result<Vec<u8>> {
-        self.file.read_sample(&self.bytes[..], track, i).map_err(|e| CodecError::Container(e.to_string()))
+        self.file.read_sample(&self.bytes, track, i).map_err(|e| CodecError::Container(e.to_string()))
     }
 
     fn audio_decoder(&self, c: &Codec, rate: u32) -> crate::Result<PacketDecoder> {
@@ -480,4 +486,12 @@ pub fn opener(name: &str, bytes: Arc<[u8]>) -> Option<Result<SharedSource, Media
         return None;
     }
     Some(MkvSource::open(name, bytes).map(|s| Arc::new(s) as SharedSource).map_err(Into::into))
+}
+
+/// [`filmcraft_media::ReaderOpener`] for Matroska/WebM.
+pub fn reader_opener(name: &str, head: &[u8], reader: &filmcraft_media::SharedReader) -> Option<Result<SharedSource, MediaError>> {
+    if !sniff(head) {
+        return None;
+    }
+    Some(MkvSource::open_reader(name, reader.clone()).map(|s| Arc::new(s) as SharedSource).map_err(Into::into))
 }

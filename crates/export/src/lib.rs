@@ -8,10 +8,13 @@
 //! [`register_encoder`] (H.264, ProRes …). Built in: Motion-JPEG (MOV), PNG sequence, GIF, WAV.
 
 use std::io::Write;
+
+mod job;
+pub use job::{Exporter, Step, stepped};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, RwLock};
 
-use filmcraft_isobmff::{Brand, Mp4Writer, PcmConfig, SampleEntry, TrackConfig, WriteSample, WriterOptions};
+use filmcraft_isobmff::SampleEntry;
 use filmcraft_project::{ItemId, Project};
 use filmcraft_render::{RenderOptions, SourceProvider};
 use filmcraft_time::{FrameRate, Tick, TimeRange};
@@ -119,6 +122,82 @@ pub struct ExportSettings {
     /// Colour signalling chosen by [`export`] for the encoders (not set by callers).
     #[serde(skip)]
     pub signal: ColorSignal,
+    /// Encode into memory and hand each finished file (path, bytes) to this sink instead of
+    /// writing `path` (hosts without a filesystem: the web app offers the file as a download).
+    #[serde(skip)]
+    pub sink: Option<OutputSink>,
+}
+
+/// Receives in-memory export output: `(path, bytes)` per finished file.
+#[derive(Clone)]
+pub struct OutputSink(pub Arc<dyn Fn(&str, Vec<u8>) -> std::io::Result<()> + Send + Sync>);
+
+impl std::fmt::Debug for OutputSink {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("OutputSink")
+    }
+}
+
+/// An export's output file: on disk, or in memory for an [`OutputSink`].
+enum Out {
+    File(std::io::BufWriter<std::fs::File>),
+    Mem(std::io::Cursor<Vec<u8>>),
+}
+
+impl Out {
+    fn create(settings: &ExportSettings) -> Result<Out> {
+        if settings.sink.is_some() {
+            return Ok(Out::Mem(std::io::Cursor::new(Vec::new())));
+        }
+        let f = std::fs::File::create(&settings.path).map_err(|e| ExportError::Io(e.to_string()))?;
+        Ok(Out::File(std::io::BufWriter::new(f)))
+    }
+
+    /// Flush (and hand in-memory output to the sink); returns the file size.
+    fn finish(self, settings: &ExportSettings) -> Result<u64> {
+        match self {
+            Out::File(mut w) => {
+                w.flush().map_err(|e| ExportError::Io(e.to_string()))?;
+                Ok(std::fs::metadata(&settings.path).map(|m| m.len()).unwrap_or(0))
+            }
+            Out::Mem(c) => write_output(settings, &settings.path, c.into_inner()),
+        }
+    }
+}
+
+/// Write one finished output file (to the sink when there is one); returns its size.
+fn write_output(settings: &ExportSettings, path: &str, data: Vec<u8>) -> Result<u64> {
+    let n = data.len() as u64;
+    match &settings.sink {
+        Some(sink) => (sink.0)(path, data),
+        None => std::fs::write(path, &data),
+    }
+    .map_err(|e| ExportError::Io(e.to_string()))?;
+    Ok(n)
+}
+
+impl Write for Out {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        match self {
+            Out::File(w) => w.write(buf),
+            Out::Mem(w) => w.write(buf),
+        }
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        match self {
+            Out::File(w) => w.flush(),
+            Out::Mem(w) => w.flush(),
+        }
+    }
+}
+
+impl std::io::Seek for Out {
+    fn seek(&mut self, pos: std::io::SeekFrom) -> std::io::Result<u64> {
+        match self {
+            Out::File(w) => w.seek(pos),
+            Out::Mem(w) => w.seek(pos),
+        }
+    }
 }
 
 /// Colour description of the encoded stream (ITU-T H.273 code points).
@@ -182,6 +261,7 @@ impl Default for ExportSettings {
             dnx_profile: String::new(),
             sdr: false,
             signal: ColorSignal::default(),
+            sink: None,
         }
     }
 }
@@ -679,19 +759,19 @@ pub fn export_range(project: &Project, seq: ItemId, settings: &ExportSettings) -
 
 /// Run an export (blocking; call from a worker thread).
 pub fn export(project: &Arc<Project>, seq: ItemId, settings: &ExportSettings, sources: &dyn SourceProvider, progress: &Progress) -> Result<Report> {
-    let t0 = std::time::Instant::now();
+    if stepped(settings.format) {
+        let mut ex = Exporter::new(project.clone(), seq, settings, progress)?;
+        loop {
+            match ex.step(sources, progress)? {
+                Step::Progress => {}
+                Step::Done(r) => return Ok(r),
+                // only asynchronous (web) sources defer; a blocking export cannot wait for them
+                Step::Pending => return Err(ExportError::Io("media data is still loading; run the export as a stepped job".into())),
+            }
+        }
+    }
+    let t0 = web_time::Instant::now();
     let q = project.sequence(seq).ok_or(ExportError::NoSequence)?;
-    // HDR sequences export HDR (H.264 / ProRes) unless SDR is asked for
-    let pipe = q.settings.color;
-    let hdr_out = pipe.working.is_hdr() && !settings.sdr && matches!(settings.format, Format::H264 | Format::ProRes | Format::DnxHr);
-    let mut settings = settings.clone();
-    settings.signal = match (hdr_out, pipe.working) {
-        (true, filmcraft_color::WorkingSpace::Rec2100Pq) => ColorSignal::PQ,
-        (true, _) => ColorSignal::HLG,
-        _ => ColorSignal::default(),
-    };
-    let settings = &settings;
-    let out_tf = hdr_out.then(|| filmcraft_color::OutputTransform::new(&pipe, pipe.working.output_space()));
     let rate = q.settings.frame_rate;
     let range = export_range(project, seq, settings)?;
     let f0 = rate.frame_at(range.start);
@@ -703,26 +783,7 @@ pub fn export(project: &Arc<Project>, seq: ItemId, settings: &ExportSettings, so
         progress.total.store(if settings.format == Format::Wav { 1 } else { nframes }, Ordering::Relaxed);
         progress.set_status(format!("Exporting {} frames ({})", nframes, settings.format.label()));
     }
-    let opts = RenderOptions { scale: w as f32 / q.settings.width as f32, captions: settings.burn_captions, working_output: hdr_out, ..Default::default() };
-    // HDR: encoded R'G'B' floats over black, padded/cropped to the even output size
-    let render_hdr = |f: i64| -> Vec<f32> {
-        let img = filmcraft_render::render_sequence(project, seq, rate.tick_of(f), opts, sources);
-        let tf = out_tf.as_ref().expect("hdr transform");
-        let mut out = vec![0f32; (w * h * 3) as usize];
-        let black = tf.encode([0.0; 3]);
-        for (y, row) in out.chunks_exact_mut(w as usize * 3).enumerate() {
-            for (x, o) in row.chunks_exact_mut(3).enumerate() {
-                let c = if x < img.w && y < img.h {
-                    let i = (y * img.w + x) * 4;
-                    tf.encode([img.px[i], img.px[i + 1], img.px[i + 2]])
-                } else {
-                    black
-                };
-                o.copy_from_slice(&c);
-            }
-        }
-        out
-    };
+    let opts = RenderOptions { scale: w as f32 / q.settings.width as f32, captions: settings.burn_captions, ..Default::default() };
     let render = |f: i64| -> Vec<u8> {
         let img = filmcraft_render::render_sequence(project, seq, rate.tick_of(f), opts, sources);
         let mut rgba = img.over_black_rgba8();
@@ -744,9 +805,9 @@ pub fn export(project: &Arc<Project>, seq: ItemId, settings: &ExportSettings, so
             let n = range.duration.to_units_floor(sr as i64) as usize;
             let buf = filmcraft_render::audio::mix_sequence(project, q, range.start.to_units_floor(sr as i64), n, sources);
             let data = filmcraft_media::wav::write_wav16(&buf.interleaved(), 2, sr);
-            std::fs::write(&settings.path, &data).map_err(|e| ExportError::Io(e.to_string()))?;
+            let n = write_output(settings, &settings.path, data)?;
             progress.done.store(1, Ordering::Relaxed);
-            data.len() as u64
+            n
         }
         Format::PngSequence => {
             let base = settings.path.trim_end_matches(".png").to_string();
@@ -762,6 +823,12 @@ pub fn export(project: &Arc<Project>, seq: ItemId, settings: &ExportSettings, so
                     .map(|fi| {
                         let rgba = render(fi);
                         let path = format!("{base}_{:05}.png", fi - f0);
+                        if settings.sink.is_some() {
+                            let mut png = Vec::new();
+                            image::ImageEncoder::write_image(image::codecs::png::PngEncoder::new(&mut png), &rgba, w, h, image::ExtendedColorType::Rgba8)
+                                .map_err(|e| ExportError::Encode(e.to_string()))?;
+                            return write_output(settings, &path, png);
+                        }
                         image::save_buffer(&path, &rgba, w, h, image::ExtendedColorType::Rgba8).map_err(|e| ExportError::Io(e.to_string()))?;
                         Ok(std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0))
                     })
@@ -775,8 +842,8 @@ pub fn export(project: &Arc<Project>, seq: ItemId, settings: &ExportSettings, so
             total
         }
         Format::Gif => {
-            let file = std::fs::File::create(&settings.path).map_err(|e| ExportError::Io(e.to_string()))?;
-            let mut enc = image::codecs::gif::GifEncoder::new_with_speed(std::io::BufWriter::new(file), 10);
+            let mut out = Out::create(settings)?;
+            let mut enc = image::codecs::gif::GifEncoder::new_with_speed(&mut out, 10);
             enc.set_repeat(image::codecs::gif::Repeat::Infinite).map_err(|e| ExportError::Encode(e.to_string()))?;
             let delay = image::Delay::from_numer_denom_ms((1000 * rate.den) as u32, rate.num as u32);
             let mut f = f0;
@@ -794,119 +861,9 @@ pub fn export(project: &Arc<Project>, seq: ItemId, settings: &ExportSettings, so
                 f = end;
             }
             drop(enc);
-            std::fs::metadata(&settings.path).map(|m| m.len()).unwrap_or(0)
+            out.finish(settings)?
         }
-        Format::H264 | Format::ProRes | Format::DnxHr | Format::Mjpeg => {
-            let mut venc = video_factories()
-                .read()
-                .unwrap_or_else(|e| e.into_inner())
-                .iter()
-                .find_map(|fac| fac(settings.format, w, h, rate, settings))
-                .ok_or_else(|| ExportError::Unsupported(format!("{} encoder not available yet", settings.format.label())))??;
-            let brand = if settings.format == Format::H264 { Brand::Mp4 } else { Brand::Mov };
-            let file = std::fs::File::create(&settings.path).map_err(|e| ExportError::Io(e.to_string()))?;
-            // Encode the first batch before creating tracks (encoders may finalise codec config then).
-            let mut pending: Vec<EncodedPacket> = Vec::new();
-            let first_end = (f0 + batch).min(f1);
-            let frame = |fi: i64| -> (Vec<u8>, Vec<f32>) { if hdr_out { (Vec::new(), render_hdr(fi)) } else { (render(fi), Vec::new()) } };
-            let first: Vec<(Vec<u8>, Vec<f32>)> = (f0..first_end).into_par_iter().map(frame).collect();
-            for (k, (rgba, hdr)) in first.iter().enumerate() {
-                pending.extend(venc.encode(&EncoderFrame { width: w, height: h, rgba, hdr: hdr_out.then_some(hdr.as_slice()), index: k as u64 })?);
-            }
-            progress.done.fetch_add((first_end - f0) as u64, Ordering::Relaxed);
-            let mut mux = Mp4Writer::new(std::io::BufWriter::new(file), WriterOptions::new(brand)).map_err(|e| ExportError::Io(e.to_string()))?;
-            let mut vcfg = TrackConfig::new(venc.sample_entry(), venc.timescale());
-            vcfg.media_start = venc.media_start();
-            let vt = mux.add_track(vcfg).map_err(|e| ExportError::Io(e.to_string()))?;
-            // audio: AAC for MP4 when available, PCM otherwise (MOV)
-            let mut aenc: Option<Box<dyn AudioEncoder>> = if settings.include_audio && brand == Brand::Mp4 {
-                audio_factories().read().unwrap_or_else(|e| e.into_inner()).iter().find_map(|f| f(settings.format, sr, 2, settings)).transpose()?
-            } else {
-                None
-            };
-            let at = if !settings.include_audio {
-                None
-            } else if let Some(a) = &aenc {
-                let mut c = TrackConfig::new(a.sample_entry(), sr);
-                c.media_start = Some(a.priming() as i64);
-                Some(mux.add_track(c).map_err(|e| ExportError::Io(e.to_string()))?)
-            } else if brand == Brand::Mov {
-                let pcm = PcmConfig { bits: 16, float: false, big_endian: false, signed: true, channels: 2, sample_rate: sr as f64 };
-                Some(mux.add_track(TrackConfig::new(SampleEntry::pcm(pcm), sr)).map_err(|e| ExportError::Io(e.to_string()))?)
-            } else {
-                None
-            };
-            let mut audio_cursor = range.start.to_units_floor(sr as i64);
-            let write_audio_until = |mux: &mut Mp4Writer<std::io::BufWriter<std::fs::File>>,
-                                     until: Tick,
-                                     cursor: &mut i64,
-                                     aenc: &mut Option<Box<dyn AudioEncoder>>|
-             -> Result<()> {
-                let Some(at) = at else { return Ok(()) };
-                let end = until.to_units_floor(sr as i64);
-                if end <= *cursor {
-                    return Ok(());
-                }
-                let n = (end - *cursor) as usize;
-                let buf = filmcraft_render::audio::mix_sequence(project, q, *cursor, n, sources);
-                *cursor = end;
-                match aenc {
-                    Some(a) => {
-                        for au in a.encode(&buf.channels)? {
-                            mux.write_sample(at, WriteSample { data: &au, duration: a.frame_size(), composition_offset: 0, is_sync: true })
-                                .map_err(|e| ExportError::Io(e.to_string()))?;
-                        }
-                    }
-                    None => {
-                        let mut pcm = Vec::with_capacity(n * 4);
-                        for s in buf.interleaved() {
-                            pcm.extend_from_slice(&((s.clamp(-1.0, 1.0) * 32767.0).round() as i16).to_le_bytes());
-                        }
-                        mux.write_sample(at, WriteSample { data: &pcm, duration: n as u32, composition_offset: 0, is_sync: true })
-                            .map_err(|e| ExportError::Io(e.to_string()))?;
-                    }
-                }
-                Ok(())
-            };
-            for p in pending.drain(..) {
-                mux.write_sample(vt, WriteSample { data: &p.data, duration: p.duration, composition_offset: p.composition_offset, is_sync: p.key })
-                    .map_err(|e| ExportError::Io(e.to_string()))?;
-            }
-            write_audio_until(&mut mux, rate.tick_of(first_end), &mut audio_cursor, &mut aenc)?;
-            let mut f = first_end;
-            while f < f1 {
-                if progress.cancel.load(Ordering::Relaxed) {
-                    return Err(ExportError::Cancelled);
-                }
-                let end = (f + batch).min(f1);
-                let frames: Vec<(Vec<u8>, Vec<f32>)> = (f..end).into_par_iter().map(frame).collect();
-                for (k, (rgba, hdr)) in frames.iter().enumerate() {
-                    for p in
-                        venc.encode(&EncoderFrame { width: w, height: h, rgba, hdr: hdr_out.then_some(hdr.as_slice()), index: (f - f0) as u64 + k as u64 })?
-                    {
-                        mux.write_sample(vt, WriteSample { data: &p.data, duration: p.duration, composition_offset: p.composition_offset, is_sync: p.key })
-                            .map_err(|e| ExportError::Io(e.to_string()))?;
-                    }
-                }
-                write_audio_until(&mut mux, rate.tick_of(end), &mut audio_cursor, &mut aenc)?;
-                progress.done.fetch_add((end - f) as u64, Ordering::Relaxed);
-                f = end;
-            }
-            for p in venc.flush()? {
-                mux.write_sample(vt, WriteSample { data: &p.data, duration: p.duration, composition_offset: p.composition_offset, is_sync: p.key })
-                    .map_err(|e| ExportError::Io(e.to_string()))?;
-            }
-            write_audio_until(&mut mux, range.end(), &mut audio_cursor, &mut aenc)?;
-            if let (Some(a), Some(at)) = (aenc.as_mut(), at) {
-                for au in a.flush()? {
-                    mux.write_sample(at, WriteSample { data: &au, duration: a.frame_size(), composition_offset: 0, is_sync: true })
-                        .map_err(|e| ExportError::Io(e.to_string()))?;
-                }
-            }
-            let mut w = mux.finish().map_err(|e| ExportError::Io(e.to_string()))?;
-            w.flush().map_err(|e| ExportError::Io(e.to_string()))?;
-            std::fs::metadata(&settings.path).map(|m| m.len()).unwrap_or(0)
-        }
+        Format::H264 | Format::ProRes | Format::DnxHr | Format::Mjpeg => unreachable!("stepped export"),
     };
     let secs = t0.elapsed().as_secs_f64();
     if !settings.part_of_batch {
