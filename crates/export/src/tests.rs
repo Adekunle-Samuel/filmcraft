@@ -101,6 +101,24 @@ fn prores_export_roundtrip() {
     assert!(f[0] > 240 && f[1] < 15 && f[2] < 15, "{:?}", &f[..4]);
 }
 
+#[test]
+fn dnxhr_export_roundtrip() {
+    let (p, seq, m) = project();
+    for (profile, label) in [("hq", "DNxHR HQ"), ("hqx", "DNxHR HQX"), ("sq", "DNxHR SQ")] {
+        let path = tmp(&format!("dnx_{profile}.mov"));
+        let s = ExportSettings { format: Format::DnxHr, path: path.clone(), dnx_profile: profile.into(), ..Default::default() };
+        export(&p, seq, &s, &m, &Progress::default()).unwrap();
+        let bytes: Arc<[u8]> = std::fs::read(&path).unwrap().into();
+        let src = filmcraft_codecs::open_bytes("dnx.mov", bytes).unwrap();
+        let info = src.info().video.clone().unwrap();
+        assert_eq!(info.codec, label);
+        let f = src.video_frame(FrameRequest::full(Tick(TICKS_PER_SECOND / 3))).unwrap();
+        assert!(f.format_label().contains("4:2:2"), "{}", f.format_label());
+        let px = f.to_rgba8();
+        assert!(px[0] > 240 && px[1] < 15 && px[2] < 15, "{profile}: {:?}", &px[..4]);
+    }
+}
+
 /// Burn-in: an H.264 export of a dark-blue matte with a caption, decoded by ffmpeg (external test
 /// oracle only), has bright caption pixels in the lower part of the frame, and none without
 /// `burn_captions` or above the caption.

@@ -1391,6 +1391,7 @@ dependencies = [
  "filmcraft-aac",
  "filmcraft-bitstream",
  "filmcraft-color",
+ "filmcraft-dnx",
  "filmcraft-frame",
  "filmcraft-h264",
  "filmcraft-hevc",
@@ -1413,6 +1414,16 @@ version = "0.1.0"
 dependencies = [
  "proptest",
  "serde",
+]
+
+[[package]]
+name = "filmcraft-dnx"
+version = "0.1.0"
+dependencies = [
+ "filmcraft-bitstream",
+ "filmcraft-testkit",
+ "rayon",
+ "thiserror 2.0.21",
 ]
 
 [[package]]
@@ -1460,6 +1471,7 @@ dependencies = [
  "filmcraft-aac",
  "filmcraft-codecs",
  "filmcraft-color",
+ "filmcraft-dnx",
  "filmcraft-frame",
  "filmcraft-h264enc",
  "filmcraft-isobmff",

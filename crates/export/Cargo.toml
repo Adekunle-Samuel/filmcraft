@@ -18,6 +18,7 @@ filmcraft-project = { workspace = true }
 filmcraft-render = { workspace = true }
 filmcraft-isobmff = { workspace = true }
 filmcraft-prores = { workspace = true }
+filmcraft-dnx = { workspace = true }
 filmcraft-aac = { workspace = true }
 filmcraft-h264enc = { workspace = true }
 serde = { workspace = true }

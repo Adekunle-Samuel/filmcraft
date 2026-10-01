@@ -409,3 +409,75 @@ impl VideoDecoder for ProResDecoder {
 pub fn prores_factory(e: &SampleEntry) -> Option<Result<Box<dyn VideoDecoder>>> {
     matches!(e.codec, CodecConfig::ProRes { .. }).then(|| Ok(Box::new(ProResDecoder) as Box<dyn VideoDecoder>))
 }
+
+/// Our DNxHD / DNxHR (VC-3) decoder (every frame is intra; macroblock rows decode in parallel).
+pub struct DnxDecoder;
+
+/// Convert a decoded VC-3 frame to a [`VideoFrame`]. RGB (4:4:4) frames are converted to
+/// BT.709 video-range Y'CbCr 4:4:4 at the coded depth.
+pub fn dnx_to_video_frame(f: filmcraft_dnx::Frame) -> VideoFrame {
+    use std::sync::Arc;
+    let chroma = match f.chroma {
+        filmcraft_dnx::ChromaFormat::Yuv420 => filmcraft_frame::Chroma::C420,
+        filmcraft_dnx::ChromaFormat::Yuv422 => filmcraft_frame::Chroma::C422,
+        filmcraft_dnx::ChromaFormat::Yuv444 => filmcraft_frame::Chroma::C444,
+    };
+    let mut color = filmcraft_color::ColorInfo::REC709;
+    if matches!(f.color_volume, filmcraft_dnx::ColorVolume::Bt2020Ncl | filmcraft_dnx::ColorVolume::Bt2020Cl) {
+        color.matrix = filmcraft_color::Matrix::Bt2020Ncl;
+        color.primaries = filmcraft_color::Primaries::Bt2020;
+    }
+    let (mut y, mut cb, mut cr) = (f.y, f.cb, f.cr);
+    if f.rgb {
+        // planes hold G, B, R (video range); derive Y'CbCr with the stream's matrix
+        let (kr, kb) = color.matrix.kr_kb();
+        let kg = 1.0 - kr - kb;
+        let s = (1u32 << (f.bit_depth - 8)) as f32;
+        let max = ((1u32 << f.bit_depth) - 1) as f32;
+        let c = 224.0 / 219.0;
+        for i in 0..y.len() {
+            let (g, b, r) = (y[i] as f32, cb[i] as f32, cr[i] as f32);
+            let yy = kr * r + kg * g + kb * b;
+            let u = (b - yy) / (2.0 * (1.0 - kb)) * c + 128.0 * s;
+            let v = (r - yy) / (2.0 * (1.0 - kr)) * c + 128.0 * s;
+            y[i] = (yy + 0.5).clamp(0.0, max) as u16;
+            cb[i] = (u + 0.5).clamp(0.0, max) as u16;
+            cr[i] = (v + 0.5).clamp(0.0, max) as u16;
+        }
+    }
+    let par = match f.par {
+        (n, d) if n > 0 && d > 0 => (n as u32, d as u32),
+        // thin rasters (1440 / 960 wide) are anamorphic 16:9
+        _ if matches!(f.cid, 1244 | 1259 | 1260) => (4, 3),
+        _ if f.cid == 1258 => (4, 3),
+        _ => (1, 1),
+    };
+    let data = if f.bit_depth == 8 {
+        let to8 = |p: Vec<u16>| Arc::new(p.into_iter().map(|v| v as u8).collect::<Vec<u8>>());
+        filmcraft_frame::PixelData::Yuv8 { planes: [to8(y), to8(cb), to8(cr)], chroma, alpha: f.alpha.map(to8) }
+    } else {
+        filmcraft_frame::PixelData::Yuv16 { planes: [Arc::new(y), Arc::new(cb), Arc::new(cr)], chroma, bits: f.bit_depth as u32, alpha: f.alpha.map(Arc::new) }
+    };
+    VideoFrame { width: f.width, height: f.height, data, color, par, pts: filmcraft_time::Tick::ZERO }
+}
+
+impl VideoDecoder for DnxDecoder {
+    fn decode(&mut self, sample: &[u8], pts: i64) -> Result<Vec<DecodedFrame>> {
+        let f = filmcraft_dnx::decode_frame(sample).map_err(|e| CodecError::Decode(e.to_string()))?;
+        Ok(vec![DecodedFrame { pts, frame: dnx_to_video_frame(f) }])
+    }
+    fn flush(&mut self) -> Vec<DecodedFrame> {
+        Vec::new()
+    }
+    fn reset(&mut self) {}
+    fn name(&self) -> &str {
+        "FilmCraft DNxHD/DNxHR"
+    }
+    fn intra_only(&self) -> bool {
+        true
+    }
+}
+
+pub fn dnx_factory(e: &SampleEntry) -> Option<Result<Box<dyn VideoDecoder>>> {
+    matches!(e.codec, CodecConfig::Dnx { .. }).then(|| Ok(Box::new(DnxDecoder) as Box<dyn VideoDecoder>))
+}

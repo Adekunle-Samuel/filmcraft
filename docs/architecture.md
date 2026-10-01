@@ -27,7 +27,7 @@ Design principles:
  L2  edit · codecs · interchange · captions
  L1  frame · media · project · audio-dsp · text
  L0  foundation: time · geom · color · bitstream · testkit (dev-dependency only)
-     codecs/containers: isobmff · matroska · h264 · h264enc · hevc · prores · aac
+     codecs/containers: isobmff · matroska · h264 · h264enc · hevc · vp9 · prores · dnx · aac · opus
 ```
 
 Crates are named `filmcraft-<dir>` (`crates/time` is `filmcraft-time`). The apps are `filmcraft`
@@ -44,6 +44,7 @@ and `filmcraft-cli`.
 | `h264`, `h264enc` | L0 | H.264 decoder; H.264 encoder |
 | `hevc` | L0 | H.265 Main/Main 10 decoder |
 | `prores` | L0 | ProRes decoder and encoder |
+| `dnx` | L0 | DNxHD / DNxHR (SMPTE ST 2019-1 VC-3) decoder and DNxHR encoder |
 | `aac` | L0 | AAC-LC decoder and encoder |
 | `testkit` | L0 | test-only helpers, used only as a dev-dependency: ffmpeg/ffprobe discovery, fixture dirs, golden images ([testing.md](testing.md)) |
 | `frame` | L1 | `VideoFrame` (planar YUV / RGBA8 / linear RGBA f32, colour metadata), `AudioBuffer` |
@@ -179,7 +180,7 @@ pub struct CommandSpec {
 
 ```text
 file ──► codecs (MP4/MOV, MKV, audio)        demux + decode, GOP-aware seek
-          │   decoder registry: h264, hevc, prores, mjpeg (+ any registered first)
+          │   decoder registry: h264, hevc, vp9, prores, dnx, mjpeg (+ any registered first)
           ▼
         media::MediaSource ──► frame cache (byte-budgeted LRU, shared)
           ▼
@@ -367,6 +368,7 @@ file.exportMedia {path, format, scale, audio, quality}
 |---|---|---|
 | `h264` | `filmcraft-h264enc` + `filmcraft-aac` | MP4 (`isobmff`) |
 | `prores` | `filmcraft-prores` | MOV |
+| `dnxhr` | `filmcraft-dnx` (LB / SQ / HQ / HQX) | MOV (`AVdh`) |
 | `mjpeg` | built in | MOV |
 | `png`, `gif`, `wav` | built in | image sequence / GIF / WAV |
 
@@ -399,7 +401,7 @@ Protocol reference: [control-protocol.md](control-protocol.md). Agent guide: [ag
 
 ## 8. Not built yet
 
-The layer table reserves names for crates that don't exist yet: `riff`, `mjpeg`, `dnx`,
+The layer table reserves names for crates that don't exist yet: `riff`, `mjpeg`,
 `keyframe`, `effects`, `audio`, `scopes`, `playback`, `format` and `platform`.
 Until they exist, that work lives elsewhere: keyframes and effect definitions in `project`, effects
 and the audio mix in `render`, scopes and playback in `ui-egui`, and OS integration (cpal, rfd,

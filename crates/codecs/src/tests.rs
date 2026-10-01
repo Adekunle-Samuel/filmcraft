@@ -136,6 +136,29 @@ fn prores_mov_decodes() {
     assert!((c[0] as i32 - 104).abs() < 6, "{c:?}");
 }
 
+#[test]
+fn dnxhd_and_dnxhr_movs_decode() {
+    for (name, args, codec, fmt) in [
+        ("bars_dnxhr_hq.mov", &["-c:v", "dnxhd", "-profile:v", "dnxhr_hq", "-pix_fmt", "yuv422p"][..], "DNxHR HQ", "4:2:2"),
+        ("bars_dnxhr_hqx.mov", &["-c:v", "dnxhd", "-profile:v", "dnxhr_hqx", "-pix_fmt", "yuv422p10le"][..], "DNxHR HQX", "4:2:2"),
+        ("bars_dnxhd_1251.mov", &["-c:v", "dnxhd", "-b:v", "90M", "-pix_fmt", "yuv422p"][..], "CID 1251", "4:2:2"),
+    ] {
+        let mut a = vec!["-f", "lavfi", "-i", if name.contains("1251") { "smptehdbars=s=1280x720:r=50:d=0.2" } else { "smptehdbars=s=640x360:r=24:d=0.5" }];
+        a.extend_from_slice(args);
+        let Some(b) = fixture(name, &a) else { return };
+        let src = crate::open_bytes(name, b).unwrap();
+        let info = src.info().video.clone().unwrap();
+        assert!(info.codec.contains(codec), "{}", info.codec);
+        let f = src.video_frame(FrameRequest::full(Tick(TICKS_PER_SECOND / 10))).unwrap();
+        assert!(f.format_label().contains(fmt), "{}", f.format_label());
+        let w = f.width as usize;
+        let px = f.to_rgba8();
+        // leftmost bars area is 40% grey
+        let c = &px[(100 * w + 20) * 4..][..3];
+        assert!((c[0] as i32 - 104).abs() < 6, "{name}: {c:?}");
+    }
+}
+
 /// Solid-colour Matroska fixtures: decoded frames must match the colour, audio must be a 1 kHz tone.
 fn check_mkv(name: &str, vcodec: &[&str], acodec: &[&str]) {
     let mut args: Vec<&str> =

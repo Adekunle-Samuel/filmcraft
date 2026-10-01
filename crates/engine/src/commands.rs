@@ -686,7 +686,7 @@ fn build() -> Vec<CommandSpec> {
             "Media…",
             ["File", "Export"],
             None,
-            r#"{"path":str,"format":"h264|prores|mjpeg|png|gif|wav","scale":f32=1,"audio":bool=true,"quality":0..100,"burnCaptions":bool=false}"#,
+            r#"{"path":str,"format":"h264|prores|dnxhr|mjpeg|png|gif|wav","scale":f32=1,"audio":bool=true,"quality":0..100,"burnCaptions":bool=false,"proresProfile":"proxy|lt|standard|hq"?,"dnxProfile":"lb|sq|hq|hqx"?}"#,
             has_seq,
             |s, p| export_media(s, p)
         ),
@@ -1902,6 +1902,7 @@ fn export_media(s: &mut Session, p: &Value) -> Result<Value> {
         burn_captions: bool_p(p, "burnCaptions").unwrap_or(false),
         part_of_batch: false,
         prores_profile: str_p(p, "proresProfile").unwrap_or_default().to_string(),
+        dnx_profile: str_p(p, "dnxProfile").unwrap_or_default().to_string(),
         sdr: bool_p(p, "sdr").unwrap_or(false),
         ..Default::default()
     };

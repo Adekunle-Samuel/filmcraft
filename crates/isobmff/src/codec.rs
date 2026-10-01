@@ -1173,6 +1173,14 @@ impl SampleEntry {
         }
         e
     }
+    /// Avid DNxHD / DNxHR entry (`AVdn`, or `AVdh` for DNxHR).
+    pub fn dnx(fourcc: FourCc, width: u16, height: u16) -> Self {
+        let mut e = Self::video(fourcc, CodecConfig::Dnx { fourcc }, width, height);
+        if let Some(v) = e.video.as_mut() {
+            v.depth = 24;
+        }
+        e
+    }
     /// Motion-JPEG entry (`jpeg`).
     pub fn jpeg(width: u16, height: u16) -> Self {
         let f = FourCc(*b"jpeg");

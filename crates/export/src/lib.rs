@@ -40,6 +40,8 @@ pub enum Format {
     H264,
     /// QuickTime, Apple ProRes 422 HQ + PCM (needs the ProRes encoder registered).
     ProRes,
+    /// QuickTime, Avid DNxHR (HQ unless the settings pick another profile) + PCM.
+    DnxHr,
     /// QuickTime, Motion-JPEG + 16-bit PCM.
     Mjpeg,
     PngSequence,
@@ -52,6 +54,7 @@ impl Format {
         Some(match s.to_ascii_lowercase().replace([' ', '-', '_', '.'], "").as_str() {
             "h264" | "mp4" | "avc" => Format::H264,
             "prores" | "mov" => Format::ProRes,
+            "dnxhr" | "dnxhd" | "dnx" | "avid" | "vc3" => Format::DnxHr,
             "mjpeg" | "motionjpeg" | "jpeg" => Format::Mjpeg,
             "png" | "pngsequence" => Format::PngSequence,
             "gif" | "animatedgif" => Format::Gif,
@@ -62,7 +65,7 @@ impl Format {
     pub fn extension(self) -> &'static str {
         match self {
             Format::H264 => "mp4",
-            Format::ProRes | Format::Mjpeg => "mov",
+            Format::ProRes | Format::DnxHr | Format::Mjpeg => "mov",
             Format::PngSequence => "png",
             Format::Gif => "gif",
             Format::Wav => "wav",
@@ -72,13 +75,14 @@ impl Format {
         match self {
             Format::H264 => "H.264",
             Format::ProRes => "Apple ProRes",
+            Format::DnxHr => "Avid DNxHR",
             Format::Mjpeg => "QuickTime (Motion JPEG)",
             Format::PngSequence => "PNG Sequence",
             Format::Gif => "Animated GIF",
             Format::Wav => "Waveform Audio",
         }
     }
-    pub const ALL: [Format; 6] = [Format::H264, Format::ProRes, Format::Mjpeg, Format::PngSequence, Format::Gif, Format::Wav];
+    pub const ALL: [Format; 7] = [Format::H264, Format::ProRes, Format::DnxHr, Format::Mjpeg, Format::PngSequence, Format::Gif, Format::Wav];
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -104,6 +108,9 @@ pub struct ExportSettings {
     /// ProRes flavour: `proxy`, `lt`, `standard` or `hq` (empty = HQ).
     #[serde(default)]
     pub prores_profile: String,
+    /// DNxHR profile: `lb`, `sq`, `hq` or `hqx` (empty = HQ).
+    #[serde(default)]
+    pub dnx_profile: String,
     /// Encode display-referred SDR (Rec. 709, tone mapped) even when the sequence works in
     /// Rec. 2100 PQ/HLG. Otherwise H.264 and ProRes exports of an HDR sequence are encoded in the
     /// sequence's HDR space and signal it (VUI / `colr` / `mdcv` / `clli` / SEI).
@@ -172,6 +179,7 @@ impl Default for ExportSettings {
             burn_captions: false,
             part_of_batch: false,
             prores_profile: String::new(),
+            dnx_profile: String::new(),
             sdr: false,
             signal: ColorSignal::default(),
         }
@@ -256,7 +264,7 @@ pub type AudioEncoderFactory = fn(format: Format, sample_rate: u32, channels: u3
 
 fn video_factories() -> &'static RwLock<Vec<EncoderFactory>> {
     static F: OnceLock<RwLock<Vec<EncoderFactory>>> = OnceLock::new();
-    F.get_or_init(|| RwLock::new(vec![h264_factory, prores_factory, mjpeg_factory]))
+    F.get_or_init(|| RwLock::new(vec![h264_factory, prores_factory, dnx_factory, mjpeg_factory]))
 }
 fn audio_factories() -> &'static RwLock<Vec<AudioEncoderFactory>> {
     static F: OnceLock<RwLock<Vec<AudioEncoderFactory>>> = OnceLock::new();
@@ -451,6 +459,65 @@ fn prores_factory(format: Format, w: u32, h: u32, rate: FrameRate, s: &ExportSet
     })
 }
 
+/// The DNxHR profile named by [`ExportSettings::dnx_profile`].
+pub fn dnx_profile(name: &str) -> filmcraft_dnx::Profile {
+    use filmcraft_dnx::Profile;
+    match name.to_ascii_lowercase().as_str() {
+        "lb" => Profile::Lb,
+        "sq" => Profile::Sq,
+        "hqx" => Profile::Hqx,
+        _ => Profile::Hq,
+    }
+}
+
+/// DNxHR encoder (RGBA8 or HDR floats → BT.709 / BT.2020 limited-range 4:2:2; 8-bit for
+/// LB/SQ/HQ, 10-bit for HQX).
+struct DnxEncoder {
+    enc: filmcraft_dnx::Encoder,
+    w: u32,
+    h: u32,
+    rate: FrameRate,
+    signal: ColorSignal,
+}
+
+impl VideoEncoder for DnxEncoder {
+    fn sample_entry(&self) -> SampleEntry {
+        let mut e = SampleEntry::dnx(filmcraft_isobmff::FourCc(*b"AVdh"), self.w as u16, self.h as u16);
+        self.signal.apply_to(&mut e, true);
+        e
+    }
+    fn timescale(&self) -> u32 {
+        self.rate.num as u32
+    }
+    fn encode(&mut self, f: &EncoderFrame) -> Result<Vec<EncodedPacket>> {
+        let mut fr = filmcraft_dnx::Frame::new(f.width, f.height, filmcraft_dnx::ChromaFormat::Yuv422, 10, false);
+        match f.hdr {
+            Some(rgb) => {
+                let (kr, kb) = self.signal.kr_kb();
+                rgbf_to_yuv422_10(rgb, f.width as usize, f.height as usize, kr, kb, &mut fr.y, &mut fr.cb, &mut fr.cr)
+            }
+            None => rgba_to_yuv422_10(f.rgba, f.width as usize, f.height as usize, &mut fr.y, &mut fr.cb, &mut fr.cr),
+        }
+        // the encoder rescales 10-bit input to its coded depth
+        let data = self.enc.encode(&fr).map_err(|e| ExportError::Encode(e.to_string()))?;
+        Ok(vec![EncodedPacket { data, key: true, duration: self.rate.den as u32, composition_offset: 0 }])
+    }
+    fn flush(&mut self) -> Result<Vec<EncodedPacket>> {
+        Ok(Vec::new())
+    }
+}
+
+fn dnx_factory(format: Format, w: u32, h: u32, rate: FrameRate, s: &ExportSettings) -> Option<Result<Box<dyn VideoEncoder>>> {
+    (format == Format::DnxHr).then(|| {
+        let mut cfg = filmcraft_dnx::EncoderConfig::new(dnx_profile(&s.dnx_profile), w, h);
+        if s.signal.primaries == 9 {
+            cfg.color_volume = filmcraft_dnx::ColorVolume::Bt2020Ncl;
+        }
+        let enc = filmcraft_dnx::Encoder::with_config(cfg).map_err(|e| ExportError::Encode(e.to_string()))?;
+        Ok(Box::new(DnxEncoder { enc, w, h, rate, signal: s.signal }) as Box<dyn VideoEncoder>)
+    })
+}
+
 /// H.264 High (our encoder): sRGB/709 RGBA8 → 8-bit limited-range BT.709 4:2:0, VBR at the
 /// requested bitrate, length-prefixed samples with the `avcC` in the sample entry.
 struct H264Encoder {
@@ -616,7 +683,7 @@ pub fn export(project: &Arc<Project>, seq: ItemId, settings: &ExportSettings, so
     let q = project.sequence(seq).ok_or(ExportError::NoSequence)?;
     // HDR sequences export HDR (H.264 / ProRes) unless SDR is asked for
     let pipe = q.settings.color;
-    let hdr_out = pipe.working.is_hdr() && !settings.sdr && matches!(settings.format, Format::H264 | Format::ProRes);
+    let hdr_out = pipe.working.is_hdr() && !settings.sdr && matches!(settings.format, Format::H264 | Format::ProRes | Format::DnxHr);
     let mut settings = settings.clone();
     settings.signal = match (hdr_out, pipe.working) {
         (true, filmcraft_color::WorkingSpace::Rec2100Pq) => ColorSignal::PQ,
@@ -729,7 +796,7 @@ pub fn export(project: &Arc<Project>, seq: ItemId, settings: &ExportSettings, so
             drop(enc);
             std::fs::metadata(&settings.path).map(|m| m.len()).unwrap_or(0)
         }
-        Format::H264 | Format::ProRes | Format::Mjpeg => {
+        Format::H264 | Format::ProRes | Format::DnxHr | Format::Mjpeg => {
             let mut venc = video_factories()
                 .read()
                 .unwrap_or_else(|e| e.into_inner())

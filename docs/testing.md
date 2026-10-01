@@ -50,7 +50,7 @@ are never linked or shipped ([AGENTS.md](../AGENTS.md) §2).
   concurrently; migrate it when convenient).
 - `cargo xtask fixtures [crate…]` pre-generates the whole fixture matrix up front (useful before a
   parallel test run or on a fresh machine). It runs each crate's ignored `generate_fixtures` test —
-  the same generators the oracle tests call — for `h264`, `hevc`, `isobmff`, `matroska` and
+  the same generators the oracle tests call — for `h264`, `hevc`, `isobmff`, `matroska`, `dnx` and
   `prores`, and prints one `made` / `cached` / `skipped` line per fixture plus a summary. The
   `aac`, `opus` and `h264enc` oracles generate small per-test signals on demand and are not part of
   the matrix.
@@ -67,6 +67,8 @@ are never linked or shipped ([AGENTS.md](../AGENTS.md) §2).
 | `h264enc` | `ffmpeg -ec 0` decodes our stream | no errors, exact frame count, **bit-identical to the encoder's reconstruction**; B-frame order checked with ffprobe; rate-control targets |
 | `prores` decode | ffmpeg `prores_ks` / `prores_aw` fixtures, compared at native depth | within **±1 LSB** (different integer IDCT); alpha bit-exact |
 | `prores` encode | ffmpeg decodes with `-xerror` | no errors; agrees with our decoder within ±1 |
+| `dnx` decode | ffmpeg VC-3 fixtures (13 DNxHD CIDs, DNxHR LB/SQ/HQ/HQX/444), compared at native depth | within **±2 LSB**, ≤ 100 samples per million beyond ±1 (ffmpeg's integer IDCT; we evaluate the exact IDCT) |
+| `dnx` encode | ffmpeg decodes with `-xerror` | no errors; agrees with our decoder within ±2; HQ luma PSNR ≥ 45 dB |
 | `aac` decode | ffmpeg's decode of the same stream | max abs error ~1e-7 (float) |
 | `aac` encode | ffmpeg decodes our stream | no errors, no clipping, CBR within ±5% of target; SNR reported |
 | `isobmff` | `ffprobe -show_packets` on ffmpeg-made MP4/MOV | packet offsets, sizes, pts/dts, durations, key flags and stream parameters equal; remuxed files decode with `ffmpeg -v error` silent |

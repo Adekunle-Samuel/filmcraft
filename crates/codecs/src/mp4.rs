@@ -113,7 +113,7 @@ impl Mp4Source {
                 explicit_color = Some(color);
             }
             let bitrate = (t.samples.iter().map(|s| s.size as u64).sum::<u64>() * 8 * t.timescale as u64).checked_div(t.duration);
-            VideoStreamInfo {
+            let mut info = VideoStreamInfo {
                 width: w,
                 height: h,
                 frame_rate: rate,
@@ -123,7 +123,23 @@ impl Mp4Source {
                 color,
                 has_alpha: matches!(&entry.codec, CodecConfig::ProRes { fourcc } if fourcc.0 == *b"ap4h" || fourcc.0 == *b"ap4x"),
                 bitrate,
+            };
+            if matches!(entry.codec, CodecConfig::Dnx { .. }) {
+                // the sample entry doesn't say which VC-3 compression ID it is: read the first frame header
+                let s0 = &t.samples[0];
+                if let Some(h) = bytes.get(s0.offset as usize..(s0.offset as usize).saturating_add(s0.size as usize)).and_then(|d| filmcraft_dnx::probe(d).ok())
+                {
+                    info.codec = filmcraft_dnx::cid_name(h.cid);
+                    let sub = match h.chroma {
+                        filmcraft_dnx::ChromaFormat::Yuv420 => "YUV 4:2:0",
+                        filmcraft_dnx::ChromaFormat::Yuv422 => "YUV 4:2:2",
+                        filmcraft_dnx::ChromaFormat::Yuv444 => "4:4:4",
+                    };
+                    info.pixel_format = format!("{sub} {}-bit", h.bit_depth);
+                    info.has_alpha = h.alpha;
+                }
             }
+            info
         });
         let audio = atrack.map(|i| {
             let t = &file.tracks[i];
@@ -396,6 +412,8 @@ fn codec_label(c: &CodecConfig) -> String {
         }
         CodecConfig::Pcm(p) => format!("PCM {}-bit{}", p.bits, if p.float { " float" } else { "" }),
         CodecConfig::Opus(_) => "Opus".into(),
+        CodecConfig::Dnx { fourcc } if fourcc.0 == *b"AVdh" => "Avid DNxHR".into(),
+        CodecConfig::Dnx { .. } => "Avid DNxHD".into(),
         other => other.name().to_string(),
     }
 }

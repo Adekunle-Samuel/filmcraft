@@ -243,8 +243,14 @@ fn wasm() -> Result<(), String> {
 }
 
 /// (crate, test target) whose ignored `generate_fixtures` test builds that crate's fixture matrix.
-const FIXTURE_GENERATORS: &[(&str, &str)] =
-    &[("h264", "conformance"), ("hevc", "conformance"), ("isobmff", "oracle_demux"), ("matroska", "oracle"), ("prores", "oracle_decode")];
+const FIXTURE_GENERATORS: &[(&str, &str)] = &[
+    ("h264", "conformance"),
+    ("hevc", "conformance"),
+    ("isobmff", "oracle_demux"),
+    ("matroska", "oracle"),
+    ("prores", "oracle_decode"),
+    ("dnx", "oracle_decode"),
+];
 
 fn fixtures(only: &[String]) -> Result<(), String> {
     let unknown: Vec<&String> = only.iter().filter(|o| !FIXTURE_GENERATORS.iter().any(|(c, _)| *c == short(o))).collect();
