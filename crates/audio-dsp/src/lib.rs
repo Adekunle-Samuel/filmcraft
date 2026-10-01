@@ -6,6 +6,7 @@
 //!   registry ([`effects()`]) describing every effect's parameters (range, unit, default) so the
 //!   engine and UI can build controls generically.
 //! * [`biquad`] — RBJ-cookbook biquads (TDF-II) with analytic magnitude response.
+//! * [`sync`] — offset between two recordings of one event (GCC-PHAT, sample-accurate).
 //!
 //! Conventions: audio is **planar f32** (`&mut [&mut [f32]]`, one slice per channel, all the same
 //! length). `process` never allocates; all buffers are sized at construction. Parameters may be
@@ -21,6 +22,7 @@ pub mod fft;
 pub mod loudness;
 pub mod oversample;
 mod smooth;
+pub mod sync;
 
 pub use effects::{Category, EffectInfo, create_effect, effect_info, effects};
 pub use loudness::{LoudnessMeter, normalize_gain_db};

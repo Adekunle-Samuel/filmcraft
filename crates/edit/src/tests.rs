@@ -55,6 +55,7 @@ impl Fx {
             frame_hold: None,
             scale_to_frame: false,
             essential: None,
+            multicam: None,
         }
     }
     fn put(&mut self, track: TrackId, start: i64, dur: i64, src_in: i64) -> ClipId {

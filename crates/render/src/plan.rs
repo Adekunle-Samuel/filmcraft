@@ -145,6 +145,22 @@ fn push_item(
 ) {
     let mt = item.source_time_at(t);
     let (op, bl) = crate::opacity_blend(item, mt);
+    // A multi-camera clip that only shows its angle (no effects, untransformed, same frame size)
+    // draws the angle's clip directly: no CPU pass over the nested sequence.
+    if let Some(ItemKind::Sequence(nested)) = project.item(item.item).map(|p| &p.kind)
+        && let Some(angle) = item.multicam_angle(nested)
+        && bl == Blend::Normal
+        && !(opts.effects && item.has_standard_effects())
+        && (nested.settings.width, nested.settings.height) == (seq.settings.width, seq.settings.height)
+        && near_identity(&motion_matrix(seq, item, (nested.settings.width, nested.settings.height), mt))
+        && let Some(tr) = nested.angle_video_track_index(angle).and_then(|i| nested.video_tracks.get(i))
+        && !tr.transitions.iter().any(|x| x.range().contains(mt))
+    {
+        if let Some(inner) = tr.item_at(mt).filter(|i| i.enabled) {
+            push_item(project, nested, inner, mt, opts, sources, extra_opacity * op, out);
+        }
+        return;
+    }
     // Graphic clips without standard effects: the layers are rasterised (cached) into one tight
     // image the GPU places as a layer.
     if bl == Blend::Normal
@@ -181,6 +197,10 @@ fn push_item(
     if let Some((img, op2, _)) = crate::item_layer(project, seq, item, t, opts, sources, &tc) {
         out.push(PlanLayer { frame: cpu_frame(img), matrix: Affine::IDENTITY, opacity: op2 * extra_opacity });
     }
+}
+
+fn near_identity(m: &Affine) -> bool {
+    (m.a - 1.0).abs() < 1e-9 && (m.d - 1.0).abs() < 1e-9 && m.b.abs() < 1e-9 && m.c.abs() < 1e-9 && m.e.abs() < 1e-6 && m.f.abs() < 1e-6
 }
 
 /// Execute a plan on the CPU (reference for the GPU compositor).

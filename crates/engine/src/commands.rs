@@ -75,7 +75,7 @@ fn has_recovery(s: &Session) -> std::result::Result<(), String> {
 pub(crate) fn has_seq(s: &Session) -> std::result::Result<(), String> {
     s.active_sequence().map(|_| ()).ok_or_else(|| "no sequence is open".into())
 }
-fn has_selection(s: &Session) -> std::result::Result<(), String> {
+pub(crate) fn has_selection(s: &Session) -> std::result::Result<(), String> {
     has_seq(s)?;
     if s.state.selection.is_empty() { Err("no clips selected".into()) } else { Ok(()) }
 }
@@ -102,7 +102,7 @@ fn has_previews(s: &Session) -> std::result::Result<(), String> {
     has_seq(s)?;
     if s.previews.count() == 0 { Err("there are no render files".into()) } else { Ok(()) }
 }
-fn has_project_selection(s: &Session) -> std::result::Result<(), String> {
+pub(crate) fn has_project_selection(s: &Session) -> std::result::Result<(), String> {
     if s.state.project_selection.is_empty() { Err("select an item in the Project panel".into()) } else { Ok(()) }
 }
 fn has_clipboard(s: &Session) -> std::result::Result<(), String> {
@@ -152,13 +152,13 @@ pub(crate) fn time_p(s: &Session, p: &Value, prefix: &str) -> Option<Tick> {
 pub(crate) fn clip_p(p: &Value, k: &str) -> Option<ClipId> {
     u64_p(p, k).map(ClipId)
 }
-fn clips_p(s: &Session, p: &Value) -> Vec<ClipId> {
+pub(crate) fn clips_p(s: &Session, p: &Value) -> Vec<ClipId> {
     match p.get("clips").and_then(Value::as_array) {
         Some(a) => a.iter().filter_map(|v| v.as_u64().map(ClipId)).collect(),
         None => clip_p(p, "clip").map(|c| vec![c]).unwrap_or_else(|| s.state.selection.clone()),
     }
 }
-fn track_p(s: &Session, p: &Value, k: &str) -> Option<TrackId> {
+pub(crate) fn track_p(s: &Session, p: &Value, k: &str) -> Option<TrackId> {
     let v = p.get(k)?;
     if let Some(id) = v.as_u64() {
         return Some(TrackId(id));
@@ -192,7 +192,7 @@ pub fn with_links(s: &Session, clips: &[ClipId]) -> Vec<ClipId> {
     out
 }
 
-fn default_seq_settings_for(info: &filmcraft_media::MediaInfo) -> SequenceSettings {
+pub(crate) fn default_seq_settings_for(info: &filmcraft_media::MediaInfo) -> SequenceSettings {
     let mut st = SequenceSettings::default();
     if let Some(v) = &info.video {
         st.width = v.width;
@@ -1876,6 +1876,7 @@ fn build() -> Vec<CommandSpec> {
     ];
     v.extend(crate::captions::commands());
     v.extend(crate::mixer::commands());
+    v.extend(crate::multicam::commands());
     v.extend(crate::essential_sound::commands());
     v.extend(crate::color::commands());
     v.extend(crate::graphics::commands());

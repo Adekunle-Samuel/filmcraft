@@ -39,6 +39,8 @@ pub const UI_COMMANDS: &[UiCommand] = &[
     uic!("view.playbackRes.quarter", "1/4", ["View", "Playback Resolution"], None),
     uic!("view.playbackRes.eighth", "1/8", ["View", "Playback Resolution"], None),
     uic!("view.safeMargins", "Safe Margins", ["View"], None),
+    uic!("multicam.toggleView", "Multi-Camera View", ["View"], Some("Shift+0")),
+    uic!("multicam.recordToggle", "Multi-Camera Record On/Off Toggle", [], Some("0")),
     uic!("view.theme.dark", "Darkest", ["View", "Appearance"], None),
     uic!("view.theme.medium", "Medium", ["View", "Appearance"], None),
     uic!("view.theme.light", "Light", ["View", "Appearance"], None),
@@ -98,6 +100,12 @@ pub fn invoke(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, params: Val
         return Ok(json!({"tool": tool}));
     }
     if let Some(r) = crate::panels::trim_monitor::route_transport(app, ctx, id) {
+        return r;
+    }
+    if let Some(r) = crate::panels::multicam::route(app, id, &params) {
+        if let Err(e) = &r {
+            app.ui.status = e.clone();
+        }
         return r;
     }
     if let Some(r) = crate::panels::media_dialogs::route(app, id, &params) {

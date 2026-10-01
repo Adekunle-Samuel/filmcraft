@@ -76,16 +76,6 @@ pub fn pan_gains(pan: f32) -> (f32, f32) {
 
 #[allow(clippy::too_many_arguments)]
 fn mix_item(project: &Project, item: &TrackItem, start: i64, frames: usize, sr: u32, sources: &dyn SourceProvider, out: &mut AudioBuffer, extra: f32) {
-    let Some(src) = sources.source(item.item) else { return };
-    if !src.info().has_audio() {
-        // nested sequences
-        if let Some(nested) = project.sequence(item.item) {
-            let rel0 = start - item.start.to_units_floor(sr as i64) + item.source_in.to_units_floor(sr as i64);
-            let b = mix_sequence(project, nested, rel0, frames, sources);
-            out.mix_from(&b, &[extra, extra]);
-        }
-        return;
-    }
     let item_s0 = item.start.to_units_floor(sr as i64);
     let item_s1 = item.end().to_units_floor(sr as i64);
     let a0 = start.max(item_s0);
@@ -97,7 +87,15 @@ fn mix_item(project: &Project, item: &TrackItem, start: i64, frames: usize, sr: 
         return;
     }
     let n = (a1 - a0) as usize;
-    let buf = effected(item, src.as_ref(), a0, n, sr);
+    let buf = if let Some(nested) = project.sequence(item.item) {
+        nested_audio(project, item, nested, a0, n, sr, sources)
+    } else {
+        let Some(src) = sources.source(item.item) else { return };
+        if !src.info().has_audio() {
+            return;
+        }
+        effected(item, src.as_ref(), a0, n, sr)
+    };
     // gains: clip gain × Volume (keyframed, per 64-sample block) × channel volume × panner
     let clip_gain = db_to_gain(item.gain_db);
     let vol = item.effect("volume").filter(|e| e.enabled && !e.param("bypass").and_then(|p| p.value.as_bool()).unwrap_or(false));
@@ -122,6 +120,23 @@ fn mix_item(project: &Project, item: &TrackItem, start: i64, frames: usize, sr: 
         }
         blk = end;
     }
+}
+
+/// A nested sequence's mix for timeline samples `[a0, a0 + n)` of the clip that shows it. A
+/// multi-camera clip plays the audio of its source's audio setting: camera 1, all cameras, or (when
+/// switching audio) the angle the clip selects.
+fn nested_audio(project: &Project, item: &TrackItem, nested: &Sequence, a0: i64, n: usize, sr: u32, sources: &dyn SourceProvider) -> [Vec<f32>; 2] {
+    let rel0 = a0 - item.start.to_units_floor(sr as i64) + item.source_in.to_units_floor(sr as i64);
+    let b = if nested.multicam.is_some() {
+        let q = nested.with_angle_audio(item.multicam_angle(nested));
+        mix_sequence(project, &q, rel0, n, sources)
+    } else {
+        mix_sequence(project, nested, rel0, n, sources)
+    };
+    let mut it = b.channels.into_iter();
+    let l = it.next().unwrap_or_else(|| vec![0.0; n]);
+    let r = it.next().unwrap_or_else(|| l.clone());
+    [l, r]
 }
 
 /// The clip's audio after speed/reverse and clip effects (before clip gain, Volume and Panner) for

@@ -18,6 +18,7 @@ pub mod misc;
 pub mod mixer;
 pub mod monitor;
 pub mod presets;
+pub mod multicam;
 pub mod project;
 pub mod shortcuts_dialog;
 pub mod text;

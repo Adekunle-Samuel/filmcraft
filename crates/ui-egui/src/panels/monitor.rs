@@ -66,6 +66,17 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, which: Which)
         }
     };
     let prefix = if which == Which::Program { "program" } else { "source" };
+    // Multi-Camera view: the angle grid on the left, the program on the right
+    let multicam = which == Which::Program && app.ui.program.multicam;
+    let (grid_area, video_area) = if multicam {
+        let mid = video_area.center().x;
+        (Some(Rect::from_min_max(video_area.min, pos2(mid - 2.0, video_area.max.y))), Rect::from_min_max(pos2(mid + 2.0, video_area.min.y), video_area.max))
+    } else {
+        (None, video_area)
+    };
+    if let Some(g) = grid_area {
+        crate::panels::multicam::grid(app, ui, g);
+    }
     ui.painter().rect_filled(video_area, 0.0, t.panel_bg);
     // ---- picture
     let has_video = frame_size.0 > 0;
@@ -203,7 +214,14 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, which: Which)
         if which == Which::Program {
             ui.separator();
             ui.checkbox(&mut app.ui.show_scopes, "Lumetri Scopes");
+            ui.checkbox(&mut app.ui.program.multicam, "Multi-Camera");
             ui.checkbox(&mut app.playback.looping, "Loop");
+            ui.separator();
+            let mut follows = app.session.state.multicam_audio_follows_video;
+            if ui.checkbox(&mut follows, "Multi-Camera Audio Follows Video").changed() {
+                let _ = app.session.execute("multicam.audioFollowsVideo", json!({"enabled": follows}));
+            }
+            ui.checkbox(&mut app.ui.multicam_record, "Multi-Camera Record");
         }
     });
 
@@ -216,7 +234,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, which: Which)
     transport(app, ui, row3, which);
 }
 
-fn quantize_scale(s: f32) -> f32 {
+pub fn quantize_scale(s: f32) -> f32 {
     // Buckets keep the cache effective while resizing the panel.
     let buckets = [1.0 / 32.0, 1.0 / 16.0, 1.0 / 8.0, 0.1875, 0.25, 0.375, 0.5, 0.75, 1.0];
     *buckets.iter().find(|b| **b >= s - 1e-4).unwrap_or(&1.0)

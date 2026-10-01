@@ -384,6 +384,47 @@ frame (Y'CbCr/RGB + metadata) ─► source colour space: Interpret Footage over
   conversions and looks). `filmcraft-gpu::GpuLut` is the WGSL tetrahedral counterpart, tested for
   parity.
 
+### 5.4 Multi-camera and synchronisation
+
+```text
+clips ──sync (in | out | timecode[±hours] | marker | audio)──► anchors (media time ↔ common instant)
+  ├─ clip.synchronize        moves selected timeline clips (link groups together) onto the reference
+  ├─ clip.mergeClips         video + ≤16 audio clips → a merged-clip sequence
+  └─ clip.createMulticam     cameras → a multi-camera source sequence (one video track per angle)
+multi-camera clip = nested source + TrackItem::multicam {enabled, angle}
+  render: only the angle's video track · audio: camera 1 | all | the angle (Switch Audio)
+```
+
+- **Model** (`project::multicam`). `Sequence::multicam` (`MulticamSource`: cameras with their video
+  track, audio tracks, name, shown flag and source item; audio mode) marks a multi-camera source;
+  `Sequence::merged` a merged clip. `TrackItem::multicam` (`MulticamSel`) makes a nested clip a
+  multi-camera clip; any nest can be one (its video tracks are then the angles,
+  `Sequence::cameras()`). Editing a multi-camera source into a sequence gives an enabled clip on the
+  first angle (`Project::make_track_item`). Project schema v7.
+- **Sync** (`engine::sync`). Each method reduces a clip to an *anchor* (the media time that lines up
+  with the common instant). Audio uses `audio_dsp::sync::find_offset`: DC removal, windowed-sinc
+  decimation to ≤ 8 kHz, GCC-PHAT-β (β = 0.75) via one packed complex FFT for the coarse lag, then
+  the same at the full rate on the loudest common window (≤ 2.7 s) and parabolic interpolation.
+  Recordings with different gains, microphones (filtered), 0 dB SNR noise or a strong echo are
+  aligned to the sample; two 10-minute recordings take ~2.4 s (release). Clips are placed on frame
+  boundaries with the sub-frame remainder taken from their source In, so video stays on frames
+  while audio keeps sample accuracy.
+- **Render.** `render::item_layer` renders a multi-camera clip's angle track only
+  (`render_seq_tracks`); `render::audio` mixes the nested source with only the audible tracks
+  (`Sequence::with_angle_audio`). Nested audio now plays at all (it was skipped when the nest had
+  no media source) and is limited to the clip's range. `render::multicam::render_grid` renders the
+  shown angles at the cell scale in parallel (rayon) and tiles them: the Multi-Camera view is one
+  frame job (`frames::Target::MulticamGrid`), prefetched while playing like the program.
+- **Editing** (`edit::multicam`, `engine::multicam`). `multicam.switchAngle` (click an angle,
+  Ctrl/⌘-click for video only), `multicam.selectCamera1…9` (keys 1–9) and `cutToCamera1…9`
+  (Ctrl+1–9), Enable/Flatten, Edit Cameras, Audio Follows Video (`EditorState`). Live switching:
+  playback in the Multi-Camera view runs `multicam.recordStart`; each key/click is a
+  `multicam.cut` that is applied at once (the program shows it) by re-applying the whole pass to
+  the project from before the pass (`edit_merged`), so a pass is one undo step; Stop runs
+  `multicam.recordStop`, which ends the last angle at the stop point. Through edits inside the
+  recorded range are healed, so pressing the angle already showing adds no edit. Flatten replaces
+  a clip by the clip(s) its angle shows (outer effects carried over; linked pairs stay linked).
+
 ## 6. Export jobs (`filmcraft-export`)
 
 ```text
