@@ -77,3 +77,19 @@ is traced or derived from Adobe artwork.
 | Demo footage (ocean sunset, aurora, city night, dunes, forest, plasma), bars and tone, counting leader, colour matte | `crates/media/src/generators.rs` |
 | Lumetri "Look" presets (Teal & Orange, Warm Film, …) | `crates/render/src/effects.rs` (`apply_look`): procedural colour transforms, not LUT files |
 | Colour palette and layout metrics | `crates/ui-egui/src/theme.rs`: colour values and sizes only; no artwork |
+
+## First-party brand marks
+
+The ArtCraft name and logo are trademarks of the ArtCraft team, used in FilmCraft with permission. They are not
+openly licensed and are not covered by the project licence; forks must remove or replace them (AGENTS.md §1.8).
+
+| File | Author | Source | Licence |
+|---|---|---|---|
+| `docs/brand/artcraft-logo-white.png` | ArtCraft team | Original work: first-party ArtCraft brand mark (ArtCraft wordmark, light ink for dark backgrounds) | ArtCraft trademark, all rights reserved; used with permission (not MIT/Apache) |
+| `docs/brand/artcraft-logo-white.svg` | ArtCraft team | Original work: first-party ArtCraft brand mark (ArtCraft wordmark, light ink for dark backgrounds) | ArtCraft trademark, all rights reserved; used with permission (not MIT/Apache) |
+| `docs/brand/artcraft-logo.png` | ArtCraft team | Original work: first-party ArtCraft brand mark (ArtCraft wordmark (symbol + "ARTCRAFT"), dark ink for light backgrounds) | ArtCraft trademark, all rights reserved; used with permission (not MIT/Apache) |
+| `docs/brand/artcraft-logo.svg` | ArtCraft team | Original work: first-party ArtCraft brand mark (ArtCraft wordmark (symbol + "ARTCRAFT"), dark ink for light backgrounds) | ArtCraft trademark, all rights reserved; used with permission (not MIT/Apache) |
+| `docs/brand/artcraft-mark-black.png` | ArtCraft team | Original work: first-party ArtCraft brand mark (ArtCraft symbol ("A" mark), black) | ArtCraft trademark, all rights reserved; used with permission (not MIT/Apache) |
+| `docs/brand/artcraft-mark-black.svg` | ArtCraft team | Original work: first-party ArtCraft brand mark (ArtCraft symbol ("A" mark), black) | ArtCraft trademark, all rights reserved; used with permission (not MIT/Apache) |
+| `docs/brand/artcraft-mark.png` | ArtCraft team | Original work: first-party ArtCraft brand mark (ArtCraft symbol ("A" mark), blue) | ArtCraft trademark, all rights reserved; used with permission (not MIT/Apache) |
+| `docs/brand/artcraft-mark.svg` | ArtCraft team | Original work: first-party ArtCraft brand mark (ArtCraft symbol ("A" mark), blue) | ArtCraft trademark, all rights reserved; used with permission (not MIT/Apache) |

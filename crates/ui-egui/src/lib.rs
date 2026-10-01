@@ -5,6 +5,7 @@
 //! control-channel handlers. Swap it for another toolkit without touching the engine.
 
 pub mod automation;
+pub mod brand;
 pub mod control;
 pub mod dock;
 pub mod frames;
