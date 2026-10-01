@@ -4,6 +4,7 @@
 pub mod dialogs;
 pub mod effect_controls;
 pub mod effects;
+pub mod essential_sound;
 pub mod export_mode;
 pub mod file_dialogs;
 pub mod graphics;
@@ -52,6 +53,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, p: PanelKind, rect: Rect)
         PanelKind::AudioClipMixer => mixer::clip_mixer(app, ui, rect),
         PanelKind::LumetriScopes => misc::scopes(app, ui, rect),
         PanelKind::Text => text::show(app, ui, rect),
+        PanelKind::EssentialSound => essential_sound::show(app, ui, rect),
         other => crate::dock::placeholder(ui, rect, &app.tokens, &format!("{} — coming in a later milestone", other.title())),
     }
 }

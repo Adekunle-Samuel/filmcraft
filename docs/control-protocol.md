@@ -45,6 +45,20 @@ record|soloSafe|output|input|fx.<n>|send.<n>|meter|name>` (popup entries below t
 `clipMixer.A1.<fader|pan|mute|solo|keyframe|value>`, `timeline.track.A1.keyframes[.<lane>|.clip]`,
 `timeline.track.A1.lane[.kf.<n>]`, `audioGain.<set|adjust|normalizeMax|normalizeAll|ok|cancel|peak>`.
 
+Essential Sound: `essentialSound.inspect`, `essentialSound.setType {type: dialogue|music|sfx|ambience}`,
+`essentialSound.clearType`, `essentialSound.set {key, value}` or `{values: {key: value}}` (keys such as
+`repair.noise.on`, `repair.noise.amount` (0–10), `repair.humHz`, `clarity.eqPreset`, `clarity.enhanceTone`,
+`creative.reverbPreset`, `ducking.against`, `ducking.reduceDb`, `ducking.fadeS`, `pan.value`,
+`volume.levelDb`, `mute`, section switches `<section>.enabled`), `essentialSound.applyPreset {preset, type?}`,
+`essentialSound.savePreset {name}`, `essentialSound.deletePreset {name}`, `essentialSound.autoMatch {target?}`,
+`essentialSound.generateDucking`; all take `clips` (default: the selected audio clips). UI ids:
+`essentialSound.tab.<Browse|Edit>`, `essentialSound.type.<Dialogue|Music|SFX|Ambience>`,
+`essentialSound.clearType`, `essentialSound.preset[.save|.delete|.name|.ok]`,
+`essentialSound.section.<Name>[.toggle]`, a row per setting key (`essentialSound.repair.noise.on`,
+`essentialSound.repair.noise.amount`, `essentialSound.repair.humHz.<i>`), `essentialSound.autoMatch`,
+`essentialSound.ducking.against.<Type>`, `essentialSound.generateDucking`, `essentialSound.volume.on`,
+`essentialSound.volume.levelDb`, `essentialSound.mute`, `essentialSound.browse.<Type>.<preset>`.
+
 Project files, auto-save, crash recovery and preferences commands (`file.recover`, `prefs.set`, …) and their
 automation ids are listed in [project-files.md](project-files.md).
 
