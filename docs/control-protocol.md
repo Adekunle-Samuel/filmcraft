@@ -31,6 +31,20 @@ Methods (handlers in `crates/ui-egui/src/control.rs`):
 Element ids are stable, e.g. `timeline.clip.<id>`, `timeline.track.V1.lock`, `tools.Razor`,
 `project.item.<id>`, `effects.item.gaussian_blur`, `panel.tab.Timeline`, `program.transport.playback.toggle`.
 
+Audio mixing: `mixer.*` commands (strips `"A1"`, `"S1"`, `"Mix"` or ids; lanes `volume`, `pan`,
+`mute`, `send.<i>.level`, `fx.<slot>.<param>`): `mixer.inspect`, `mixer.setStrip` (volume, pan, mute,
+solo, record arm, solo safe, mode Off/Read/Latch/Touch/Write, output, input map, channels),
+`mixer.setValue`, `mixer.touch` / `mixer.release` (a fader gesture; recorded during an automation pass),
+`mixer.recordStart` / `mixer.recordStop` (playback runs them), `mixer.addSubmix`, `mixer.deleteSubmix`,
+`mixer.addInsert` / `removeInsert` / `setInsert`, `mixer.addSend` / `setSend` / `removeSend`,
+`mixer.setKeyframe` / `deleteKeyframe` / `moveKeyframe` / `clearLane`, `mixer.writeAutomation`;
+`clipMixer.set`; `clip.audioGain {mode: set|adjust|normalizeMax|normalizeAll, db}`, `clip.audioPeak`;
+`effects.setDefaultTransition`. UI ids: `mixer.<A1|S1|Mix>.<fader|value|pan|panValue|mode|mute|solo|
+record|soloSafe|output|input|fx.<n>|send.<n>|meter|name>` (popup entries below them, e.g.
+`mixer.A1.mode.Touch`, `mixer.A1.fx.0.studio_reverb`), `mixer.showEffects`, `mixer.transport.<cmd>`,
+`clipMixer.A1.<fader|pan|mute|solo|keyframe|value>`, `timeline.track.A1.keyframes[.<lane>|.clip]`,
+`timeline.track.A1.lane[.kf.<n>]`, `audioGain.<set|adjust|normalizeMax|normalizeAll|ok|cancel|peak>`.
+
 Project files, auto-save, crash recovery and preferences commands (`file.recover`, `prefs.set`, …) and their
 automation ids are listed in [project-files.md](project-files.md).
 

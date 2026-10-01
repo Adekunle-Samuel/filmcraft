@@ -2,7 +2,7 @@
 
 Progress toward feature parity with Adobe Premiere Pro, with estimates. Updated as milestones land.
 
-**Last updated:** 2026-09-30 (midday) · **Overall parity:** ~32% · **Code:** ~71k lines of Rust, 400+ tests
+**Last updated:** 2026-10-01 · **Overall parity:** ~33% · **Code:** ~71k lines of Rust, 400+ tests
 
 ## Estimate to parity
 
@@ -35,7 +35,7 @@ Status: ✅ done · 🟡 in progress · ⬜ not started. Estimates are remaining
 | M4 | Playback | 🟡 | Audio-clock master, prefetch, J/K/L, dropped-frame stats, playback resolution | Render previews, render bar, 4K/8K tuning | 8–12 |
 | M5 | Effects, keyframes, GPU | 🟡 | ~60 CPU effects, 30 transitions, keyframes + value/velocity graphs, wgpu compositor | Full ~150-effect catalogue, WGSL parity for all, masks + tracking, adjustment layers, presets, Warp Stabilizer, Morph Cut | 30–45 |
 | M6 | Export | ✅ | Own H.264 encoder (High/Main/Baseline, B-frames, VBR/CBR/2-pass) → MP4 + own AAC; ProRes, MJPEG, PNG, GIF, WAV; background jobs | Preset library, queue UI, smart render | 6–8 |
-| M7 | Audio | 🟡 | Mixer basics, peak meters, BS.1770 loudness meters (M/S/I LUFS, true peak; matches ffmpeg), DSP crate, 12 clip audio effects running on it (EQ, filters, dynamics, limiter, delay, reverb, DeNoise, DeHum, pitch) with keyframes | Effects UI polish (EQ curve), remaining effects (multiband, convolution reverb), track effects/mixers with automation, Essential Sound, audio transitions, 5.1 | 6–10 |
+| M7 | Audio | 🟡 | Mixer graph (tracks → submixes → Mix, pre/post-fader inserts and sends, latency-compensated, sample-accurate, ~6× realtime for 24 tracks × 3 effects on one core), Audio Track Mixer + Audio Clip Mixer panels, track automation (Off/Read/Latch/Touch/Write, recorded live while playing, thinned to keyframes, timeline lanes with pen editing), solo/solo-safe, channel mapping basics, peak + BS.1770 loudness meters (match ffmpeg), DSP crate with 12 clip/track effects, Audio Gain (set/adjust/normalize), Constant Power / Constant Gain / Exponential Fade | Essential Sound, 5.1 panner and multichannel buses, voice-over record, effect editor windows (EQ curve), remaining effects (multiband, convolution reverb), clip-mixer automation recording | 6–9 |
 | M8 | Colour | 🟡 | Lumetri: basic, creative + looks, RGB & hue curves, wheels, HSL secondary, vignette; basic scopes | LUT import UI, colour match, colour management + HDR (PQ/HLG, log, tone mapping) | 8–12 |
 | M9 | More codecs | 🟡 | ProRes decode+encode, AAC decode+encode, HEVC Main/Main 10 decoder (bit-exact on 41 fixtures, ~225 fps 1080p), Matroska/WebM import (H.264/HEVC/ProRes/MJPEG + AAC/Opus/FLAC/MP3/Vorbis/PCM), Opus decoder (SILK/CELT/hybrid, 5.1/7.1 multistream; all RFC 8251 vectors range-exact; WebM/MKV/MP4) | VP9 (in progress), Ogg Opus files, AV1 (rav1d), DNxHR, MXF, hardware decode | 12–20 |
 | M10 | Graphics & captions | 🟡 | Caption tracks (Subtitle/CEA-608/708/Teletext formats, track style), SRT/WebVTT/SCC import+export (frame-exact, property-tested), caption editing (add/split/merge/trim/move, sync-locked insert/extract), Text panel Captions tab, burn-in in Program monitor and export | Text engine with shaping, Type tool, Essential Graphics, rolls/crawls, MCC/STL/TTML, 608/708 embedding, speech-to-text | 18–27 |
@@ -49,6 +49,7 @@ Status: ✅ done · 🟡 in progress · ⬜ not started. Estimates are remaining
 
 ## Log
 
+- **2026-10-01:** Audio mixing (M7.2/M7.5/M7.6 basics): mixer graph with submixes, sends, inserts and latency compensation; Audio Track / Clip Mixer panels; Latch/Touch/Write automation recorded live; timeline track keyframes; Audio Gain dialog.
 - **2026-09-30 (evening):** Opus decoder (RFC 6716/8251, range-exact on every conformance vector, ~80–110× realtime 48 kHz stereo) wired into WebM/MKV and MP4 import.
 - **2026-09-30 (afternoon):** Matroska/WebM import; LUFS meters; clip audio effects on the DSP crate.
 - **2026-09-30 (midday):** HEVC decoder, Matroska/WebM demuxer and audio DSP merged; HEVC import wired; asset rules (AGENTS.md, ATTRIBUTION.md, `cargo xtask assets`); README with hero screenshot and the Craft family.

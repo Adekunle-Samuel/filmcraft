@@ -115,7 +115,10 @@ Sequence
 Track
 ├─ locked, sync lock, targeting, mute/solo/visibility
 ├─ items: Vec<TrackItem>             sorted, never overlapping
-└─ transitions: Vec<Transition>
+├─ transitions: Vec<Transition>
+└─ audio: volume_db, pan, effects (mixer inserts), mixer: MixerStrip
+     (automation mode + lanes, sends, output, record arm, solo safe, input map)
+Sequence (audio) ─ submix_tracks: Vec<Track>, master_volume_db / master_effects / master_mixer
 TrackItem (a clip instance)
 ├─ item: ItemId, start (timeline ticks), source_in (media ticks), duration, speed
 ├─ link group, label, enabled
@@ -208,8 +211,50 @@ file ──► codecs (MP4/MOV, MKV, audio)        demux + decode, GOP-aware see
 - **Audio clock.** The desktop app passes a cpal output (`apps/filmcraft/src/audio.rs`) to the UI as
   `AudioOut`. While playing, the samples played by the sound card drive the playhead and video follows.
   Without an audio device, playback falls back to the wall clock. Dropped frames are counted.
-  Sequence audio is mixed in `render::audio`, and clip audio effects run on `audio-dsp` via
-  `render::audio_fx`.
+  Sequence audio goes through the mixer graph (`render::mixer`, §5.1); clip audio effects run on
+  `audio-dsp` via `render::audio_fx`.
+
+### 5.1 Audio mixer
+
+```text
+clip: gain → clip effects → Volume / Channel Volume / Panner (clip keyframes, media time)
+      → audio transitions → summed per track                           render::audio::track_input
+track / submix strip:  input map, mono fold → pre-fader inserts → pre-fader sends → mute
+      → fader (volume) → meter → post-fader inserts → post-fader sends → pan / balance → output
+Mix:  bus sum → pre-fader inserts → fader → meter → post-fader inserts → out    render::mixer
+```
+
+- **Model** (`project::mixer`). Every audio track, submix and the Mix has a `MixerStrip`. Static
+  values stay in `Track::volume_db`, `pan`, `muted` and the send/effect parameters; automation is
+  keyframes in sequence ticks: lanes `volume`, `pan`, `mute` (hold), `send.<i>.level` in
+  `MixerStrip::lanes`, and insert parameters (`fx.<slot>.<param>`) in the effect's own keyframes.
+  Up to 5 inserts (`EffectInstance::post_fader` picks the side) and 5 sends per strip. Submixes feed
+  the Mix or a submix after them (no feedback). All fields have serde defaults, so older projects
+  load unchanged.
+- **Graph** (`render::mixer::mix_graph`). Lanes are evaluated per sample; effect parameters update
+  on an absolute 64-sample grid, so the output does not depend on how callers cut the timeline into
+  requests (export batches and device callbacks give identical samples). Inserts that report
+  latency delay their strip; each route into a bus gets a compensation delay and the graph is read
+  ahead by its total latency. Graph state (DSP, delay lines) is cached per structure and continued by
+  sequential readers; other requests start fresh with a pre-roll (effect tails, ≤ 3 s). Tracks run
+  in parallel (rayon), buses in order. Mono tracks pan with the −3 dB constant-power law; stereo
+  tracks and sends use balance. Solo keeps soloed and solo-safe strips plus everything feeding them
+  or fed by them. 24 tracks × (EQ + Dynamics + Studio Reverb) + a compressed submix renders at
+  ~6× realtime on one core (release).
+- **Automation modes** (Premiere semantics). Off ignores lanes; Read plays them; Latch records from
+  the first touch and holds the last value until playback stops; Touch records while held and ramps
+  back to the existing automation over the **automatch time** (Preferences ▸ Audio, 1 s); Write
+  records every control from playback start (then switches to Touch unless "Switch to Touch after
+  Write" is off).
+- **Recording** (`engine::mixer`). Playback start runs `mixer.recordStart`, stop runs
+  `mixer.recordStop`. Fader and knob drags send `mixer.touch` (value, playhead) while held and
+  `mixer.release` when let go. Held values go to `render::mixer::LiveMix`, which the playing mix
+  reads, so moves are heard at once. At stop each gesture stream is thinned (linear keyframe
+  thinning, optional minimum time interval) and written over its time range as one undo step,
+  with boundary keyframes that keep the automation outside the range unchanged.
+- **Live state.** `PreviewStore::live` (`LiveMix`) also carries per-strip meter peaks posted by the
+  mix (Track Mixer and Audio Meters read them) and the newest project snapshot, which the audio
+  callback uses, so edits made during playback are heard.
 
 ## 6. Export jobs (`filmcraft-export`)
 

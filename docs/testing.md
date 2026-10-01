@@ -20,6 +20,7 @@ FILMCRAFT_REQUIRE_ORACLES=1 cargo test --workspace   # CI: missing ffmpeg fails 
 | Golden images | `crates/golden/tests/golden.rs` | CPU renders vs committed PNGs; GPU vs CPU on the same scenes (§3) |
 | Engine / command | `crates/engine/src/tests.rs` | run commands on the demo project, assert the sequence, undo/redo, disabled cases |
 | Render | `crates/render/src/tests.rs` | compositing, opacity, Motion, cross dissolve midpoint, ½-res vs full, GPU plan vs reference, audio mix, audio-effect continuity |
+| Mixer | `crates/render/src/mixer_tests.rs`, `crates/engine/src/mixer_tests.rs` | sample-exact fader gain and pan laws, automation at block boundaries (bit-identical however requests are cut), solo/mute/solo-safe, sends and submix routing, latency-compensation alignment, render-vs-playback identity, Touch ramp-back, recorder modes (Latch/Touch/Write), thinning, Audio Gain, transition curves; `perf_24_tracks_3_effects_realtime_factor` prints the realtime factor |
 | Oracle | `crates/*/tests/*oracle*.rs`, `conformance.rs` | compare with ffmpeg/ffprobe (§2) |
 | Robustness / fuzz | `*/tests/robustness.rs`, `*/tests/fuzz.rs` | seeded mutation and truncation of real and synthetic files; nothing may panic |
 | Performance | `*/tests/perf.rs` (`#[ignore]`) | §5 |
@@ -126,6 +127,12 @@ next frame by the app's own `raw_input_hook`, so clicks by automation id work he
 | `playback_toggle_and_stop` | `playback.toggle` / `ui.playback stop` and `ui.inspect` playback state |
 | `clicking_a_tool_button_by_automation_id` | `ui.click {id: "tools.Razor"}` changes the tool (real egui input path) |
 | `unknown_methods_and_commands_fail_cleanly` | errors come back as `{"ok": false}` |
+
+`crates/ui-egui/tests/mixer_ui.rs` drives the Audio Track Mixer, Audio Clip Mixer, timeline track
+keyframes and the Audio Gain dialog by automation id and with multi-frame pointer drags (press, move
+over several frames, release). With `FILMCRAFT_UI_SNAPSHOT_DIR=<dir>` it also renders the window
+offscreen through wgpu (`Harness::render`) and writes `mixer-*.png`; this works without a visible
+window (for example on a locked screen, where `ui.screenshot` cannot capture).
 
 Not covered headless: `ui.screenshot` (needs a real viewport), the wgpu monitor path (the harness
 runs the CPU texture path), audio output, and wall-clock playback advance (kittest frames do not
