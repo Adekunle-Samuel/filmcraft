@@ -2,7 +2,7 @@
 
 Progress toward feature parity with Adobe Premiere Pro, with estimates. Updated as milestones land.
 
-**Last updated:** 2026-09-30 (midday) · **Overall parity:** ~32% · **Code:** ~71k lines of Rust, 400+ tests
+**Last updated:** 2026-10-01 · **Overall parity:** ~40% · **Code:** ~106k lines of Rust in 30 crates, 724 tests
 
 ## Estimate to parity
 
@@ -44,9 +44,13 @@ Status: ✅ done · 🟡 in progress · ⬜ not started. Estimates are remaining
 
 ## Running now
 
-- Interchange (`crates/interchange`): CMX 3600 EDL, FCP7 XML, FCPXML, OTIO import and export
+- Playback: fix a UI hang after preview renders, then a load-robust playback benchmark and profiling (target: 3 × 1080p streams with 0 dropped frames)
+- Text engine (shaping, layout), Type tool, graphics clips and Essential Graphics (M10.1–2)
+- Audio Track Mixer: track effects, sends, submixes, automation modes (M7.2)
 
 ## Log
+
+- **2026-10-01:** recovered from a machine crash with no lost work. Merged: VP9 decoder (profiles 0–3, bit-exact, WebM/MKV/MP4), Opus decoder (RFC 8251 range-exact; WebM/MKV/MP4), captions (SRT/VTT/SCC, burn-in), render bar + render previews, project schema versioning + atomic saves + auto-save + crash-recovery journal, test infrastructure (golden images, loudness oracle vs ffmpeg, headless scripted UI tests; fixed a GPU stale-texture bug), public contributor docs and licence files.
 
 - **2026-09-30 (evening):** Opus decoder (RFC 6716/8251, range-exact on every conformance vector, ~80–110× realtime 48 kHz stereo) wired into WebM/MKV and MP4 import.
 - **2026-09-30 (afternoon):** Matroska/WebM import; LUFS meters; clip audio effects on the DSP crate.
