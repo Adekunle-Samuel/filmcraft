@@ -79,6 +79,9 @@ pub struct Playback {
     pub meter: frames::PlaybackMeter,
 }
 
+/// How long `ui.screenshot` waits for the window to present the frame.
+const SCREENSHOT_TIMEOUT_S: f64 = 10.0;
+
 pub struct FilmcraftApp {
     pub session: Session,
     pub ui: UiState,
@@ -101,7 +104,8 @@ pub struct FilmcraftApp {
     pub(crate) loudness: Option<(filmcraft_audio_dsp::LoudnessMeter, i64)>,
     /// Status message last shown and when it first appeared (messages expire after a few seconds).
     status_seen: (String, f64),
-    pending_screenshots: Vec<(u64, Option<String>, Option<[f32; 4]>, Sender<Value>)>,
+    /// Screenshots waiting for their frame: (token, path, crop, reply, give-up time).
+    pending_screenshots: Vec<(u64, Option<String>, Option<[f32; 4]>, Sender<Value>, f64)>,
     queued_screenshots: Vec<(u64, f64, u32)>,
     input_waiters: Vec<Sender<Value>>,
     next_token: u64,
@@ -576,7 +580,7 @@ impl FilmcraftApp {
                     self.next_token += 1;
                     let settle = ctx.input(|i| i.time) + 0.25;
                     self.queued_screenshots.push((token, settle, 0));
-                    self.pending_screenshots.push((token, path, crop, reply));
+                    self.pending_screenshots.push((token, path, crop, reply, settle + SCREENSHOT_TIMEOUT_S));
                 }
             }
         }
@@ -596,8 +600,20 @@ impl FilmcraftApp {
                 true
             }
         });
-        if any || !self.pending_screenshots.is_empty() {
+        // A hidden window (or a sleeping display) never presents, so its screenshot never
+        // arrives: give up instead of waiting (and repainting) forever.
+        self.pending_screenshots.retain(|(.., reply, deadline)| {
+            if now > *deadline {
+                let _ = reply.send(json!({"ok": false, "error": "no frame was presented (window hidden or display asleep)"}));
+                false
+            } else {
+                true
+            }
+        });
+        if any {
             ctx.request_repaint();
+        } else if !self.pending_screenshots.is_empty() {
+            ctx.request_repaint_after(std::time::Duration::from_millis(16));
         }
     }
 
@@ -620,7 +636,7 @@ impl FilmcraftApp {
         });
         for (token, image) in events {
             if let Some(i) = self.pending_screenshots.iter().position(|(t, ..)| *t == token) {
-                let (_, path, crop, reply) = self.pending_screenshots.remove(i);
+                let (_, path, crop, reply, _) = self.pending_screenshots.remove(i);
                 let r = control::save_screenshot(ctx, &image, path.as_deref(), crop);
                 let _ = reply.send(r);
             }

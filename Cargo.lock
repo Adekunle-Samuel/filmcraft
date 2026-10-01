@@ -1296,6 +1296,7 @@ dependencies = [
  "filmcraft-ui-egui",
  "log",
  "muda",
+ "objc2-foundation 0.3.2",
  "rfd",
  "serde_json",
 ]

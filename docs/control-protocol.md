@@ -2,7 +2,9 @@
 
 ## Desktop control channel
 `filmcraft --control 9876` (or `FILMCRAFT_CONTROL_PORT`) listens on `127.0.0.1:<port>` (loopback only).
-One JSON request per line → one JSON reply per line:
+One JSON request per line → one JSON reply per line. The app opts out of macOS App Nap
+(`apps/filmcraft/src/app_nap.rs`): a hidden window would otherwise drop the whole process to
+background priority, and on a busy machine it would stop answering.
 
 ```json
 {"id": 1, "method": "engine.execute", "params": {"command": "sequence.addEdit", "params": {"seconds": 3}}}
@@ -25,7 +27,7 @@ Methods (handlers in `crates/ui-egui/src/control.rs`):
 | `ui.key` / `ui.type` | `{key}` (`Cmd+K`, `Space`…) / `{text}` | keyboard |
 | `ui.timeline.hit` / `ui.timeline.locate` | `{x,y}` / `{clip, edge?}` | timeline hit-testing |
 | `ui.playback` | `{action: play|stop|toggle, speed?}` | |
-| `ui.screenshot` | `{path?, panel?}` | PNG of the window or one panel |
+| `ui.screenshot` | `{path?, panel?}` | PNG of the window or one panel; fails after 10 s when no frame is presented (window hidden, display asleep) |
 | `ui.resize`, `ui.focus`, `app.quit` | | |
 
 Element ids are stable, e.g. `timeline.clip.<id>`, `timeline.track.V1.lock`, `tools.Razor`,
