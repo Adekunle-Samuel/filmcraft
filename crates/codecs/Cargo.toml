@@ -21,6 +21,7 @@ filmcraft-h264 = { workspace = true }
 filmcraft-hevc = { workspace = true }
 filmcraft-prores = { workspace = true }
 filmcraft-aac = { workspace = true }
+filmcraft-opus = { workspace = true }
 thiserror = { workspace = true }
 log = { workspace = true }
 image = { version = "0.25", default-features = false, features = ["jpeg"] }

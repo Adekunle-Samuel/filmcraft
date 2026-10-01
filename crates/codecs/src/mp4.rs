@@ -1,4 +1,8 @@
 //! MP4/MOV media source with GOP-aware random access (see [`crate::gop`]).
+//!
+//! Opus (`Opus` sample entry + `dOps`): always 48 kHz output. Pre-skip is removed by the edit list
+//! (`media_time` = pre-skip), or applied from `dOps` when a file has no edit list; random access
+//! decodes [`crate::audio::OPUS_PRE_ROLL`] of preceding packets first (≥ the 80 ms `roll` distance).
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -32,6 +36,10 @@ pub struct Mp4Source {
     audio: Mutex<AudioState>,
     /// Cumulative sample start frames for the audio track (for packet lookup).
     audio_starts: Vec<i64>,
+    /// Presentation offset of the audio track in its timescale (edit list, or Opus pre-skip).
+    audio_offset: i64,
+    /// Decoder pre-roll after a seek, in audio track timescale units (0: prime with one packet).
+    audio_preroll: i64,
 }
 
 pub fn sniff(b: &[u8]) -> bool {
@@ -120,6 +128,7 @@ impl Mp4Source {
                     None,
                 ),
                 CodecConfig::Pcm(p) => (p.sample_rate as u32, p.channels, Some(p.bits as u32)),
+                CodecConfig::Opus(o) => (crate::audio::OPUS_RATE, (o.output_channels as u32).max(1), None),
                 _ => (if ap.sample_rate > 0.0 { ap.sample_rate as u32 } else { t.timescale }, ap.channels.max(1), None),
             };
             AudioStreamInfo { sample_rate: rate.max(1), channels: ch.max(1), codec: codec_label(&entry.codec), bits_per_sample: bits }
@@ -163,6 +172,19 @@ impl Mp4Source {
                     .collect()
             })
             .unwrap_or_default();
+        let (audio_offset, audio_preroll) = atrack
+            .map(|i| {
+                let t = &file.tracks[i];
+                let ts = t.timescale.max(1) as i64;
+                match &t.entries[0].codec {
+                    CodecConfig::Opus(o) => {
+                        let off = if t.edit_offset != 0 { t.edit_offset } else { -(o.pre_skip as i64) * ts / 48_000 };
+                        (off, (crate::audio::OPUS_PRE_ROLL as u64 * ts as u64).div_ceil(48_000) as i64)
+                    }
+                    _ => (t.edit_offset, 0),
+                }
+            })
+            .unwrap_or((0, 0));
         Ok(Self {
             info,
             bytes,
@@ -172,6 +194,8 @@ impl Mp4Source {
             video: GopCache::new(explicit_color),
             audio: Mutex::new(AudioState { decoder: None, packets: HashMap::new(), order: Vec::new(), last_decoded: None }),
             audio_starts,
+            audio_offset,
+            audio_preroll,
         })
     }
 
@@ -199,14 +223,20 @@ impl Mp4Source {
                 if st.decoder.is_none() {
                     st.decoder = Some(PacketDecoder::for_isobmff(c, self.info.audio.as_ref().map_or(48_000, |a| a.sample_rate))?);
                 }
-                // Non-sequential access: reset and prime with the previous packet (codec pre-roll).
+                // Non-sequential access: reset and prime with the preceding packets (codec pre-roll:
+                // one packet, or `OPUS_PRE_ROLL` worth for Opus).
                 if st.last_decoded.is_none_or(|l| l + 1 != i) {
                     let d = st.decoder.as_mut().expect("decoder");
                     d.reset();
-                    if i > 0
-                        && let Ok(prev) = self.read(ti, i - 1)
-                    {
-                        let _ = d.decode(&prev, 0);
+                    let from = if self.audio_preroll > 0 {
+                        self.audio_starts.partition_point(|&x| x <= self.audio_starts[i] - self.audio_preroll).saturating_sub(1)
+                    } else {
+                        i.saturating_sub(1)
+                    };
+                    for j in from..i {
+                        if let Ok(prev) = self.read(ti, j) {
+                            let _ = d.decode(&prev, 0);
+                        }
                     }
                 }
                 let r = st.decoder.as_mut().expect("decoder").decode(&data, self.audio_starts[i].max(0) as u64);
@@ -273,7 +303,7 @@ impl MediaSource for Mp4Source {
         let ch = ainfo.channels.max(1) as usize;
         // Map the requested window to source samples (edit list offset applied: presentation = pts + edit_offset).
         let ratio = src_rate as f64 / sample_rate as f64;
-        let s0 = (start as f64 * ratio).floor() as i64 - track.edit_offset * src_rate as i64 / track.timescale.max(1) as i64;
+        let s0 = (start as f64 * ratio).floor() as i64 - self.audio_offset * src_rate as i64 / track.timescale.max(1) as i64;
         let need = (frames as f64 * ratio).ceil() as i64 + 2;
         // Samples-per-unit: the track timescale is usually the sample rate for audio.
         let unit = src_rate as f64 / track.timescale.max(1) as f64;
@@ -356,6 +386,7 @@ fn codec_label(c: &CodecConfig) -> String {
             }
         }
         CodecConfig::Pcm(p) => format!("PCM {}-bit{}", p.bits, if p.float { " float" } else { "" }),
+        CodecConfig::Opus(_) => "Opus".into(),
         other => other.name().to_string(),
     }
 }

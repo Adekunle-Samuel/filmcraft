@@ -1361,6 +1361,7 @@ dependencies = [
  "filmcraft-isobmff",
  "filmcraft-matroska",
  "filmcraft-media",
+ "filmcraft-opus",
  "filmcraft-prores",
  "filmcraft-time",
  "image",
@@ -1535,6 +1536,10 @@ dependencies = [
  "serde",
  "thiserror 2.0.21",
 ]
+
+[[package]]
+name = "filmcraft-opus"
+version = "0.1.0"
 
 [[package]]
 name = "filmcraft-project"

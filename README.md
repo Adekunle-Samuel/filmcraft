@@ -103,7 +103,7 @@ FilmCraft is a non-linear editor for people who know Premiere: the same panels, 
 
 ## Formats and codecs
 
-No FFmpeg inside. The video codecs, AAC and the containers are our own Rust code, implemented from the public ITU-T, ISO and IETF specifications and tested frame by frame against ffmpeg as an external oracle.
+No FFmpeg inside. The video codecs, AAC, Opus and the containers are our own Rust code, implemented from the public ITU-T, ISO and IETF specifications and tested frame by frame against ffmpeg as an external oracle.
 
 | | Decode | Encode | Notes |
 |---|:---:|:---:|---|
@@ -111,13 +111,14 @@ No FFmpeg inside. The video codecs, AAC and the containers are our own Rust code
 | **HEVC / H.265** | ✓ | | Main and Main 10, bit-exact on 41 streams (tiles, WPP, PCM, long-term references), about 225 fps at 1080p |
 | **Apple ProRes** | ✓ | ✓ | Decodes 422 Proxy to 4444 XQ; export writes 422 HQ |
 | **AAC-LC** | ✓ | ✓ | |
+| **Opus** | ✓ | | SILK, CELT, hybrid and multistream surround; range-exact on every RFC 8251 conformance vector; in WebM/Matroska and MP4 |
 | **MJPEG, PCM** | ✓ | ✓ | |
 | **MP3, FLAC, ALAC, Vorbis** | ✓ | | Via the [symphonia](https://github.com/pdeljanov/Symphonia) crate (MPL-2.0) for now, to be replaced by our own |
 | **MP4 / MOV** | ✓ | ✓ | Fragmented MP4, edit lists, timecode tracks |
 | **Matroska / WebM** | ✓ | | Lacing, Cues, header stripping, HDR colour metadata |
 | **Stills** | ✓ | ✓ | Import PNG, JPEG, GIF, WebP, TIFF and BMP; export PNG sequences and animated GIF |
 
-VP9, Opus, AV1, DNxHR and MXF are next ([roadmap](ROADMAP.md)).
+VP9, AV1, DNxHR and MXF are next ([roadmap](ROADMAP.md)).
 
 <br>
 
