@@ -1,6 +1,6 @@
 //! Headless UI tests of media management: the Link Media dialog opening for a project whose media
 //! moved (search a folder, link, the others follow), Project panel offline / proxy badges, the
-//! monitors' Toggle Proxies button and the Create Proxies dialog.
+//! monitors' Toggle Proxies button, Create Proxies and Project Manager dialogs.
 //!
 //! Set `FILMCRAFT_UI_SNAPSHOT_DIR=<dir>` to also render the window offscreen with wgpu and write PNGs
 //! there (`media-*.png`).
@@ -246,5 +246,15 @@ fn offline_badges_proxy_toggle_and_dialogs() {
     assert_eq!(d.ids("project.item.").into_iter().filter(|i| i.ends_with(".proxy")).count(), 2, "proxy badges");
     d.frames(20);
     d.snapshot("media-proxies-on");
+    // Project Manager dialog: calculate the size estimate
+    d.ok("ui.menu.invoke", json!({"id": "file.projectManager"}));
+    d.frames(2);
+    d.app().ui.project_manager.as_mut().unwrap().destination = root.join("Collected").to_string_lossy().into_owned();
+    d.click("pm.calculate");
+    let est = d.app().ui.project_manager.as_ref().unwrap().estimate;
+    assert!(est.is_some_and(|(a, b, n)| a > 0 && b == a && n == 2), "{est:?}");
+    d.snapshot("media-project-manager");
+    d.click("pm.ok");
+    assert!(d.app().ui.project_manager.is_none());
     let _ = std::fs::remove_dir_all(&root);
 }

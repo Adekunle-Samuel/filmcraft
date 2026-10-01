@@ -17,6 +17,7 @@ pub mod interchange;
 pub mod media_pool;
 pub mod mixer;
 pub mod previews;
+pub mod project_manager;
 pub mod proxies;
 pub mod relink;
 pub mod shortcut_presets;
@@ -610,6 +611,8 @@ mod media_test_util;
 mod mixer_tests;
 #[cfg(test)]
 mod previews_tests;
+#[cfg(test)]
+mod project_manager_tests;
 #[cfg(test)]
 mod proxies_tests;
 #[cfg(test)]

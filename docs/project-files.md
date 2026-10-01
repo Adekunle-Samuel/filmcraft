@@ -292,3 +292,28 @@ destination?, preset?}` (Project Settings ▸ Ingest) acts on every `file.import
 
 `file.import` reports this under `ingest`.
 
+## Project Manager
+
+`file.projectManager` (File ▸ Project Manager…) makes a self-contained copy of a project:
+
+```json
+{"destination": "/path/Folder", "mode": "collect|consolidate", "sequences": [id], "excludeUnused": true,
+ "handles": 30, "preset": "prores_lt", "includeProxies": true, "includePreviews": false,
+ "projectName": "…", "dryRun": false, "overwrite": false, "wait": false}
+```
+
+- **collect** copies every media file that the chosen sequences use (following nested sequences and
+  subclips), plus their proxies and render previews if asked.
+- **consolidate** writes only the used range of each movie or audio file, plus `handles` frames on
+  each side, with a transcode preset (`prores_lt`, `prores_hq`, `h264`). It then re-bases the clips'
+  media time, so every edit, keyframe and marker stays in place. Stills are copied.
+- **excludeUnused** drops media items and sequences that the chosen sequences don't use.
+- **dryRun** returns the plan and the disk-space estimate (`originalBytes`, `resultBytes`, `files`)
+  without writing anything.
+
+The copy runs as a job. The project file (`<destination>/<name>.fcproj`) is written last, with the
+new paths and fingerprints, so it opens with no missing media.
+
+Dialog ids: `pm.seq.<id>`, `pm.mode.<collect|consolidate>`, `pm.preset.<id>`, `pm.excludeUnused`,
+`pm.handles`, `pm.includeProxies`, `pm.includePreviews`, `pm.destination`, `pm.browse`,
+`pm.calculate`, `pm.sizes`, `pm.ok`, `pm.cancel`.

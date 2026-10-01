@@ -298,6 +298,9 @@ pub struct UiState {
     /// Create Proxies dialog (open when Some).
     #[serde(default)]
     pub create_proxies: Option<ProxyDraft>,
+    /// Project Manager dialog (open when Some).
+    #[serde(default)]
+    pub project_manager: Option<ProjectManagerDraft>,
     /// Make Offline dialog: Some(delete files?) while open.
     #[serde(default)]
     pub make_offline: Option<bool>,
@@ -358,6 +361,41 @@ pub struct ProxyDraft {
     pub preset: String,
     /// Empty = a Proxies folder next to the original media.
     pub destination: String,
+}
+
+/// File ▸ Project Manager….
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ProjectManagerDraft {
+    pub sequences: Vec<u64>,
+    /// "collect" | "consolidate"
+    pub mode: String,
+    pub preset: String,
+    pub exclude_unused: bool,
+    pub handles: u32,
+    pub include_proxies: bool,
+    pub include_previews: bool,
+    pub destination: String,
+    /// Last dry-run estimate: (original bytes, resulting bytes, files).
+    pub estimate: Option<(u64, u64, usize)>,
+    pub message: String,
+}
+
+impl Default for ProjectManagerDraft {
+    fn default() -> Self {
+        Self {
+            sequences: vec![],
+            mode: "collect".into(),
+            preset: "prores_lt".into(),
+            exclude_unused: true,
+            handles: 30,
+            include_proxies: true,
+            include_previews: false,
+            destination: String::new(),
+            estimate: None,
+            message: String::new(),
+        }
+    }
 }
 
 /// The Audio Gain dialog (Clip ▸ Audio Gain…, G).
@@ -424,6 +462,7 @@ impl Default for UiState {
             pen_points: vec![],
             link_media: None,
             create_proxies: None,
+            project_manager: None,
             make_offline: None,
         }
     }

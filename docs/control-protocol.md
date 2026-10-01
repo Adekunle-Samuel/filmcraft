@@ -49,8 +49,8 @@ Project files, auto-save, crash recovery and preferences commands (`file.recover
 automation ids are listed in [project-files.md](project-files.md). That file also lists the media
 management commands and dialog ids: offline media and relinking (`media.findMissing`,
 `media.relink`, `media.autoRelink`, `media.search`, `media.makeOffline`, `media.status`, `linkMedia.*`),
-proxies (`media.createProxies`, `media.attachProxies`, `media.toggleProxies`, `proxies.*`) and ingest
-(`project.ingestSettings`).
+proxies (`media.createProxies`, `media.attachProxies`, `media.toggleProxies`, `proxies.*`), ingest
+(`project.ingestSettings`) and the Project Manager (`file.projectManager`, `pm.*`).
 
 **Trim mode** (`crates/engine/src/trim.rs`): `trim.selectEditPoint` / `trim.selectNearest` enter trim
 mode (the Program monitor becomes the Trim Monitor, ids `trimMonitor.*`); `trim.monitor` returns what
