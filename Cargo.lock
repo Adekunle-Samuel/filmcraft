@@ -1586,6 +1586,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "filmcraft-vp9"
+version = "0.1.0"
+dependencies = [
+ "filmcraft-bitstream",
+ "rayon",
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "find-msvc-tools"
 version = "0.1.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
