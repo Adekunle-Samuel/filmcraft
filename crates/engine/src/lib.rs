@@ -19,8 +19,8 @@ pub mod interchange;
 pub mod masks;
 pub mod media_pool;
 pub mod mixer;
-pub mod presets;
 pub mod multicam;
+pub mod presets;
 pub mod previews;
 pub mod project_manager;
 pub mod proxies;
@@ -656,9 +656,9 @@ mod media_test_util;
 #[cfg(test)]
 mod mixer_tests;
 #[cfg(test)]
-mod presets_tests;
-#[cfg(test)]
 mod multicam_tests;
+#[cfg(test)]
+mod presets_tests;
 #[cfg(test)]
 mod previews_tests;
 #[cfg(test)]
