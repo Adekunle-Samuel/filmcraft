@@ -275,6 +275,22 @@ pub struct UiState {
     /// Preferences ▸ Playback: play the rendered range when a preview render finishes.
     #[serde(default = "yes")]
     pub play_after_render: bool,
+    /// On-monitor text editing (Type tool / double-click on a text layer).
+    #[serde(default)]
+    pub gfx_edit: Option<GfxEdit>,
+    /// Pen tool: path points placed so far (sequence pixels).
+    #[serde(default)]
+    pub pen_points: Vec<[f64; 2]>,
+}
+
+/// The text layer being edited on the Program monitor: caret and selection anchor are byte
+/// offsets into the layer's text.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct GfxEdit {
+    pub clip: u64,
+    pub layer: usize,
+    pub caret: usize,
+    pub anchor: usize,
 }
 
 fn captions_tab() -> String {
@@ -313,6 +329,8 @@ impl Default for UiState {
             text_tab: captions_tab(),
             caption_search: String::new(),
             play_after_render: true,
+            gfx_edit: None,
+            pen_points: vec![],
         }
     }
 }

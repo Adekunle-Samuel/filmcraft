@@ -106,7 +106,7 @@ the boundary.
 Project
 ├─ root: Bin                         tree of bins
 ├─ items: map ItemId → ProjectItem   flat
-│    kind: Media(MediaClip) | Sequence(Sequence) | Subclip{..} | AdjustmentLayer{..}
+│    kind: Media(MediaClip) | Sequence(Sequence) | Subclip{..} | AdjustmentLayer{..} | Graphic{..}
 └─ next_id
 
 Sequence
@@ -125,6 +125,8 @@ EffectInstance
 └─ effect id, enabled, params: id → constant value or keyframe track
 ```
 
+- **Graphic clips** ([graphics.md](graphics.md)) reference a `Graphic` canvas item; their text and
+  shape layers are hidden `graphic_text` / `graphic_shape` effect instances on the track item.
 - Everything is plain serde data. `Sequence::check()` validates the invariants (no overlaps, unique
   ids), and the engine runs it after every sequence edit.
 - Timeline positions are sequence ticks; `source_in` and keyframes are in media time, so trims and

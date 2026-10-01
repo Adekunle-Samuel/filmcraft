@@ -30,4 +30,4 @@ log = { workspace = true }
 rayon = { workspace = true }
 
 [dev-dependencies]
-egui_kittest = { workspace = true, features = ["eframe"] }
+egui_kittest = { workspace = true, features = ["eframe", "wgpu"] }
