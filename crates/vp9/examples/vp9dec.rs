@@ -7,7 +7,8 @@ fn main() {
     let args: Vec<String> = std::env::args().collect();
     let data = std::fs::read(&args[1]).expect("read input");
     let mut out = args.get(2).map(|p| std::io::BufWriter::new(std::fs::File::create(p).expect("create output")));
-    let mut dec = filmcraft_vp9::Decoder::new();
+    let threads = std::env::var("VP9_THREADS").ok().and_then(|s| s.parse().ok()).unwrap_or(0);
+    let mut dec = if threads > 0 { filmcraft_vp9::Decoder::with_threads(threads) } else { filmcraft_vp9::Decoder::new() };
     let hl = u16::from_le_bytes([data[6], data[7]]) as usize;
     let mut p = hl;
     let mut i = 0i64;

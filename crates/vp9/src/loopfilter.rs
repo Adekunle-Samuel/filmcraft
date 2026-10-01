@@ -148,20 +148,22 @@ fn filter_sb_plane(v: &mut PlaneView, mi: &MiGrid, f: &LfFrame, plane: usize, pa
 }
 
 /// Sample filtering process (8.8.5) at `pos` (the q0 sample), samples across the edge `step`
-/// apart.
+/// apart. The samples are gathered into `v` (`v[8 + k]` = sample at offset k) and only modified
+/// samples are written back.
 #[allow(clippy::too_many_arguments)]
 #[inline]
 fn filter_sample(d: &mut [u16], pos: isize, step: isize, limit: i32, blimit: i32, thresh: i32, filter_size: u8, bit_depth: u8) {
-    let at = |k: isize| (pos + k * step) as usize;
-    let s = |d: &[u16], k: isize| d[at(k)] as i32;
-    let q0 = s(d, 0);
-    let q1 = s(d, 1);
-    let q2 = s(d, 2);
-    let q3 = s(d, 3);
-    let p0 = s(d, -1);
-    let p1 = s(d, -2);
-    let p2 = s(d, -3);
-    let p3 = s(d, -4);
+    let reach: usize = if filter_size == TX_16X16 { 8 } else { 4 };
+    let step = step as usize;
+    let start = pos as usize - reach * step;
+    let mut v = [0i32; 16];
+    {
+        let span = &d[start..start + (2 * reach - 1) * step + 1];
+        for k in 0..2 * reach {
+            v[8 - reach + k] = span[k * step] as i32;
+        }
+    }
+    let (p3, p2, p1, p0, q0, q1, q2, q3) = (v[4], v[5], v[6], v[7], v[8], v[9], v[10], v[11]);
     let shift = bit_depth as u32 - 8;
     // Filter mask process (8.8.5.1).
     let limit_bd = limit << shift;
@@ -186,71 +188,57 @@ fn filter_sample(d: &mut [u16], pos: isize, step: isize, limit: i32, blimit: i32
         && (q2 - q0).abs() <= one
         && (p3 - p0).abs() <= one
         && (q3 - q0).abs() <= one;
-    if filter_size == TX_4X4 || !flat {
-        narrow_filter(d, pos, step, hev, bit_depth, p1, p0, q0, q1);
-        return;
-    }
-    let flat2 = filter_size >= TX_16X16 && {
-        let mut ok = true;
-        for k in 4..8 {
-            if (s(d, -(k + 1)) - p0).abs() > one || (s(d, k) - q0).abs() > one {
-                ok = false;
-                break;
-            }
-        }
-        ok
-    };
-    if filter_size == TX_8X8 || !flat2 {
-        wide_filter(d, pos, step, 3);
+    let (lo, hi) = if filter_size == TX_4X4 || !flat {
+        narrow_filter(&mut v, hev, bit_depth);
+        (6, 10)
     } else {
-        wide_filter(d, pos, step, 4);
+        let flat2 = filter_size >= TX_16X16 && (0..4).all(|k| (v[3 - k] - p0).abs() <= one && (v[12 + k] - q0).abs() <= one);
+        if flat2 {
+            wide_filter(&mut v, 4);
+            (1, 15)
+        } else {
+            wide_filter(&mut v, 3);
+            (5, 11)
+        }
+    };
+    for k in lo..hi {
+        d[(pos + (k as isize - 8) * step as isize) as usize] = v[k] as u16;
     }
 }
 
-/// Narrow filter process (8.8.5.2).
-#[allow(clippy::too_many_arguments)]
+/// Narrow filter process (8.8.5.2) on gathered samples.
 #[inline]
-fn narrow_filter(d: &mut [u16], pos: isize, step: isize, hev: bool, bit_depth: u8, p1: i32, p0: i32, q0: i32, q1: i32) {
+fn narrow_filter(v: &mut [i32; 16], hev: bool, bit_depth: u8) {
     let shift = bit_depth as u32 - 8;
     let lo = -(1 << (bit_depth - 1));
     let hi = (1 << (bit_depth - 1)) - 1;
-    let c = |v: i32| v.clamp(lo, hi);
+    let c = |x: i32| x.clamp(lo, hi);
     let off = 0x80 << shift;
-    let (ps1, ps0, qs0, qs1) = (p1 - off, p0 - off, q0 - off, q1 - off);
+    let (ps1, ps0, qs0, qs1) = (v[6] - off, v[7] - off, v[8] - off, v[9] - off);
     let mut filter = if hev { c(ps1 - qs1) } else { 0 };
     filter = c(filter + 3 * (qs0 - ps0));
     let filter1 = c(filter + 4) >> 3;
     let filter2 = c(filter + 3) >> 3;
-    let at = |k: isize| (pos + k * step) as usize;
-    d[at(0)] = (c(qs0 - filter1) + off) as u16;
-    d[at(-1)] = (c(ps0 + filter2) + off) as u16;
+    v[8] = c(qs0 - filter1) + off;
+    v[7] = c(ps0 + filter2) + off;
     if !hev {
         let f = (filter1 + 1) >> 1;
-        d[at(1)] = (c(qs1 - f) + off) as u16;
-        d[at(-2)] = (c(ps1 + f) + off) as u16;
+        v[9] = c(qs1 - f) + off;
+        v[6] = c(ps1 + f) + off;
     }
 }
 
-/// Wide filter process (8.8.5.3) with 2^log2 taps.
+/// Wide filter process (8.8.5.3) with 2^log2 taps on gathered samples; the sum over j of the
+/// specification is computed as a sliding window over the clamped indices (identical results).
 #[inline]
-fn wide_filter(d: &mut [u16], pos: isize, step: isize, log2: u32) {
+fn wide_filter(v: &mut [i32; 16], log2: u32) {
     let n = (1isize << (log2 - 1)) - 1;
-    let at = |k: isize| (pos + k * step) as usize;
-    let mut src = [0i32; 16];
-    // src[k + 8] = sample at offset k, k in -8..8.
-    for k in -(n + 1)..=n {
-        src[(k + 8) as usize] = d[at(k)] as i32;
-    }
-    let mut f = [0i32; 16];
+    let src = *v;
+    let s = |k: isize| src[(k.clamp(-(n + 1), n) + 8) as usize];
+    let mut sum: i32 = (-n..=n).map(|j| s(-n + j)).sum();
+    let round = 1i32 << (log2 - 1);
     for i in -n..n {
-        let mut t = src[(i + 8) as usize];
-        for j in -n..=n {
-            let p = (i + j).clamp(-(n + 1), n);
-            t += src[(p + 8) as usize];
-        }
-        f[(i + 8) as usize] = (t + (1 << (log2 - 1))) >> log2;
-    }
-    for i in -n..n {
-        d[at(i)] = f[(i + 8) as usize] as u16;
+        v[(i + 8) as usize] = (sum + s(i) + round) >> log2;
+        sum += s(i + 1 + n) - s(i - n);
     }
 }
