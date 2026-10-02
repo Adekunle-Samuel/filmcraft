@@ -360,17 +360,12 @@ pub struct UiState {
     pub show_scopes: bool,
     /// Transient status line shown in the footer.
     pub status: String,
-    /// Export mode: chosen format id and output path.
     /// Essential Sound sub-tab: "Edit" or "Browse".
     #[serde(default)]
     pub essential_sound_tab: String,
+    /// Export mode: settings, preset, destination, range, the Preset Manager and Quick Export.
     #[serde(default)]
-    pub export_format: String,
-    #[serde(default)]
-    pub export_path: String,
-    /// Export mode: burn visible caption tracks into the video.
-    #[serde(default)]
-    pub export_burn_captions: bool,
+    pub export: crate::panels::export_mode::ExportUi,
     /// Text panel: active tab ("Transcript" / "Captions" / "Graphics").
     #[serde(default = "captions_tab")]
     pub text_tab: String,
@@ -699,9 +694,7 @@ impl Default for UiState {
             show_scopes: false,
             status: String::new(),
             essential_sound_tab: "Edit".into(),
-            export_format: "h264".into(),
-            export_path: String::new(),
-            export_burn_captions: false,
+            export: Default::default(),
             text_tab: captions_tab(),
             caption_search: String::new(),
             transcript_sel: None,

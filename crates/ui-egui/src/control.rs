@@ -183,6 +183,22 @@ pub fn handle(app: &mut FilmcraftApp, ctx: &egui::Context, req: &ControlRequest)
                     Err(e) => return err(format!("`{k}`: {e}")),
                 }
             }
+            // Export mode state (`panels::export_mode::ExportUi`), deep-merged; `"preset": name`
+            // applies that preset's settings first
+            if let Some(patch) = p.get("export").filter(|v| v.is_object()) {
+                if let Some(name) = patch.get("preset").and_then(Value::as_str)
+                    && name != crate::panels::export_mode::CUSTOM
+                    && !crate::panels::export_mode::apply_preset(app, name)
+                {
+                    return err(format!("no export preset named `{name}`"));
+                }
+                let mut cur = serde_json::to_value(&app.ui.export).unwrap_or_default();
+                merge_json(&mut cur, patch);
+                match serde_json::from_value(cur) {
+                    Ok(e) => app.ui.export = e,
+                    Err(e) => return err(format!("`export`: {e}")),
+                }
+            }
             // fields of the open Edit / Clip / File dialog (`panels::clip_dialogs`)
             if let Some(m) = p.get("clipDialog").and_then(Value::as_object) {
                 let Some(d) = app.ui.clip_dialog.as_mut() else { return err("no clip dialog is open") };
@@ -451,6 +467,18 @@ pub fn encode_png(rgba: &[u8], w: u32, h: u32) -> Result<Vec<u8>, String> {
     chunk(&mut out, b"IDAT", &z);
     chunk(&mut out, b"IEND", &[]);
     Ok(out)
+}
+
+/// Deep-merge `patch` into `base` (objects merge, everything else replaces).
+fn merge_json(base: &mut Value, patch: &Value) {
+    match (base, patch) {
+        (Value::Object(b), Value::Object(p)) => {
+            for (k, v) in p {
+                merge_json(b.entry(k.clone()).or_insert(Value::Null), v);
+            }
+        }
+        (b, p) => *b = p.clone(),
+    }
 }
 
 #[cfg(test)]

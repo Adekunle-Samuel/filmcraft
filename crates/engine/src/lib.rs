@@ -15,6 +15,7 @@ pub mod color;
 pub mod commands;
 pub mod demo;
 pub mod essential_sound;
+pub mod export_tools;
 pub mod graphics;
 pub mod interchange;
 pub mod masks;
@@ -273,6 +274,10 @@ pub struct Session {
     pub scene_jobs: Vec<scene_detect::PendingScene>,
     /// Effect presets (built-in + the user's, persisted in the data directory).
     pub presets: presets::PresetLibrary,
+    /// Export presets (built-in + the user's, persisted in the data directory) and favourites.
+    pub export_presets: export_tools::ExportPresetLibrary,
+    /// The export queue (session state, not saved with the project).
+    pub export_queue: export_tools::ExportQueue,
     /// Exports run a batch at a time by [`Session::pump_jobs`] (hosts without threads: web).
     pub stepped: Vec<SteppedJob>,
     /// Speech recogniser for `transcript.generate` (None = the Whisper model named by the command,
@@ -357,6 +362,8 @@ impl Session {
             mask_jobs: Vec::new(),
             scene_jobs: Vec::new(),
             presets: Default::default(),
+            export_presets: Default::default(),
+            export_queue: Default::default(),
             stepped: Vec::new(),
             transcriber: None,
             exec_depth: 0,
@@ -366,6 +373,7 @@ impl Session {
     /// Advance stepped jobs ([`SteppedJob`]) for up to `budget` (at least one step). Returns
     /// whether jobs remain. A job whose media is still loading waits for the next call.
     pub fn pump_jobs(&mut self, budget: std::time::Duration) -> bool {
+        export_tools::pump_queue(self, false);
         let t0 = web_time::Instant::now();
         while let Some(j) = self.stepped.first_mut() {
             match j.exporter.step(&j.provider, &j.progress) {
@@ -387,7 +395,7 @@ impl Session {
                 break;
             }
         }
-        !self.stepped.is_empty()
+        !self.stepped.is_empty() || self.export_queue.is_active()
     }
 
     /// Start auto-save and the crash-recovery journal (native frontends). Loads preferences from
@@ -399,6 +407,7 @@ impl Session {
         self.media.set_use_proxies(self.prefs.media.enable_proxies);
         self.shortcuts.set_dir(&cfg.data_dir);
         self.presets.set_dir(&cfg.data_dir);
+        self.export_presets.set_dir(&cfg.data_dir);
         self.prefs_path = Some(prefs_path);
         self.apply_media_cache();
         self.persistence = Some(autosave::Persistence::start(&cfg, self.prefs.auto_save.clone())?);
@@ -442,6 +451,7 @@ impl Session {
         proxies::poll(self);
         masks::poll(self);
         scene_detect::poll(self);
+        export_tools::pump_queue(self, false);
         let Some(p) = self.persistence.as_mut() else { return };
         for ev in p.drain_events() {
             match ev {
@@ -749,6 +759,8 @@ mod clip_ops_tests;
 mod color_tests;
 #[cfg(test)]
 mod essential_sound_tests;
+#[cfg(test)]
+mod export_tests;
 #[cfg(test)]
 mod file_tests;
 #[cfg(test)]

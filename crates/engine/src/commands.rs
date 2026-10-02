@@ -807,9 +807,9 @@ fn build() -> Vec<CommandSpec> {
             "Media…",
             ["File", "Export"],
             None,
-            r#"{"path":str,"format":"h264|prores|dnxhr|mjpeg|png|gif|wav","scale":f32=1,"audio":bool=true,"quality":0..100,"burnCaptions":bool=false,"proresProfile":"proxy|lt|standard|hq"?,"dnxProfile":"lb|sq|hq|hqx"?}"#,
+            r#"{"path":str,"preset":str?,"settings":ExportSettings?,"format":"h264|prores|dnxhr|mjpeg|png|tiff|bmp|gif|wav|aiff"?,"width":u32?,"height":u32?,"fps":f64?,"bitrateKbps":u32?,"bitrateMode":"cbr|vbr1Pass|vbr2Pass"?,"scale":f32=1,"audio":bool=true,"quality":0..100,"burnCaptions":bool=false,"captionSidecar":"srt|vtt"?,"loudnessLufs":f64?,"proresProfile":"proxy|lt|standard|hq"?,"dnxProfile":"lb|sq|hq|hqx"?,"sequence":id?,"range":"entire|inOut|workArea|custom"?,"startSeconds":f64?,"endSeconds":f64?,"wait":bool=false}"#,
             has_seq,
-            |s, p| export_media(s, p)
+            crate::export_tools::export_media
         ),
         query!("jobs.list", "List Jobs", "{}", |s, _| Ok(Value::Array(s.jobs.iter().map(crate::Job::to_json).collect()))),
         query!("perf.stats", "Performance Statistics", "{}", |s, _| Ok(crate::perf::stats(s))),
@@ -2091,6 +2091,7 @@ fn build() -> Vec<CommandSpec> {
     v.extend(crate::project_manager::commands());
     v.extend(crate::masks::commands());
     v.extend(crate::presets::commands());
+    v.extend(crate::export_tools::commands());
     v.extend(crate::transcript::commands());
     // Edit ▸ Label ▸ <colour>, Paste Attributes, subclips, Video / Audio Options, Replace With Clip…
     // and their menu order
@@ -2099,68 +2100,6 @@ fn build() -> Vec<CommandSpec> {
     crate::project_tools::apply_layout(&mut v);
     v.shrink_to_fit();
     v
-}
-
-fn export_media(s: &mut Session, p: &Value) -> Result<Value> {
-    let seq = s.state.active_sequence.ok_or(EngineError::NoSequence)?;
-    let format = str_p(p, "format").and_then(filmcraft_export::Format::from_name).unwrap_or(filmcraft_export::Format::H264);
-    if !filmcraft_export::available(format) {
-        return Err(EngineError::Other(format!("{} export is not available (no encoder registered)", format.label())));
-    }
-    let path = str_p(p, "path").map(str::to_string).ok_or_else(|| bad("file.exportMedia", "need `path`"))?;
-    let settings = filmcraft_export::ExportSettings {
-        format,
-        path: path.clone(),
-        range: None,
-        scale: f64_p(p, "scale").unwrap_or(1.0) as f32,
-        include_audio: bool_p(p, "audio").unwrap_or(true),
-        quality: u64_p(p, "quality").unwrap_or(90).min(100) as u8,
-        bitrate_kbps: u64_p(p, "bitrateKbps").unwrap_or(20_000) as u32,
-        burn_captions: bool_p(p, "burnCaptions").unwrap_or(false),
-        part_of_batch: false,
-        prores_profile: str_p(p, "proresProfile").unwrap_or_default().to_string(),
-        dnx_profile: str_p(p, "dnxProfile").unwrap_or_default().to_string(),
-        sdr: bool_p(p, "sdr").unwrap_or(false),
-        sink: s.services.export_in_memory().then(|| {
-            let services = s.services.clone();
-            filmcraft_export::OutputSink(std::sync::Arc::new(move |path: &str, data: Vec<u8>| services.write_file(path, &data)))
-        }),
-        ..Default::default()
-    };
-    let id = s.jobs.len() as u64 + 1;
-    let job = crate::Job {
-        id,
-        label: format!("Export {}", std::path::Path::new(&path).file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or(path.clone())),
-        progress: Default::default(),
-        result: Default::default(),
-    };
-    let project = s.project.clone();
-    // Export always renders full-resolution media, whatever the proxy toggle says.
-    let provider = s.media.full_res_provider(project.clone(), s.services.clone());
-    let (prog, res) = (job.progress.clone(), job.result.clone());
-    let wait = bool_p(p, "wait").unwrap_or(false);
-    if cfg!(target_arch = "wasm32") && !wait && filmcraft_export::stepped(format) {
-        // No threads: the host advances the export between UI frames (`Session::pump_jobs`).
-        let mut exporter = filmcraft_export::Exporter::new(project, seq, &settings, &prog).map_err(|e| EngineError::Other(e.to_string()))?;
-        exporter.set_batch(1);
-        s.jobs.push(job);
-        s.stepped.push(crate::SteppedJob { job: id, exporter, provider, progress: prog, result: res });
-        return Ok(json!({"job": id}));
-    }
-    let run = move || {
-        let r = filmcraft_export::export(&project, seq, &settings, &provider, &prog).map_err(|e| e.to_string());
-        if let Err(e) = &r {
-            *prog.error.lock().unwrap_or_else(|x| x.into_inner()) = Some(e.clone());
-        }
-        *res.lock().unwrap_or_else(|x| x.into_inner()) = Some(r);
-    };
-    s.jobs.push(job);
-    if wait || cfg!(target_arch = "wasm32") {
-        run();
-    } else {
-        std::thread::Builder::new().name("filmcraft-export".into()).spawn(run).map_err(|e| EngineError::Other(e.to_string()))?;
-    }
-    Ok(json!({"job": id}))
 }
 
 fn keyframe_op(s: &mut Session, p: &Value, op: &str) -> Result<Value> {

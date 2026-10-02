@@ -1840,10 +1840,12 @@ name = "filmcraft-export"
 version = "0.1.0"
 dependencies = [
  "filmcraft-aac",
+ "filmcraft-audio-dsp",
  "filmcraft-codecs",
  "filmcraft-color",
  "filmcraft-dnx",
  "filmcraft-frame",
+ "filmcraft-geom",
  "filmcraft-h264enc",
  "filmcraft-isobmff",
  "filmcraft-media",
@@ -1851,6 +1853,7 @@ dependencies = [
  "filmcraft-prores",
  "filmcraft-render",
  "filmcraft-testkit",
+ "filmcraft-text",
  "filmcraft-time",
  "image",
  "rayon",

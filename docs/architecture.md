@@ -438,19 +438,40 @@ multi-camera clip = nested source + TrackItem::multicam {enabled, angle}
 ## 6. Export jobs (`filmcraft-export`)
 
 ```text
-file.exportMedia {path, format, scale, audio, quality}
-  → engine creates a Job {id, label, progress, result} and runs it on a background thread
-  → export: render frames in parallel batches → encode in order → mux; audio mixed per batch
+file.exportMedia {path, preset?, settings?, format?, range?, …}     export.quick {preset?, path?}
+  → engine::export_tools: preset ⊕ settings JSON ⊕ flat overrides → ExportSettings; range resolved
+  → a Job {id, label, progress, result} on a background thread (export.queue.* runs them in order)
+  → export: per output frame render (output rate) → fit into the output frame → overlays → limiter
+            → encode in order → mux; audio mixed at the output rate, folded to mono/stereo,
+            loudness-normalized (measuring pass + gain + true-peak limiter) per batch
   → jobs.list shows progress; jobs.cancel sets the shared cancel flag
 ```
 
 | Format | Encoder | Container |
 |---|---|---|
-| `h264` | `filmcraft-h264enc` + `filmcraft-aac` | MP4 (`isobmff`) |
-| `prores` | `filmcraft-prores` | MOV |
+| `h264` | `filmcraft-h264enc` (profile, level, CBR / VBR 1-pass / VBR 2-pass, keyframe distance) + `filmcraft-aac` | MP4 or QuickTime (`isobmff`, the Multiplexer setting) |
+| `prores` | `filmcraft-prores` (Proxy / LT / 422 / HQ) | MOV |
 | `dnxhr` | `filmcraft-dnx` (LB / SQ / HQ / HQX) | MOV (`AVdh`) |
 | `mjpeg` | built in | MOV |
-| `png`, `gif`, `wav` | built in | image sequence / GIF / WAV |
+| `png`, `tiff`, `bmp` | `image` | numbered stills `<name>000.<ext>`, `<name>001.<ext>` … |
+| `gif`, `wav`, `aiff` | built in / `image` | GIF / RIFF WAVE / AIFF (16- or 24-bit PCM) |
+
+- **Settings.** `ExportSettings` (serde, camelCase, every field optional) holds Video (frame size or
+  Match Source, frame rate, Scale to Fit / Fill / Stretch, pixel aspect, field order — progressive
+  only, profile / level, bitrate encoding, target / maximum / adaptive bitrate, keyframe distance,
+  maximum render quality), Audio (codec, sample rate, channels, AAC bitrate, PCM sample size),
+  Multiplexer, Captions (burn-in or SRT / WebVTT sidecar), Effects (image / name / timecode
+  overlays, video limiter, loudness normalization), Metadata (`udta` `©nam`, `©ART`, `©cpy`, `©des`,
+  `©cmt`). `settings.summary()` / `estimate_bytes()` feed Export mode's Summary.
+- **Presets.** `export::presets::builtin_presets()` are our own definitions (Match Source adaptive
+  H.264 at 0.2 / 0.1 / 0.05 bits per pixel, 1080p / 2160p delivery, vertical 1080×1920, ProRes,
+  DNxHR, image sequences, GIF, WAV / AIFF). User presets and favourites persist in
+  `<data dir>/export-presets.json` (`export.presets.*`).
+- **Queue.** `export.queue.add` snapshots the project and the resolved settings (several sequences
+  or ranges add several items); `export.queue.start` encodes ready items one after another as
+  ordinary jobs, advanced by `Session::poll_persistence` / `pump_jobs` (or synchronously with
+  `wait`). Cancel, retry, reorder, remove and clear work per item. The queue is session state, not
+  part of the project file.
 
 Video encoders implement `export::VideoEncoder`. Codec crates plug in with `register_encoder` and
 `register_audio_encoder`.
