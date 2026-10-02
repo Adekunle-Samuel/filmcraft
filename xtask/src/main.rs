@@ -11,7 +11,10 @@
 //! - `fixtures [crate…]`: pre-generate the ffmpeg fixture matrix of the oracle tests (runs each
 //!   crate's ignored `generate_fixtures` test, i.e. the same generators the tests use) and print
 //!   what was made, reused or skipped.
+//! - `ico <out.ico> <in.png>…`: pack PNGs into a Windows `.ico` (used by `packaging/icons.sh`).
 //! - `ci`: fmt check, clippy -D warnings, tests, layers, assets, wasm.
+
+mod ico;
 
 use std::process::{Command, ExitCode};
 
@@ -346,6 +349,7 @@ fn serve_dir(dir: &std::path::Path, port: u16) -> Result<(), String> {
                 "js" => "text/javascript",
                 "wasm" => "application/wasm",
                 "svg" => "image/svg+xml",
+                "png" => "image/png",
                 "json" => "application/json",
                 "mp4" => "video/mp4",
                 "webm" => "video/webm",
@@ -435,7 +439,11 @@ fn main() -> ExitCode {
         "ci" => ci(),
         "bench-playback" => bench_playback(),
         "web" => web(&std::env::args().skip(2).collect::<Vec<_>>()),
-        _ => Err("usage: cargo xtask <layers|assets|wasm|web [--dev] [--serve PORT]|fixtures [crate…]|ci|bench-playback [args]>".into()),
+        "ico" => {
+            let rest: Vec<String> = std::env::args().skip(2).collect();
+            ico::run(&rest.iter().map(String::as_str).collect::<Vec<_>>())
+        }
+        _ => Err("usage: cargo xtask <layers|assets|wasm|web [--dev] [--serve PORT]|fixtures [crate…]|ico OUT IN…|ci|bench-playback [args]>".into()),
     };
     match r {
         Ok(()) => ExitCode::SUCCESS,

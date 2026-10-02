@@ -7,6 +7,10 @@
   </a>
 </p>
 
+<p align="center">
+  <img alt="FilmCraft icon: an engraved owl on FilmCraft violet (#8b5cf6)" src="assets/app-icon/filmcraft-1024.png" width="128">
+</p>
+
 <h1 align="center">FilmCraft</h1>
 
 <p align="center">
