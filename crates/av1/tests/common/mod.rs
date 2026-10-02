@@ -82,14 +82,20 @@ pub fn reference(ff: &Path, path: &Path, pix_fmt: &str) -> Vec<u16> {
     }
 }
 
-/// Decode every frame of an IVF file with our decoder.
+/// Decode every frame of an IVF file with our decoder (all cores).
 pub fn decode_all(path: &Path) -> Result<Vec<Picture>, String> {
-    let mut dec = Decoder::new();
+    decode_all_threads(path, std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1))
+}
+
+/// Decode every frame of an IVF file with a decoder using `threads` threads.
+pub fn decode_all_threads(path: &Path, threads: usize) -> Result<Vec<Picture>, String> {
+    let mut dec = Decoder::with_threads(threads);
     let mut pics = Vec::new();
     for (i, f) in ivf_frames(path).iter().enumerate() {
-        let p = dec.decode(f).map_err(|e| format!("frame {i}: {e}"))?;
+        let p = dec.decode_pts(f, i as i64).map_err(|e| format!("frame {i}: {e}"))?;
         pics.extend(p);
     }
+    pics.extend(dec.flush_result().map_err(|e| format!("flush: {e}"))?);
     Ok(pics)
 }
 
@@ -159,7 +165,14 @@ pub fn check_bit_exact(ff: &Path, spec: &Spec) {
 
 /// Decode an IVF file and compare every frame with libdav1d; panics with details on mismatch.
 pub fn check_file(ff: &Path, name: &str, path: &Path) {
-    let pics = decode_all(path).unwrap_or_else(|e| panic!("{name}: {e}"));
+    let pics = decode_all_threads(path, 1).unwrap_or_else(|e| panic!("{name}: {e}"));
+    // Tile, post-filter and frame threading must give the same pictures.
+    let threads = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1).max(4);
+    let mt = decode_all_threads(path, threads).unwrap_or_else(|e| panic!("{name} ({threads} threads): {e}"));
+    assert_eq!(mt.len(), pics.len(), "{name}: frame count with {threads} threads");
+    for (i, (a, b)) in pics.iter().zip(&mt).enumerate() {
+        assert!(a == b, "{name}: frame {i} differs with {threads} threads");
+    }
     assert!(!pics.is_empty(), "{name}: no frames");
     let raw = reference(ff, path, pix_fmt_for(&pics[0]));
     let per = picture_samples(&pics[0]);

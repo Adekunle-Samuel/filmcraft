@@ -1362,6 +1362,7 @@ dependencies = [
  "filmcraft-bitstream",
  "filmcraft-testkit",
  "rayon",
+ "rustix 1.1.5",
  "thiserror 2.0.21",
 ]
 

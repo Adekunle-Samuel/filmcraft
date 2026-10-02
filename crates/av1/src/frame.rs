@@ -1,31 +1,65 @@
 //! Frame sample buffers and per-4x4 mode info storage.
+//!
+//! Tiles decode in parallel into private buffers that cover only the tile's area: a [`Plane`]
+//! or [`MiInfo`] may hold a region of the frame (origin `ox`, `oy`), addressed with frame
+//! coordinates throughout.
 
-/// One plane of samples (u16 at every bit depth).
+/// One plane of samples (u16 at every bit depth), or a rectangular region of one.
 #[derive(Clone, Default)]
 pub struct Plane {
     pub data: Vec<u16>,
     pub stride: usize,
     /// Allocated rows.
     pub rows: usize,
+    /// Frame coordinates of `data[0]` (0 for whole planes).
+    pub ox: usize,
+    pub oy: usize,
 }
 
 impl Plane {
     pub fn new(width: usize, height: usize) -> Plane {
-        Plane { data: vec![0; width * height], stride: width, rows: height }
+        Plane { data: vec![0; width * height], stride: width, rows: height, ox: 0, oy: 0 }
+    }
+    /// A `width` x `height` region with its top-left sample at frame position (ox, oy).
+    pub fn region(ox: usize, oy: usize, width: usize, height: usize) -> Plane {
+        Plane { data: vec![0; width * height], stride: width, rows: height, ox, oy }
     }
     #[inline(always)]
     pub fn at(&self, x: usize, y: usize) -> u16 {
-        self.data[y * self.stride + x]
+        self.data[(y - self.oy) * self.stride + x - self.ox]
     }
     #[inline(always)]
     pub fn set(&mut self, x: usize, y: usize, v: u16) {
-        self.data[y * self.stride + x] = v;
+        self.data[(y - self.oy) * self.stride + x - self.ox] = v;
     }
+    /// Row `y`; index 0 is column `ox` (whole planes: column 0).
+    #[inline(always)]
     pub fn row(&self, y: usize) -> &[u16] {
-        &self.data[y * self.stride..(y + 1) * self.stride]
+        let o = (y - self.oy) * self.stride;
+        &self.data[o..o + self.stride]
     }
+    #[inline(always)]
     pub fn row_mut(&mut self, y: usize) -> &mut [u16] {
-        &mut self.data[y * self.stride..(y + 1) * self.stride]
+        let o = (y - self.oy) * self.stride;
+        &mut self.data[o..o + self.stride]
+    }
+    /// Row `y` from column `x` (frame coordinates) to the end of the stored row.
+    #[inline(always)]
+    pub fn row_from(&self, y: usize, x: usize) -> &[u16] {
+        let o = (y - self.oy) * self.stride;
+        &self.data[o + x - self.ox..o + self.stride]
+    }
+    #[inline(always)]
+    pub fn row_from_mut(&mut self, y: usize, x: usize) -> &mut [u16] {
+        let o = (y - self.oy) * self.stride;
+        &mut self.data[o + x - self.ox..o + self.stride]
+    }
+    /// Copy this region into the whole plane `dst` (same frame coordinates).
+    pub fn copy_into(&self, dst: &mut Plane) {
+        for y in 0..self.rows {
+            let s = &self.data[y * self.stride..(y + 1) * self.stride];
+            dst.row_from_mut(self.oy + y, self.ox)[..self.stride].copy_from_slice(s);
+        }
     }
 }
 
@@ -56,6 +90,29 @@ impl FrameBuf {
         FrameBuf { planes, num_planes, subsampling_x, subsampling_y, bit_depth, width, height }
     }
 
+    /// The region of a frame of this geometry covering luma samples [x0, x1) x [y0, y1)
+    /// (chroma scaled down); the bounds are multiples of 8, or the allocated size.
+    pub fn region_like(&self, x0: usize, y0: usize, x1: usize, y1: usize) -> FrameBuf {
+        let mut planes: [Plane; 3] = Default::default();
+        for (p, pl) in planes.iter_mut().enumerate().take(self.num_planes) {
+            let (sx, sy) = if p == 0 { (0, 0) } else { (self.subsampling_x, self.subsampling_y) };
+            let full = &self.planes[p];
+            let (px0, py0) = (x0 >> sx, y0 >> sy);
+            let px1 = (x1 >> sx).min(full.stride);
+            let py1 = (y1 >> sy).min(full.rows);
+            *pl = Plane::region(px0, py0, px1 - px0, py1 - py0);
+        }
+        FrameBuf {
+            planes,
+            num_planes: self.num_planes,
+            subsampling_x: self.subsampling_x,
+            subsampling_y: self.subsampling_y,
+            bit_depth: self.bit_depth,
+            width: self.width,
+            height: self.height,
+        }
+    }
+
     pub fn plane_width(&self, plane: usize) -> usize {
         if plane == 0 { self.width } else { (self.width + self.subsampling_x) >> self.subsampling_x }
     }
@@ -83,8 +140,14 @@ impl Mv {
 /// `[ row ][ col ]` in mode-info units).
 #[derive(Clone, Default)]
 pub struct MiInfo {
+    /// Frame size in mode info units.
     pub cols: usize,
     pub rows: usize,
+    /// Stored region: origin and width (the whole frame unless a tile's private copy).
+    pub ox: usize,
+    pub oy: usize,
+    pub stride: usize,
+    pub region_rows: usize,
     pub y_mode: Vec<u8>,
     pub uv_mode: Vec<u8>,
     pub ref_frame: Vec<[i8; 2]>,
@@ -111,10 +174,19 @@ pub struct MiInfo {
 
 impl MiInfo {
     pub fn new(cols: usize, rows: usize) -> MiInfo {
-        let n = cols * rows;
+        MiInfo::region(cols, rows, 0, 0, cols, rows)
+    }
+
+    /// Storage for the w x h mode info units at (ox, oy) of a cols x rows frame.
+    pub fn region(cols: usize, rows: usize, ox: usize, oy: usize, w: usize, h: usize) -> MiInfo {
+        let n = w * h;
         MiInfo {
             cols,
             rows,
+            ox,
+            oy,
+            stride: w,
+            region_rows: h,
             y_mode: vec![0; n],
             uv_mode: vec![0; n],
             ref_frame: vec![[0, -1]; n],
@@ -140,6 +212,28 @@ impl MiInfo {
 
     #[inline(always)]
     pub fn idx(&self, row: usize, col: usize) -> usize {
-        row * self.cols + col
+        debug_assert!(col >= self.ox && col < self.ox + self.stride && row >= self.oy, "mode info ({row}, {col}) outside the stored region");
+        (row - self.oy) * self.stride + col - self.ox
+    }
+
+    /// Copy this region into the whole-frame `dst`.
+    pub fn copy_into(&self, dst: &mut MiInfo) {
+        let (w, h) = (self.stride, self.region_rows);
+        macro_rules! copy {
+            ($($f:ident)*) => {$(
+                for y in 0..h {
+                    let d = dst.idx(self.oy + y, self.ox);
+                    dst.$f[d..d + w].copy_from_slice(&self.$f[y * w..(y + 1) * w]);
+                }
+            )*};
+        }
+        copy!(y_mode uv_mode ref_frame mv is_inter skip_mode skip tx_size inter_tx_size mi_size segment_id delta_lf comp_group_idx compound_idx interp_filter motion_mode tx_type written);
+        for k in 0..2 {
+            for y in 0..h {
+                let d = dst.idx(self.oy + y, self.ox);
+                dst.palette_size[k][d..d + w].copy_from_slice(&self.palette_size[k][y * w..(y + 1) * w]);
+                dst.palette_colors[k][d..d + w].copy_from_slice(&self.palette_colors[k][y * w..(y + 1) * w]);
+            }
+        }
     }
 }

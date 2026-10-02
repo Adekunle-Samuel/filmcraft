@@ -39,3 +39,37 @@ fn inter_gops() {
         check_bit_exact(&ff, &s);
     }
 }
+
+/// Several tiles (decoded in parallel into private buffers, then merged).
+fn specs_tiles() -> Vec<Spec> {
+    let p = |preset: &'static str, params: &'static str| -> Vec<&'static str> { vec!["-preset", preset, "-crf", "32", "-svtav1-params", params] };
+    vec![
+        Spec::new("inter_tiles_4x2", "testsrc2=s=1280x720:r=25,noise=alls=4:allf=t", 8, "yuv420p", &p("8", "tile-columns=2:tile-rows=1")),
+        Spec::new("inter_tiles_odd_10bit", "mandelbrot=s=650x370:r=25", 8, "yuv420p10le", &p("6", "tile-columns=1:tile-rows=1")),
+    ]
+}
+
+#[test]
+fn inter_tiles() {
+    let Some(ff) = ffmpeg() else { return };
+    for s in specs_tiles() {
+        check_bit_exact(&ff, &s);
+    }
+}
+
+/// The 1080p performance fixtures (slow; part of the extended run).
+#[test]
+#[ignore]
+fn inter_1080p() {
+    let Some(ff) = ffmpeg() else { return };
+    let p = |crf: &'static str, params: &'static str| -> Vec<&'static str> { vec!["-preset", "8", "-crf", crf, "-svtav1-params", params] };
+    let src = "testsrc2=s=1920x1080:r=25,noise=alls=6:allf=t";
+    for s in [
+        Spec::new("perf_1080p_gop", src, 60, "yuv420p", &p("30", "keyint=60")),
+        Spec::new("perf_1080p_gop_10bit", src, 60, "yuv420p10le", &p("30", "keyint=60")),
+        Spec::new("perf_1080p_gop_hq", src, 60, "yuv420p", &p("18", "keyint=60")),
+        Spec::new("perf_1080p_gop_tiles", src, 60, "yuv420p", &p("30", "keyint=60:tile-columns=2:tile-rows=1")),
+    ] {
+        check_bit_exact(&ff, &s);
+    }
+}

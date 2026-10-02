@@ -1,16 +1,20 @@
 //! In-loop post filters run by decode_frame_wrapup: loop filter (7.14), CDEF (7.15),
 //! super-resolution upscaling (7.16) and loop restoration (7.17).
 
-use crate::frame::Plane;
 use crate::spec_tables::*;
 use crate::state::FrameState;
+use crate::stats::{DecodeStats, Stage, Timer};
 
-pub(crate) fn apply(fs: &mut FrameState) {
+/// The post-filters run on the frame worker; `_pool` is for row-parallel filtering (not yet used).
+pub(crate) fn apply(fs: &mut FrameState, stats: &mut DecodeStats, _pool: &crate::par::Pool) {
+    let mut t = Timer::start();
     let lvl = fs.fh.lf.level;
     if lvl[0] != 0 || lvl[1] != 0 {
         loop_filter(fs);
     }
+    stats.add(Stage::LoopFilter, t.lap());
     let cdef = crate::cdef::apply(fs);
+    stats.add(Stage::Cdef, t.lap());
     let (up_cur, up_cdef) = if fs.fh.use_superres {
         let c = crate::restoration::upscale(fs, &fs.cur);
         let d = cdef.as_ref().map(|f| crate::restoration::upscale(fs, f));
@@ -18,7 +22,9 @@ pub(crate) fn apply(fs: &mut FrameState) {
     } else {
         (std::mem::take(&mut fs.cur), cdef)
     };
+    stats.add(Stage::Superres, t.lap());
     fs.cur = if fs.fh.lr.uses_lr { crate::restoration::loop_restoration(fs, &up_cur, up_cdef.as_ref().unwrap_or(&up_cur)) } else { up_cdef.unwrap_or(up_cur) };
+    stats.add(Stage::Restoration, t.lap());
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -60,21 +66,26 @@ fn edge(fs: &mut FrameState, plane: usize, pass: usize, row: usize, col: usize) 
     let yp = y >> sub_y;
     let prev_row = row - ((dy as usize) << sub_y);
     let prev_col = col - ((dx as usize) << sub_x);
+    let tx_sz = fs.lf_tx_size(plane, row >> sub_y, col >> sub_x);
+    let is_tx_edge = if pass == 0 { xp.is_multiple_of(TX_WIDTH[tx_sz] as usize) } else { yp.is_multiple_of(TX_HEIGHT[tx_sz] as usize) };
+    if !is_tx_edge {
+        return;
+    }
     let mi = &fs.mi;
     let i = mi.idx(row, col);
     let mi_size = mi.mi_size[i] as usize;
-    let tx_sz = fs.lf_tx_size(plane, row >> sub_y, col >> sub_x);
     let plane_size = fs.plane_residual_size(mi_size, plane);
     let skip = mi.skip[i];
     let is_intra = mi.ref_frame[i][0] <= INTRA_FRAME as i8;
-    let prev_tx_sz = fs.lf_tx_size(plane, prev_row >> sub_y, prev_col >> sub_x);
     let is_block_edge = if pass == 0 {
         xp.is_multiple_of(4 * NUM_4X4_BLOCKS_WIDE[plane_size] as usize)
     } else {
         yp.is_multiple_of(4 * NUM_4X4_BLOCKS_HIGH[plane_size] as usize)
     };
-    let is_tx_edge = if pass == 0 { xp.is_multiple_of(TX_WIDTH[tx_sz] as usize) } else { yp.is_multiple_of(TX_HEIGHT[tx_sz] as usize) };
-    let apply_filter = is_tx_edge && (is_block_edge || !skip || is_intra);
+    if !(is_block_edge || !skip || is_intra) {
+        return;
+    }
+    let prev_tx_sz = fs.lf_tx_size(plane, prev_row >> sub_y, prev_col >> sub_x);
     // filter size (7.14.3)
     let base_size = if pass == 0 { TX_WIDTH[prev_tx_sz].min(TX_WIDTH[tx_sz]) } else { TX_HEIGHT[prev_tx_sz].min(TX_HEIGHT[tx_sz]) } as usize;
     let filter_size = if plane == 0 { 16.min(base_size) } else { 8.min(base_size) };
@@ -82,13 +93,17 @@ fn edge(fs: &mut FrameState, plane: usize, pass: usize, row: usize, col: usize) 
     if lvl == 0 {
         (lvl, limit, blimit, thresh) = strength(fs, prev_row, prev_col, plane, pass);
     }
-    if !apply_filter || lvl == 0 {
+    if lvl == 0 {
         return;
     }
-    let bd = fs.bit_depth;
+    let t = LfThresh::new(limit, blimit, thresh, fs.bit_depth);
     let pl = &mut fs.cur.planes[plane];
+    let stride = pl.stride;
+    let (step, along) = if pass == 0 { (1, stride) } else { (stride, 1) };
+    let base = yp * stride + xp;
+    let chroma = plane > 0;
     for k in 0..4 {
-        sample_filter(pl, xp + (dy as usize) * k, yp + (dx as usize) * k, plane, limit, blimit, thresh, dx, dy, filter_size, bd);
+        sample_filter(&mut pl.data, base + k * along, step, chroma, filter_size, t);
     }
 }
 
@@ -134,106 +149,113 @@ fn strength(fs: &FrameState, row: usize, col: usize, plane: usize, pass: usize) 
     (lvl, limit, blimit, thresh)
 }
 
+/// Per-edge thresholds of the sample filter, scaled to the bit depth.
+#[derive(Clone, Copy)]
+struct LfThresh {
+    limit: i32,
+    blimit: i32,
+    thresh: i32,
+    /// Flatness threshold 1 << (BitDepth - 8).
+    flat: i32,
+    /// 0x80 << (BitDepth - 8) and 1 << (BitDepth - 1).
+    off: i32,
+    half: i32,
+}
+
+impl LfThresh {
+    fn new(limit: i32, blimit: i32, thresh: i32, bd: u32) -> LfThresh {
+        let sh = bd - 8;
+        LfThresh { limit: limit << sh, blimit: blimit << sh, thresh: thresh << sh, flat: 1 << sh, off: 0x80 << sh, half: 1 << (bd - 1) }
+    }
+}
+
+/// Sample filtering process (7.14.6) for one line across the edge: `base` indexes q0 and
+/// `step` is the distance between samples across the edge.
 #[allow(clippy::too_many_arguments)]
-#[inline]
-fn sample_filter(pl: &mut Plane, x: usize, y: usize, plane: usize, limit: i32, blimit: i32, thresh: i32, dx: i32, dy: i32, filter_size: usize, bd: u32) {
-    let stride = pl.stride as isize;
-    let step = dy as isize * stride + dx as isize;
-    let base = y as isize * stride + x as isize;
-    let reach: isize = if filter_size >= 16 { 7 } else { 4 };
-    let mut v = [0i32; 16];
-    for k in -reach..reach {
-        v[(k + 8) as usize] = pl.data[(base + k * step) as usize] as i32;
-    }
-    let at = |k: isize| -> i32 { v[(k + 8) as usize] };
-    let (q0, q1, q2, q3) = (at(0), at(1), at(2), at(3));
-    let (p0, p1, p2, p3) = (at(-1), at(-2), at(-3), at(-4));
-    let d = &mut pl.data;
-    let sh = bd - 8;
-    let thresh_bd = thresh << sh;
-    let hev = (p1 - p0).abs() > thresh_bd || (q1 - q0).abs() > thresh_bd;
-    let filter_len = if filter_size == 4 {
-        4
-    } else if plane != 0 {
-        6
-    } else if filter_size == 8 {
-        8
-    } else {
-        16
-    };
-    let limit_bd = limit << sh;
-    let blimit_bd = blimit << sh;
-    let mut mask = (p1 - p0).abs() > limit_bd || (q1 - q0).abs() > limit_bd || (p0 - q0).abs() * 2 + (p1 - q1).abs() / 2 > blimit_bd;
-    if filter_len >= 6 {
-        mask |= (p2 - p1).abs() > limit_bd || (q2 - q1).abs() > limit_bd;
-    }
-    if filter_len >= 8 {
-        mask |= (p3 - p2).abs() > limit_bd || (q3 - q2).abs() > limit_bd;
-    }
-    if mask {
+#[inline(always)]
+fn sample_filter(d: &mut [u16], base: usize, step: usize, chroma: bool, filter_size: usize, t: LfThresh) {
+    let at = |d: &[u16], k: isize| -> i32 { d[(base as isize + k * step as isize) as usize] as i32 };
+    let (q0, q1, p0, p1) = (at(d, 0), at(d, 1), at(d, -1), at(d, -2));
+    let lim = t.limit;
+    // filter mask (7.14.6.2)
+    if (p1 - p0).abs() > lim || (q1 - q0).abs() > lim || (p0 - q0).abs() * 2 + (p1 - q1).abs() / 2 > t.blimit {
         return;
     }
-    let t_bd = 1 << sh;
-    let flat = if filter_size >= 8 {
-        let mut m = (p1 - p0).abs() > t_bd || (q1 - q0).abs() > t_bd || (p2 - p0).abs() > t_bd || (q2 - q0).abs() > t_bd;
-        if filter_len >= 8 {
-            m |= (p3 - p0).abs() > t_bd || (q3 - q0).abs() > t_bd;
+    let hev = (p1 - p0).abs() > t.thresh || (q1 - q0).abs() > t.thresh;
+    let mut flat = false;
+    if filter_size > 4 {
+        let (q2, p2) = (at(d, 2), at(d, -3));
+        if (p2 - p1).abs() > lim || (q2 - q1).abs() > lim {
+            return;
         }
-        !m
-    } else {
-        false
-    };
-    let flat2 = if filter_size >= 16 {
-        let (q4, q5, q6, p4, p5, p6) = (at(4), at(5), at(6), at(-5), at(-6), at(-7));
-        !((p6 - p0).abs() > t_bd
-            || (q6 - q0).abs() > t_bd
-            || (p5 - p0).abs() > t_bd
-            || (q5 - q0).abs() > t_bd
-            || (p4 - p0).abs() > t_bd
-            || (q4 - q0).abs() > t_bd)
-    } else {
-        false
-    };
-    if filter_size == 4 || !flat {
+        let tf = t.flat;
+        flat = (p1 - p0).abs() <= tf && (q1 - q0).abs() <= tf && (p2 - p0).abs() <= tf && (q2 - q0).abs() <= tf;
+        if !chroma {
+            // filterLen >= 8
+            let (q3, p3) = (at(d, 3), at(d, -4));
+            if (p3 - p2).abs() > lim || (q3 - q2).abs() > lim {
+                return;
+            }
+            flat = flat && (p3 - p0).abs() <= tf && (q3 - q0).abs() <= tf;
+        }
+    }
+    if !flat {
         // narrow filter (7.14.6.3)
-        let half = 1i32 << (bd - 1);
-        let c = |v: i32| v.clamp(-half, half - 1);
-        let off = 0x80 << sh;
+        let c = |v: i32| v.clamp(-t.half, t.half - 1);
+        let off = t.off;
         let (ps1, ps0, qs0, qs1) = (p1 - off, p0 - off, q0 - off, q1 - off);
         let mut filter = if hev { c(ps1 - qs1) } else { 0 };
         filter = c(filter + 3 * (qs0 - ps0));
         let filter1 = c(filter + 4) >> 3;
         let filter2 = c(filter + 3) >> 3;
-        d[base as usize] = (c(qs0 - filter1) + off) as u16;
-        d[(base - step) as usize] = (c(ps0 + filter2) + off) as u16;
+        d[base] = (c(qs0 - filter1) + off) as u16;
+        d[base - step] = (c(ps0 + filter2) + off) as u16;
         if !hev {
             let f = (filter1 + 1) >> 1;
-            d[(base + step) as usize] = (c(qs1 - f) + off) as u16;
-            d[(base - 2 * step) as usize] = (c(ps1 + f) + off) as u16;
+            d[base + step] = (c(qs1 - f) + off) as u16;
+            d[base - 2 * step] = (c(ps1 + f) + off) as u16;
         }
+        return;
+    }
+    if chroma {
+        wide::<2, 1, 3>(d, base, step);
+    } else if filter_size == 8 {
+        wide::<3, 0, 3>(d, base, step);
     } else {
-        let log2 = if filter_size == 8 || !flat2 { 3 } else { 4 };
-        // wide filter (7.14.6.4)
-        let n: isize = if log2 == 4 {
-            6
-        } else if plane == 0 {
-            3
-        } else {
-            2
-        };
-        let n2: isize = if log2 == 3 && plane == 0 { 0 } else { 1 };
-        let mut f = [0i32; 12];
-        for i in -n..n {
-            let mut t = 0;
-            for j in -n..=n {
-                let p = (i + j).clamp(-(n + 1), n);
-                let tap = if j.abs() <= n2 { 2 } else { 1 };
-                t += at(p) * tap;
-            }
-            f[(i + n) as usize] = (t + (1 << (log2 - 1))) >> log2;
+        let tf = t.flat;
+        let q0 = at(d, 0);
+        let p0 = at(d, -1);
+        let flat2 = (4..7).all(|k| (at(d, k) - q0).abs() <= tf && (at(d, -k - 1) - p0).abs() <= tf);
+        if flat2 { wide::<6, 1, 4>(d, base, step) } else { wide::<3, 0, 3>(d, base, step) }
+    }
+}
+
+/// Wide filter process (7.14.6.4) with n = N, the 2-weight taps |j| <= N2 and log2Size = LOG2.
+#[inline(always)]
+fn wide<const N: usize, const N2: usize, const LOG2: u32>(d: &mut [u16], base: usize, step: usize) {
+    // v[k] = sample at offset k - (N + 1) from q0, k in 0 .. 2N + 2
+    let mut v = [0i32; 14];
+    let first = base - (N + 1) * step;
+    for (k, x) in v[..2 * N + 2].iter_mut().enumerate() {
+        *x = d[first + k * step] as i32;
+    }
+    // e[m] = v[clamp(m - N, 0, 2N + 1)]: the clamped tap positions as one array, so
+    // F[i] = sum_{jj = 0}^{2N} e[i + 1 + jj] * (2 if |jj - N| <= N2 else 1), a sliding window.
+    let mut e = [0i32; 25];
+    for (m, x) in e[..4 * N + 1].iter_mut().enumerate() {
+        *x = v[m.saturating_sub(N).min(2 * N + 1)];
+    }
+    let mut f = [0i32; 12];
+    let mut win: i32 = e[1..2 * N + 2].iter().sum();
+    for i in 0..2 * N {
+        if i > 0 {
+            win += e[i + 1 + 2 * N] - e[i];
         }
-        for i in -n..n {
-            d[(base + i * step) as usize] = f[(i + n) as usize] as u16;
-        }
+        let centre: i32 = e[i + 1 + N - N2..=i + 1 + N + N2].iter().sum();
+        f[i] = (win + centre + (1 << (LOG2 - 1))) >> LOG2;
+    }
+    let out = base - N * step;
+    for i in 0..2 * N {
+        d[out + i * step] = f[i] as u16;
     }
 }

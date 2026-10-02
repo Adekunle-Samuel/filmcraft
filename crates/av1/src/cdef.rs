@@ -1,6 +1,6 @@
 //! CDEF (7.15).
 
-use crate::frame::FrameBuf;
+use crate::frame::{FrameBuf, Plane};
 use crate::spec_tables::*;
 use crate::state::FrameState;
 
@@ -113,18 +113,23 @@ fn direction(fs: &FrameState, r: usize, c: usize) -> (usize, i32) {
     (y_dir, (best - cost[(y_dir + 4) & 7]) >> 10)
 }
 
+/// Marks a sample outside the frame (CdefAvailable = 0) in the padded block.
+const CDEF_NA: i32 = i32::MIN;
+/// Padded block: 8x8 plus 2 samples on every side, row stride 12.
+const PAD_STRIDE: usize = 12;
+
 #[inline(always)]
-fn constrain(diff: i32, threshold: i32, damping: i32) -> i32 {
-    if threshold == 0 {
-        return 0;
-    }
-    let adj = (damping - (31 - (threshold as u32).leading_zeros()) as i32).max(0);
+fn constrain(diff: i32, threshold: i32, adj: u32) -> i32 {
     let mag = (threshold - (diff.abs() >> adj)).clamp(0, diff.abs());
     if diff < 0 { -mag } else { mag }
 }
 
 #[allow(clippy::too_many_arguments)]
 fn filter(fs: &FrameState, out: &mut FrameBuf, plane: usize, r: usize, c: usize, pri: i32, sec: i32, damping: i32, dir: usize) {
+    if pri == 0 && sec == 0 {
+        // Every tap contributes 0 and the clamp to [min, max] keeps x: CdefFrame = CurrFrame.
+        return;
+    }
     let coeff_shift = fs.bit_depth - 8;
     let (sub_x, sub_y) = if plane > 0 { (fs.ssx, fs.ssy) } else { (0, 0) };
     let x0 = (c * 4) >> sub_x;
@@ -132,43 +137,128 @@ fn filter(fs: &FrameState, out: &mut FrameBuf, plane: usize, r: usize, c: usize,
     let w = 8 >> sub_x;
     let h = 8 >> sub_y;
     let src = &fs.cur.planes[plane];
-    let dst = &mut out.planes[plane];
     let (mi_rows, mi_cols) = (fs.fh.mi_rows as isize, fs.fh.mi_cols as isize);
-    let pri_tap = ((pri >> coeff_shift) & 1) as usize;
-    let get = |y: isize, x: isize| -> Option<i32> {
+    // CdefAvailable per sample: its 4x4 block is inside the frame.
+    let mut buf = [CDEF_NA; PAD_STRIDE * PAD_STRIDE];
+    let mut all_avail = true;
+    for i in 0..h + 4 {
+        let y = (y0 + i) as isize - 2;
         let cand_r = (y << sub_y) >> 2;
-        let cand_c = (x << sub_x) >> 2;
-        if cand_c >= 0 && cand_c < mi_cols && cand_r >= 0 && cand_r < mi_rows { Some(src.at(x as usize, y as usize) as i32) } else { None }
-    };
+        if y < 0 || cand_r >= mi_rows {
+            all_avail = false;
+            continue;
+        }
+        let row = src.row(y as usize);
+        for j in 0..w + 4 {
+            let x = (x0 + j) as isize - 2;
+            let cand_c = (x << sub_x) >> 2;
+            if x >= 0 && cand_c < mi_cols {
+                buf[i * PAD_STRIDE + j] = row[x as usize] as i32;
+            } else {
+                all_avail = false;
+            }
+        }
+    }
+    let pri_tap = ((pri >> coeff_shift) & 1) as usize;
+    let off = |d: usize, k: usize| CDEF_DIRECTIONS[d][k][0] as isize * PAD_STRIDE as isize + CDEF_DIRECTIONS[d][k][1] as isize;
+    let pri_off = [off(dir, 0), off(dir, 1)];
+    let d_lo = (dir + 6) & 7;
+    let d_hi = (dir + 2) & 7;
+    let sec_off = [[off(d_lo, 0), off(d_hi, 0)], [off(d_lo, 1), off(d_hi, 1)]];
+    let pri_taps = [CDEF_PRI_TAPS[pri_tap][0] as i32, CDEF_PRI_TAPS[pri_tap][1] as i32];
+    let sec_taps = [CDEF_SEC_TAPS[pri_tap][0] as i32, CDEF_SEC_TAPS[pri_tap][1] as i32];
+    let adj = |t: i32| if t == 0 { 0 } else { (damping - (31 - (t as u32).leading_zeros()) as i32).max(0) as u32 };
+    let (pri_adj, sec_adj) = (adj(pri), adj(sec));
+    let dst = &mut out.planes[plane];
+    if all_avail {
+        // Every tap is available: whole rows at a time (constrain() with threshold 0 is 0).
+        let mut taps = [(0isize, 0i32, 0i32, 0u32); 12];
+        let mut n = 0;
+        for k in 0..2 {
+            for sign in [-1isize, 1] {
+                taps[n] = (sign * pri_off[k], pri_taps[k], pri, pri_adj);
+                taps[n + 1] = (sign * sec_off[k][0], sec_taps[k], sec, sec_adj);
+                taps[n + 2] = (sign * sec_off[k][1], sec_taps[k], sec, sec_adj);
+                n += 3;
+            }
+        }
+        let rows = (y0, x0, h);
+        match w {
+            8 => filter_rows::<8>(&buf, &taps, dst, rows),
+            _ => filter_rows::<4>(&buf, &taps, dst, rows),
+        }
+        return;
+    }
     for i in 0..h {
+        // The centre sample is read even where CdefAvailable is 0 (8x8 blocks straddling an odd
+        // MiRows / MiCols edge).
+        let srow = &src.row(y0 + i)[x0..x0 + w];
+        let drow = &mut dst.row_mut(y0 + i)[x0..x0 + w];
         for j in 0..w {
-            let x = src.at(x0 + j, y0 + i) as i32;
+            let ci = ((i + 2) * PAD_STRIDE + j + 2) as isize;
+            let x = srow[j] as i32;
             let mut sum = 0i32;
             let mut max = x;
             let mut min = x;
             for k in 0..2 {
                 for sign in [-1isize, 1] {
-                    let yy = (y0 + i) as isize + sign * CDEF_DIRECTIONS[dir][k][0] as isize;
-                    let xx = (x0 + j) as isize + sign * CDEF_DIRECTIONS[dir][k][1] as isize;
-                    if let Some(p) = get(yy, xx) {
-                        sum += CDEF_PRI_TAPS[pri_tap][k] as i32 * constrain(p - x, pri, damping);
+                    let p = buf[(ci + sign * pri_off[k]) as usize];
+                    if p != CDEF_NA {
+                        if pri != 0 {
+                            sum += pri_taps[k] * constrain(p - x, pri, pri_adj);
+                        }
                         max = max.max(p);
                         min = min.min(p);
                     }
-                    for dir_off in [-2isize, 2] {
-                        let d2 = ((dir as isize + dir_off) & 7) as usize;
-                        let yy = (y0 + i) as isize + sign * CDEF_DIRECTIONS[d2][k][0] as isize;
-                        let xx = (x0 + j) as isize + sign * CDEF_DIRECTIONS[d2][k][1] as isize;
-                        if let Some(s) = get(yy, xx) {
-                            sum += CDEF_SEC_TAPS[pri_tap][k] as i32 * constrain(s - x, sec, damping);
-                            max = max.max(s);
-                            min = min.min(s);
+                    for s in 0..2 {
+                        let q = buf[(ci + sign * sec_off[k][s]) as usize];
+                        if q != CDEF_NA {
+                            if sec != 0 {
+                                sum += sec_taps[k] * constrain(q - x, sec, sec_adj);
+                            }
+                            max = max.max(q);
+                            min = min.min(q);
                         }
                     }
                 }
             }
-            let v = (x + ((8 + sum - (sum < 0) as i32) >> 4)).clamp(min, max);
-            dst.set(x0 + j, y0 + i, v as u16);
+            drow[j] = (x + ((8 + sum - (sum < 0) as i32) >> 4)).clamp(min, max) as u16;
+        }
+    }
+}
+
+/// CDEF of a block whose taps are all available, `W` samples per row. Samples (at most 12
+/// bits), differences and the weighted tap sum all fit in i16, which doubles the SIMD width.
+#[inline(always)]
+fn filter_rows<const W: usize>(buf: &[i32; PAD_STRIDE * PAD_STRIDE], taps: &[(isize, i32, i32, u32); 12], dst: &mut Plane, (y0, x0, h): (usize, usize, usize)) {
+    let mut b16 = [0i16; PAD_STRIDE * PAD_STRIDE];
+    for (d, &s) in b16.iter_mut().zip(buf.iter()) {
+        *d = s as i16;
+    }
+    for i in 0..h {
+        let ci = ((i + 2) * PAD_STRIDE + 2) as isize;
+        let x: [i16; W] = b16[ci as usize..ci as usize + W].try_into().expect("centre row");
+        let (mut sum, mut max, mut min) = ([0i16; W], x, x);
+        for &(off, weight, thr, adj) in taps {
+            let (weight, thr) = (weight as i16, thr as i16);
+            let start = (ci + off) as usize;
+            let p: &[i16; W] = b16[start..start + W].try_into().expect("tap row");
+            for j in 0..W {
+                // constrain(): .max / .min instead of clamp (whose bound check panics), and
+                // the sign applied branch-free, so the loop vectorises.
+                let d = p[j] - x[j];
+                let ad = d.abs();
+                let mag = (thr - (ad >> adj)).max(0).min(ad);
+                let sign = d >> 15;
+                sum[j] += weight * ((mag ^ sign) - sign);
+                max[j] = max[j].max(p[j]);
+                min[j] = min[j].min(p[j]);
+            }
+        }
+        let drow = &mut dst.row_mut(y0 + i)[x0..x0 + W];
+        for j in 0..W {
+            let s = sum[j];
+            drow[j] = (x[j] + ((8 + s - (s < 0) as i16) >> 4)).max(min[j]).min(max[j]) as u16;
         }
     }
 }
