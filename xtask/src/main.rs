@@ -15,6 +15,7 @@
 //! - `ci`: fmt check, clippy -D warnings, tests, layers, assets, wasm.
 
 mod ico;
+mod version;
 
 use std::process::{Command, ExitCode};
 
