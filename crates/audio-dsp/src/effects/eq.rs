@@ -9,6 +9,8 @@ pub const FILTER_TYPE_NAMES: &[&str] = &["Peaking", "Low Shelf", "High Shelf", "
 /// Coefficients are recomputed at most every this many samples while parameters glide.
 const COEFF_INTERVAL: u32 = 16;
 const SMOOTH_MS: f32 = 30.0;
+/// Most bands a [`BandBank`] can hold.
+pub(crate) const MAX_BANDS: usize = 40;
 
 #[derive(Clone, Debug)]
 struct Band {
@@ -35,6 +37,7 @@ pub(crate) struct BandBank {
 
 impl BandBank {
     pub(crate) fn new(sample_rate: f32, channels: usize, nbands: usize) -> Self {
+        assert!(nbands <= MAX_BANDS);
         let band = Band {
             kind: FilterType::Peaking,
             freq: Smoothed::with_ms(1000f32.log2(), sample_rate, SMOOTH_MS),
@@ -66,7 +69,7 @@ impl BandBank {
         b.dirty = true;
     }
 
-    fn update_coeffs(&mut self, force: bool) {
+    pub(crate) fn update_coeffs(&mut self, force: bool) {
         let sr = self.sample_rate;
         for b in &mut self.bands {
             if b.dirty || force {
@@ -122,7 +125,7 @@ impl BandBank {
             }
             let g = out_gain.tick();
             // Tick the band mixes once per sample (shared by all channels).
-            let mut mixes = [0.0f32; 16];
+            let mut mixes = [0.0f32; MAX_BANDS];
             for (m, b) in mixes.iter_mut().zip(self.bands.iter_mut()) {
                 *m = b.mix.tick();
             }
@@ -228,6 +231,9 @@ impl ParametricEq {
 
 impl AudioEffect for ParametricEq {
     param_plumbing!("parametric_eq");
+    fn response_db(&self, freq: f64) -> Option<f64> {
+        Some(ParametricEq::response_db(self, freq))
+    }
     fn reset(&mut self) {
         self.out.snap();
         self.bank.reset();
@@ -284,6 +290,9 @@ impl SimpleEq {
 
 impl AudioEffect for SimpleEq {
     param_plumbing!("simple_eq");
+    fn response_db(&self, freq: f64) -> Option<f64> {
+        Some(SimpleEq::response_db(self, freq))
+    }
     fn reset(&mut self) {
         self.out.snap();
         self.bank.reset();

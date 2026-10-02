@@ -55,6 +55,37 @@ id, name, range, default, `Unit`, log-scale hint and choice labels so UIs can be
 | `dereverb` | STFT late-reverb suppression: λ_r(t) = e^{−2Δ·T_d}·λ_x(t − T_d) (Δ = 3 ln10 / `rt60`, T_d ≈ 50 ms), over-subtraction 1 + `amount`, gain floor down to −18 dB, smoothed gains (latency = FFT size) |
 | `speech_enhance` | Enhance Speech DSP chain: 80 Hz HPF, de-mud cut (250 / 350 Hz −3 dB), presence (2.5 / 4 kHz +4 dB) and air (+2 dB @ 10 kHz) boosts by `tone`, downward expander below −50 dBFS (3:1, ≤ 18 dB), 3:1 soft-knee compressor above −24 dBFS, +3 dB make-up, `mix` |
 | `stereo_width` | mid/side width 0–200 % (100 % = identity, 0 % = mono) |
+| `graphic_eq_10/20/30` | constant-Q peaking bands at octave / half-octave / third-octave ISO centres (Q from the bandwidth), ±24 dB, master gain |
+| `parametric_eq_full` | Premiere's Parametric Equalizer: master gain, high-pass and low-pass (12–48 dB/oct Butterworth cascades), low shelf, 5 peaking bands, high shelf |
+| `notch_filter` | 6 constant-bandwidth cuts (`FilterType::Cut` = 1 + (g − 1)·BP: the width stays f/Q however deep), Narrow / Very Narrow / Super Narrow |
+| `scientific_filter` | Bessel / Butterworth / Chebyshev I / elliptic, LP / HP / BP / BS, order 1–12 (`design`: analog prototype → frequency transform at pre-warped edges → bilinear → biquads; elliptic via Landen-transformation Jacobi functions after Orfanidis) |
+| `fft_filter` | 8-point gain curve (log-frequency, linear or smoothstep), applied zero-phase by √Hann STFT at 75 % overlap (latency = FFT size) |
+| `dynamics_rack` | Dynamics: auto gate (hold) → expander → compressor (auto make-up) → limiter (soft clip), stereo-linked; `transfer_db` gives the static curve |
+| `multiband_compressor` | 4 bands with LR4 crossovers and all-pass phase compensation (bands sum to an all-pass: flat magnitude), per-band threshold/ratio/attack/release/gain/solo/bypass, output limiter, channel link |
+| `tube_compressor` | RMS detector, 10 dB soft knee, program-dependent release, gentle `tanh(x/2)·2` saturation |
+| `chorus_flanger` | chorus (3 voices, 15–35 ms) or flanger (0.3–5 ms, feedback), transience emphasis, mix |
+| `flanger` | initial/final delay sweep, stereo phasing, ±feedback, inverted / special / sinusoidal modes |
+| `phaser` | 2–12 swept first-order all-passes, depth (octaves below the upper frequency), feedback, stereo phase difference |
+| `analog_delay` | Tape / Tape+Tube / Analog: low-passed, saturating feedback (bounded up to 200 %), trash, stereo spread |
+| `multitap_delay` | 4 independent feedback taps, levels, mix |
+| `convolution_reverb` | uniformly partitioned overlap-save convolution (256-sample partitions, latency 256) with 7 impulses generated here (noise with frequency-dependent exponential decay + early reflections, unit energy); room size (resampling), LF/HF damping, pre-delay, width |
+| `surround_reverb` | early reflections + FDN late field, centre input, low/high cut, width, dry/wet (stereo rendering) |
+| `click_remover` | LPC residual outlier detection (k·σ, σ from the median), AR forward/backward interpolation of ≤ 64-sample regions (latency 640) |
+| `channel_mixer`, `stereo_expander`, `mute` | 2×2 matrix with inversion; mid/side expand + centre pan; ramped mute |
+| `distortion`, `guitar_suite` | waveshaper (soft/hard/tube/foldback, asymmetry, tone); compressor → distortion → amp/cabinet voicing → filter |
+| `mastering`, `vocal_enhancer` | EQ → reverb → exciter → widener → loudness maximiser (transparent at defaults); fixed Male/Female/Music voicings |
+| `binauralizer` | ±angle virtual speakers through a spherical-head model (Woodworth ITD + Brown–Duda head shadow) |
+| `ambisonics_panner` | rotates a ±30° source pair (pan/tilt/roll) and re-pans to stereo; identity at 0/0/0 |
+| `loudness_meter` | pass-through BS.1770 meter (`LoudnessMeterFx::meter`) |
+
+`AudioEffect::response_db(freq)` (EQs and filters) and `transfer_db(band, input_db)` (dynamics)
+expose the analytic curves for the graphical effect editors. Modulation effects start their LFO
+at the beginning of a chain, so a random-access render may differ in LFO phase from continuous
+playback.
+
+`effects::premiere_tests` checks every effect: neutral settings are (delayed) identity, output is
+deterministic and latency constant (impulse lands at `latency()`), plus a level / frequency-response
+test on generated tones, noise or impulses and a realtime-factor floor.
 
 Essential Sound builds on these (Repair: `denoise`, high-pass via `parametric_eq`, `dehum`,
 `deesser`, `dereverb`; Clarity: `compressor`, `simple_eq`, `speech_enhance`; Creative: `reverb`,

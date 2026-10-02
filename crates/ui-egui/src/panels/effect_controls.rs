@@ -141,6 +141,9 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
             if !open {
                 continue;
             }
+            if crate::panels::audio_fx_editor::has_editor(&e.effect) {
+                custom_setup_row(app, bui, body, clip, idx, &e.effect);
+            }
             for pd in &def.params {
                 param_row(app, bui, body, clip, idx, e, None, pd, mt_now, &mut actions, &lane, &lx, &it);
                 if app.ui.expanded_fx.contains(&graph_key(clip, idx, pd.id))
@@ -167,6 +170,22 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         if let Err(e) = app.session.execute(&cmd, p) {
             app.ui.status = e.to_string();
         }
+    }
+}
+
+/// Premiere's "Custom Setup ▸ Edit…" row: opens the effect's Clip Fx Editor window.
+fn custom_setup_row(app: &mut FilmcraftApp, ui: &mut egui::Ui, body: Rect, clip: ClipId, idx: usize, effect: &str) {
+    let t = app.tokens;
+    let (r, _) = ui.allocate_exact_size(vec2(body.width(), ROW_H), Sense::hover());
+    ui.painter().text(pos2(r.min.x + 42.0, r.center().y), Align2::LEFT_CENTER, "Custom Setup", Tokens::ui(12.0), t.text_dim);
+    let br = Rect::from_min_size(pos2(r.min.x + 160.0, r.min.y + 2.0), vec2(60.0, ROW_H - 4.0));
+    let resp = ui.interact(br, egui::Id::new(("fx-custom-setup", clip.0, idx)), Sense::click());
+    ui.painter().rect_filled(br, 3.0, if resp.hovered() { t.hover } else { t.field_bg });
+    ui.painter().rect_stroke(br, 3.0, Stroke::new(1.0, t.field_border), egui::StrokeKind::Inside);
+    ui.painter().text(br.center(), Align2::CENTER_CENTER, "Edit…", Tokens::ui(11.5), t.text);
+    app.auto.add(&format!("effectControls.effect.{effect}.edit"), br, "Edit…");
+    if resp.clicked() {
+        crate::panels::audio_fx_editor::open(app, crate::panels::audio_fx_editor::FxTarget::Clip { clip: clip.0, index: idx });
     }
 }
 

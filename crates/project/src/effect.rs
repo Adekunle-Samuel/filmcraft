@@ -11,7 +11,10 @@ use filmcraft_geom::Vec2;
 use serde::{Deserialize, Serialize};
 
 use crate::keyframe::{Param, ParamValue};
+
+mod audio;
 use crate::mask::Mask;
+pub use audio::{GEQ10_LABELS, GEQ20_LABELS, GEQ30_LABELS, PREMIERE_AUDIO_EFFECTS};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum EffectKind {
@@ -819,110 +822,7 @@ fn build_effects() -> Vec<EffectDef> {
         vtrans("cube_spin", "Cube Spin", MOTION3D, vec![]),
         vtrans("flip_over", "Flip Over", MOTION3D, vec![]),
         // ---- audio effects ----
-        audio("amplify", "Amplify", A_AMP, vec![fs("gain", "Gain", 0.0, (-96.0, 48.0), (-24.0, 24.0), "dB", 1)]),
-        audio(
-            "dynamics",
-            "Dynamics Processing",
-            A_AMP,
-            vec![
-                fs("threshold", "Threshold", -20.0, (-60.0, 0.0), (-60.0, 0.0), "dB", 1),
-                fs("ratio", "Ratio", 4.0, (1.0, 30.0), (1.0, 30.0), ":1", 1),
-                fs("attack", "Attack", 10.0, (0.1, 500.0), (0.1, 500.0), "ms", 1),
-                fs("release", "Release", 100.0, (1.0, 5000.0), (1.0, 5000.0), "ms", 0),
-            ],
-        ),
-        audio(
-            "hard_limiter",
-            "Hard Limiter",
-            A_AMP,
-            vec![
-                fs("max", "Maximum Amplitude", -0.1, (-30.0, 0.0), (-30.0, 0.0), "dB", 1),
-                fs("boost", "Input Boost", 0.0, (-30.0, 30.0), (-30.0, 30.0), "dB", 1),
-                fs("lookahead", "Look-Ahead Time", 7.0, (0.0, 30.0), (0.0, 30.0), "ms", 1),
-                fs("release", "Release Time", 100.0, (1.0, 1000.0), (1.0, 1000.0), "ms", 0),
-            ],
-        ),
-        audio("multiband_compressor", "Multiband Compressor", A_AMP, vec![]),
-        audio("channel_mixer_a", "Channel Mixer", A_AMP, vec![]),
-        audio(
-            "delay",
-            "Delay",
-            A_DELAY,
-            vec![
-                fs("delay", "Delay", 1.0, (0.0, 2.0), (0.0, 2.0), "s", 2),
-                f("feedback", "Feedback", 0.0, 0.0, 100.0, "%"),
-                f("mix", "Mix", 50.0, 0.0, 100.0, "%"),
-            ],
-        ),
-        audio("analog_delay", "Analog Delay", A_DELAY, vec![]),
-        audio(
-            "parametric_eq",
-            "Parametric Equalizer",
-            A_FILTER,
-            vec![
-                fs("low_freq", "Low Frequency", 100.0, (20.0, 20000.0), (20.0, 1000.0), "Hz", 0),
-                fs("low_gain", "Low Gain", 0.0, (-24.0, 24.0), (-24.0, 24.0), "dB", 1),
-                fs("mid_freq", "Mid Frequency", 1000.0, (20.0, 20000.0), (200.0, 8000.0), "Hz", 0),
-                fs("mid_gain", "Mid Gain", 0.0, (-24.0, 24.0), (-24.0, 24.0), "dB", 1),
-                fs("mid_q", "Mid Q", 1.0, (0.1, 20.0), (0.1, 10.0), "", 2),
-                fs("high_freq", "High Frequency", 8000.0, (20.0, 20000.0), (2000.0, 20000.0), "Hz", 0),
-                fs("high_gain", "High Gain", 0.0, (-24.0, 24.0), (-24.0, 24.0), "dB", 1),
-            ],
-        ),
-        audio("highpass", "Highpass", A_FILTER, vec![fs("cutoff", "Cutoff", 80.0, (20.0, 20000.0), (20.0, 2000.0), "Hz", 0)]),
-        audio("lowpass", "Lowpass", A_FILTER, vec![fs("cutoff", "Cutoff", 8000.0, (20.0, 20000.0), (500.0, 20000.0), "Hz", 0)]),
-        audio(
-            "bandpass",
-            "Bandpass",
-            A_FILTER,
-            vec![fs("center", "Center", 1000.0, (20.0, 20000.0), (20.0, 20000.0), "Hz", 0), fs("q", "Q", 1.0, (0.1, 20.0), (0.1, 20.0), "", 2)],
-        ),
-        audio("notch", "Notch Filter", A_FILTER, vec![]),
-        audio("simple_eq", "Simple Parametric EQ", A_FILTER, vec![]),
-        audio("graphic_eq", "Graphic Equalizer (10 Bands)", A_FILTER, vec![]),
-        audio("denoise", "DeNoise", A_NOISE, vec![f("amount", "Amount", 40.0, 0.0, 100.0, "%")]),
-        audio("dehummer", "DeHummer", A_NOISE, vec![ch("freq", "Frequency", &["50 Hz", "60 Hz"], 1), f("gain", "Gain", -40.0, -80.0, 0.0, "dB")]),
-        audio("declicker", "Automatic Click Remover", A_NOISE, vec![]),
-        audio(
-            "dereverb",
-            "DeReverb",
-            A_NOISE,
-            vec![f("amount", "Amount", 50.0, 0.0, 100.0, "%"), fs("rt60", "Decay Time (RT60)", 0.8, (0.1, 5.0), (0.1, 3.0), "s", 2)],
-        ),
-        audio(
-            "deesser",
-            "DeEsser",
-            A_AMP,
-            vec![
-                fs("frequency", "Frequency", 6000.0, (2000.0, 12000.0), (2000.0, 12000.0), "Hz", 0),
-                fs("threshold", "Threshold", -12.0, (-40.0, 0.0), (-40.0, 0.0), "dB", 1),
-                fs("reduction", "Maximum Reduction", 8.0, (0.0, 24.0), (0.0, 24.0), "dB", 1),
-            ],
-        ),
-        audio("speech_enhance", "Enhance Speech", A_NOISE, vec![f("mix", "Mix", 100.0, 0.0, 100.0, "%"), ch("tone", "Voice", &["Low Tone", "High Tone"], 0)]),
-        audio("stereo_width", "Stereo Width", A_STEREO, vec![fs("width", "Width", 100.0, (0.0, 200.0), (0.0, 200.0), "%", 0)]),
-        audio(
-            "studio_reverb",
-            "Studio Reverb",
-            A_REVERB,
-            vec![
-                f("room", "Room Size", 50.0, 0.0, 100.0, "%"),
-                f("decay", "Decay", 50.0, 0.0, 100.0, "%"),
-                f("damping", "High Frequency Damping", 50.0, 0.0, 100.0, "%"),
-                f("dry", "Dry", 90.0, 0.0, 100.0, "%"),
-                f("wet", "Wet", 35.0, 0.0, 100.0, "%"),
-            ],
-        ),
-        audio("convolution_reverb", "Convolution Reverb", A_REVERB, vec![]),
-        audio("surround_reverb", "Surround Reverb", A_REVERB, vec![]),
-        audio("loudness_radar", "Loudness Meter", A_SPECIAL, vec![]),
-        audio("invert_a", "Invert", A_SPECIAL, vec![]),
-        audio(
-            "pitch_shifter",
-            "Pitch Shifter",
-            A_TIME,
-            vec![fs("semitones", "Semi-tones", 0.0, (-12.0, 12.0), (-12.0, 12.0), "", 0), fs("cents", "Cents", 0.0, (-100.0, 100.0), (-100.0, 100.0), "", 0)],
-        ),
+        // (defined in effect/audio.rs; appended below)
         EffectDef {
             id: "constant_power",
             name: "Constant Power",
@@ -957,6 +857,7 @@ fn build_effects() -> Vec<EffectDef> {
             yuv: false,
         },
     ];
+    v.extend(audio::defs());
     v.extend(crate::graphic::layer_defs());
     // YUV badge for the colour/intrinsic set
     for e in &mut v {

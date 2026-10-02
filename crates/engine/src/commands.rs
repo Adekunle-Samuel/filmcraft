@@ -152,6 +152,26 @@ pub(crate) fn time_p(s: &Session, p: &Value, prefix: &str) -> Option<Tick> {
 pub(crate) fn clip_p(p: &Value, k: &str) -> Option<ClipId> {
     u64_p(p, k).map(ClipId)
 }
+/// Effect by id or display name. Names shared by several definitions ("Invert", "Volume",
+/// "Channel Volume") resolve to an applicable (non-intrinsic) effect whose kind matches the
+/// target clips' tracks.
+fn resolve_effect_name(s: &Session, p: &Value, name: &str) -> Option<&'static filmcraft_project::EffectDef> {
+    if let Some(d) = filmcraft_project::find_effect(name) {
+        return Some(d);
+    }
+    let n = name.to_ascii_lowercase();
+    let cands: Vec<_> = filmcraft_project::effect_defs().iter().filter(|e| e.name.to_ascii_lowercase() == n).collect();
+    if cands.len() <= 1 {
+        return cands.first().copied().or_else(|| filmcraft_project::find_effect(&n));
+    }
+    let on_audio = s.active_sequence().is_some_and(|q| {
+        let clips = clips_p(s, p);
+        !clips.is_empty() && clips.iter().all(|c| q.find_item(*c).and_then(|(t, _)| q.track(t)).is_some_and(|t| t.kind == TrackKind::Audio))
+    });
+    let want = if on_audio { filmcraft_project::EffectKind::Audio } else { filmcraft_project::EffectKind::Video };
+    cands.iter().find(|d| !d.intrinsic && d.kind == want).or_else(|| cands.iter().find(|d| !d.intrinsic)).or(cands.first()).copied()
+}
+
 pub(crate) fn clips_p(s: &Session, p: &Value) -> Vec<ClipId> {
     match p.get("clips").and_then(Value::as_array) {
         Some(a) => a.iter().filter_map(|v| v.as_u64().map(ClipId)).collect(),
@@ -1723,7 +1743,7 @@ fn build() -> Vec<CommandSpec> {
         // ================= Effects =================
         cmd!("effects.apply", "Apply Effect", [], None, r#"{"clips":[id]?,"effect":"gaussian_blur|Gaussian Blur|…"}"#, has_seq, |s, p| {
             let name = str_p(p, "effect").ok_or_else(|| bad("effects.apply", "need `effect`"))?;
-            let def = filmcraft_project::effect::find_effect_by_name(name).ok_or_else(|| bad("effects.apply", format!("unknown effect `{name}`")))?;
+            let def = resolve_effect_name(s, p, name).ok_or_else(|| bad("effects.apply", format!("unknown effect `{name}`")))?;
             if filmcraft_project::graphic::is_layer_id(def.id) {
                 return Err(bad("effects.apply", "graphic layers are added with graphics.newText / graphics.newShape"));
             }

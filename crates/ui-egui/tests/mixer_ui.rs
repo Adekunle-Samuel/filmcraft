@@ -187,6 +187,7 @@ fn track_mixer_controls_by_id_and_by_drag() {
     // effects and sends
     d.click("mixer.showEffects");
     d.click("mixer.A1.fx.0");
+    d.click("mixer.A1.fx.0.folder.Reverb");
     d.click("mixer.A1.fx.0.studio_reverb");
     assert_eq!(d.strip("A1")["inserts"][0]["effect"], "studio_reverb");
     d.exec("mixer.addSubmix", json!({"name": "Reverb Bus"}));

@@ -423,6 +423,9 @@ pub struct UiState {
     /// Effect presets: the preset being renamed / the Save Preset dialog (open when Some).
     #[serde(default)]
     pub save_preset: Option<SavePresetDraft>,
+    /// Open Clip / Track Fx Editor windows (graphical audio-effect editors).
+    #[serde(default)]
+    pub audio_fx_editors: Vec<crate::panels::audio_fx_editor::FxTarget>,
     /// Synchronize / Merge Clips / Create Multi-Camera Source Sequence dialog (open when Some).
     #[serde(default)]
     pub sync_dialog: Option<SyncDraft>,
@@ -709,6 +712,7 @@ impl Default for UiState {
             color_dialog: None,
             mask_pen: None,
             save_preset: None,
+            audio_fx_editors: Vec::new(),
             sync_dialog: None,
             multicam_record: true,
             guide_dialog: None,
