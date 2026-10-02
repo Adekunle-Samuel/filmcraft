@@ -266,6 +266,7 @@ fn place_item(
     adest: Option<TrackId>,
     insert: bool,
     label: &str,
+    audio_split: Option<(TimeRange, Tick)>,
 ) -> Result<Vec<ClipId>> {
     let pi = s.project.item(item).ok_or_else(|| bad(label, "no such item"))?.clone();
     let has_v = pi.has_video() && vdest.is_some();
@@ -297,7 +298,8 @@ fn place_item(
             placements.push((vdest.expect("checked"), v));
         }
         if has_a {
-            let mut a = p.make_track_item(item, TrackKind::Audio, at, range, rate).ok_or_else(|| bad(label, "bad item"))?;
+            let (arange, aat) = audio_split.unwrap_or((range, at));
+            let mut a = p.make_track_item(item, TrackKind::Audio, aat, arange, rate).ok_or_else(|| bad(label, "bad item"))?;
             a.link = link;
             placements.push((adest.expect("checked"), a));
         }
@@ -307,7 +309,14 @@ fn place_item(
         let mut next = p.next_id;
         let seq = p.sequence_mut(seq_id).ok_or(EngineError::NoSequence)?;
         let mut ctx = edit::EditCtx { next_id: &mut next, media_duration: &durations, min_duration: min };
+        let span = placements.iter().map(|x| x.1.start).min().zip(placements.iter().map(|x| x.1.end()).max());
         let ids = if insert { edit::insert(seq, placements, &mut ctx)? } else { edit::overwrite(seq, placements, &mut ctx)? };
+        if insert
+            && st.ripple_sequence_markers
+            && let Some((a, b)) = span
+        {
+            crate::sequence_tools::ripple_markers(&mut seq.markers, a, b - a);
+        }
         p.next_id = next;
         st.selection = ids.clone();
         Ok(ids)
@@ -339,8 +348,17 @@ fn edit_at_source(s: &mut Session, insert: bool) -> Result<Value> {
     let at = seq.mark_in.unwrap_or(s.playhead());
     let tg = s.targeting();
     let label = if insert { "Insert" } else { "Overwrite" };
-    let ids = place_item(s, item, range, at, tg.video_dest, tg.audio_dest, insert, label)?;
-    let end = at + s.sequence_rate().snap_nearest(range.duration);
+    // split points: each channel takes its own range, offset by the difference of the In points
+    let (vr, ar) = crate::sequence_tools::split_source_ranges(s, item, range);
+    let base = vr.start.min(ar.start);
+    let (vat, aat) = (at + (vr.start - base), at + (ar.start - base));
+    let ids = if vr == ar {
+        place_item(s, item, range, at, tg.video_dest, tg.audio_dest, insert, label, None)?
+    } else {
+        place_item(s, item, vr, vat, tg.video_dest, tg.audio_dest, insert, label, Some((ar, aat)))?
+    };
+    let end =
+        if vr == ar { at + s.sequence_rate().snap_nearest(range.duration) } else { s.sequence_rate().snap_nearest((vat + vr.duration).max(aat + ar.duration)) };
     s.set_playhead(end);
     Ok(json!({"clips": ids.iter().map(|c| c.0).collect::<Vec<_>>()}))
 }
@@ -422,7 +440,7 @@ fn build() -> Vec<CommandSpec> {
                 if let Some(from) = item_p(p, "fromItem") {
                     let dur = s.project.item(from).map(|i| i.duration()).unwrap_or_default();
                     let tg = s.targeting();
-                    place_item(s, from, TimeRange::new(Tick::ZERO, dur), Tick::ZERO, tg.video_dest, tg.audio_dest, false, "New Sequence From Clip")?;
+                    place_item(s, from, TimeRange::new(Tick::ZERO, dur), Tick::ZERO, tg.video_dest, tg.audio_dest, false, "New Sequence From Clip", None)?;
                 }
                 s.events.push(crate::Event::OpenSequence(id));
                 Ok(json!({"sequence": id.0}))
@@ -737,7 +755,15 @@ fn build() -> Vec<CommandSpec> {
             }
             let sel = with_links(s, &clips_p(s, p));
             s.edit_sequence("Ripple Delete", |q, _, st| {
+                let mut spans: Vec<TimeRange> = sel.iter().filter_map(|c| q.find_item(*c).map(|(_, i)| i.range())).collect();
+                spans.sort_by_key(|r| (r.start, r.duration));
+                spans.dedup();
                 edit::ripple_delete_items(q, &sel)?;
+                if st.ripple_sequence_markers {
+                    for r in spans.iter().rev() {
+                        crate::sequence_tools::ripple_markers(&mut q.markers, r.end(), -r.duration);
+                    }
+                }
                 st.selection.clear();
                 Ok(())
             })?;
@@ -959,10 +985,14 @@ fn build() -> Vec<CommandSpec> {
         cmd!("sequence.extract", "Extract", ["Sequence"], Some("'"), "{}", has_in_out, |s, _| {
             let r = in_out_range(s)?;
             let tg = s.targeting().targeted;
-            s.edit_sequence("Extract", |q, ctx, _| {
+            s.edit_sequence("Extract", |q, ctx, st| {
                 edit::extract(q, &tg, r, ctx);
+                if st.ripple_sequence_markers {
+                    crate::sequence_tools::ripple_markers(&mut q.markers, r.end(), -r.duration);
+                }
                 q.mark_in = None;
                 q.mark_out = None;
+                q.split = Default::default();
                 Ok(())
             })?;
             s.set_playhead(r.start);
@@ -989,7 +1019,21 @@ fn build() -> Vec<CommandSpec> {
         cmd!("sequence.closeGap", "Close Gap", ["Sequence"], None, r#"{"track":"V1"|id,"time":ticks}"#, has_seq, |s, p| {
             let tr = track_p(s, p, "track").ok_or_else(|| bad("sequence.closeGap", "need `track`"))?;
             let t = time_p(s, p, "").unwrap_or(s.playhead());
-            s.edit_sequence("Ripple Delete", |q, _, _| Ok(edit::close_gap(q, tr, t)?))?;
+            s.edit_sequence("Ripple Delete", |q, _, st| {
+                let before: Vec<(ClipId, Tick)> = q.track(tr).map(|x| x.items.iter().map(|i| (i.id, i.start)).collect()).unwrap_or_default();
+                edit::close_gap(q, tr, t)?;
+                if st.ripple_sequence_markers {
+                    // the gap ended where the first clip that moved started
+                    let moved = before
+                        .iter()
+                        .filter_map(|(id, old)| q.find_item(*id).filter(|(_, i)| i.start != *old).map(|(_, i)| (*old, *old - i.start)))
+                        .min_by_key(|m| m.0);
+                    if let Some((end, len)) = moved {
+                        crate::sequence_tools::ripple_markers(&mut q.markers, end, -len);
+                    }
+                }
+                Ok(())
+            })?;
             Ok(Value::Null)
         }),
         cmd!("sequence.snap", "Snap in Timeline", ["Sequence"], Some("S"), r#"{"on":bool?}"#, always, |s, p| {
@@ -1120,6 +1164,8 @@ fn build() -> Vec<CommandSpec> {
         cmd!("markers.clearIn", "Clear In", ["Markers"], Some("Cmd+Shift+I"), "{}", has_seq, |s, _| {
             s.edit_sequence("Clear In", |q, _, _| {
                 q.mark_in = None;
+                q.split.video_in = None;
+                q.split.audio_in = None;
                 Ok(())
             })?;
             Ok(Value::Null)
@@ -1127,6 +1173,8 @@ fn build() -> Vec<CommandSpec> {
         cmd!("markers.clearOut", "Clear Out", ["Markers"], Some("Cmd+Shift+O"), "{}", has_seq, |s, _| {
             s.edit_sequence("Clear Out", |q, _, _| {
                 q.mark_out = None;
+                q.split.video_out = None;
+                q.split.audio_out = None;
                 Ok(())
             })?;
             Ok(Value::Null)
@@ -1135,6 +1183,7 @@ fn build() -> Vec<CommandSpec> {
             s.edit_sequence("Clear In and Out", |q, _, _| {
                 q.mark_in = None;
                 q.mark_out = None;
+                q.split = Default::default();
                 Ok(())
             })?;
             Ok(Value::Null)
@@ -1184,7 +1233,7 @@ fn build() -> Vec<CommandSpec> {
             })?;
             Ok(Value::Null)
         }),
-        cmd!("markers.clearAll", "Clear All Markers", ["Markers"], Some("Cmd+Alt+Shift+M"), "{}", has_seq, |s, _| {
+        cmd!("markers.clearAll", "Clear Markers", ["Markers"], Some("Cmd+Alt+Shift+M"), "{}", has_seq, |s, _| {
             s.edit_sequence("Clear All Markers", |q, _, _| {
                 q.markers.clear();
                 Ok(())
@@ -1318,7 +1367,7 @@ fn build() -> Vec<CommandSpec> {
                 };
                 let sin = p.get("sourceIn").and_then(Value::as_i64).map(Tick).or(mi).unwrap_or_default();
                 let dur = p.get("duration").and_then(Value::as_i64).map(Tick).unwrap_or_else(|| mo.unwrap_or(full) - sin);
-                let ids = place_item(s, item, TimeRange::new(sin, dur), at, v, a, bool_p(p, "insert").unwrap_or(false), "Place Clip")?;
+                let ids = place_item(s, item, TimeRange::new(sin, dur), at, v, a, bool_p(p, "insert").unwrap_or(false), "Place Clip", None)?;
                 Ok(json!({"clips": ids.iter().map(|c| c.0).collect::<Vec<_>>()}))
             }
         ),
@@ -1380,7 +1429,8 @@ fn build() -> Vec<CommandSpec> {
                     .or_else(|| p.get("deltaFrames").and_then(Value::as_i64).map(|f| s.sequence_rate().tick_of(f)))
                     .unwrap_or_default();
                 let clips = with_links(s, &[c]);
-                let applied = s.edit_sequence(if mode == TrimMode::Ripple { "Ripple Trim" } else { "Trim" }, |q, ctx, _| {
+                let applied = s.edit_sequence(if mode == TrimMode::Ripple { "Ripple Trim" } else { "Trim" }, |q, ctx, st| {
+                    let before = q.find_item(c).map(|(_, i)| i.range());
                     // clamp across all linked partners, then apply the common delta
                     let mut dd = d;
                     for c in &clips {
@@ -1394,6 +1444,16 @@ fn build() -> Vec<CommandSpec> {
                         let mut group = vec![c];
                         group.extend(clips.iter().copied().filter(|o| *o != c));
                         dd = edit::ripple_trim_group(q, &group, edge, dd, ctx)?;
+                        if st.ripple_sequence_markers
+                            && let Some(r) = before
+                        {
+                            let (from, shift) = match edge {
+                                Edge::In if dd > Tick::ZERO => (r.start + dd, -dd),
+                                Edge::In => (r.start, -dd),
+                                Edge::Out => (r.end(), dd),
+                            };
+                            crate::sequence_tools::ripple_markers(&mut q.markers, from, shift);
+                        }
                     } else {
                         for c in &clips {
                             edit::trim(q, *c, edge, mode, dd, ctx)?;
@@ -1849,6 +1909,15 @@ fn build() -> Vec<CommandSpec> {
             let p = p.clone();
             s.edit("Mark", |pr, _| {
                 let it = pr.item_mut(id).ok_or_else(|| bad("project.setMarks", "no such item"))?;
+                // an ordinary In/Out replaces that side's split points
+                if p.get("in").is_some() {
+                    it.split.video_in = None;
+                    it.split.audio_in = None;
+                }
+                if p.get("out").is_some() {
+                    it.split.video_out = None;
+                    it.split.audio_out = None;
+                }
                 if let Some(m) = it.as_media_mut() {
                     if let Some(v) = p.get("in") {
                         m.mark_in = v.as_i64().map(Tick);
@@ -1887,6 +1956,7 @@ fn build() -> Vec<CommandSpec> {
             json!({"undo": s.history.undo.iter().map(|h| &h.0).collect::<Vec<_>>(), "redo": s.history.redo.iter().map(|h| &h.0).collect::<Vec<_>>()})
         )),
     ];
+    crate::sequence_tools::splice(&mut v);
     v.extend(crate::captions::commands());
     v.extend(crate::mixer::commands());
     v.extend(crate::multicam::commands());
@@ -2058,11 +2128,15 @@ fn mark(s: &mut Session, p: &Value, is_in: bool) -> Result<Value> {
     s.edit_sequence(if is_in { "Mark In" } else { "Mark Out" }, |q, _, _| {
         if is_in {
             q.mark_in = Some(t);
+            q.split.video_in = None;
+            q.split.audio_in = None;
             if q.mark_out.is_some_and(|o| o < t) {
                 q.mark_out = None;
             }
         } else {
             q.mark_out = Some(t);
+            q.split.video_out = None;
+            q.split.audio_out = None;
             if q.mark_in.is_some_and(|i| i > t) {
                 q.mark_in = None;
             }
@@ -2103,6 +2177,13 @@ fn copy_selection(s: &mut Session) {
     let Some(q) = s.active_sequence() else { return };
     let sel = with_links(s, &s.state.selection);
     let min = sel.iter().filter_map(|c| q.find_item(*c).map(|(_, i)| i.start)).min().unwrap_or_default();
+    let max = sel.iter().filter_map(|c| q.find_item(*c).map(|(_, i)| i.end())).max().unwrap_or_default();
+    // Copy Paste Includes Sequence Markers: the markers inside the copied span go along
+    let markers: Vec<Marker> = if s.state.copy_paste_sequence_markers {
+        q.markers.iter().filter(|m| m.start >= min && m.start < max).map(|m| Marker { start: m.start - min, ..m.clone() }).collect()
+    } else {
+        Vec::new()
+    };
     let mut clip = Vec::new();
     for (kind, tracks) in [(TrackKind::Video, &q.video_tracks), (TrackKind::Audio, &q.audio_tracks)] {
         for (ti, t) in tracks.iter().enumerate() {
@@ -2114,11 +2195,13 @@ fn copy_selection(s: &mut Session) {
         }
     }
     s.state.clipboard = clip;
+    s.state.clipboard_markers = markers;
 }
 
 fn paste(s: &mut Session, insert: bool) -> Result<Value> {
     let at = s.playhead();
     let clip = s.state.clipboard.clone();
+    let markers = if s.state.copy_paste_sequence_markers { s.state.clipboard_markers.clone() } else { Vec::new() };
     let end = s.edit_sequence(if insert { "Paste Insert" } else { "Paste" }, |q, ctx, st| {
         let mut placements = Vec::new();
         let mut links = std::collections::HashMap::new();
@@ -2135,6 +2218,13 @@ fn paste(s: &mut Session, insert: bool) -> Result<Value> {
         }
         let end = placements.iter().map(|p| p.1.end()).max().unwrap_or(at);
         let ids = if insert { edit::insert(q, placements, ctx)? } else { edit::overwrite(q, placements, ctx)? };
+        if insert && st.ripple_sequence_markers {
+            crate::sequence_tools::ripple_markers(&mut q.markers, at, end - at);
+        }
+        for m in &markers {
+            q.markers.push(Marker { id: MarkerId(ctx.alloc()), start: m.start + at, ..m.clone() });
+        }
+        q.markers.sort_by_key(|m| m.start);
         st.selection = ids;
         Ok(end)
     })?;
@@ -2312,7 +2402,8 @@ pub fn inspect_sequence(s: &Session, id: ItemId, q: &filmcraft_project::Sequence
         "playhead": s.state.playheads.get(&id).map(|t| t.0),
         "in": q.mark_in.map(|t| t.0),
         "out": q.mark_out.map(|t| t.0),
-        "markers": q.markers.iter().map(|m| json!({"id": m.id.0, "start": m.start.0, "name": m.name, "color": m.color.name()})).collect::<Vec<_>>(),
+        "split": q.split,
+        "markers": q.markers.iter().map(|m| json!({"id": m.id.0, "start": m.start.0, "duration": m.duration.0, "kind": format!("{:?}", m.kind), "name": m.name, "color": m.color.name()})).collect::<Vec<_>>(),
         "video": q.video_tracks.iter().map(tr).collect::<Vec<_>>(),
         "audio": q.audio_tracks.iter().map(tr).collect::<Vec<_>>(),
         "selection": s.state.selection.iter().map(|c| c.0).collect::<Vec<_>>(),

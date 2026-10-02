@@ -75,6 +75,8 @@ pub enum Dialog {
     RevertConfirm,
     /// Clip ▸ Audio Gain… (G).
     AudioGain,
+    /// Sequence ▸ Delete Tracks….
+    DeleteTracks,
 }
 
 #[derive(Default)]
@@ -639,7 +641,9 @@ impl FilmcraftApp {
         });
         for id in fire {
             // Mark In/Out in the Source monitor when it has focus.
-            let params = if self.ui.focused == PanelKind::Source && matches!(id.as_str(), "markers.markIn" | "markers.markOut") {
+            let params = if self.ui.focused == PanelKind::Source
+                && (matches!(id.as_str(), "markers.markIn" | "markers.markOut") || id.starts_with("markers.markSplit") || id.starts_with("markers.goToSplit"))
+            {
                 json!({"target": "source"})
             } else {
                 json!({})

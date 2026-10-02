@@ -202,6 +202,12 @@ pub fn invoke(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, params: Val
             crate::panels::color_dialogs::open_interpret(app, &params);
             return Ok(json!({"dialog": "interpretFootage"}));
         }
+        "sequence.deleteTracks" if params.as_object().is_none_or(|m| m.is_empty()) => {
+            filmcraft_engine::find_command(id).map_or(Ok(()), |c| (c.enabled)(&app.session))?;
+            app.ui.delete_tracks = Default::default();
+            app.dialog = Some(crate::Dialog::DeleteTracks);
+            return Ok(json!({"dialog": "deleteTracks"}));
+        }
         "sequence.colorSettings" if params.as_object().is_none_or(|m| m.is_empty()) => {
             filmcraft_engine::find_command(id).map_or(Ok(()), |c| (c.enabled)(&app.session))?;
             crate::panels::color_dialogs::open_sequence(app);
@@ -357,8 +363,27 @@ pub type KeyBinding = (egui::Modifiers, egui::Key, String, Option<String>);
 pub fn bindings(app: &FilmcraftApp) -> Vec<KeyBinding> {
     let mut v: Vec<KeyBinding> =
         app.session.shortcuts.bindings.iter().filter_map(|b| parse_shortcut(&b.keys).map(|(m, k)| (m, k, b.command.clone(), b.panel.clone()))).collect();
+    // With Shift held, a punctuation key arrives as its shifted glyph (Shift+; is `:` on US layouts).
+    let shifted: Vec<KeyBinding> =
+        v.iter().filter(|b| b.0.shift).filter_map(|(m, k, id, p)| shifted_key(*k).map(|k2| (*m, k2, id.clone(), p.clone()))).collect();
+    v.extend(shifted);
     v.sort_by_key(|(m, ..)| std::cmp::Reverse(m.command as u8 + m.shift as u8 + m.alt as u8 + m.ctrl as u8));
     v
+}
+
+/// The key a US layout reports for `k` with Shift held, when it differs.
+fn shifted_key(k: egui::Key) -> Option<egui::Key> {
+    use egui::Key;
+    Some(match k {
+        Key::Semicolon => Key::Colon,
+        Key::Slash => Key::Questionmark,
+        Key::Equals => Key::Plus,
+        Key::Backslash => Key::Pipe,
+        Key::Num1 => Key::Exclamationmark,
+        Key::OpenBracket => Key::OpenCurlyBracket,
+        Key::CloseBracket => Key::CloseCurlyBracket,
+        _ => return None,
+    })
 }
 
 /// Frontend-owned commands, registered with the engine's shortcut set so they can be listed,

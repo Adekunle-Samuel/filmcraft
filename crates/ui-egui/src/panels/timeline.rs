@@ -263,6 +263,17 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                 draw_clip(app, &ctx, &p, body, it, r.kind, true, &t, rate);
             }
         }
+        // Show Through Edits: a small bow-tie on cuts between continuous pieces of one clip
+        if app.session.state.show_through_edits {
+            for te in filmcraft_edit::through::track_through_edits(tr) {
+                let x = layout.x_of(te.time);
+                if x < content.min.x - 6.0 || x > content.max.x + 6.0 {
+                    continue;
+                }
+                let r = paint_through_edit(&p, x, r.rect);
+                app.auto.add(&format!("timeline.throughEdit.{}", te.right.0), r, "Through edit");
+            }
+        }
         // selected edit points (trim mode): red brackets for ripple, yellow for roll / regular trim
         super::trim_monitor::paint_edit_points(app, &p, &seq, tr, r, &layout);
         // transitions
@@ -381,6 +392,22 @@ fn empty_state(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     {
         let _ = app.session.execute("file.newSequence", json!({"fromItem": item.0}));
     }
+}
+
+/// The through-edit mark: two small triangles pointing at the cut, centred on the track, with a
+/// dashed white line through the clip body. Returns the mark's rect.
+fn paint_through_edit(p: &egui::Painter, x: f32, row: Rect) -> Rect {
+    let cy = row.center().y.max(row.min.y + 10.0);
+    let (w, h) = (4.0, 4.0);
+    let col = Color32::from_white_alpha(230);
+    let mut y = row.min.y + 2.0;
+    while y < row.max.y - 2.0 {
+        p.line_segment([pos2(x, y), pos2(x, (y + 3.0).min(row.max.y - 2.0))], Stroke::new(1.0, Color32::from_white_alpha(140)));
+        y += 6.0;
+    }
+    p.add(egui::Shape::convex_polygon(vec![pos2(x - w, cy - h), pos2(x, cy), pos2(x - w, cy + h)], col, Stroke::new(0.5, Color32::BLACK)));
+    p.add(egui::Shape::convex_polygon(vec![pos2(x + w, cy - h), pos2(x + w, cy + h), pos2(x, cy)], col, Stroke::new(0.5, Color32::BLACK)));
+    Rect::from_center_size(pos2(x, cy), vec2(2.0 * w + 2.0, 2.0 * h + 2.0))
 }
 
 fn lighten(c: Color32, f: f32) -> Color32 {
@@ -868,6 +895,13 @@ fn draw_top(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, seq: &Sequenc
                 ui.checkbox(&mut app.ui.timeline.show_thumbnails, "Show Video Thumbnails");
                 ui.checkbox(&mut app.ui.timeline.show_waveforms, "Show Audio Waveform");
                 ui.separator();
+                let mut te = app.session.state.show_through_edits;
+                let c = ui.checkbox(&mut te, "Show Through Edits");
+                app.auto.add("timeline.settings.showThroughEdits", c.rect, "Show Through Edits");
+                if c.changed() {
+                    let _ = app.session.execute("sequence.showThroughEdits", json!({"on": te}));
+                }
+                ui.separator();
                 if ui.button("Expand All Tracks").clicked() {
                     app.ui.timeline.video_track_h = 64.0;
                     app.ui.timeline.audio_track_h = 64.0;
@@ -914,6 +948,23 @@ fn draw_top(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, seq: &Sequenc
         let a = layout.x_of(seq.mark_in.unwrap_or(Tick::ZERO));
         let b = layout.x_of(seq.mark_out.map(|o| o + rate.frame_duration()).unwrap_or(seq.duration()));
         clip.rect_filled(Rect::from_min_max(pos2(a, label_y + 7.0), pos2(b, tick_base)), 0.0, Color32::from_rgb(0x5c, 0x5c, 0x5c));
+    }
+    // split points: a short bracket with a V or A tag (video above, audio below)
+    let sp = seq.split;
+    for (t, is_in, tag, low) in
+        [(sp.video_in, true, "V", false), (sp.video_out, false, "V", false), (sp.audio_in, true, "A", true), (sp.audio_out, false, "A", true)]
+    {
+        let Some(t) = t else { continue };
+        let x = layout.x_of(if is_in { t } else { t + rate.frame_duration() });
+        let y0 = if low { tick_base - 7.0 } else { label_y + 7.0 };
+        let col = Color32::from_rgb(0xd0, 0xd0, 0xd0);
+        let dx = if is_in { 4.0 } else { -4.0 };
+        clip.line_segment([pos2(x, y0), pos2(x, y0 + 7.0)], Stroke::new(1.5, col));
+        clip.line_segment([pos2(x, y0), pos2(x + dx, y0)], Stroke::new(1.5, col));
+        clip.text(pos2(x + 2.0 * dx, y0 + 3.5), Align2::CENTER_CENTER, tag, Tokens::ui(8.5), col);
+        let kind = if low { "audio" } else { "video" };
+        let side = if is_in { "In" } else { "Out" };
+        app.auto.add(&format!("timeline.split.{kind}{side}"), Rect::from_center_size(pos2(x, y0 + 3.5), vec2(12.0, 9.0)), &format!("Split {tag} {side}"));
     }
     let f0 = rate.frame_at(layout.tick_at(ruler.min.x)).max(0);
     let f1 = rate.frame_at(layout.tick_at(ruler.max.x)) + 1;
@@ -1541,7 +1592,7 @@ fn interact(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, layout: &
     resp.context_menu(|ui| {
         ui.set_min_width(200.0);
         let sel_n = app.session.state.selection.len();
-        let items: [(&str, &str); 10] = [
+        let items: [(&str, &str); 11] = [
             ("Cut", "edit.cut"),
             ("Copy", "edit.copy"),
             ("Clear", "edit.clear"),
@@ -1552,6 +1603,7 @@ fn interact(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, layout: &
             ("Speed/Duration…", "clip.speedDuration"),
             ("Nest…", "clip.nest"),
             ("Scale to Frame Size", "clip.scaleToFrameSize"),
+            ("Join Through Edits", "sequence.joinThroughEdits"),
         ];
         for (label, cmd) in items {
             if ui.add_enabled(sel_n > 0 && app.session.is_enabled(cmd), egui::Button::new(label)).clicked() {

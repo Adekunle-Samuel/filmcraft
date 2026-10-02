@@ -292,6 +292,9 @@ pub struct UiState {
     /// Audio Gain dialog draft (mode, dB values).
     #[serde(default)]
     pub audio_gain: AudioGainDraft,
+    /// Delete Tracks dialog draft.
+    #[serde(default)]
+    pub delete_tracks: DeleteTracksDraft,
     /// On-monitor text editing (Type tool / double-click on a text layer).
     #[serde(default)]
     pub gfx_edit: Option<GfxEdit>,
@@ -507,6 +510,23 @@ pub struct AudioGainDraft {
     pub all_peaks_db: f64,
 }
 
+/// The Delete Tracks dialog (Sequence ▸ Delete Tracks…): per kind, whether to delete and which
+/// track (`"empty"` = All Empty Tracks, or a track name such as `"V2"`).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct DeleteTracksDraft {
+    pub video: bool,
+    pub video_target: String,
+    pub audio: bool,
+    pub audio_target: String,
+}
+
+impl Default for DeleteTracksDraft {
+    fn default() -> Self {
+        Self { video: false, video_target: "empty".into(), audio: false, audio_target: "empty".into() }
+    }
+}
+
 /// The text layer being edited on the Program monitor: caret and selection anchor are byte
 /// offsets into the layer's text.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -556,6 +576,7 @@ impl Default for UiState {
             play_after_render: true,
             mixer_fx_open: false,
             audio_gain: AudioGainDraft::default(),
+            delete_tracks: DeleteTracksDraft::default(),
             gfx_edit: None,
             pen_points: vec![],
             link_media: None,

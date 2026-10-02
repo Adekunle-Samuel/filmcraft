@@ -25,6 +25,7 @@ pub mod previews;
 pub mod project_manager;
 pub mod proxies;
 pub mod relink;
+pub mod sequence_tools;
 pub mod shortcut_presets;
 pub mod shortcuts;
 pub mod sync;
@@ -179,6 +180,25 @@ pub struct EditorState {
     /// audio clips too.
     #[serde(default)]
     pub multicam_audio_follows_video: bool,
+    /// Sequence ▸ Selection Follows Playhead: moving the playhead selects the clips under it on
+    /// targeted tracks.
+    #[serde(default)]
+    pub selection_follows_playhead: bool,
+    /// Sequence ▸ Show Through Edits: the timeline marks cuts between continuous pieces of a clip.
+    #[serde(default)]
+    pub show_through_edits: bool,
+    /// Markers ▸ Ripple Sequence Markers: ripple edits move (and delete) sequence markers too.
+    #[serde(default)]
+    pub ripple_sequence_markers: bool,
+    /// Markers ▸ Copy Paste Includes Sequence Markers.
+    #[serde(default)]
+    pub copy_paste_sequence_markers: bool,
+    /// Marker colours hidden in the Markers panel (Show All Marker Colors clears this).
+    #[serde(default)]
+    pub hidden_marker_colors: Vec<filmcraft_project::Label>,
+    /// Sequence markers copied with the clipboard clips (start relative to the copied range).
+    #[serde(skip)]
+    pub clipboard_markers: Vec<filmcraft_project::Marker>,
 }
 
 /// Events for frontends (drained each frame).
@@ -583,6 +603,9 @@ impl Session {
         if let Some(s) = self.state.active_sequence {
             let rate = self.active_sequence().map(|s| s.settings.frame_rate).unwrap_or_default();
             self.state.playheads.insert(s, rate.snap(t.max(Tick::ZERO)));
+            if self.state.selection_follows_playhead {
+                sequence_tools::select_under_playhead(self);
+            }
         }
     }
 
@@ -667,6 +690,8 @@ mod project_manager_tests;
 mod proxies_tests;
 #[cfg(test)]
 mod relink_tests;
+#[cfg(test)]
+mod sequence_tools_tests;
 #[cfg(test)]
 mod shortcuts_tests;
 #[cfg(test)]

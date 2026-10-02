@@ -37,6 +37,12 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
             }
             return;
         }
+        Dialog::DeleteTracks => {
+            if !delete_tracks(app, ctx) {
+                app.dialog = None;
+            }
+            return;
+        }
         Dialog::NewSequence | Dialog::Preferences | Dialog::Recovery | Dialog::RevertConfirm => {}
     }
     if !open {
@@ -122,5 +128,86 @@ fn audio_gain(app: &mut FilmcraftApp, ctx: &egui::Context) -> bool {
         keep = false;
     }
     app.ui.audio_gain = draft;
+    keep
+}
+
+/// Sequence ▸ Delete Tracks…: "Delete Video Tracks" / "Delete Audio Tracks" checkboxes, each with a
+/// track choice (All Empty Tracks or one track). Returns whether the dialog stays open.
+///
+/// Automation ids: `deleteTracks.video`, `deleteTracks.audio` (checkboxes),
+/// `deleteTracks.video.target`, `deleteTracks.audio.target` (track menus),
+/// `deleteTracks.<kind>.option.<empty|V1|A2…>` (menu entries while open), `deleteTracks.ok`,
+/// `deleteTracks.cancel`.
+fn delete_tracks(app: &mut FilmcraftApp, ctx: &egui::Context) -> bool {
+    let Some(seq) = app.session.active_sequence() else { return false };
+    let names = |n: usize, p: &str| (1..=n).map(|i| format!("{p}{i}")).collect::<Vec<_>>();
+    let vnames = names(seq.video_tracks.len(), "V");
+    let anames = names(seq.audio_tracks.len(), "A");
+    let mut draft = app.ui.delete_tracks.clone();
+    let mut keep = true;
+    let mut apply = false;
+    let mut elems: Vec<(String, egui::Rect, String)> = Vec::new();
+    egui::Window::new("Delete Tracks").collapsible(false).resizable(false).anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0]).show(ctx, |ui| {
+        ui.set_min_width(300.0);
+        for (kind, title, on, target, list) in [
+            ("video", "Video Tracks", &mut draft.video, &mut draft.video_target, &vnames),
+            ("audio", "Audio Tracks", &mut draft.audio, &mut draft.audio_target, &anames),
+        ] {
+            ui.add_space(4.0);
+            ui.label(egui::RichText::new(title).strong());
+            let label = format!("Delete {title}");
+            let c = ui.checkbox(on, &label);
+            elems.push((format!("deleteTracks.{kind}"), c.rect, label));
+            ui.horizontal(|ui| {
+                ui.add_space(22.0);
+                let shown = if target == "empty" { "All Empty Tracks".to_string() } else { target.clone() };
+                ui.add_enabled_ui(*on, |ui| {
+                    let r = egui::ComboBox::from_id_salt(("delete-tracks", kind)).selected_text(&shown).width(170.0).show_ui(ui, |ui| {
+                        let e = ui.selectable_value(target, "empty".to_string(), "All Empty Tracks");
+                        elems.push((format!("deleteTracks.{kind}.option.empty"), e.rect, "All Empty Tracks".into()));
+                        for n in list {
+                            let r = ui.selectable_value(target, n.clone(), n);
+                            elems.push((format!("deleteTracks.{kind}.option.{n}"), r.rect, n.clone()));
+                        }
+                    });
+                    elems.push((format!("deleteTracks.{kind}.target"), r.response.rect, shown));
+                });
+            });
+        }
+        ui.add_space(10.0);
+        ui.horizontal(|ui| {
+            let c = ui.button("Cancel");
+            elems.push(("deleteTracks.cancel".into(), c.rect, "Cancel".into()));
+            if c.clicked() {
+                keep = false;
+            }
+            let o =
+                ui.add_enabled(draft.video || draft.audio, egui::Button::new(egui::RichText::new("OK").color(egui::Color32::WHITE)).fill(app.tokens.accent));
+            elems.push(("deleteTracks.ok".into(), o.rect, "OK".into()));
+            if o.clicked() {
+                apply = true;
+            }
+        });
+    });
+    for (id, r, l) in elems {
+        app.auto.add(&id, r, &l);
+    }
+    if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+        keep = false;
+    }
+    if apply {
+        let mut p = serde_json::Map::new();
+        if draft.video {
+            p.insert("video".into(), serde_json::json!(draft.video_target));
+        }
+        if draft.audio {
+            p.insert("audio".into(), serde_json::json!(draft.audio_target));
+        }
+        if let Err(e) = app.session.execute("sequence.deleteTracks", serde_json::Value::Object(p)) {
+            app.ui.status = e.to_string();
+        }
+        keep = false;
+    }
+    app.ui.delete_tracks = draft;
     keep
 }

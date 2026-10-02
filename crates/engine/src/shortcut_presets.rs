@@ -123,6 +123,12 @@ pub const PREMIERE: &[Entry] = &[
     ("markers.goPrev", "Cmd+Shift+M", ""),
     ("markers.clearCurrent", "Alt+M", ""),
     ("markers.clearAll", "Cmd+Alt+M", ""),
+    ("markers.addRange", "Ctrl+Shift+M", ""),
+    ("markers.addRangeInOut", "Ctrl+M", ""),
+    ("sequence.reverseMatchFrame", "Shift+R", ""),
+    ("sequence.goToNextGap", "Shift+;", ""),
+    ("sequence.goToPrevGap", "Alt+;", ""),
+    ("sequence.makeSubsequence", "Shift+U", ""),
     // Window
     ("window.workspace.reset", "Alt+Shift+0", ""),
     ("window.workspace.editing", "Alt+Shift+1", ""),

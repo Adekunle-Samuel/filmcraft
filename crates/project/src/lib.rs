@@ -254,6 +254,10 @@ pub struct ProjectItem {
     /// Import time counter (for "Date Created"/sorting), not wall clock.
     #[serde(default)]
     pub created: u64,
+    /// Split In/Out points set in the Source monitor (Markers ▸ Mark Split); they override the
+    /// item's In/Out for one channel (J- and L-cuts).
+    #[serde(default, skip_serializing_if = "SplitMarks::is_empty")]
+    pub split: SplitMarks,
 }
 
 impl ProjectItem {
@@ -740,6 +744,39 @@ pub struct Sequence {
     /// Set on merged clips (the merged video and audio items).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub merged: Option<MergedClip>,
+    /// Split In/Out points (Markers ▸ Mark Split): per-channel overrides of `mark_in`/`mark_out`.
+    #[serde(default, skip_serializing_if = "SplitMarks::is_empty")]
+    pub split: SplitMarks,
+}
+
+/// Split edit points: separate video and audio In/Out points (Markers ▸ Mark Split). `None` means
+/// the channel uses the ordinary In/Out point.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct SplitMarks {
+    pub video_in: Option<Tick>,
+    pub video_out: Option<Tick>,
+    pub audio_in: Option<Tick>,
+    pub audio_out: Option<Tick>,
+}
+
+impl SplitMarks {
+    pub fn is_empty(&self) -> bool {
+        *self == Self::default()
+    }
+    /// The video In point given the ordinary In point.
+    pub fn video_in_or(&self, mark_in: Option<Tick>) -> Option<Tick> {
+        self.video_in.or(mark_in)
+    }
+    pub fn video_out_or(&self, mark_out: Option<Tick>) -> Option<Tick> {
+        self.video_out.or(mark_out)
+    }
+    pub fn audio_in_or(&self, mark_in: Option<Tick>) -> Option<Tick> {
+        self.audio_in.or(mark_in)
+    }
+    pub fn audio_out_or(&self, mark_out: Option<Tick>) -> Option<Tick> {
+        self.audio_out.or(mark_out)
+    }
 }
 
 impl Sequence {
@@ -923,7 +960,7 @@ impl Project {
     pub fn add_item(&mut self, name: &str, label: Label, kind: ItemKind, bin: Option<BinId>) -> ItemId {
         let id = ItemId(self.alloc_id());
         let created = id.0;
-        self.items.insert(id, ProjectItem { id, name: name.into(), label, kind, metadata: BTreeMap::new(), created });
+        self.items.insert(id, ProjectItem { id, name: name.into(), label, kind, metadata: BTreeMap::new(), created, split: SplitMarks::default() });
         if let Some(b) = bin.and_then(|b| self.root.find_bin_mut(b)) {
             b.children.push(BinEntry::Item(id));
         } else {
@@ -992,6 +1029,7 @@ impl Project {
             caption_tracks: Vec::new(),
             multicam: None,
             merged: None,
+            split: SplitMarks::default(),
         };
         for i in 0..v {
             let id = TrackId(self.alloc_id());
