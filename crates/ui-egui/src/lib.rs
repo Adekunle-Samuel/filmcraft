@@ -491,6 +491,30 @@ impl FilmcraftApp {
         id
     }
 
+    /// Like [`Self::texture_for`], uploading `map(img)` (computed only when the key changed).
+    pub fn texture_for_mapped(
+        &mut self,
+        ctx: &egui::Context,
+        name: &str,
+        key: FrameKey,
+        img: &frames::Rgba,
+        map: impl FnOnce(&frames::Rgba) -> frames::Rgba,
+    ) -> egui::TextureId {
+        if let Some((k, tex)) = self.textures.get_mut(name) {
+            if *k != key {
+                let m = map(img);
+                tex.set(egui::ColorImage::from_rgba_unmultiplied([m.w, m.h], &m.px), TextureOptions::LINEAR);
+                *k = key;
+            }
+            return tex.id();
+        }
+        let m = map(img);
+        let tex = ctx.load_texture(name, egui::ColorImage::from_rgba_unmultiplied([m.w, m.h], &m.px), TextureOptions::LINEAR);
+        let id = tex.id();
+        self.textures.insert(name.to_string(), (key, tex));
+        id
+    }
+
     pub fn texture_existing(&self, name: &str) -> Option<(egui::TextureId, egui::Vec2)> {
         self.textures.get(name).map(|(_, t)| (t.id(), t.size_vec2()))
     }
@@ -574,6 +598,12 @@ impl FilmcraftApp {
             "file.open" => {
                 let Some(path) = self.hooks.pick_open_project.as_mut().and_then(|f| f()) else { return Ok(Value::Null) };
                 self.session.execute("file.open", json!({"path": path})).map_err(|e| e.to_string())
+            }
+            "graphics.newFromFile" => {
+                let exts: Vec<&str> = filmcraft_media::STILL_EXTENSIONS.iter().chain(filmcraft_media::VIDEO_EXTENSIONS).copied().collect();
+                let paths = self.hooks.pick_files.as_mut().map(|f| f(&exts)).unwrap_or_default();
+                let Some(path) = paths.into_iter().next() else { return Ok(Value::Null) };
+                self.session.execute("graphics.newFromFile", json!({"path": path})).map_err(|e| e.to_string())
             }
             "captions.import" => {
                 let paths = self.hooks.pick_files.as_mut().map(|f| f(&["srt", "vtt", "scc"])).unwrap_or_default();
