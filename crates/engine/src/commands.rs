@@ -2094,6 +2094,8 @@ fn build() -> Vec<CommandSpec> {
     // Edit ▸ Label ▸ <colour>, Paste Attributes, subclips, Video / Audio Options, Replace With Clip…
     // and their menu order
     crate::clip_ops::apply_layout(&mut v);
+    // Search Bin, Find, Project Settings, Scene Edit Detection, Normalize Mix Track… (M3.11)
+    crate::project_tools::apply_layout(&mut v);
     v.shrink_to_fit();
     v
 }
@@ -2744,7 +2746,7 @@ fn install_project(s: &mut Session, proj: filmcraft_project::Project, path: Opti
     if let Some(p) = &path
         && !cfg!(target_arch = "wasm32")
     {
-        s.previews.set_dir(Some(crate::previews::dir_for_project(p)));
+        s.previews.set_dir(Some(crate::project_tools::previews_dir_for(&s.project, p)));
     }
     s.path = path;
     s.revision += 1;
@@ -2793,6 +2795,9 @@ fn recover(s: &mut Session, id: Option<&str>) -> Result<Value> {
 
 /// Where auto-saves of the current project go.
 fn auto_save_dir(s: &Session) -> std::path::PathBuf {
+    if let Some(d) = s.project.settings.scratch.auto_save.as_deref().filter(|d| !d.is_empty() && s.path.is_some()) {
+        return std::path::PathBuf::from(d);
+    }
     match (&s.path, &s.persistence) {
         (Some(p), _) => filmcraft_format::autosave::auto_save_dir(std::path::Path::new(p)),
         (None, Some(per)) => per.data_dir.join(filmcraft_format::autosave::AUTO_SAVE_DIR),

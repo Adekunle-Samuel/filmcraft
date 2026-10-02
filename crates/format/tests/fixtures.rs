@@ -191,3 +191,22 @@ fn v8_loads_without_transcripts_and_v9_roundtrips_them() {
     assert_eq!(again.project, p);
     assert_eq!(again.project.transcripts[&ItemId(7)].speakers[0].name, "Speaker 1");
 }
+
+/// Schema 10 (before M3.11): no search bins, no safe areas / capture format / scratch disks in
+/// the project settings.
+#[test]
+fn v10_minimal_loads_with_m3_11_defaults() {
+    let l = decode(&fixture("v10-minimal.fcproj")).unwrap();
+    assert_eq!(l.schema_version, 10);
+    assert!(l.migrated());
+    let p = &l.project;
+    assert_eq!(p.name, "Before Search Bins");
+    assert!(p.search_bins.is_empty());
+    assert_eq!((p.settings.title_safe, p.settings.action_safe), ((20.0, 20.0), (10.0, 10.0)));
+    assert_eq!(p.settings.capture_format, "DV");
+    assert_eq!(p.settings.scratch, Default::default());
+    assert!(p.root.find_bin(filmcraft_project::BinId(1)).is_some());
+    let again = decode(&encode(p, true)).unwrap();
+    assert_eq!(again.schema_version, SCHEMA_VERSION);
+    assert_eq!(&again.project, p);
+}

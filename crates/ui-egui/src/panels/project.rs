@@ -60,6 +60,11 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                 ui.painter().line_segment([hr.left_bottom(), hr.right_bottom()], Stroke::new(1.0, t.separator));
                 let mut row = 0usize;
                 list_bin(app, ui, &root, 0, &filter, &mut row, &mut actions, true);
+                // search bins: saved queries listing their live matches
+                let mut draw = |app: &mut FilmcraftApp, ui: &mut egui::Ui, bin: &Bin, row: &mut usize, actions: &mut Vec<(String, serde_json::Value)>| {
+                    list_bin(app, ui, bin, 1, "", row, actions, false);
+                };
+                crate::panels::menu_dialogs::search_bin_rows(app, ui, &mut row, &mut actions, &mut draw);
             }
             _ => icon_view(app, ui, &root, &filter, &mut actions),
         }
@@ -75,6 +80,9 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         resp.context_menu(|ui| {
             for (label, cmd) in [
                 ("New Bin", "file.newBin"),
+                ("New Search Bin", "file.newSearchBin"),
+                ("Find…", "edit.find"),
+                ("Automate to Sequence…", "clip.automateToSequence"),
                 ("New Sequence…", "file.newSequence"),
                 ("Import…", "file.import"),
                 ("Bars and Tone", "file.newBarsAndTone"),
@@ -146,8 +154,8 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                     }
                 }
             });
-        } else if resp.clicked() && cmd != "find" {
-            actions.push((cmd.into(), json!({})));
+        } else if resp.clicked() {
+            actions.push((if cmd == "find" { "edit.find" } else { cmd }.into(), json!({})));
         }
         rx -= 26.0;
     }

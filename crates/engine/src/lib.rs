@@ -24,8 +24,11 @@ pub mod multicam;
 pub mod presets;
 pub mod previews;
 pub mod project_manager;
+pub mod project_tools;
 pub mod proxies;
 pub mod relink;
+pub mod scene_detect;
+pub mod sequence_extras;
 pub mod sequence_tools;
 pub mod settings;
 pub mod shortcut_presets;
@@ -213,6 +216,9 @@ pub struct EditorState {
     /// Sequence markers copied with the clipboard clips (start relative to the copied range).
     #[serde(skip)]
     pub clipboard_markers: Vec<filmcraft_project::Marker>,
+    /// The last Edit ▸ Find… (Find Next continues it).
+    #[serde(default)]
+    pub find: Option<project_tools::FindState>,
 }
 
 /// Events for frontends (drained each frame).
@@ -262,6 +268,8 @@ pub struct Session {
     pub media_jobs: Vec<proxies::PendingJob>,
     /// Mask tracking jobs whose keyframes are still being written.
     pub mask_jobs: Vec<masks::PendingTrack>,
+    /// Scene Edit Detection jobs whose results are applied when they finish.
+    pub scene_jobs: Vec<scene_detect::PendingScene>,
     /// Effect presets (built-in + the user's, persisted in the data directory).
     pub presets: presets::PresetLibrary,
     /// Exports run a batch at a time by [`Session::pump_jobs`] (hosts without threads: web).
@@ -346,6 +354,7 @@ impl Session {
             offline: Default::default(),
             media_jobs: Vec::new(),
             mask_jobs: Vec::new(),
+            scene_jobs: Vec::new(),
             presets: Default::default(),
             stepped: Vec::new(),
             transcriber: None,
@@ -431,6 +440,7 @@ impl Session {
     pub fn poll_persistence(&mut self) {
         proxies::poll(self);
         masks::poll(self);
+        scene_detect::poll(self);
         let Some(p) = self.persistence.as_mut() else { return };
         for ev in p.drain_events() {
             match ev {
@@ -471,7 +481,7 @@ impl Session {
         if let Some(p) = &self.path
             && !cfg!(target_arch = "wasm32")
         {
-            self.previews.move_to(previews::dir_for_project(p));
+            self.previews.move_to(project_tools::previews_dir(self).unwrap_or_else(|| previews::dir_for_project(p)));
         }
     }
 

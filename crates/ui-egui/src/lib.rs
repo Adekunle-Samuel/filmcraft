@@ -81,6 +81,9 @@ pub struct HostHooks {
     /// (macOS: `orderFrontRegardless`). Without it the app only requests a repaint: it never
     /// activates itself for an agent, because the user's keystrokes would land here.
     pub raise_without_focus: Option<Box<dyn FnMut()>>,
+    /// Open a file in its default application, or (`true`) reveal it in the file manager (Edit ▸
+    /// Edit Original, Help ▸ Reveal Log Files).
+    pub open_path: Option<Box<dyn FnMut(&str, bool) -> Result<(), String>>>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

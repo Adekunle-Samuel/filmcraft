@@ -442,6 +442,10 @@ pub struct UiState {
     /// open when Some). See `panels::clip_dialogs`.
     #[serde(default)]
     pub clip_dialog: Option<ClipDialogDraft>,
+    /// M3.11 menu items: their dialog, Dynamic Audio Waveforms, the Media Browser selection. See
+    /// `panels::menu_dialogs`.
+    #[serde(default)]
+    pub extras: crate::panels::menu_dialogs::Extras,
 }
 
 /// An open Edit / Clip / File menu dialog: the engine command it runs on OK and the parameters
@@ -721,6 +725,7 @@ impl Default for UiState {
             multicam_record: true,
             guide_dialog: None,
             clip_dialog: None,
+            extras: Default::default(),
         }
     }
 }
