@@ -193,10 +193,19 @@ pub fn handle(app: &mut FilmcraftApp, ctx: &egui::Context, req: &ControlRequest)
                     return err(format!("no export preset named `{name}`"));
                 }
                 let mut cur = serde_json::to_value(&app.ui.export).unwrap_or_default();
-                merge_json(&mut cur, patch);
+                merge(&mut cur, patch);
                 match serde_json::from_value(cur) {
                     Ok(e) => app.ui.export = e,
                     Err(e) => return err(format!("`export`: {e}")),
+                }
+            }
+            // panel settings (`panels::panel_state`): {"scopes": {...}, "timecode": {...}, …}, merged
+            if let Some(patch) = p.get("panels") {
+                let mut cur = serde_json::to_value(&app.ui.panels).unwrap_or_default();
+                merge(&mut cur, patch);
+                match serde_json::from_value(cur) {
+                    Ok(v) => app.ui.panels = v,
+                    Err(e) => return err(format!("`panels`: {e}")),
                 }
             }
             // fields of the open Edit / Clip / File dialog (`panels::clip_dialogs`)
@@ -349,6 +358,23 @@ pub fn handle(app: &mut FilmcraftApp, ctx: &egui::Context, req: &ControlRequest)
     }
 }
 
+/// Merge `patch` into `v` (objects recursively; other values replace).
+fn merge(v: &mut Value, patch: &Value) {
+    match (v, patch) {
+        (Value::Object(o), Value::Object(p)) => {
+            for (k, pv) in p {
+                match o.get_mut(k) {
+                    Some(cur) => merge(cur, pv),
+                    None => {
+                        o.insert(k.clone(), pv.clone());
+                    }
+                }
+            }
+        }
+        (v, p) => *v = p.clone(),
+    }
+}
+
 pub fn inspect(app: &FilmcraftApp, ctx: &egui::Context) -> Value {
     let size = ctx.content_rect().size();
     json!({
@@ -467,18 +493,6 @@ pub fn encode_png(rgba: &[u8], w: u32, h: u32) -> Result<Vec<u8>, String> {
     chunk(&mut out, b"IDAT", &z);
     chunk(&mut out, b"IEND", &[]);
     Ok(out)
-}
-
-/// Deep-merge `patch` into `base` (objects merge, everything else replaces).
-fn merge_json(base: &mut Value, patch: &Value) {
-    match (base, patch) {
-        (Value::Object(b), Value::Object(p)) => {
-            for (k, v) in p {
-                merge_json(b.entry(k.clone()).or_insert(Value::Null), v);
-            }
-        }
-        (b, p) => *b = p.clone(),
-    }
 }
 
 #[cfg(test)]
