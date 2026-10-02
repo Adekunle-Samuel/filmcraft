@@ -94,7 +94,29 @@ Notes:
 - Element ids come from the previous frame. If an element is missing right after a layout change,
   the app retries on later frames before giving up.
 - Without a window, `filmcraft-cli run script.jsonl` (lines of `{"id":"…","params":{…}}`) runs the
-  same commands headlessly.
+  same commands headlessly. See §2b for the rest of the CLI.
+
+## 2b. Command-line interface
+
+Every command is also one shell call away. Options go anywhere; output is JSON; exit status is 0 on
+success, 1 when a command fails and 2 on a usage error. `filmcraft-cli help` prints the reference.
+
+```sh
+filmcraft-cli commands razor                     # find ids (add --json for machine output)
+filmcraft-cli describe timeline.razor            # one command: menu, shortcut, params, enabled now
+filmcraft-cli --demo inspect sequence            # project / sequence as JSON
+filmcraft-cli --project p.fcproj --save exec timeline.razor seconds=3.5
+filmcraft-cli --project p.fcproj exec effects.apply '{"effect":"Gaussian Blur"}'
+filmcraft-cli --project p.fcproj --save import a.mov b.wav
+filmcraft-cli --project p.fcproj export out.mp4  # format from the extension; waits for the job
+echo '{"id":"file.newBin","params":{"name":"Selects"}}' | filmcraft-cli --project p.fcproj --save run -
+filmcraft-cli --bridge 127.0.0.1:9876 exec window.workspace.color   # the running app
+```
+
+`key=value` values are parsed as JSON when they can be (`3.5`, `true`, `[1,2]`), otherwise taken as
+strings; dotted keys nest (`color.r=1`). `run` prints one JSON line per command
+(`{"line","id","ok","result"|"error"}`) and stops at the first failure unless `--keep-going`.
+`--save` writes back to `--project`; `--save-as path` writes elsewhere.
 
 ## 3. Verifying UI work
 
