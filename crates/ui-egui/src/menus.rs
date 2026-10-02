@@ -6,7 +6,7 @@ use serde_json::{Value, json};
 
 use crate::FilmcraftApp;
 use crate::dock::PanelKind;
-use crate::state::{Mode, PlaybackRes, Tool};
+use crate::state::{Mode, Tool};
 
 pub struct UiCommand {
     pub id: &'static str,
@@ -38,7 +38,45 @@ pub const UI_COMMANDS: &[UiCommand] = &[
     uic!("view.playbackRes.half", "1/2", ["View", "Playback Resolution"], None),
     uic!("view.playbackRes.quarter", "1/4", ["View", "Playback Resolution"], None),
     uic!("view.playbackRes.eighth", "1/8", ["View", "Playback Resolution"], None),
-    uic!("view.safeMargins", "Safe Margins", ["View"], None),
+    uic!("view.playbackRes.sixteenth", "1/16", ["View", "Playback Resolution"], None),
+    uic!("view.pausedRes.full", "Full", ["View", "Paused Resolution"], None),
+    uic!("view.pausedRes.half", "1/2", ["View", "Paused Resolution"], None),
+    uic!("view.pausedRes.quarter", "1/4", ["View", "Paused Resolution"], None),
+    uic!("view.pausedRes.eighth", "1/8", ["View", "Paused Resolution"], None),
+    uic!("view.pausedRes.sixteenth", "1/16", ["View", "Paused Resolution"], None),
+    uic!("view.highQualityPlayback", "High Quality Playback", ["View"], None),
+    uic!("view.display.composite", "Composite Video", ["View", "Display Mode"], None),
+    uic!("view.display.alpha", "Alpha", ["View", "Display Mode"], None),
+    uic!("view.display.red", "Red", ["View", "Display Mode"], None),
+    uic!("view.display.green", "Green", ["View", "Display Mode"], None),
+    uic!("view.display.blue", "Blue", ["View", "Display Mode"], None),
+    uic!("view.display.multicam", "Multi-Camera", ["View", "Display Mode"], None),
+    uic!("view.display.audioWaveform", "Audio Waveform", ["View", "Display Mode"], None),
+    uic!("view.display.comparison", "Comparison View", ["View", "Display Mode"], None),
+    uic!("view.display.videoAndWaveform", "Video and Audio Waveform Split", ["View", "Display Mode"], None),
+    uic!("view.magnification.fit", "Fit", ["View", "Magnification"], None),
+    uic!("view.magnification.10", "10%", ["View", "Magnification"], None),
+    uic!("view.magnification.25", "25%", ["View", "Magnification"], None),
+    uic!("view.magnification.50", "50%", ["View", "Magnification"], None),
+    uic!("view.magnification.75", "75%", ["View", "Magnification"], None),
+    uic!("view.magnification.100", "100%", ["View", "Magnification"], None),
+    uic!("view.magnification.150", "150%", ["View", "Magnification"], None),
+    uic!("view.magnification.200", "200%", ["View", "Magnification"], None),
+    uic!("view.magnification.400", "400%", ["View", "Magnification"], None),
+    uic!("view.magnification.800", "800%", ["View", "Magnification"], None),
+    uic!("view.magnification.1600", "1600%", ["View", "Magnification"], None),
+    uic!("view.showRulers", "Show Rulers", ["View"], None),
+    uic!("view.showGuides", "Show Guides", ["View"], None),
+    uic!("view.lockGuides", "Lock Guides", ["View"], None),
+    uic!("view.addGuide", "Add Guide…", ["View"], None),
+    uic!("view.clearGuides", "Clear Guides", ["View"], None),
+    uic!("view.snapInProgramMonitor", "Snap in Program Monitor", ["View"], None),
+    uic!("view.safeMargins", "Safe Margins", ["View", "Guide Templates"], None),
+    uic!("view.guideTemplates.save", "Save Guides as Template…", ["View", "Guide Templates"], None),
+    uic!("view.guideTemplates.manage", "Manage Guides…", ["View", "Guide Templates"], None),
+    uic!("view.guideTemplates.apply", "Apply Guide Template", [], None),
+    uic!("view.guideTemplates.delete", "Delete Guide Template", [], None),
+    uic!("view.compare.setReference", "Set Comparison Reference", [], None),
     uic!("multicam.toggleView", "Multi-Camera View", ["View"], Some("Shift+0")),
     uic!("multicam.recordToggle", "Multi-Camera Record On/Off Toggle", [], Some("0")),
     uic!("view.theme.dark", "Darkest", ["View", "Appearance"], None),
@@ -68,6 +106,11 @@ pub const UI_COMMANDS: &[UiCommand] = &[
     uic!("mode.import", "Import", [], None),
     uic!("mode.edit", "Edit", [], None),
     uic!("mode.export", "Export", ["File", "Export"], Some("Cmd+M")),
+    uic!("help.discord", "Join the ArtCraft Discord…", ["Help"], None),
+    uic!("help.website", "ArtCraft Website", ["Help"], None),
+    uic!("help.appPage", "FilmCraft on getartcraft.com", ["Help"], None),
+    uic!("help.github", "FilmCraft on GitHub", ["Help"], None),
+    uic!("help.reportIssue", "Report an Issue…", ["Help"], None),
     uic!("app.about", "About FilmCraft", ["Help"], None),
     uic!("app.keyboardShortcuts", "Keyboard Shortcuts…", ["Edit"], Some("Cmd+Alt+K")),
     uic!("app.preferences.autoSave", "Auto Save…", ["Edit", "Preferences"], Some("Cmd+,")),
@@ -109,6 +152,12 @@ pub fn invoke(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, params: Val
         return r;
     }
     if let Some(r) = crate::panels::media_dialogs::route(app, id, &params) {
+        if let Err(e) = &r {
+            app.ui.status = e.clone();
+        }
+        return r;
+    }
+    if let Some(r) = crate::panels::monitor_view::route(app, id, &params) {
         if let Err(e) = &r {
             app.ui.status = e.clone();
         }
@@ -158,10 +207,6 @@ pub fn invoke(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, params: Val
             app.ui.timeline.fit_pending = true;
             return Ok(Value::Null);
         }
-        "view.safeMargins" => {
-            app.ui.program.safe_margins = !app.ui.program.safe_margins;
-            return Ok(Value::Null);
-        }
         "mode.import" => {
             app.ui.mode = Mode::Import;
             return Ok(Value::Null);
@@ -177,6 +222,12 @@ pub fn invoke(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, params: Val
         "app.about" => {
             app.dialog = Some(crate::Dialog::About);
             return Ok(Value::Null);
+        }
+        id if crate::links::url_for(id).is_some() => {
+            let url = crate::links::url_for(id).unwrap_or_default();
+            crate::links::open(ctx, url);
+            app.ui.status = format!("Opened {url}");
+            return Ok(json!({"url": url}));
         }
         "help.shortcuts" | "app.keyboardShortcuts" => {
             crate::panels::shortcuts_dialog::open(app);
@@ -231,17 +282,6 @@ pub fn invoke(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, params: Val
         }
         _ => {}
     }
-    if let Some(r) = id.strip_prefix("view.playbackRes.") {
-        let res = match r {
-            "full" => PlaybackRes::Full,
-            "half" => PlaybackRes::Half,
-            "quarter" => PlaybackRes::Quarter,
-            "eighth" => PlaybackRes::Eighth,
-            _ => PlaybackRes::Sixteenth,
-        };
-        app.ui.program.res = res;
-        return Ok(Value::Null);
-    }
     if let Some(th) = id.strip_prefix("view.theme.") {
         let k = crate::theme::ThemeKind::from_name(th).ok_or("unknown theme")?;
         app.set_theme(ctx, k);
@@ -254,6 +294,7 @@ pub fn invoke(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, params: Val
         || (id == "file.open" && params.get("path").is_none())
         || (id == "file.save" && params.get("path").is_none() && app.session.path.is_none())
         || (matches!(id, "captions.import" | "captions.export") && params.get("path").is_none())
+        || (id == "graphics.newFromFile" && params.get("path").is_none())
     {
         return app.file_dialog(id, &params);
     }
@@ -272,12 +313,22 @@ pub struct MenuItem {
     pub path: Vec<String>,
     pub shortcut: Option<String>,
     pub enabled: bool,
+    /// Checkmark state of toggle / radio items (None = not checkable).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub checked: Option<bool>,
 }
 
 pub const MENUS: [&str; 9] = ["File", "Edit", "Clip", "Sequence", "Markers", "Graphics and Titles", "View", "Window", "Help"];
 
 pub fn menu_items(app: &FilmcraftApp) -> Vec<MenuItem> {
-    menu_items_for(&app.session)
+    let mut v = menu_items_for(&app.session);
+    for it in &mut v {
+        if it.id.starts_with("view.") {
+            it.checked = crate::panels::monitor_view::checked(app, &it.id);
+            it.enabled &= crate::panels::monitor_view::enabled(app, &it.id);
+        }
+    }
+    v
 }
 
 /// Menu entries with their live shortcuts and enablement.
@@ -293,6 +344,7 @@ pub fn menu_items_for(session: &filmcraft_engine::Session) -> Vec<MenuItem> {
             path: c.menu.iter().map(|s| s.to_string()).collect(),
             shortcut: session.shortcuts.primary(c.id),
             enabled: session.is_enabled(c.id),
+            checked: None,
         });
     }
     for c in UI_COMMANDS {
@@ -305,6 +357,7 @@ pub fn menu_items_for(session: &filmcraft_engine::Session) -> Vec<MenuItem> {
             path: c.menu.iter().map(|s| s.to_string()).collect(),
             shortcut: session.shortcuts.primary(c.id),
             enabled: true,
+            checked: None,
         });
     }
     for p in PanelKind::ALL {
@@ -314,6 +367,7 @@ pub fn menu_items_for(session: &filmcraft_engine::Session) -> Vec<MenuItem> {
             path: vec!["Window".into()],
             shortcut: session.shortcuts.primary(&panel_command_id(p)),
             enabled: true,
+            checked: None,
         });
     }
     out
@@ -440,9 +494,19 @@ pub fn menu_bar(app: &mut FilmcraftApp, ui: &mut egui::Ui) {
 }
 
 fn menu_entry(ui: &mut egui::Ui, it: &MenuItem) -> bool {
-    let mut b = egui::Button::new(&it.label);
+    // checkable items leave room for a checkmark drawn at the left
+    let label = if it.checked.is_some() { format!("      {}", it.label) } else { it.label.clone() };
+    let mut b = egui::Button::new(label);
     if let Some(s) = &it.shortcut {
         b = b.shortcut_text(shortcut_text(s));
     }
-    ui.add_enabled(it.enabled, b).clicked()
+    let r = ui.add_enabled(it.enabled, b);
+    if it.checked == Some(true) {
+        let c = r.rect.left_center() + egui::vec2(10.0, 0.0);
+        let col = ui.visuals().text_color();
+        let st = egui::Stroke::new(1.5, col);
+        ui.painter().line_segment([c + egui::vec2(-4.0, 0.0), c + egui::vec2(-1.0, 3.0)], st);
+        ui.painter().line_segment([c + egui::vec2(-1.0, 3.0), c + egui::vec2(4.5, -3.5)], st);
+    }
+    r.clicked()
 }

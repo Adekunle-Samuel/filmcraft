@@ -188,7 +188,7 @@ impl TileDecoder<'_, '_> {
             if !self.inside(mv_row, mv_col) {
                 break;
             }
-            let mi = &self.fs.mi;
+            let mi = &self.t.mi;
             let mut len = bw4.min(NUM_4X4_BLOCKS_WIDE[mi.mi_size[mi.idx(mv_row as usize, mv_col as usize)] as usize] as isize);
             if delta_row.abs() > 1 {
                 len = len.max(2);
@@ -221,7 +221,7 @@ impl TileDecoder<'_, '_> {
             if !self.inside(mv_row, mv_col) {
                 break;
             }
-            let mi = &self.fs.mi;
+            let mi = &self.t.mi;
             let mut len = bh4.min(NUM_4X4_BLOCKS_HIGH[mi.mi_size[mi.idx(mv_row as usize, mv_col as usize)] as usize] as isize);
             if delta_col.abs() > 1 {
                 len = len.max(2);
@@ -238,7 +238,7 @@ impl TileDecoder<'_, '_> {
     fn scan_point(&mut self, delta_row: isize, delta_col: isize, is_compound: bool) {
         let mv_row = self.b.mi_row as isize + delta_row;
         let mv_col = self.b.mi_col as isize + delta_col;
-        if self.inside(mv_row, mv_col) && self.fs.mi.written[self.fs.mi.idx(mv_row as usize, mv_col as usize)] {
+        if self.inside(mv_row, mv_col) && self.t.mi.written[self.t.mi.idx(mv_row as usize, mv_col as usize)] {
             self.add_ref_mv_candidate(mv_row as usize, mv_col as usize, is_compound, 4);
         }
     }
@@ -332,7 +332,7 @@ impl TileDecoder<'_, '_> {
     }
 
     fn add_ref_mv_candidate(&mut self, mv_row: usize, mv_col: usize, is_compound: bool, weight: u32) {
-        let mi = &self.fs.mi;
+        let mi = &self.t.mi;
         let i = mi.idx(mv_row, mv_col);
         if !mi.is_inter[i] {
             return;
@@ -350,7 +350,7 @@ impl TileDecoder<'_, '_> {
     }
 
     fn search_stack(&mut self, mv_row: usize, mv_col: usize, cand_list: usize, weight: u32) {
-        let mi = &self.fs.mi;
+        let mi = &self.t.mi;
         let i = mi.idx(mv_row, mv_col);
         let cand_mode = mi.y_mode[i] as usize;
         let cand_size = mi.mi_size[i] as usize;
@@ -378,7 +378,7 @@ impl TileDecoder<'_, '_> {
     }
 
     fn compound_search_stack(&mut self, mv_row: usize, mv_col: usize, weight: u32) {
-        let mi = &self.fs.mi;
+        let mi = &self.t.mi;
         let i = mi.idx(mv_row, mv_col);
         let mut cand = [[mi.mv[i][0].row as i32, mi.mv[i][0].col as i32], [mi.mv[i][1].row as i32, mi.mv[i][1].col as i32]];
         let cand_mode = mi.y_mode[i] as usize;
@@ -443,7 +443,7 @@ impl TileDecoder<'_, '_> {
                     break;
                 }
                 self.add_extra_mv_candidate(mv_row as usize, mv_col as usize, is_compound);
-                let mi = &self.fs.mi;
+                let mi = &self.t.mi;
                 let sz = mi.mi_size[mi.idx(mv_row as usize, mv_col as usize)] as usize;
                 idx += if pass == 0 { NUM_4X4_BLOCKS_WIDE[sz] } else { NUM_4X4_BLOCKS_HIGH[sz] } as isize;
             }
@@ -492,7 +492,7 @@ impl TileDecoder<'_, '_> {
     }
 
     fn add_extra_mv_candidate(&mut self, mv_row: usize, mv_col: usize, is_compound: bool) {
-        let mi = &self.fs.mi;
+        let mi = &self.t.mi;
         let i = mi.idx(mv_row, mv_col);
         let rfs = mi.ref_frame[i];
         let mvs = mi.mv[i];
@@ -593,7 +593,7 @@ impl TileDecoder<'_, '_> {
 
     /// has_overlappable_candidates( ) (7.10.3)
     pub(crate) fn has_overlappable_candidates(&self) -> bool {
-        let mi = &self.fs.mi;
+        let mi = &self.t.mi;
         let (mi_rows, mi_cols) = (self.fs.fh.mi_rows as usize, self.fs.fh.mi_cols as usize);
         if self.b.avail_u {
             let mut x4 = self.b.mi_col;
@@ -629,7 +629,7 @@ impl TileDecoder<'_, '_> {
         let mut do_top_left = true;
         let mut do_top_right = true;
         if self.b.avail_u {
-            let mi = &self.fs.mi;
+            let mi = &self.t.mi;
             let src_w = NUM_4X4_BLOCKS_WIDE[mi.mi_size[mi.idx(mi_row as usize - 1, mi_col as usize)] as usize] as isize;
             if w4 <= src_w {
                 let col_offset = -(mi_col & (src_w - 1));
@@ -643,7 +643,7 @@ impl TileDecoder<'_, '_> {
             } else {
                 let mut i = 0;
                 while i < w4.min(mi_cols - mi_col) {
-                    let mi = &self.fs.mi;
+                    let mi = &self.t.mi;
                     let src_w = NUM_4X4_BLOCKS_WIDE[mi.mi_size[mi.idx(mi_row as usize - 1, (mi_col + i) as usize)] as usize] as isize;
                     let step = w4.min(src_w);
                     self.add_sample(-1, i);
@@ -652,7 +652,7 @@ impl TileDecoder<'_, '_> {
             }
         }
         if self.b.avail_l {
-            let mi = &self.fs.mi;
+            let mi = &self.t.mi;
             let src_h = NUM_4X4_BLOCKS_HIGH[mi.mi_size[mi.idx(mi_row as usize, mi_col as usize - 1)] as usize] as isize;
             if h4 <= src_h {
                 let row_offset = -(mi_row & (src_h - 1));
@@ -663,7 +663,7 @@ impl TileDecoder<'_, '_> {
             } else {
                 let mut i = 0;
                 while i < h4.min(mi_rows - mi_row) {
-                    let mi = &self.fs.mi;
+                    let mi = &self.t.mi;
                     let src_h = NUM_4X4_BLOCKS_HIGH[mi.mi_size[mi.idx((mi_row + i) as usize, mi_col as usize - 1)] as usize] as isize;
                     let step = h4.min(src_h);
                     self.add_sample(i, -1);
@@ -691,7 +691,7 @@ impl TileDecoder<'_, '_> {
         if !self.inside(mv_row, mv_col) {
             return;
         }
-        let mi = &self.fs.mi;
+        let mi = &self.t.mi;
         let i = mi.idx(mv_row as usize, mv_col as usize);
         if !mi.written[i] {
             return;

@@ -1,0 +1,8 @@
+asset:        artcraft-logo-white.svg
+title:        ArtCraft wordmark, light ink for dark backgrounds
+author:       ArtCraft team (Storyteller)
+source:       original work (first-party ArtCraft brand asset supplied by the ArtCraft team)
+license:      LicenseRef-ArtCraft-Trademark — ArtCraft name and logo are trademarks of the ArtCraft team, all rights reserved; used in FilmCraft with permission. Not covered by the project's MIT OR Apache-2.0 licence.
+license-file:
+added:        2026-10-01 by Claude (agent) for Brandon Thomas
+notes:        SVG. Bundled in the app (About dialog, Home screen) and shown in the README header. First-party brand mark: the one exception to the open-licence rule (AGENTS.md §1.8). Forks and redistributions must remove or replace it unless they have permission.

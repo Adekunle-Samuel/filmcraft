@@ -57,8 +57,9 @@ pub fn text_styles(t: &TextProps) -> (TextStyle, ParagraphStyle) {
                 _ => Align::Left,
             },
             leading: t.leading,
-            width: (t.box_width > 0.0).then_some(t.box_width),
+            width: (t.box_width > 0.0 && !t.vertical).then_some(t.box_width),
             rtl: None,
+            vertical: t.vertical,
         },
     )
 }

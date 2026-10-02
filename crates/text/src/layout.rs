@@ -83,6 +83,9 @@ pub struct ParagraphStyle {
     pub width: Option<f32>,
     /// Base direction: None = from the first strong character.
     pub rtl: Option<bool>,
+    /// Vertical text: characters stack top to bottom, paragraphs are columns laid out right to
+    /// left. Alignment applies along the column (Left = top, Center, Right = bottom).
+    pub vertical: bool,
 }
 
 fn hf(h: &mut impl Hasher, v: f32) {
@@ -106,6 +109,7 @@ impl Hash for ParagraphStyle {
         hf(h, self.leading);
         self.width.map(f32::to_bits).hash(h);
         self.rtl.hash(h);
+        self.vertical.hash(h);
     }
 }
 
@@ -150,6 +154,8 @@ pub struct Layout {
     /// The face requested was missing (substituted).
     pub missing_font: bool,
     pub text_len: usize,
+    /// Laid out vertically (one line per character; columns right to left).
+    pub vertical: bool,
 }
 
 impl Layout {
@@ -172,7 +178,15 @@ impl Layout {
     }
     /// Nearest caret byte offset to point `(x, y)`.
     pub fn hit(&self, x: f32, y: f32) -> usize {
-        let Some(l) = self.lines.iter().min_by(|a, b| line_dist(a, y).total_cmp(&line_dist(b, y))) else {
+        let d = |l: &Line| {
+            if self.vertical {
+                let dx = if x < l.x - l.ascent * 0.5 { l.x - l.ascent * 0.5 - x } else { (x - l.x - l.width - l.ascent * 0.5).max(0.0) };
+                line_dist(l, y) + dx
+            } else {
+                line_dist(l, y)
+            }
+        };
+        let Some(l) = self.lines.iter().min_by(|a, b| d(a).total_cmp(&d(b))) else {
             return 0;
         };
         l.carets.iter().min_by(|a, b| (a.1 - x).abs().total_cmp(&(b.1 - x).abs())).map_or(l.range.start, |c| c.0)
@@ -504,6 +518,9 @@ pub fn layout_uncached(text: &str, style: &TextStyle, para: &ParagraphStyle) -> 
     let pm = fonts::face(primary.face).metrics(style.size);
     let line_h = (pm.ascent + pm.descent + pm.line_gap).max(style.size * 0.5) + para.leading;
     let mut lay = Layout { missing_font: primary.missing, text_len: text.len(), ..Default::default() };
+    if para.vertical {
+        return layout_vertical(text, style, para, primary, line_h, lay);
+    }
     let mut base = 0usize;
     let mut plines = Vec::new();
     for p in text.split('\n') {
@@ -555,6 +572,63 @@ pub fn layout_uncached(text: &str, style: &TextStyle, para: &ParagraphStyle) -> 
     let first = &lay.lines[0];
     let last = lay.lines.last().expect("at least one line");
     lay.bounds = [x0, first.baseline - first.ascent, x1.max(x0), last.baseline + last.descent];
+    lay
+}
+
+/// Vertical layout: each character is its own line (so carets, hit testing and selection work
+/// unchanged), stacked top to bottom and centred on its column; columns run right to left.
+fn layout_vertical(text: &str, style: &TextStyle, para: &ParagraphStyle, primary: Resolved, col_w: f32, mut lay: Layout) -> Layout {
+    let pm = fonts::face(primary.face).metrics(style.size);
+    let row = (pm.ascent + pm.descent).max(style.size * 0.5) + style.tracking * style.size / 1000.0;
+    let flat = ParagraphStyle::default();
+    lay.vertical = true;
+    let mut base = 0usize;
+    let mut ncols = 0usize;
+    for (c, p) in text.split('\n').enumerate() {
+        ncols = c + 1;
+        let p_clean = p.strip_suffix('\r').unwrap_or(p);
+        let mut cells: Vec<ParaLine> = Vec::new();
+        if p_clean.is_empty() {
+            cells.extend(paragraph("", base, style, &flat, primary));
+        }
+        for (off, ch) in p_clean.char_indices() {
+            cells.extend(paragraph(&p_clean[off..off + ch.len_utf8()], base + off, style, &flat, primary));
+        }
+        let h = row * cells.len() as f32;
+        let y0 = match para.align {
+            Align::Center => -h / 2.0,
+            Align::Right => -h,
+            _ => 0.0,
+        };
+        let cx = -(c as f32) * col_w;
+        for (k, pl) in cells.into_iter().enumerate() {
+            let baseline = y0 + row * k as f32;
+            let shift = cx - pl.content / 2.0 - pl.left_trim;
+            let g0 = lay.glyphs.len();
+            lay.glyphs.extend(pl.glyphs.into_iter().map(|mut g| {
+                g.x += shift;
+                g.y += baseline;
+                g
+            }));
+            lay.lines.push(Line {
+                range: pl.range,
+                baseline,
+                x: shift + pl.left_trim,
+                width: pl.content,
+                ascent: pl.ascent,
+                descent: pl.descent,
+                glyphs: g0..lay.glyphs.len(),
+                carets: pl.carets.into_iter().map(|(b, x)| (b, x + shift)).collect(),
+            });
+        }
+        base += p.len() + 1;
+    }
+    let (mut y0, mut y1) = (f32::MAX, f32::MIN);
+    for l in &lay.lines {
+        y0 = y0.min(l.baseline - l.ascent);
+        y1 = y1.max(l.baseline + l.descent);
+    }
+    lay.bounds = [-(ncols.max(1) as f32 - 0.5) * col_w, y0, col_w / 2.0, y1.max(y0)];
     lay
 }
 
@@ -651,6 +725,29 @@ mod tests {
         let gap = l.lines[1].baseline - l.lines[0].baseline;
         let l2 = layout("one\ntwo", &st(30.0), &ParagraphStyle { leading: 10.0, ..Default::default() });
         assert!((l2.lines[1].baseline - l2.lines[0].baseline - gap - 10.0).abs() < 1e-3);
+    }
+
+    #[test]
+    fn vertical_text_stacks_characters_in_columns() {
+        let p = ParagraphStyle { vertical: true, ..Default::default() };
+        let l = layout("abc\nde", &st(40.0), &p);
+        assert!(l.vertical);
+        assert_eq!(l.lines.len(), 5, "one line per character");
+        // first column: same centre x, increasing baselines
+        let cx = |i: usize| l.lines[i].x + l.lines[i].width / 2.0;
+        assert!((cx(0) - cx(2)).abs() < 1e-3 && l.lines[1].baseline > l.lines[0].baseline && l.lines[2].baseline > l.lines[1].baseline);
+        // second column is to the left of the first
+        assert!(cx(3) < cx(0) - 20.0, "{} {}", cx(3), cx(0));
+        assert_eq!(l.lines[3].range, 4..5);
+        // taller than wide for a single column
+        let one = layout("abcdef", &st(40.0), &p);
+        assert!(one.bounds[3] - one.bounds[1] > 3.0 * (one.bounds[2] - one.bounds[0]), "{:?}", one.bounds);
+        // hit testing finds the character in the second column
+        let (x, b, _) = l.caret(4);
+        assert_eq!(l.hit(x + 1.0, b - 5.0), 4);
+        // differs from horizontal layout in the cache
+        let h = layout("abc\nde", &st(40.0), &ParagraphStyle::default());
+        assert_eq!(h.lines.len(), 2);
     }
 
     #[test]

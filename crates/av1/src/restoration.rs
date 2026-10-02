@@ -104,7 +104,7 @@ pub(crate) fn loop_restoration(fs: &FrameState, cur: &FrameBuf, cdef: &FrameBuf)
                 let h = (4 >> sub_y).min(plane_end_y - y + 1);
                 if w > 0 && h > 0 {
                     let ui = (unit_row * unit_cols + unit_col) as usize;
-                    match fs.lr_type[plane][ui] {
+                    match fs.lr.lr_type[plane][ui] {
                         t if t == RESTORE_WIENER as u8 => wiener(fs, &ctx, &mut lr.planes[plane], plane, ui, x, y, w, h, bd),
                         t if t == RESTORE_SGRPROJ as u8 => self_guided(fs, &ctx, &mut lr.planes[plane], plane, ui, x, y, w, h, bd),
                         _ => {}
@@ -122,7 +122,7 @@ pub(crate) fn loop_restoration(fs: &FrameState, cur: &FrameBuf, cdef: &FrameBuf)
 fn wiener(fs: &FrameState, ctx: &LrCtx, out: &mut Plane, plane: usize, ui: usize, x: i32, y: i32, w: i32, h: i32, bd: u32) {
     let round0: u32 = if bd == 12 { 5 } else { 3 };
     let round1: u32 = if bd == 12 { 9 } else { 11 };
-    let coef = &fs.lr_wiener[plane][ui];
+    let coef = &fs.lr.lr_wiener[plane][ui];
     let mk = |c: &[i8; 3]| -> [i32; 7] {
         let mut f = [0i32; 7];
         f[3] = 128;
@@ -164,12 +164,12 @@ fn wiener(fs: &FrameState, ctx: &LrCtx, out: &mut Plane, plane: usize, ui: usize
 
 #[allow(clippy::too_many_arguments)]
 fn self_guided(fs: &FrameState, ctx: &LrCtx, out: &mut Plane, plane: usize, ui: usize, x: i32, y: i32, w: i32, h: i32, bd: u32) {
-    let set = fs.lr_sgr_set[plane][ui] as usize;
+    let set = fs.lr.lr_sgr_set[plane][ui] as usize;
     let mut flt0 = [[0i32; 4]; 4];
     let mut flt1 = [[0i32; 4]; 4];
     box_filter(ctx, x, y, w, h, set, 0, bd, &mut flt0);
     box_filter(ctx, x, y, w, h, set, 1, bd, &mut flt1);
-    let xqd = fs.lr_sgr_xqd[plane][ui];
+    let xqd = fs.lr.lr_sgr_xqd[plane][ui];
     let w0 = xqd[0] as i32;
     let w1 = xqd[1] as i32;
     let w2 = (1 << SGRPROJ_PRJ_BITS) - w0 - w1;

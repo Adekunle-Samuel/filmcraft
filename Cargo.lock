@@ -1362,6 +1362,7 @@ dependencies = [
  "filmcraft-bitstream",
  "filmcraft-testkit",
  "rayon",
+ "rustix 1.1.5",
  "thiserror 2.0.21",
 ]
 
@@ -1476,6 +1477,7 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror 2.0.21",
+ "web-time",
 ]
 
 [[package]]
@@ -1500,6 +1502,7 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror 2.0.21",
+ "web-time",
 ]
 
 [[package]]
@@ -1748,6 +1751,7 @@ dependencies = [
  "rustix 1.1.5",
  "serde",
  "serde_json",
+ "web-time",
 ]
 
 [[package]]
@@ -1757,6 +1761,30 @@ dependencies = [
  "filmcraft-bitstream",
  "rayon",
  "thiserror 2.0.21",
+]
+
+[[package]]
+name = "filmcraft-web"
+version = "0.1.0"
+dependencies = [
+ "eframe",
+ "egui",
+ "filmcraft-codecs",
+ "filmcraft-color",
+ "filmcraft-engine",
+ "filmcraft-format",
+ "filmcraft-frame",
+ "filmcraft-isobmff",
+ "filmcraft-media",
+ "filmcraft-time",
+ "filmcraft-ui-egui",
+ "js-sys",
+ "log",
+ "serde_json",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "web-sys",
+ "web-time",
 ]
 
 [[package]]

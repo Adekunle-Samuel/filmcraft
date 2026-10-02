@@ -17,6 +17,7 @@ pub mod meters;
 pub mod misc;
 pub mod mixer;
 pub mod monitor;
+pub mod monitor_view;
 pub mod multicam;
 pub mod presets;
 pub mod project;

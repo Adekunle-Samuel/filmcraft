@@ -11,6 +11,8 @@ pub mod cache;
 pub mod cancel;
 pub mod digits;
 pub mod generators;
+pub mod pending;
+pub mod reader;
 pub mod still;
 pub mod wav;
 
@@ -24,6 +26,7 @@ use serde::{Deserialize, Serialize};
 
 pub use cache::FrameCache;
 pub use generators::{DemoScene, Generator};
+pub use reader::{ByteReader, ReaderOpener, SharedReader};
 
 #[derive(Debug, thiserror::Error)]
 pub enum MediaError {

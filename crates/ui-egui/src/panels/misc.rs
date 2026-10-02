@@ -2,7 +2,6 @@
 
 use egui::{Align2, Color32, Rect, Sense, pos2, vec2};
 use filmcraft_time::{TimeDisplay, format_time};
-use serde_json::json;
 
 use crate::FilmcraftApp;
 use crate::frames::{FrameKey, Target};
@@ -126,7 +125,7 @@ pub fn markers(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         app.auto.add(&id, r, &l);
     }
     if let Some((l, visible)) = toggle
-        && let Err(e) = app.session.execute("markers.filterColors", json!({"color": l.name(), "visible": visible}))
+        && let Err(e) = app.session.execute("markers.filterColors", serde_json::json!({"color": l.name(), "visible": visible}))
     {
         app.ui.status = e.to_string();
     }
@@ -228,7 +227,7 @@ pub fn media_browser(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         });
         ui.data_mut(|d| d.insert_temp(dir_id, dir));
         if !import.is_empty() {
-            let r = app.session.execute("file.import", json!({"paths": import}));
+            let r = app.session.execute("file.import", serde_json::json!({"paths": import}));
             if let Err(e) = r {
                 app.ui.status = e.to_string();
             }
@@ -237,7 +236,7 @@ pub fn media_browser(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     #[cfg(target_arch = "wasm32")]
     {
         let _ = dir_id;
-        ui.label(egui::RichText::new("Use File ▸ Import to pick files.").color(t.text_dim));
+        ui.label(egui::RichText::new("Use File ▸ Import, or drop files on the window.").color(t.text_dim));
     }
     let _ = t;
 }

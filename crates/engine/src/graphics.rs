@@ -96,22 +96,38 @@ fn graphic_source(p: &mut filmcraft_project::Project, w: u32, h: u32, rate: film
 /// Place a new graphic clip holding `layer` at the playhead: on the first video track above the
 /// topmost clip at the playhead that is free for the duration (a track is added if needed).
 fn new_graphic_clip(s: &mut Session, layer: filmcraft_project::EffectInstance, name: &str, p: &Value) -> Result<ClipId> {
+    let seconds = f64_p(p, "seconds").unwrap_or(5.0).max(0.01);
+    place_video_clip(s, name, p, "New Graphic", vec![layer], move |pr, (w, h, rate)| {
+        let src = graphic_source(pr, w, h, rate);
+        (src, rate.snap_nearest(Tick::from_seconds_f64(seconds)).max(rate.frame_duration()))
+    })
+}
+
+/// Place a video clip of the item `source` returns (with its duration) at the playhead (or
+/// `time`), above the clips there, as one undo step; selects it.
+fn place_video_clip(
+    s: &mut Session,
+    name: &str,
+    p: &Value,
+    label: &str,
+    extra: Vec<filmcraft_project::EffectInstance>,
+    source: impl FnOnce(&mut filmcraft_project::Project, (u32, u32, filmcraft_time::FrameRate)) -> (ItemId, Tick),
+) -> Result<ClipId> {
     let seq_id = s.state.active_sequence.ok_or(EngineError::NoSequence)?;
     let t = time_p(s, p, "").unwrap_or_else(|| s.playhead());
-    let seconds = f64_p(p, "seconds").unwrap_or(5.0).max(0.01);
     let want_track = u64_p(p, "track").map(|v| v as usize);
     let name = name.to_string();
-    s.edit("New Graphic", |pr, st| {
+    s.edit(label, |pr, st| {
         let (w, h, rate) = {
             let q = pr.sequence(seq_id).ok_or(EngineError::NoSequence)?;
             (q.settings.width, q.settings.height, q.settings.frame_rate)
         };
-        let src = graphic_source(pr, w, h, rate);
+        let (src, dur) = source(pr, (w, h, rate));
         let t = rate.snap(t);
-        let dur = rate.snap_nearest(Tick::from_seconds_f64(seconds)).max(rate.frame_duration());
+        let dur = dur.max(rate.frame_duration());
         let mut ti = pr.make_track_item(src, TrackKind::Video, t, TimeRange::new(Tick::ZERO, dur), rate).ok_or_else(|| bad("graphics.newText", "bad item"))?;
         ti.name = name;
-        ti.effects.push(layer);
+        ti.effects.extend(extra);
         for e in &mut ti.effects {
             filmcraft_project::resolve_auto_points(e, (w, h), (w, h));
         }
@@ -307,20 +323,416 @@ fn move_layers(s: &mut Session, clip: ClipId, moves: Vec<(usize, Vec2)>, label: 
     })
 }
 
-pub fn commands() -> Vec<CommandSpec> {
+#[derive(Clone, Copy, PartialEq)]
+enum AlignTo {
+    /// Each layer to the video frame.
+    Frame,
+    /// The layers' union to the video frame (they keep their relative positions).
+    FrameGroup,
+    /// Each layer to the union of the selection.
+    Selection,
+}
+
+fn align_delta(how: &str, r: [f64; 4], b: [f64; 4]) -> Result<(f64, f64)> {
+    Ok(match how {
+        "left" => (r[0] - b[0], 0.0),
+        "right" => (r[2] - b[2], 0.0),
+        "hcenter" | "center" => ((r[0] + r[2]) / 2.0 - (b[0] + b[2]) / 2.0, 0.0),
+        "top" => (0.0, r[1] - b[1]),
+        "bottom" => (0.0, r[3] - b[3]),
+        "vcenter" | "middle" => (0.0, (r[1] + r[3]) / 2.0 - (b[1] + b[3]) / 2.0),
+        o => return Err(bad("graphics.align", format!("unknown alignment `{o}`"))),
+    })
+}
+
+fn union_box(boxes: &[(usize, Vec2, [f64; 4])]) -> [f64; 4] {
+    boxes.iter().fold([f64::MAX, f64::MAX, f64::MIN, f64::MIN], |a, b| [a[0].min(b.2[0]), a[1].min(b.2[1]), a[2].max(b.2[2]), a[3].max(b.2[3])])
+}
+
+/// Graphics ▸ Align to Video Frame / Align to Video Frame as Group / Align to Selection.
+fn align_layers(s: &mut Session, p: &Value, how: &str, mode: AlignTo) -> Result<Value> {
+    let clip = target_clip(s, p).ok_or_else(|| bad("graphics.align", "no graphic clip"))?;
+    let layers = layers_p(s, clip, p)?;
+    let (boxes, size) = layer_boxes(s, clip, &layers)?;
+    let frame = [0.0, 0.0, size.0 as f64, size.1 as f64];
+    let mode = if mode == AlignTo::Selection && boxes.len() < 2 { AlignTo::Frame } else { mode };
+    let union = union_box(&boxes);
+    let group = align_delta(how, frame, union)?;
+    let mut moves = Vec::new();
+    for (ei, pos, b) in &boxes {
+        let (dx, dy) = match mode {
+            AlignTo::Frame => align_delta(how, frame, *b)?,
+            AlignTo::FrameGroup => group,
+            AlignTo::Selection => align_delta(how, union, *b)?,
+        };
+        moves.push((*ei, Vec2::new(pos.x + dx, pos.y + dy)));
+    }
+    move_layers(s, clip, moves, "Align Layers")?;
+    Ok(json!({"clip": clip.0, "layers": layers}))
+}
+
+/// Graphics ▸ Distribute: equal centre spacing, or (`space`) equal gaps between the layers.
+fn distribute_layers(s: &mut Session, p: &Value, vertical: bool, space: bool) -> Result<Value> {
+    let clip = target_clip(s, p).ok_or_else(|| bad("graphics.distribute", "no graphic clip"))?;
+    let layers = layers_p(s, clip, p)?;
+    let (mut boxes, _) = layer_boxes(s, clip, &layers)?;
+    if boxes.len() < 3 {
+        return Err(bad("graphics.distribute", "select three or more layers"));
+    }
+    let (lo, hi) = if vertical { (1, 3) } else { (0, 2) };
+    let c = |b: &[f64; 4]| (b[lo] + b[hi]) / 2.0;
+    boxes.sort_by(|a, b| c(&a.2).total_cmp(&c(&b.2)));
+    let n = boxes.len() - 1;
+    let deltas: Vec<f64> = if space {
+        let span = boxes[n].2[hi] - boxes[0].2[lo];
+        let total: f64 = boxes.iter().map(|b| b.2[hi] - b.2[lo]).sum();
+        let gap = (span - total) / n as f64;
+        let mut at = boxes[0].2[lo];
+        boxes
+            .iter()
+            .map(|b| {
+                let d = at - b.2[lo];
+                at += b.2[hi] - b.2[lo] + gap;
+                d
+            })
+            .collect()
+    } else {
+        let (first, last) = (c(&boxes[0].2), c(&boxes[n].2));
+        boxes.iter().enumerate().map(|(i, b)| first + (last - first) * i as f64 / n as f64 - c(&b.2)).collect()
+    };
+    let moves =
+        boxes.iter().zip(deltas).map(|((ei, pos, _), d)| (*ei, if vertical { Vec2::new(pos.x, pos.y + d) } else { Vec2::new(pos.x + d, pos.y) })).collect();
+    move_layers(s, clip, moves, "Distribute Layers")?;
+    Ok(json!({"clip": clip.0, "layers": layers}))
+}
+
+/// Move a graphic layer in the paint order (`to`: front / back / forward / backward / index).
+fn arrange_layer(s: &mut Session, p: &Value, to: Value) -> Result<Value> {
+    let clip = target_clip(s, p).ok_or_else(|| bad("graphics.arrangeLayer", "no graphic clip"))?;
+    let (l, _) = layer_effect_index(s, clip, p)?;
+    let dest = s.edit_sequence("Arrange Graphic Layer", |q, _, st| {
+        let (_, it) = q.find_item_mut(clip).ok_or(filmcraft_edit::EditError::NoItem(clip))?;
+        let idx = layer_indices(&it.effects);
+        let last = idx.len() - 1;
+        let dest = match &to {
+            Value::Number(v) => (v.as_u64().unwrap_or(0) as usize).min(last),
+            Value::String(w) => match w.as_str() {
+                "front" => last,
+                "back" => 0,
+                "forward" => (l + 1).min(last),
+                "backward" => l.saturating_sub(1),
+                o => return Err(bad("graphics.arrangeLayer", format!("unknown `to` `{o}`"))),
+            },
+            _ => last,
+        };
+        let e = it.effects.remove(idx[l]);
+        let mut idx2 = layer_indices(&it.effects);
+        let insert_at = if dest >= idx2.len() { idx2.pop().map_or(idx[0], |x| x + 1) } else { idx2[dest] };
+        it.effects.insert(insert_at, e);
+        st.selection = vec![clip];
+        st.graphic_layers = vec![dest];
+        Ok(dest)
+    })?;
+    Ok(json!({"clip": clip.0, "layer": dest}))
+}
+
+/// Graphic clips of the active sequence in timeline order (start, then track bottom → top).
+fn graphic_clips(s: &Session) -> Vec<(Tick, usize, ClipId)> {
+    let Some(q) = s.active_sequence() else { return Vec::new() };
+    let mut v: Vec<(Tick, usize, ClipId)> = q
+        .video_tracks
+        .iter()
+        .enumerate()
+        .flat_map(|(ti, tr)| tr.items.iter().map(move |it| (it.start, ti, it.id)))
+        .filter(|(_, _, c)| is_graphic(s, q, *c))
+        .collect();
+    v.sort();
+    v
+}
+
+/// Graphics ▸ Select ▸ Select Next / Previous Graphic.
+fn select_graphic(s: &mut Session, forward: bool) -> Result<Value> {
+    let all = graphic_clips(s);
+    let cur = s.state.selection.iter().find_map(|c| all.iter().position(|g| g.2 == *c));
+    let ph = s.playhead();
+    let pick = match (cur, forward) {
+        (Some(i), true) => all.get(i + 1),
+        (Some(i), false) => i.checked_sub(1).and_then(|j| all.get(j)),
+        (None, true) => all.iter().find(|g| g.0 >= ph).or(all.first()),
+        (None, false) => all.iter().rev().find(|g| g.0 < ph).or(all.last()),
+    };
+    let (start, _, clip) = *pick.ok_or_else(|| bad("graphics.select", if forward { "no next graphic" } else { "no previous graphic" }))?;
+    let dur = s.active_sequence().and_then(|q| q.find_item(clip)).map_or(Tick::ZERO, |(_, it)| it.duration);
+    s.state.selection = vec![clip];
+    s.state.graphic_layers.clear();
+    if !(ph >= start && ph < start + dur) {
+        s.set_playhead(start);
+    }
+    Ok(json!({"clip": clip.0}))
+}
+
+/// Graphics ▸ Select ▸ Select Next / Previous Layer (cycles through the clip's layers).
+fn select_layer_step(s: &mut Session, forward: bool) -> Result<Value> {
+    let clip = target_clip(s, &Value::Null).ok_or_else(|| bad("graphics.selectLayer", "no graphic clip"))?;
+    let n = s.active_sequence().and_then(|q| q.find_item(clip)).map_or(0, |(_, it)| layer_indices(&it.effects).len());
+    if n == 0 {
+        return Err(bad("graphics.selectLayer", "the graphic has no layers"));
+    }
+    let l = match (s.state.graphic_layers.first().copied().filter(|l| *l < n), forward) {
+        (Some(l), true) => (l + 1) % n,
+        (Some(l), false) => (l + n - 1) % n,
+        (None, true) => 0,
+        (None, false) => n - 1,
+    };
+    s.state.selection = vec![clip];
+    s.state.graphic_layers = vec![l];
+    Ok(json!({"clip": clip.0, "layer": l}))
+}
+
+fn has_two_layers(s: &Session) -> std::result::Result<(), String> {
+    has_graphic(s)?;
+    if s.state.graphic_layers.len() < 2 { Err("select two or more graphic layers".into()) } else { Ok(()) }
+}
+
+fn has_three_layers(s: &Session) -> std::result::Result<(), String> {
+    has_graphic(s)?;
+    if s.state.graphic_layers.len() < 3 { Err("select three or more graphic layers".into()) } else { Ok(()) }
+}
+
+fn has_graphics_in_seq(s: &Session) -> std::result::Result<(), String> {
+    has_seq(s)?;
+    if graphic_clips(s).is_empty() { Err("the sequence has no graphics".into()) } else { Ok(()) }
+}
+
+const ALIGN_PARAMS: &str = r#"{"clip":id?,"layers":[n]? (default: the selected layers)}"#;
+
+macro_rules! align_cmd {
+    ($id:literal, $label:literal, $menu:expr, $how:literal, $mode:expr, $en:expr) => {
+        spec($id, $label, &["Graphics and Titles", $menu], None, ALIGN_PARAMS, $en, |s, p| align_layers(s, p, $how, $mode))
+    };
+}
+
+macro_rules! arrange_cmd {
+    ($id:literal, $label:literal, $sc:literal, $to:literal) => {
+        spec($id, $label, &["Graphics and Titles", "Arrange"], Some($sc), r#"{"clip":id?,"layer":n?}"#, has_graphic, |s, p| arrange_layer(s, p, json!($to)))
+    };
+}
+
+fn new_shape_cmd(s: &mut Session, p: &Value, shape: &str) -> Result<Value> {
+    let mut q = p.clone();
+    q["shape"] = json!(shape);
+    (find_spec("graphics.newShape").run)(s, &q)
+}
+
+fn find_spec(id: &str) -> CommandSpec {
+    commands().into_iter().find(|c| c.id == id).expect("graphics command")
+}
+
+/// Graphics menu commands (New Layer shapes, Align/Distribute/Arrange/Select submenus, resets).
+fn menu_commands() -> Vec<CommandSpec> {
+    const F: &str = "Align to Video Frame";
+    const G: &str = "Align to Video Frame as Group";
+    const S: &str = "Align to Selection";
+    const D: &[&str] = &["Graphics and Titles", "Distribute"];
+    const SEL: &[&str] = &["Graphics and Titles", "Select"];
     vec![
+        spec(
+            "graphics.newVerticalText",
+            "Vertical Text",
+            &["Graphics and Titles", "New Layer"],
+            None,
+            r#"{"text":str="New Text","position":[x,y]?,"clip":id?,"size":px=100,"seconds":f64=5,"time":ticks?}"#,
+            has_seq,
+            |s, p| {
+                let mut p = if p.is_object() { p.clone() } else { json!({}) };
+                p["vertical"] = json!(true);
+                (find_spec("graphics.newText").run)(s, &p)
+            },
+        ),
+        spec(
+            "graphics.newRectangle",
+            "Rectangle",
+            &["Graphics and Titles", "New Layer"],
+            Some("Cmd+Alt+R"),
+            r#"{"position":[x,y]?,"size":[w,h]=[400,200],"clip":id?}"#,
+            has_seq,
+            |s, p| new_shape_cmd(s, p, "rectangle"),
+        ),
+        spec(
+            "graphics.newEllipse",
+            "Ellipse",
+            &["Graphics and Titles", "New Layer"],
+            Some("Cmd+Alt+E"),
+            r#"{"position":[x,y]?,"size":[w,h]=[400,200],"clip":id?}"#,
+            has_seq,
+            |s, p| new_shape_cmd(s, p, "ellipse"),
+        ),
+        spec(
+            "graphics.newPolygon",
+            "Polygon",
+            &["Graphics and Titles", "New Layer"],
+            None,
+            r#"{"position":[x,y]?,"size":[w,h]=[300,300],"sides":n=6,"clip":id?}"#,
+            has_seq,
+            |s, p| {
+                let mut q = if p.is_object() { p.clone() } else { json!({}) };
+                if q.get("size").is_none() {
+                    q["size"] = json!([300, 300]);
+                }
+                let r = new_shape_cmd(s, &q, "polygon")?;
+                if let Some(n) = f64_p(p, "sides") {
+                    // fold the side count into the same undo step
+                    let clip = ClipId(r["clip"].as_u64().unwrap_or(0));
+                    let (_, ei) = layer_effect_index(s, clip, &json!({"layer": r["layer"]}))?;
+                    let mut props = serde_json::Map::new();
+                    props.insert("sides".into(), json!(n));
+                    let ph = s.playhead();
+                    let before = s.history.undo.len();
+                    set_props(s, clip, ei, &props, ph, "Change Graphic Property")?;
+                    if s.history.undo.len() > before {
+                        s.history.undo.pop();
+                    }
+                }
+                Ok(r)
+            },
+        ),
+        spec(
+            "graphics.newFromFile",
+            "From file…",
+            &["Graphics and Titles", "New Layer"],
+            None,
+            r#"{"path":str,"time":ticks?,"track":index?} (imports the image or video and places it above the clips at the playhead)"#,
+            has_seq,
+            |s, p| {
+                let path = str_p(p, "path").ok_or_else(|| bad("graphics.newFromFile", "need `path`"))?.to_string();
+                let r = s.execute("file.import", json!({"paths": [path]}))?;
+                let item = r["items"].as_array().and_then(|a| a.first()).and_then(Value::as_u64).map(ItemId).ok_or_else(|| {
+                    bad(
+                        "graphics.newFromFile",
+                        r["errors"].as_array().and_then(|e| e.first()).and_then(Value::as_str).unwrap_or("nothing imported").to_string(),
+                    )
+                })?;
+                let pi = s.project.item(item).ok_or_else(|| bad("graphics.newFromFile", "no such item"))?;
+                if matches!(&pi.kind, ItemKind::Media(m) if m.info.video.is_none()) {
+                    return Err(bad("graphics.newFromFile", "the file has no picture"));
+                }
+                let (name, dur) = (pi.name.clone(), pi.duration());
+                let clip = place_video_clip(s, &name, p, "New Layer from File", Vec::new(), move |_, _| (item, dur))?;
+                s.state.graphic_layers.clear();
+                Ok(json!({"clip": clip.0, "item": item.0}))
+            },
+        ),
+        align_cmd!("graphics.alignFrame.left", "Left", F, "left", AlignTo::Frame, has_graphic),
+        align_cmd!("graphics.alignFrame.hcenter", "Center Horizontally", F, "hcenter", AlignTo::Frame, has_graphic),
+        align_cmd!("graphics.alignFrame.right", "Right", F, "right", AlignTo::Frame, has_graphic),
+        align_cmd!("graphics.alignFrame.top", "Top", F, "top", AlignTo::Frame, has_graphic),
+        align_cmd!("graphics.alignFrame.vcenter", "Center Vertically", F, "vcenter", AlignTo::Frame, has_graphic),
+        align_cmd!("graphics.alignFrame.bottom", "Bottom", F, "bottom", AlignTo::Frame, has_graphic),
+        align_cmd!("graphics.alignGroup.left", "Left", G, "left", AlignTo::FrameGroup, has_two_layers),
+        align_cmd!("graphics.alignGroup.hcenter", "Center Horizontally", G, "hcenter", AlignTo::FrameGroup, has_two_layers),
+        align_cmd!("graphics.alignGroup.right", "Right", G, "right", AlignTo::FrameGroup, has_two_layers),
+        align_cmd!("graphics.alignGroup.top", "Top", G, "top", AlignTo::FrameGroup, has_two_layers),
+        align_cmd!("graphics.alignGroup.vcenter", "Center Vertically", G, "vcenter", AlignTo::FrameGroup, has_two_layers),
+        align_cmd!("graphics.alignGroup.bottom", "Bottom", G, "bottom", AlignTo::FrameGroup, has_two_layers),
+        align_cmd!("graphics.alignSelection.left", "Left", S, "left", AlignTo::Selection, has_two_layers),
+        align_cmd!("graphics.alignSelection.hcenter", "Center Horizontally", S, "hcenter", AlignTo::Selection, has_two_layers),
+        align_cmd!("graphics.alignSelection.right", "Right", S, "right", AlignTo::Selection, has_two_layers),
+        align_cmd!("graphics.alignSelection.top", "Top", S, "top", AlignTo::Selection, has_two_layers),
+        align_cmd!("graphics.alignSelection.vcenter", "Center Vertically", S, "vcenter", AlignTo::Selection, has_two_layers),
+        align_cmd!("graphics.alignSelection.bottom", "Bottom", S, "bottom", AlignTo::Selection, has_two_layers),
+        spec("graphics.distributeVertically", "Distribute Vertically", D, None, ALIGN_PARAMS, has_three_layers, |s, p| distribute_layers(s, p, true, false)),
+        spec("graphics.distributeSpaceVertically", "Distribute Space Vertically", D, None, ALIGN_PARAMS, has_three_layers, |s, p| {
+            distribute_layers(s, p, true, true)
+        }),
+        spec("graphics.distributeHorizontally", "Distribute Horizontally", D, None, ALIGN_PARAMS, has_three_layers, |s, p| {
+            distribute_layers(s, p, false, false)
+        }),
+        spec("graphics.distributeSpaceHorizontally", "Distribute Space Horizontally", D, None, ALIGN_PARAMS, has_three_layers, |s, p| {
+            distribute_layers(s, p, false, true)
+        }),
+        arrange_cmd!("graphics.bringToFront", "Bring to Front", "Cmd+Shift+]", "front"),
+        arrange_cmd!("graphics.bringForward", "Bring Forward", "Cmd+]", "forward"),
+        arrange_cmd!("graphics.sendBackward", "Send Backward", "Cmd+[", "backward"),
+        arrange_cmd!("graphics.sendToBack", "Send to Back", "Cmd+Shift+[", "back"),
+        spec("graphics.selectNextGraphic", "Select Next Graphic", SEL, None, "{}", has_graphics_in_seq, |s, _| select_graphic(s, true)),
+        spec("graphics.selectPreviousGraphic", "Select Previous Graphic", SEL, None, "{}", has_graphics_in_seq, |s, _| select_graphic(s, false)),
+        spec("graphics.selectNextLayer", "Select Next Layer", SEL, Some("Cmd+Alt+]"), "{}", has_graphic, |s, _| select_layer_step(s, true)),
+        spec("graphics.selectPreviousLayer", "Select Previous Layer", SEL, Some("Cmd+Alt+["), "{}", has_graphic, |s, _| select_layer_step(s, false)),
+        spec(
+            "graphics.resetAllParameters",
+            "Reset All Parameters",
+            &["Graphics and Titles"],
+            None,
+            r#"{"clip":id?,"layers":[n]? (default: the selected layers, else all)}"#,
+            has_graphic,
+            |s, p| {
+                let clip = target_clip(s, p).ok_or_else(|| bad("graphics.resetAllParameters", "no graphic clip"))?;
+                let frame = s.active_sequence().map(|q| (q.settings.width, q.settings.height)).unwrap_or((1920, 1080));
+                let want: Vec<usize> = match p.get("layers").and_then(Value::as_array) {
+                    Some(a) => a.iter().filter_map(Value::as_u64).map(|v| v as usize).collect(),
+                    None => s.state.graphic_layers.clone(),
+                };
+                let n = s.edit_sequence("Reset All Parameters", |q, _, _| {
+                    let (_, it) = q.find_item_mut(clip).ok_or(filmcraft_edit::EditError::NoItem(clip))?;
+                    let mut n = 0;
+                    for (l, ei) in layer_indices(&it.effects).into_iter().enumerate() {
+                        if want.is_empty() || want.contains(&l) {
+                            graphic::reset_layer_params(&mut it.effects[ei]);
+                            filmcraft_project::resolve_auto_points(&mut it.effects[ei], frame, frame);
+                            n += 1;
+                        }
+                    }
+                    Ok(n)
+                })?;
+                Ok(json!({"clip": clip.0, "reset": n}))
+            },
+        ),
+        spec(
+            "graphics.resetDuration",
+            "Reset Duration",
+            &["Graphics and Titles"],
+            None,
+            r#"{"clip":id?,"seconds":f64=5 (the default graphic duration; limited by the next clip on the track)}"#,
+            has_graphic,
+            |s, p| {
+                let clip = target_clip(s, p).ok_or_else(|| bad("graphics.resetDuration", "no graphic clip"))?;
+                let seconds = f64_p(p, "seconds").unwrap_or(5.0).max(0.01);
+                let d = s.edit_sequence("Reset Duration", |q, _, _| {
+                    let rate = q.settings.frame_rate;
+                    let want = rate.snap_nearest(Tick::from_seconds_f64(seconds)).max(rate.frame_duration());
+                    let tr = q.video_tracks.iter_mut().find(|tr| tr.items.iter().any(|i| i.id == clip)).ok_or(filmcraft_edit::EditError::NoItem(clip))?;
+                    let i = tr.items.iter().position(|i| i.id == clip).expect("found");
+                    let start = tr.items[i].start;
+                    let limit = tr.items.get(i + 1).map_or(want, |n| n.start - start);
+                    let d = want.min(limit).max(rate.frame_duration());
+                    tr.items[i].duration = d;
+                    Ok(d)
+                })?;
+                Ok(json!({"clip": clip.0, "duration": d.0}))
+            },
+        ),
+    ]
+}
+
+pub fn commands() -> Vec<CommandSpec> {
+    let mut v = vec![
         spec(
             "graphics.newText",
             "Text",
             &["Graphics and Titles", "New Layer"],
             Some("Cmd+T"),
-            r#"{"text":str="New Text","position":[x,y]?,"clip":id?,"newClip":bool?,"size":px=100,"font":str?,"fontStyle":str?,"seconds":f64=5,"track":index?,"time":ticks?}"#,
+            r#"{"text":str="New Text","position":[x,y]?,"clip":id?,"newClip":bool?,"vertical":bool=false,"size":px=100,"font":str?,"fontStyle":str?,"seconds":f64=5,"track":index?,"time":ticks?}"#,
             has_seq,
             |s, p| {
                 let text = str_p(p, "text").unwrap_or("New Text").to_string();
                 let (w, h) = s.active_sequence().map(|q| (q.settings.width, q.settings.height)).unwrap_or((1920, 1080));
                 let pos = vec2_p(p, "position").unwrap_or(Vec2::new(w as f64 / 2.0, h as f64 / 2.0));
-                let mut layer = new_text_layer(&text, pos, f64_p(p, "size").unwrap_or(100.0));
+                let size = f64_p(p, "size").unwrap_or(100.0);
+                let mut layer = if p.get("vertical").and_then(Value::as_bool) == Some(true) {
+                    graphic::new_vertical_text_layer(&text, pos, size)
+                } else {
+                    new_text_layer(&text, pos, size)
+                };
                 for (k, id) in [("font", "font"), ("fontStyle", "font_style")] {
                     if let Some(v) = str_p(p, k) {
                         layer.params.insert(id.into(), filmcraft_project::Param::new(ParamValue::Text(v.into())));
@@ -341,7 +753,7 @@ pub fn commands() -> Vec<CommandSpec> {
         spec(
             "graphics.newShape",
             "Shape",
-            &["Graphics and Titles", "New Layer"],
+            &[],
             None,
             r#"{"shape":"rectangle|ellipse|polygon|path","position":[x,y]?,"size":[w,h]=[400,200],"points":[[x,y],…]?,"clip":id?,"seconds":f64=5}"#,
             has_seq,
@@ -437,34 +849,8 @@ pub fn commands() -> Vec<CommandSpec> {
             r#"{"clip":id?,"layer":n?,"to":"front|back|forward|backward"|index}"#,
             has_graphic,
             |s, p| {
-                let clip = target_clip(s, p).ok_or_else(|| bad("graphics.arrangeLayer", "no graphic clip"))?;
-                let (l, _) = layer_effect_index(s, clip, p)?;
                 let to = p.get("to").cloned().unwrap_or(json!("front"));
-                let n = s.state.graphic_layers.len();
-                let _ = n;
-                s.edit_sequence("Arrange Graphic Layer", |q, _, st| {
-                    let (_, it) = q.find_item_mut(clip).ok_or(filmcraft_edit::EditError::NoItem(clip))?;
-                    let idx = layer_indices(&it.effects);
-                    let last = idx.len() - 1;
-                    let dest = match &to {
-                        Value::Number(v) => (v.as_u64().unwrap_or(0) as usize).min(last),
-                        Value::String(w) => match w.as_str() {
-                            "front" => last,
-                            "back" => 0,
-                            "forward" => (l + 1).min(last),
-                            "backward" => l.saturating_sub(1),
-                            o => return Err(bad("graphics.arrangeLayer", format!("unknown `to` `{o}`"))),
-                        },
-                        _ => last,
-                    };
-                    let e = it.effects.remove(idx[l]);
-                    let mut idx2 = layer_indices(&it.effects);
-                    let insert_at = if dest >= idx2.len() { idx2.pop().map_or(idx[0], |x| x + 1) } else { idx2[dest] };
-                    it.effects.insert(insert_at, e);
-                    st.graphic_layers = vec![dest];
-                    Ok(())
-                })?;
-                Ok(Value::Null)
+                arrange_layer(s, p, to)
             },
         ),
         spec(
@@ -472,34 +858,16 @@ pub fn commands() -> Vec<CommandSpec> {
             "Align Layers",
             &[],
             None,
-            r#"{"clip":id?,"layers":[n]?,"align":"left|hcenter|right|top|vcenter|bottom","to":"frame|selection"="frame" (one layer always aligns to the frame)}"#,
+            r#"{"clip":id?,"layers":[n]?,"align":"left|hcenter|right|top|vcenter|bottom","to":"frame|group|selection"="frame" (frame: each layer; group: the layers' union; one layer always aligns to the frame)}"#,
             has_graphic,
             |s, p| {
-                let clip = target_clip(s, p).ok_or_else(|| bad("graphics.align", "no graphic clip"))?;
-                let layers = layers_p(s, clip, p)?;
-                let (boxes, size) = layer_boxes(s, clip, &layers)?;
-                let how = str_p(p, "align").ok_or_else(|| bad("graphics.align", "need `align`"))?;
-                let to_sel = str_p(p, "to") == Some("selection") && boxes.len() > 1;
-                let r = if to_sel {
-                    boxes.iter().fold([f64::MAX, f64::MAX, f64::MIN, f64::MIN], |a, b| [a[0].min(b.2[0]), a[1].min(b.2[1]), a[2].max(b.2[2]), a[3].max(b.2[3])])
-                } else {
-                    [0.0, 0.0, size.0 as f64, size.1 as f64]
+                let how = str_p(p, "align").ok_or_else(|| bad("graphics.align", "need `align`"))?.to_string();
+                let mode = match str_p(p, "to") {
+                    Some("selection") => AlignTo::Selection,
+                    Some("group") => AlignTo::FrameGroup,
+                    _ => AlignTo::Frame,
                 };
-                let mut moves = Vec::new();
-                for (ei, pos, b) in boxes {
-                    let (dx, dy) = match how {
-                        "left" => (r[0] - b[0], 0.0),
-                        "right" => (r[2] - b[2], 0.0),
-                        "hcenter" | "center" => ((r[0] + r[2]) / 2.0 - (b[0] + b[2]) / 2.0, 0.0),
-                        "top" => (0.0, r[1] - b[1]),
-                        "bottom" => (0.0, r[3] - b[3]),
-                        "vcenter" | "middle" => (0.0, (r[1] + r[3]) / 2.0 - (b[1] + b[3]) / 2.0),
-                        o => return Err(bad("graphics.align", format!("unknown alignment `{o}`"))),
-                    };
-                    moves.push((ei, Vec2::new(pos.x + dx, pos.y + dy)));
-                }
-                move_layers(s, clip, moves, "Align Layers")?;
-                Ok(Value::Null)
+                align_layers(s, p, &how, mode)
             },
         ),
         spec(
@@ -507,30 +875,12 @@ pub fn commands() -> Vec<CommandSpec> {
             "Distribute Layers",
             &[],
             None,
-            r#"{"clip":id?,"layers":[n] (3 or more)?,"axis":"horizontal|vertical"}"#,
+            r#"{"clip":id?,"layers":[n] (3 or more)?,"axis":"horizontal|vertical","space":bool=false (equal gaps instead of equal centre spacing)}"#,
             has_graphic,
             |s, p| {
-                let clip = target_clip(s, p).ok_or_else(|| bad("graphics.distribute", "no graphic clip"))?;
-                let layers = layers_p(s, clip, p)?;
-                let (mut boxes, _) = layer_boxes(s, clip, &layers)?;
-                if boxes.len() < 3 {
-                    return Err(bad("graphics.distribute", "select three or more layers"));
-                }
                 let vertical = str_p(p, "axis") == Some("vertical");
-                let c = |b: &[f64; 4]| if vertical { (b[1] + b[3]) / 2.0 } else { (b[0] + b[2]) / 2.0 };
-                boxes.sort_by(|a, b| c(&a.2).total_cmp(&c(&b.2)));
-                let (first, last) = (c(&boxes[0].2), c(&boxes[boxes.len() - 1].2));
-                let n = boxes.len() - 1;
-                let moves = boxes
-                    .iter()
-                    .enumerate()
-                    .map(|(i, (ei, pos, b))| {
-                        let d = first + (last - first) * i as f64 / n as f64 - c(b);
-                        (*ei, if vertical { Vec2::new(pos.x, pos.y + d) } else { Vec2::new(pos.x + d, pos.y) })
-                    })
-                    .collect();
-                move_layers(s, clip, moves, "Distribute Layers")?;
-                Ok(Value::Null)
+                let space = p.get("space").and_then(Value::as_bool).unwrap_or(false);
+                distribute_layers(s, p, vertical, space)
             },
         ),
         query("graphics.list", "List Graphic Layers", r#"{"clip":id?}"#, |s, p| {
@@ -543,7 +893,9 @@ pub fn commands() -> Vec<CommandSpec> {
             }
             Ok(json!(filmcraft_text::families().into_iter().map(|(f, st)| json!({"family": f, "styles": st})).collect::<Vec<_>>()))
         }),
-    ]
+    ];
+    v.extend(menu_commands());
+    v
 }
 
 #[cfg(test)]

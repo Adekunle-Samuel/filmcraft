@@ -43,6 +43,11 @@ reproduce an image (for example, point lists traced from someone else's icon).
    `crates/media`, procedural looks in `crates/render`) are original work under the project licence
    and are listed in `ATTRIBUTION.md`.
 7. **When in doubt, leave it out** and draw or generate it yourself.
+8. **The one exception: first-party ArtCraft brand marks.** The ArtCraft name and logos in `docs/brand/`
+   (supplied by the ArtCraft team) are trademarks, all rights reserved, used with permission. They still
+   need a sidecar and an `ATTRIBUTION.md` row (licence `LicenseRef-ArtCraft-Trademark`). No other
+   non-open asset is allowed, and this exception never covers third-party marks (Adobe, Discord, GitHub
+   and other logos stay out; draw a generic icon instead).
 
 ## 2. Clean-room code
 

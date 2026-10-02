@@ -22,7 +22,7 @@ reference) is used only as an external test oracle.
 | Uncompressed frame header (all fields, frame size / superres / render size, tile info, quantiser, segmentation, delta q/lf, loop filter, CDEF, LR, tx mode, skip mode, global motion, film grain params) | 5.9 | done |
 | Reference frame state: set_frame_refs, setup_past_independence, load_previous, reference update, show_existing_frame | 7.8, 7.20, 7.21 | done |
 | Symbol decoder, CDF adaptation, init / load / save / frame-end CDF update | 8.2, 8.3 | done |
-| Tiles and tile groups (uniform and explicit spacing, tile size bytes) | 5.11 | done (decoded sequentially) |
+| Tiles and tile groups (uniform and explicit spacing, tile size bytes) | 5.11 | done (tiles decoded in parallel) |
 | Intra frame mode info: partitions, skip, segment id, CDEF index, delta q / lf, y / uv modes, angle deltas, CfL alphas, palette (colors, cache, color index map), filter intra, tx size (incl. var-tx syntax) | 5.11 | done, bit-exact |
 | Coefficients (all_zero, eob, base / br levels, Golomb, dc sign, tx type sets, scans) | 5.11.39 | done, bit-exact |
 | Dequantisation incl. quantiser matrices | 7.12 | done (qmatrix not yet oracle-tested) |
@@ -63,13 +63,42 @@ OBMC / warped motion, motion-field projection, all loop filters; presets 3–8, 
 sizes), plus super-resolution (denominator 12) and film-grain streams, and compares every frame
 with libdav1d: **bit-exact** on all 6 fixtures.
 
+## Threading and performance
+
+`Decoder::new()` uses all cores (`Decoder::with_threads(1)` decodes on the calling thread; on
+wasm32, or without the default `threads` feature, everything runs on the calling thread). Headers are parsed in order; each frame is
+then decoded by a frame worker once the reference frames it reads are finished, so independent
+frames (hierarchical GOP layers) decode concurrently; tiles of a frame decode in parallel into
+private buffers that are merged afterwards. Results never depend on scheduling (the oracle tests
+compare 1 thread, many threads and libdav1d). With frame threads, pictures may be returned by a
+later `decode_pts` call or by `flush`; each carries the `pts` of the temporal unit that showed it.
+
+`tests/perf.rs` (ignored) prints single-threaded fps (thread CPU time), per-stage ms/frame
+(`Decoder::stats()`) and all-core fps for 1080p fixtures. The hot loops (sub-pixel filters,
+CDEF, inverse transforms, deblocking, entropy decoding) are written for auto-vectorisation.
+
+Measured 2026-10-01 on a 14-core Apple Silicon Mac (release build, SVT-AV1 preset 8 1080p
+fixtures from `tests/perf.rs`), before (`31f8b3d`: hot loops only, no threading) and after tile / frame /
+post-filter threading. The machine was heavily loaded by other builds during both runs (load
+average 200–400), so the all-core wall figures understate what an idle machine reaches and are
+noisy; single-threaded figures use thread CPU time and are comparable.
+
+| Fixture | 1 thread before | 1 thread after | 14 threads before | 14 threads after |
+|---|---|---|---|---|
+| `perf_1080p_intra` (10 key frames) | 43.3 fps | 43.0 fps | 6.5 fps | 20.8 fps |
+| `perf_1080p_gop` (60 frames, crf 30) | 45.5 fps | 40.7 fps | 7.7 fps | 11.0 fps |
+| `perf_1080p_gop_10bit` | 41.3 fps | 35.9 fps | 8.0 fps | 6.6 fps |
+| `perf_1080p_gop_hq` (crf 18) | 19.5 fps | 19.4 fps | 2.4 fps | 3.6 fps |
+| `perf_1080p_gop_tiles` (4x2 tiles) | 44.4 fps | 44.7 fps | 2.7 fps | 16.3 fps |
+
 ## API
 
 ```rust
 let mut dec = filmcraft_av1::Decoder::new();
 for sample in samples {                  // one temporal unit (MP4 / Matroska sample) each
-    for pic in dec.decode(&sample)? {    // shown frames, planar u16
-        // pic.width, pic.height, pic.bit_depth, pic.planes[0..3]
+    for pic in dec.decode_pts(&sample, pts)? {   // shown frames ready so far, planar u16
+        // pic.width, pic.height, pic.bit_depth, pic.planes[0..3], pic.pts
     }
 }
+let rest = dec.flush();                  // pictures still in flight at the end
 ```

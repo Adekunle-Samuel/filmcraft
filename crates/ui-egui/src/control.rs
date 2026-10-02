@@ -158,6 +158,21 @@ pub fn handle(app: &mut FilmcraftApp, ctx: &egui::Context, req: &ControlRequest)
             if let Some(v) = p.get("safeMargins").and_then(Value::as_bool) {
                 app.ui.program.safe_margins = v;
             }
+            // Monitor view state (serde fields of `MonitorView`), merged into the current state.
+            for k in ["program", "source"] {
+                let Some(patch) = p.get(k).and_then(Value::as_object) else { continue };
+                let mv = if k == "program" { &mut app.ui.program } else { &mut app.ui.source };
+                let mut cur = serde_json::to_value(&*mv).unwrap_or_default();
+                if let Some(o) = cur.as_object_mut() {
+                    for (f, v) in patch {
+                        o.insert(f.clone(), v.clone());
+                    }
+                }
+                match serde_json::from_value(cur) {
+                    Ok(m) => *mv = m,
+                    Err(e) => return err(format!("`{k}`: {e}")),
+                }
+            }
             ok(Value::Null)
         }
         "ui.panel.show" | "ui.panel.close" => {
@@ -329,6 +344,13 @@ pub fn save_screenshot(ctx: &egui::Context, image: &egui::ColorImage, path: Opti
             rgba.extend_from_slice(&[c.r(), c.g(), c.b(), 255]);
         }
     }
+    if cfg!(target_arch = "wasm32") {
+        // No filesystem on the web: the PNG comes back in the reply.
+        return match encode_png(&rgba, cw as u32, ch as u32) {
+            Ok(png) => json!({"ok": true, "result": {"pngBase64": base64(&png), "width": cw, "height": ch}}),
+            Err(e) => json!({"ok": false, "error": e}),
+        };
+    }
     let path = path.map(str::to_string).unwrap_or_else(|| std::env::temp_dir().join("filmcraft-screenshot.png").to_string_lossy().to_string());
     match encode_png(&rgba, cw as u32, ch as u32) {
         Ok(png) => match std::fs::write(&path, png) {
@@ -337,6 +359,23 @@ pub fn save_screenshot(ctx: &egui::Context, image: &egui::ColorImage, path: Opti
         },
         Err(e) => json!({"ok": false, "error": e}),
     }
+}
+
+/// Standard base64 (RFC 4648, with padding).
+pub fn base64(data: &[u8]) -> String {
+    const A: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity(data.len().div_ceil(3) * 4);
+    for c in data.chunks(3) {
+        let n = (c[0] as u32) << 16 | (*c.get(1).unwrap_or(&0) as u32) << 8 | *c.get(2).unwrap_or(&0) as u32;
+        for k in 0..4 {
+            if k <= c.len() {
+                out.push(A[(n >> (18 - 6 * k) & 63) as usize] as char);
+            } else {
+                out.push('=');
+            }
+        }
+    }
+    out
 }
 
 /// Minimal PNG encoder (stored deflate blocks, no compression dependency).
@@ -388,4 +427,14 @@ pub fn encode_png(rgba: &[u8], w: u32, h: u32) -> Result<Vec<u8>, String> {
     chunk(&mut out, b"IDAT", &z);
     chunk(&mut out, b"IEND", &[]);
     Ok(out)
+}
+
+#[cfg(test)]
+mod base64_tests {
+    #[test]
+    fn rfc4648_vectors() {
+        for (i, o) in [("", ""), ("f", "Zg=="), ("fo", "Zm8="), ("foo", "Zm9v"), ("foob", "Zm9vYg=="), ("fooba", "Zm9vYmE="), ("foobar", "Zm9vYmFy")] {
+            assert_eq!(super::base64(i.as_bytes()), o);
+        }
+    }
 }

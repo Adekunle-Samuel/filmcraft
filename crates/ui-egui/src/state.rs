@@ -213,22 +213,116 @@ impl Default for TimelineView {
     }
 }
 
+/// Monitor display mode (View ▸ Display Mode / the monitor's wrench menu). Multi-Camera is the
+/// separate `MonitorView::multicam` switch.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum DisplayMode {
+    #[default]
+    Composite,
+    Alpha,
+    Red,
+    Green,
+    Blue,
+    /// Source Monitor: the clip's audio waveform.
+    AudioWaveform,
+    /// Program Monitor: a reference frame beside the current frame.
+    Comparison,
+    /// Source Monitor: the picture above the audio waveform.
+    VideoAndWaveform,
+}
+
+impl DisplayMode {
+    /// Shows a single colour channel (or alpha) as greyscale.
+    pub fn is_channel(self) -> bool {
+        matches!(self, DisplayMode::Alpha | DisplayMode::Red | DisplayMode::Green | DisplayMode::Blue)
+    }
+}
+
+/// Monitor guide (frame pixels): `vertical` = a line at x = `position`.
+pub type Guide = filmcraft_engine::autosave::Guide;
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(default)]
 pub struct MonitorView {
+    /// Playback Resolution (used while playing).
     pub res: PlaybackRes,
-    /// Zoom: None = Fit.
+    /// Paused Resolution (used while stopped).
+    pub paused_res: PlaybackRes,
+    /// High Quality Playback: play at the paused resolution when it is higher.
+    pub high_quality: bool,
+    /// Magnification: None = Fit, else the zoom factor (1.0 = 100%: one frame pixel per screen pixel).
     pub zoom: Option<f32>,
+    /// Pan offset of a magnified picture from the centre (points).
+    pub pan: [f32; 2],
     pub safe_margins: bool,
     pub show_transport: bool,
     /// Program monitor display mode Multi-Camera (angle grid + program).
-    #[serde(default)]
     pub multicam: bool,
+    pub display: DisplayMode,
+    /// Comparison View: the reference frame's time (ticks); None = set on entry from the playhead.
+    pub compare_ref: Option<i64>,
+    pub show_rulers: bool,
+    pub show_guides: bool,
+    pub lock_guides: bool,
+    /// Snap in Program Monitor: graphic drags snap to guides, the frame edges and centre.
+    pub snap: bool,
+    pub guides: Vec<Guide>,
 }
 
 impl Default for MonitorView {
     fn default() -> Self {
-        Self { res: PlaybackRes::Half, zoom: None, safe_margins: false, show_transport: true, multicam: false }
+        Self {
+            res: PlaybackRes::Half,
+            paused_res: PlaybackRes::Full,
+            high_quality: false,
+            zoom: None,
+            pan: [0.0, 0.0],
+            safe_margins: false,
+            show_transport: true,
+            multicam: false,
+            display: DisplayMode::Composite,
+            compare_ref: None,
+            show_rulers: false,
+            show_guides: true,
+            lock_guides: false,
+            snap: true,
+            guides: Vec::new(),
+        }
     }
+}
+
+impl MonitorView {
+    /// The resolution frames are rendered at: Playback Resolution while playing (or the higher
+    /// of it and Paused Resolution with High Quality Playback), Paused Resolution when stopped.
+    pub fn effective_res(&self, playing: bool) -> PlaybackRes {
+        if !playing || (self.high_quality && self.paused_res.scale() > self.res.scale()) { self.paused_res } else { self.res }
+    }
+    /// The display mode in effect (None = Multi-Camera).
+    pub fn display_mode(&self) -> Option<DisplayMode> {
+        (!self.multicam).then_some(self.display)
+    }
+}
+
+/// Guide dialogs (View ▸ Add Guide…, Guide Templates ▸ Save Guides as Template… / Manage Guides…).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub enum GuideDialog {
+    /// `source`: the dialog acts on the Source Monitor (else the Program Monitor).
+    Add {
+        vertical: bool,
+        position: f64,
+        #[serde(default)]
+        source: bool,
+    },
+    SaveTemplate {
+        name: String,
+        #[serde(default)]
+        source: bool,
+    },
+    Manage {
+        selected: Option<usize>,
+        #[serde(default)]
+        source: bool,
+    },
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -328,6 +422,9 @@ pub struct UiState {
     /// Multi-Camera Record On/Off (key 0): playing in the Multi-Camera view records cuts.
     #[serde(default = "yes")]
     pub multicam_record: bool,
+    /// Open guide dialog (Add Guide / Save Guides as Template / Manage Guides).
+    #[serde(default)]
+    pub guide_dialog: Option<GuideDialog>,
 }
 
 /// A pen mask in progress: vertices placed so far, in clip pixels (`[x, y, tangent x, tangent y]`).
@@ -588,6 +685,7 @@ impl Default for UiState {
             save_preset: None,
             sync_dialog: None,
             multicam_record: true,
+            guide_dialog: None,
         }
     }
 }

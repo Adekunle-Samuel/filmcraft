@@ -119,11 +119,15 @@ impl MediaPool {
         filmcraft_media::open_bytes(name, bytes, &openers)
     }
 
-    /// Read and open a file through `services`.
+    /// Read and open a file through `services` (through its random-access reader when the host
+    /// has one: containers then read only their index now and samples on demand).
     pub fn open_file(&self, path: &str, services: &dyn Services) -> Result<SharedSource, MediaError> {
-        let bytes = services
-            .read_file(path)
-            .map_err(|e| if e.kind() == std::io::ErrorKind::NotFound { MediaError::Offline(e.to_string()) } else { MediaError::Io(e.to_string()) })?;
+        let io = |e: std::io::Error| if e.kind() == std::io::ErrorKind::NotFound { MediaError::Offline(e.to_string()) } else { MediaError::Io(e.to_string()) };
+        if let Some(r) = services.reader(path) {
+            let openers = self.openers.read().unwrap_or_else(|e| e.into_inner()).clone();
+            return filmcraft_media::reader::open_reader(&file_name(path), r.map_err(io)?, &filmcraft_codecs::reader_openers(), &openers);
+        }
+        let bytes = services.read_file(path).map_err(io)?;
         self.open_bytes(&file_name(path), bytes.into())
     }
 
@@ -171,6 +175,10 @@ impl MediaPool {
                 Ok(s) => {
                     self.offline.write().unwrap_or_else(|e| e.into_inner()).remove(&item);
                     s
+                }
+                Err(_) if filmcraft_media::pending::is_set() => {
+                    // the host is still fetching the file's bytes: show the slate for now, retry later
+                    return Some(Arc::new(SlateSource::new(m.info.clone(), &file_name(path), OfflineReason::Missing)));
                 }
                 Err(e) => {
                     log::warn!("media offline: {path}: {e}");

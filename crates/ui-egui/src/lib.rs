@@ -5,11 +5,13 @@
 //! control-channel handlers. Swap it for another toolkit without touching the engine.
 
 pub mod automation;
+pub mod brand;
 pub mod control;
 pub mod dock;
 pub mod frames;
 pub mod header;
 pub mod icons;
+pub mod links;
 pub mod menus;
 pub mod panels;
 pub mod state;
@@ -175,7 +177,7 @@ impl FilmcraftApp {
         {
             return Some((t, g.size));
         }
-        let t0 = std::time::Instant::now();
+        let t0 = web_time::Instant::now();
         let (view, size) = g.compositor.composite_prepared(&plan.plan, Some(&plan.prepared));
         let view = view.clone();
         g.last_ms = t0.elapsed().as_secs_f32() * 1000.0;
@@ -491,6 +493,30 @@ impl FilmcraftApp {
         id
     }
 
+    /// Like [`Self::texture_for`], uploading `map(img)` (computed only when the key changed).
+    pub fn texture_for_mapped(
+        &mut self,
+        ctx: &egui::Context,
+        name: &str,
+        key: FrameKey,
+        img: &frames::Rgba,
+        map: impl FnOnce(&frames::Rgba) -> frames::Rgba,
+    ) -> egui::TextureId {
+        if let Some((k, tex)) = self.textures.get_mut(name) {
+            if *k != key {
+                let m = map(img);
+                tex.set(egui::ColorImage::from_rgba_unmultiplied([m.w, m.h], &m.px), TextureOptions::LINEAR);
+                *k = key;
+            }
+            return tex.id();
+        }
+        let m = map(img);
+        let tex = ctx.load_texture(name, egui::ColorImage::from_rgba_unmultiplied([m.w, m.h], &m.px), TextureOptions::LINEAR);
+        let id = tex.id();
+        self.textures.insert(name.to_string(), (key, tex));
+        id
+    }
+
     pub fn texture_existing(&self, name: &str) -> Option<(egui::TextureId, egui::Vec2)> {
         self.textures.get(name).map(|(_, t)| (t.id(), t.size_vec2()))
     }
@@ -574,6 +600,12 @@ impl FilmcraftApp {
             "file.open" => {
                 let Some(path) = self.hooks.pick_open_project.as_mut().and_then(|f| f()) else { return Ok(Value::Null) };
                 self.session.execute("file.open", json!({"path": path})).map_err(|e| e.to_string())
+            }
+            "graphics.newFromFile" => {
+                let exts: Vec<&str> = filmcraft_media::STILL_EXTENSIONS.iter().chain(filmcraft_media::VIDEO_EXTENSIONS).copied().collect();
+                let paths = self.hooks.pick_files.as_mut().map(|f| f(&exts)).unwrap_or_default();
+                let Some(path) = paths.into_iter().next() else { return Ok(Value::Null) };
+                self.session.execute("graphics.newFromFile", json!({"path": path})).map_err(|e| e.to_string())
             }
             "captions.import" => {
                 let paths = self.hooks.pick_files.as_mut().map(|f| f(&["srt", "vtt", "scc"])).unwrap_or_default();
@@ -993,6 +1025,9 @@ impl eframe::App for FilmcraftApp {
             ui.ctx().request_repaint();
             return;
         }
+        // No frame worker threads on the web: render queued frames here, within a time budget
+        // that leaves room for the UI pass (a no-op where workers run).
+        self.frames.pump(std::time::Duration::from_millis(if self.playback.playing { 24 } else { 40 }));
         self.frame(ui);
         let ctx = ui.ctx().clone();
         self.last_ui_time = ctx.input(|i| i.time);

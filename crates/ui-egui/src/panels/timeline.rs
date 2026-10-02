@@ -601,7 +601,7 @@ fn waveform_display_gain(source_peak: f32, clip_gain_db: f64) -> f32 {
     filmcraft_render::audio::db_to_gain(clip_gain_db) * boost
 }
 
-fn request_peaks(app: &mut FilmcraftApp, item: ItemId) -> Option<Arc<Vec<(f32, f32)>>> {
+pub(crate) fn request_peaks(app: &mut FilmcraftApp, item: ItemId) -> Option<Arc<Vec<(f32, f32)>>> {
     if let Some(p) = app.tl.peaks.lock().unwrap_or_else(|e| e.into_inner()).get(&item) {
         return Some(p.clone());
     }

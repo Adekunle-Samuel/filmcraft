@@ -17,16 +17,19 @@ mod inter;
 mod inter_info;
 mod intra;
 mod mvpred;
+mod par;
 mod postfilter;
 mod restoration;
 mod spec_tables;
 mod state;
+mod stats;
 mod symbol;
 mod tile;
 mod transform;
 
 pub use decoder::Decoder;
 pub use header::{ColorConfig, FrameHeader, SequenceHeader};
+pub use stats::{DecodeStats, Stage};
 
 /// Decoder errors.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -57,6 +60,8 @@ pub struct Picture {
     pub transfer_characteristics: u8,
     pub matrix_coefficients: u8,
     pub full_range: bool,
+    /// Timestamp of the temporal unit that showed the picture ([`Decoder::decode_pts`]).
+    pub pts: i64,
 }
 
 impl Picture {
