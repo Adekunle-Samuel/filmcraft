@@ -94,3 +94,14 @@ openly licensed and are not covered by the project licence; forks must remove or
 | `docs/brand/artcraft-mark-black.svg` | ArtCraft team | Original work: first-party ArtCraft brand mark (ArtCraft symbol ("A" mark), black) | ArtCraft trademark, all rights reserved; used with permission (not MIT/Apache) |
 | `docs/brand/artcraft-mark.png` | ArtCraft team | Original work: first-party ArtCraft brand mark (ArtCraft symbol ("A" mark), blue) | ArtCraft trademark, all rights reserved; used with permission (not MIT/Apache) |
 | `docs/brand/artcraft-mark.svg` | ArtCraft team | Original work: first-party ArtCraft brand mark (ArtCraft symbol ("A" mark), blue) | ArtCraft trademark, all rights reserved; used with permission (not MIT/Apache) |
+
+## Downloaded at runtime
+
+These files are never in the repository or the app bundle. FilmCraft downloads them into the
+per-user data directory (`<data dir>/models/<id>/`) only after the user confirms a dialog that shows
+the size, the source URL and the licence. Every file is pinned to a revision and checked against its
+SHA-256 (`crates/speech/src/models.rs`, `docs/transcripts.md`).
+
+| Asset | Author | Source | Licence |
+|---|---|---|---|
+| Whisper tiny / base / small speech-recognition weights (`model.safetensors`, `config.json`, `generation_config.json`, `tokenizer.json`) | OpenAI | `https://huggingface.co/openai/whisper-{tiny,base,small}` (revisions `169d4a43…`, `e37978b9…`, `973afd24…`); weights released with `https://github.com/openai/whisper` | MIT (weights and code, github.com/openai/whisper); the Hugging Face conversion is labelled Apache-2.0 |

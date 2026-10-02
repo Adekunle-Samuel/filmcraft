@@ -15,6 +15,7 @@ pub mod keyframe;
 pub mod mask;
 pub mod mixer;
 pub mod multicam;
+pub mod transcript;
 
 use std::collections::BTreeMap;
 
@@ -30,6 +31,7 @@ pub use keyframe::{Interpolation, Keyframe, Param, ParamValue};
 pub use mask::{Mask, MaskMode, MaskPath, MaskVertex, TrackMethod};
 pub use mixer::{AutomationMode, InputMap, MixerStrip, TrackSend};
 pub use multicam::{Camera, MergedClip, MulticamAudio, MulticamSel, MulticamSource};
+pub use transcript::{Speaker, Transcript, Word};
 
 macro_rules! id_type {
     ($name:ident) => {
@@ -879,6 +881,10 @@ pub struct Project {
     /// embedded, so projects render without the original files.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub luts: Vec<ProjectLut>,
+    /// Transcripts of media items (Text panel ▸ Transcript), keyed by the media item; word times
+    /// are media time. Shared (`Arc`) so undo snapshots don't copy them.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub transcripts: BTreeMap<ItemId, std::sync::Arc<Transcript>>,
 }
 
 /// A LUT imported into the project (`lut.import`). Lumetri refers to it as `lib:<id>`.
@@ -910,6 +916,7 @@ impl Project {
             items: BTreeMap::new(),
             next_id: 1,
             luts: Vec::new(),
+            transcripts: BTreeMap::new(),
         }
     }
 

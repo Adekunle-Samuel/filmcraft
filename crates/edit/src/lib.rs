@@ -17,6 +17,7 @@
 
 pub mod captions;
 pub mod multicam;
+pub mod transcript;
 
 use std::collections::HashMap;
 

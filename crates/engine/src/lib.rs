@@ -28,6 +28,7 @@ pub mod relink;
 pub mod shortcut_presets;
 pub mod shortcuts;
 pub mod sync;
+pub mod transcript;
 pub mod trim;
 
 use std::sync::Arc;
@@ -243,6 +244,9 @@ pub struct Session {
     pub presets: presets::PresetLibrary,
     /// Exports run a batch at a time by [`Session::pump_jobs`] (hosts without threads: web).
     pub stepped: Vec<SteppedJob>,
+    /// Speech recogniser for `transcript.generate` (None = the Whisper model named by the command,
+    /// feature `whisper`). Hosts and tests install one here.
+    pub transcriber: Option<Arc<dyn filmcraft_speech::Transcriber>>,
     /// Nesting depth of [`Session::execute`] (commands that run other commands).
     exec_depth: u32,
 }
@@ -322,6 +326,7 @@ impl Session {
             mask_jobs: Vec::new(),
             presets: Default::default(),
             stepped: Vec::new(),
+            transcriber: None,
             exec_depth: 0,
         }
     }
@@ -721,5 +726,7 @@ mod relink_tests;
 mod shortcuts_tests;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod transcript_tests;
 #[cfg(test)]
 mod trim_tests;

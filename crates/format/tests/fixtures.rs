@@ -153,3 +153,21 @@ fn large_project_roundtrip_and_timing() {
         compact.len() as f64 / 1024.0
     );
 }
+
+#[test]
+fn v8_loads_without_transcripts_and_v9_roundtrips_them() {
+    let l = decode(&fixture("v8-minimal.fcproj")).unwrap();
+    assert_eq!(l.schema_version, 8);
+    assert!(l.migrated());
+    assert!(l.project.transcripts.is_empty());
+    let mut p = l.project;
+    let mut t = filmcraft_project::Transcript { language: "en".into(), source: "manual".into(), ..Default::default() };
+    t.words.push(filmcraft_project::Word::new("Hello", Tick(0), Tick(1000)));
+    t.words[0].speaker = Some(0);
+    t.normalize();
+    p.transcripts.insert(ItemId(7), std::sync::Arc::new(t));
+    let again = decode(&encode(&p, true)).unwrap();
+    assert!(!again.migrated());
+    assert_eq!(again.project, p);
+    assert_eq!(again.project.transcripts[&ItemId(7)].speakers[0].name, "Speaker 1");
+}

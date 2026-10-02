@@ -283,6 +283,13 @@ pub struct UiState {
     /// Text panel: caption search filter.
     #[serde(default)]
     pub caption_search: String,
+    /// Text panel ▸ Transcript: selected words of the sequence transcript (anchor, end; indices as
+    /// `transcript.inspect` lists them).
+    #[serde(default)]
+    pub transcript_sel: Option<(usize, usize)>,
+    /// Text panel ▸ Transcript: search text.
+    #[serde(default)]
+    pub transcript_search: String,
     /// Preferences ▸ Playback: play the rendered range when a preview render finishes.
     #[serde(default = "yes")]
     pub play_after_render: bool,
@@ -553,6 +560,8 @@ impl Default for UiState {
             export_burn_captions: false,
             text_tab: captions_tab(),
             caption_search: String::new(),
+            transcript_sel: None,
+            transcript_search: String::new(),
             play_after_render: true,
             mixer_fx_open: false,
             audio_gain: AudioGainDraft::default(),
