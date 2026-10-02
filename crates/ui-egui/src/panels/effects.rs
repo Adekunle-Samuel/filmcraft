@@ -45,8 +45,12 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
             if !open {
                 continue;
             }
-            let mut subs: Vec<&str> = items.iter().filter_map(|d| d.category.get(1).copied()).collect();
+            // Sub-folders in definition order; loose items (no sub-folder, e.g. Audio Effects ▸
+            // Balance / Mute / Volume) come last, outside any folder.
+            let sub = |d: &filmcraft_project::EffectDef| d.category.get(1).copied().unwrap_or("");
+            let mut subs: Vec<&str> = items.iter().map(|d| sub(d)).collect();
             subs.dedup();
+            subs.sort_by_key(|s| s.is_empty());
             let mut seen = Vec::new();
             for s in subs {
                 if seen.contains(&s) {
@@ -54,10 +58,10 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                 }
                 seen.push(s);
                 let key = format!("{top}/{s}");
-                if !folder_row(app, ui, &key, 1, &filter) {
+                if !s.is_empty() && !folder_row(app, ui, &key, 1, &filter) {
                     continue;
                 }
-                for d in items.iter().filter(|d| d.category.get(1) == Some(&s)) {
+                for d in items.iter().filter(|d| sub(d) == s) {
                     let (r, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 20.0), Sense::click_and_drag());
                     if resp.hovered() {
                         ui.painter().rect_filled(r, 0.0, t.hover);
