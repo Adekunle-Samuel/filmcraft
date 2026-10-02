@@ -184,7 +184,7 @@ fn set_params(base: &EffectInstance, x: &[f32; 10]) -> EffectInstance {
 
 fn graded_stats(img: &Image, base: &EffectInstance, x: &[f32; 10], skin_protect: bool) -> Stats {
     let mut g = img.clone();
-    let cx = FxCtx { t: Tick::ZERO, px_scale: g.w as f32 / 1920.0, seconds: 0.0, timecode: "", clip_name: "", project: None };
+    let cx = FxCtx { t: Tick::ZERO, px_scale: g.w as f32 / 1920.0, seconds: 0.0, timecode: "", clip_name: "", project: None, env: None };
     apply(&mut g, &set_params(base, x), &cx);
     stats(&g, skin_protect)
 }
@@ -344,7 +344,7 @@ mod tests {
 
     fn graded(img: &Image, base: &EffectInstance, x: [f32; 10]) -> Image {
         let mut g = img.clone();
-        let cx = FxCtx { t: Tick::ZERO, px_scale: 0.1, seconds: 0.0, timecode: "", clip_name: "", project: None };
+        let cx = FxCtx { t: Tick::ZERO, px_scale: 0.1, seconds: 0.0, timecode: "", clip_name: "", project: None, env: None };
         apply(&mut g, &set_params(base, &x), &cx);
         g
     }

@@ -1996,7 +1996,7 @@ fn build() -> Vec<CommandSpec> {
         }),
         query!("state.inspect", "Inspect Editor State", "{}", |s, _| Ok(serde_json::to_value(&s.state).unwrap_or_default())),
         query!("effects.list", "List Effects", "{}", |_, _| {
-            Ok(Value::Array(filmcraft_project::effect_defs().iter().map(|d| json!({"id": d.id, "name": d.name, "kind": format!("{:?}", d.kind), "category": d.category, "params": d.params.iter().map(|p| p.id).collect::<Vec<_>>()})).collect()))
+            Ok(Value::Array(filmcraft_project::effect_defs().iter().map(|d| json!({"id": d.id, "name": d.name, "kind": format!("{:?}", d.kind), "category": d.category, "folder": d.category.get(1), "badges": {"accelerated": d.accelerated, "float32": d.float32, "yuv": d.yuv}, "params": d.params.iter().map(|p| p.id).collect::<Vec<_>>()})).collect()))
         }),
         query!("history.list", "List History", "{}", |s, _| Ok(
             json!({"undo": s.history.undo.iter().map(|h| &h.0).collect::<Vec<_>>(), "redo": s.history.redo.iter().map(|h| &h.0).collect::<Vec<_>>()})

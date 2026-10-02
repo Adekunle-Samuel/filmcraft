@@ -13,6 +13,9 @@ use serde::{Deserialize, Serialize};
 use crate::keyframe::{Param, ParamValue};
 use crate::mask::Mask;
 
+mod vfx;
+pub use vfx::{EASINGS, ECHO_OPERATORS, FRAME_LAYOUTS, LIGHT_IDS, SIMPLE_BLEND, TRACK_CHOICES, auto_point};
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum EffectKind {
     Video,
@@ -352,7 +355,7 @@ fn build_effects() -> Vec<EffectDef> {
         video(
             "color_balance",
             "Color Balance",
-            COLOR_CORR,
+            vfx::OBSOLETE,
             vec![
                 f("shadow_r", "Shadow Red Balance", 0.0, -100.0, 100.0, ""),
                 f("shadow_g", "Shadow Green Balance", 0.0, -100.0, 100.0, ""),
@@ -369,7 +372,7 @@ fn build_effects() -> Vec<EffectDef> {
         video(
             "leave_color",
             "Leave Color",
-            COLOR_CORR,
+            vfx::OBSOLETE,
             vec![
                 f("amount", "Amount to Decolor", 0.0, 0.0, 100.0, "%"),
                 col("color", "Color To Leave", [1.0, 0.0, 0.0, 1.0]),
@@ -380,7 +383,7 @@ fn build_effects() -> Vec<EffectDef> {
         video(
             "change_to_color",
             "Change to Color",
-            COLOR_CORR,
+            vfx::OBSOLETE,
             vec![
                 col("from", "From", [1.0, 0.0, 0.0, 1.0]),
                 col("to", "To", [0.0, 0.0, 1.0, 1.0]),
@@ -485,7 +488,7 @@ fn build_effects() -> Vec<EffectDef> {
                 fs("threshold", "Threshold", 0.0, (0.0, 255.0), (0.0, 255.0), "", 0),
             ],
         ),
-        video("camera_blur", "Camera Blur", BLUR, vec![f("percent", "Percent Blur", 0.0, 0.0, 100.0, "")]),
+        video("camera_blur", "Camera Blur", vfx::LEGACY, vec![f("percent", "Percent Blur", 0.0, 0.0, 100.0, "")]),
         video("black_white", "Black & White", IMAGE_CONTROL, vec![]),
         video(
             "color_pass",
@@ -497,7 +500,7 @@ fn build_effects() -> Vec<EffectDef> {
         video(
             "invert",
             "Invert",
-            &["Video Effects", "Channel"],
+            IMAGE_CONTROL,
             vec![ch("channel", "Channel", &["RGB", "Red", "Green", "Blue", "Alpha"], 0), f("blend", "Blend With Original", 0.0, 0.0, 100.0, "%")],
         ),
         video(
@@ -549,7 +552,7 @@ fn build_effects() -> Vec<EffectDef> {
         video(
             "emboss",
             "Emboss",
-            STYLIZE,
+            vfx::OBSOLETE,
             vec![
                 ang("direction", "Direction", 45.0),
                 fs("relief", "Relief", 1.8, (0.0, 10.0), (0.0, 10.0), "", 1),
@@ -557,7 +560,7 @@ fn build_effects() -> Vec<EffectDef> {
                 f("blend", "Blend With Original", 0.0, 0.0, 100.0, "%"),
             ],
         ),
-        video("replicate", "Replicate", STYLIZE, vec![fs("count", "Count", 2.0, (2.0, 16.0), (2.0, 16.0), "", 0)]),
+        video("replicate", "Replicate", vfx::LEGACY, vec![fs("count", "Count", 2.0, (2.0, 16.0), (2.0, 16.0), "", 0)]),
         video(
             "strobe",
             "Strobe Light",
@@ -575,11 +578,11 @@ fn build_effects() -> Vec<EffectDef> {
             NOISE,
             vec![f("amount", "Amount of Noise", 0.0, 0.0, 100.0, "%"), b("color", "Use Color Noise", true), b("clip", "Clipping", true)],
         ),
-        video("median", "Median", NOISE, vec![fs("radius", "Radius", 0.0, (0.0, 100.0), (0.0, 20.0), "", 0)]),
+        video("median", "Median", vfx::OBSOLETE, vec![fs("radius", "Radius", 0.0, (0.0, 100.0), (0.0, 20.0), "", 0)]),
         video(
             "crop",
             "Crop",
-            TRANSFORM,
+            vfx::LEGACY,
             vec![
                 f("left", "Left", 0.0, 0.0, 100.0, "%"),
                 f("top", "Top", 0.0, 0.0, 100.0, "%"),
@@ -591,11 +594,11 @@ fn build_effects() -> Vec<EffectDef> {
         ),
         video("horizontal_flip", "Horizontal Flip", TRANSFORM, vec![]),
         video("vertical_flip", "Vertical Flip", TRANSFORM, vec![]),
-        video("edge_feather", "Edge Feather", TRANSFORM, vec![fs("amount", "Amount", 0.0, (0.0, 100.0), (0.0, 100.0), "", 0)]),
+        video("edge_feather", "Edge Feather", vfx::LEGACY, vec![fs("amount", "Amount", 0.0, (0.0, 100.0), (0.0, 100.0), "", 0)]),
         video(
             "transform",
             "Transform",
-            DISTORT,
+            TRANSFORM,
             vec![
                 pt("anchor", "Anchor Point", f64::NAN, f64::NAN),
                 pt("position", "Position", f64::NAN, f64::NAN),
@@ -610,7 +613,7 @@ fn build_effects() -> Vec<EffectDef> {
             ],
         ),
         video("mirror", "Mirror", DISTORT, vec![pt("center", "Reflection Center", f64::NAN, f64::NAN), ang("angle", "Reflection Angle", 0.0)]),
-        video("offset", "Offset", DISTORT, vec![pt("shift", "Shift Center To", f64::NAN, f64::NAN), f("blend", "Blend With Original", 0.0, 0.0, 100.0, "%")]),
+        video("offset", "Offset", TRANSFORM, vec![pt("shift", "Shift Center To", f64::NAN, f64::NAN), f("blend", "Blend With Original", 0.0, 0.0, 100.0, "%")]),
         video(
             "lens_distortion",
             "Lens Distortion",
@@ -664,7 +667,7 @@ fn build_effects() -> Vec<EffectDef> {
         video(
             "bevel_alpha",
             "Bevel Alpha",
-            PERSPECTIVE,
+            vfx::OBSOLETE,
             vec![
                 fs("thickness", "Edge Thickness", 2.0, (0.0, 200.0), (0.0, 10.0), "", 1),
                 ang("angle", "Light Angle", -60.0),
@@ -728,7 +731,7 @@ fn build_effects() -> Vec<EffectDef> {
         video(
             "ramp",
             "Ramp",
-            GENERATE,
+            vfx::LEGACY,
             vec![
                 pt("start", "Start of Ramp", f64::NAN, 0.0),
                 col("start_color", "Start Color", [0.0, 0.0, 0.0, 1.0]),
@@ -741,7 +744,7 @@ fn build_effects() -> Vec<EffectDef> {
         video(
             "circle",
             "Circle",
-            GENERATE,
+            vfx::OBSOLETE,
             vec![
                 pt("center", "Center", f64::NAN, f64::NAN),
                 fs("radius", "Radius", 75.0, (0.0, 4000.0), (0.0, 400.0), "", 1),
@@ -752,7 +755,7 @@ fn build_effects() -> Vec<EffectDef> {
         video(
             "grid",
             "Grid",
-            GENERATE,
+            vfx::OBSOLETE,
             vec![
                 fs("size", "Width", 60.0, (1.0, 4000.0), (1.0, 400.0), "", 0),
                 fs("border", "Border", 2.0, (0.0, 100.0), (0.0, 20.0), "", 1),
@@ -763,7 +766,7 @@ fn build_effects() -> Vec<EffectDef> {
         video(
             "lens_flare",
             "Lens Flare",
-            GENERATE,
+            vfx::LIGHTS,
             vec![
                 pt("center", "Flare Center", f64::NAN, f64::NAN),
                 f("brightness", "Flare Brightness", 100.0, 0.0, 300.0, "%"),
@@ -773,7 +776,7 @@ fn build_effects() -> Vec<EffectDef> {
         video(
             "timecode",
             "Timecode",
-            VIDEO,
+            vfx::OBSOLETE,
             vec![
                 pt("position", "Position", f64::NAN, f64::NAN),
                 fs("size", "Size", 15.0, (1.0, 100.0), (1.0, 50.0), "%", 1),
@@ -783,10 +786,10 @@ fn build_effects() -> Vec<EffectDef> {
         video(
             "clip_name",
             "Clip Name",
-            VIDEO,
+            vfx::OBSOLETE,
             vec![pt("position", "Position", f64::NAN, f64::NAN), fs("size", "Size", 15.0, (1.0, 100.0), (1.0, 50.0), "%", 1)],
         ),
-        video("simple_text", "Simple Text", VIDEO, vec![]),
+        video("simple_text", "Simple Text", vfx::UTILITY, vec![]),
         // ---- video transitions ----
         vtrans("cross_dissolve", "Cross Dissolve", DISSOLVE, vec![]),
         vtrans("additive_dissolve", "Additive Dissolve", DISSOLVE, vec![]),
@@ -957,6 +960,8 @@ fn build_effects() -> Vec<EffectDef> {
             yuv: false,
         },
     ];
+    v.extend(vfx::defs());
+    vfx::extend_core(&mut v);
     v.extend(crate::graphic::layer_defs());
     // YUV badge for the colour/intrinsic set
     for e in &mut v {
@@ -964,6 +969,7 @@ fn build_effects() -> Vec<EffectDef> {
             e.yuv = true;
         }
     }
+    vfx::apply_badges(&mut v);
     v
 }
 

@@ -1263,6 +1263,14 @@ pub fn resolve_auto_points(e: &mut EffectInstance, frame: (u32, u32), source: (u
     for (k, p) in e.params.iter_mut() {
         if let ParamValue::Vec2(v) = &mut p.value {
             let (w, h) = if k == "anchor" { source } else { frame };
+            if let Some((fx, fy)) = effect::auto_point(&e.effect, k) {
+                if v.x.is_nan() {
+                    v.x = w as f64 * fx;
+                }
+                if v.y.is_nan() {
+                    v.y = h as f64 * fy;
+                }
+            }
             if v.x.is_nan() {
                 v.x = w as f64 / 2.0;
             }
