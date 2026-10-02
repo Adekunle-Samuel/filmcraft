@@ -353,7 +353,9 @@ impl FilmcraftApp {
                 | PanelKind::Metadata
                 | PanelKind::LumetriScopes
                 | PanelKind::AudioTrackMixer
-                | PanelKind::Text => PanelKind::Source,
+                | PanelKind::Text
+                | PanelKind::ReferenceMonitor
+                | PanelKind::Timecode => PanelKind::Source,
                 _ => PanelKind::Project,
             };
             self.ui.dock.open_near(p, near);

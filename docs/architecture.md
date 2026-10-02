@@ -60,6 +60,7 @@ and `filmcraft-cli`.
 | `render` | L3 | sequence evaluation, CPU compositor, video effects (`effects`, `vfx`; effects needing other frames or tracks read them through `vfx::FxEnv`), transitions, audio mix |
 | `gpu` | L3 | wgpu compositor (WGSL) |
 | `golden` | L3 | test-only: golden-image tests of the CPU renderer and GPU-vs-CPU parity; empty library, dev-dependencies only |
+| `scopes` | L3 | video scope maths: waveform, parade, histogram, YUV / HLS vectorscopes, numeric summaries ([crates/scopes/README.md](../crates/scopes/README.md)) |
 | `export` | L3 | render → encode → mux pipeline, progress/cancel |
 | `engine` | L4 | `Session`, command registry, undo history, media pool, jobs, interchange glue |
 | `ui-egui` | L5 | the egui frontend: docking, panels, timeline, monitors, playback, control-channel handlers |
@@ -176,6 +177,10 @@ pub struct CommandSpec {
   is serde, so agents can read it with `state.inspect`.
 - **Events** (`ProjectChanged`, `Toast`, `OpenSequence`, `OpenSource`) are drained by frontends
   each frame.
+- **Event log** (`Session::log`, `engine::panels`): every failed top-level command (an error; a
+  disabled one is a warning), messages and error toasts, auto-save errors, and background jobs
+  starting, finishing, failing or being cancelled. Repeats of the newest entry bump its count. The
+  Events panel shows it; `events.list {level?, since?}` and `events.clear` reach it headless.
 - **UI-only commands** (tools, playback, zoom, panels, workspaces) live in
   `crates/ui-egui/src/menus.rs` (`UI_COMMANDS`). The menu bar is built from the engine registry plus
   this table, and `menus::invoke` is the single entry point for menus, shortcuts and the control
@@ -477,12 +482,18 @@ All of these dispatch the same command ids.
   settings) is in `crates/ui-egui/src/state.rs` as serde structs, so `ui.inspect` and `ui.set` can
   read and write it.
 
+- **Panels with engine data** (M8.9 / M12.6): Lumetri Scopes (`scopes.read` returns the same
+  scopes as numbers), Metadata (`metadata.get` / `metadata.set`, one undo step per edit, stored in
+  `ProjectItem::metadata`), Events (`events.list` / `events.clear`), Progress (`jobs.list` /
+  `jobs.cancel`). Timecode and Reference Monitor are frontend-only views. Their settings are
+  `UiState::panels` (`ui.set {"panels": {...}}`).
+
 Protocol reference: [control-protocol.md](control-protocol.md). Agent guide: [agents.md](agents.md).
 
 ## 8. Not built yet
 
 The layer table reserves names for crates that don't exist yet: `riff`, `mjpeg`,
-`keyframe`, `effects`, `audio`, `scopes`, `playback`, `format` and `platform`.
+`keyframe`, `effects`, `audio`, `playback` and `platform`.
 Until they exist, that work lives elsewhere: keyframes and effect definitions in `project`, effects
-and the audio mix in `render`, scopes and playback in `ui-egui`, and OS integration (cpal, rfd,
+and the audio mix in `render`, playback in `ui-egui`, and OS integration (cpal, rfd,
 native menus) in `apps/filmcraft`. [ROADMAP.md](../ROADMAP.md) has the milestone status.

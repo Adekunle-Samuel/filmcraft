@@ -446,6 +446,10 @@ pub struct UiState {
     /// `panels::menu_dialogs`.
     #[serde(default)]
     pub extras: crate::panels::menu_dialogs::Extras,
+    /// Lumetri Scopes, Timecode, Events, Progress and Reference Monitor settings. See
+    /// `panels::panel_state`.
+    #[serde(default)]
+    pub panels: crate::panels::panel_state::PanelsState,
 }
 
 /// An open Edit / Clip / File menu dialog: the engine command it runs on OK and the parameters
@@ -726,6 +730,7 @@ impl Default for UiState {
             guide_dialog: None,
             clip_dialog: None,
             extras: Default::default(),
+            panels: Default::default(),
         }
     }
 }

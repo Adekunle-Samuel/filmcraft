@@ -183,6 +183,15 @@ pub fn handle(app: &mut FilmcraftApp, ctx: &egui::Context, req: &ControlRequest)
                     Err(e) => return err(format!("`{k}`: {e}")),
                 }
             }
+            // panel settings (`panels::panel_state`): {"scopes": {...}, "timecode": {...}, …}, merged
+            if let Some(patch) = p.get("panels") {
+                let mut cur = serde_json::to_value(&app.ui.panels).unwrap_or_default();
+                merge(&mut cur, patch);
+                match serde_json::from_value(cur) {
+                    Ok(v) => app.ui.panels = v,
+                    Err(e) => return err(format!("`panels`: {e}")),
+                }
+            }
             // fields of the open Edit / Clip / File dialog (`panels::clip_dialogs`)
             if let Some(m) = p.get("clipDialog").and_then(Value::as_object) {
                 let Some(d) = app.ui.clip_dialog.as_mut() else { return err("no clip dialog is open") };
@@ -330,6 +339,23 @@ pub fn handle(app: &mut FilmcraftApp, ctx: &egui::Context, req: &ControlRequest)
             ok(Value::Null)
         }
         m => err(format!("unknown method `{m}`")),
+    }
+}
+
+/// Merge `patch` into `v` (objects recursively; other values replace).
+fn merge(v: &mut Value, patch: &Value) {
+    match (v, patch) {
+        (Value::Object(o), Value::Object(p)) => {
+            for (k, pv) in p {
+                match o.get_mut(k) {
+                    Some(cur) => merge(cur, pv),
+                    None => {
+                        o.insert(k.clone(), pv.clone());
+                    }
+                }
+            }
+        }
+        (v, p) => *v = p.clone(),
     }
 }
 
