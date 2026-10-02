@@ -20,7 +20,7 @@ Design principles:
 ## 1. Layers
 
 ```text
- L6  apps/filmcraft · apps/filmcraft-cli
+ L6  apps/filmcraft · apps/filmcraft-cli · apps/filmcraft-web
  L5  ui-egui · automation
  L4  engine
  L3  render · gpu · export · golden (test-only)
@@ -65,6 +65,7 @@ and `filmcraft-cli`.
 | `automation` | L5 | MCP server (`rmcp`, stdio), headless or bridged to the running app |
 | `filmcraft` | L6 | desktop binary: eframe/wgpu window, cpal audio output, file dialogs, native macOS menu, TCP control server |
 | `filmcraft-cli` | L6 | headless CLI: `probe`, `commands`, `render`, `run`, `mcp` |
+| `filmcraft-web` | L6 | the browser app (wasm32): eframe web runner on WebGPU/WebGL2, Blob-backed services, OPFS recovery, WebAudio, WebCodecs, `window.filmcraft` API ([web.md](web.md)) |
 
 ### What `cargo xtask layers` enforces
 
@@ -80,8 +81,9 @@ are exempt):
 | L0 codecs stay standalone | L0 crates other than `time`, `geom`, `color`, `bitstream`, `testkit` may depend on no workspace crate except `filmcraft-bitstream`. External crates such as `thiserror` and `rayon` are allowed. |
 | No UI/OS crates below L5 | `egui`, `eframe`, `egui-wgpu`, `winit`, `rfd`, `cpal`, `muda` are allowed only in L5 and L6. |
 
-`cargo xtask wasm` runs `cargo check --target wasm32-unknown-unknown` on every L0–L4 crate, so
-everything up to the engine stays web-portable. `unsafe_code = "deny"` applies workspace-wide.
+`cargo xtask wasm` runs `cargo check --target wasm32-unknown-unknown` on every L0–L4 crate, the
+egui UI and the web app, so everything up to the engine stays web-portable and the web app builds
+([web.md](web.md)). `unsafe_code = "deny"` applies workspace-wide.
 
 ## 2. Time base
 

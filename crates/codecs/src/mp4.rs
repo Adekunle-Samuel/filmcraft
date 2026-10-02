@@ -28,7 +28,7 @@ struct AudioState {
 
 pub struct Mp4Source {
     info: MediaInfo,
-    bytes: Arc<[u8]>,
+    bytes: crate::Src,
     file: Mp4File,
     vtrack: Option<usize>,
     atrack: Option<usize>,
@@ -86,7 +86,13 @@ fn color_from(entry: &filmcraft_isobmff::SampleEntry, w: u32, h: u32) -> ColorIn
 
 impl Mp4Source {
     pub fn open(name: &str, bytes: Arc<[u8]>) -> crate::Result<Self> {
-        let file = filmcraft_isobmff::open(&bytes[..]).map_err(|e| CodecError::Container(e.to_string()))?;
+        Self::open_reader(name, Arc::new(filmcraft_media::reader::MemReader(bytes)))
+    }
+
+    /// Open from a random-access reader: only the index is read now, samples on demand.
+    pub fn open_reader(name: &str, reader: filmcraft_media::SharedReader) -> crate::Result<Self> {
+        let bytes = crate::Src(reader);
+        let file = filmcraft_isobmff::open(&bytes).map_err(|e| CodecError::Container(e.to_string()))?;
         let vtrack = file.tracks.iter().position(|t| t.kind == TrackKind::Video && !t.samples.is_empty());
         let atrack = file.tracks.iter().position(|t| t.kind == TrackKind::Audio && !t.samples.is_empty());
         if vtrack.is_none() && atrack.is_none() {
@@ -127,8 +133,7 @@ impl Mp4Source {
             if matches!(entry.codec, CodecConfig::Dnx { .. }) {
                 // the sample entry doesn't say which VC-3 compression ID it is: read the first frame header
                 let s0 = &t.samples[0];
-                if let Some(h) = bytes.get(s0.offset as usize..(s0.offset as usize).saturating_add(s0.size as usize)).and_then(|d| filmcraft_dnx::probe(d).ok())
-                {
+                if let Some(h) = filmcraft_media::reader::read_range(&*bytes.0, s0.offset, s0.size as usize).ok().and_then(|d| filmcraft_dnx::probe(&d).ok()) {
                     info.codec = filmcraft_dnx::cid_name(h.cid);
                     let sub = match h.chroma {
                         filmcraft_dnx::ChromaFormat::Yuv420 => "YUV 4:2:0",
@@ -180,7 +185,7 @@ impl Mp4Source {
             audio,
             container: if file.is_quicktime { "QuickTime".into() } else { "MPEG-4".into() },
             start_timecode,
-            file_size: Some(bytes.len() as u64),
+            file_size: Some(bytes.0.len()),
         };
         let audio_starts = atrack
             .map(|i| {
@@ -224,7 +229,7 @@ impl Mp4Source {
     }
 
     fn read(&self, track: usize, i: usize) -> crate::Result<Vec<u8>> {
-        self.file.read_sample(&self.bytes[..], track, i).map_err(|e| CodecError::Container(e.to_string()))
+        self.file.read_sample(&self.bytes, track, i).map_err(|e| CodecError::Container(e.to_string()))
     }
 
     fn video_at(&self, t: Tick) -> crate::Result<Arc<VideoFrame>> {
@@ -447,4 +452,12 @@ pub fn opener(name: &str, bytes: Arc<[u8]>) -> Option<Result<SharedSource, Media
         return None;
     }
     Some(Mp4Source::open(name, bytes).map(|s| Arc::new(s) as SharedSource).map_err(Into::into))
+}
+
+/// [`filmcraft_media::ReaderOpener`] for MP4/MOV.
+pub fn reader_opener(name: &str, head: &[u8], reader: &filmcraft_media::SharedReader) -> Option<Result<SharedSource, MediaError>> {
+    if !sniff(head) {
+        return None;
+    }
+    Some(Mp4Source::open_reader(name, reader.clone()).map(|s| Arc::new(s) as SharedSource).map_err(Into::into))
 }

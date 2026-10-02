@@ -80,6 +80,17 @@ pub trait Services: Send + Sync {
         let a = (offset as usize).min(b.len());
         Ok(b[a..(a + len).min(b.len())].to_vec())
     }
+    /// A random-access reader for a media file, so containers are opened without reading the
+    /// whole file (web: `Blob` range reads). `None`: the host has none; media are read whole.
+    fn reader(&self, _path: &str) -> Option<std::io::Result<filmcraft_media::SharedReader>> {
+        None
+    }
+    /// Exports are encoded in memory and handed to [`Services::write_file`] (hosts without a
+    /// filesystem, e.g. the web: the file is then offered as a download). Otherwise they stream
+    /// to the output path.
+    fn export_in_memory(&self) -> bool {
+        false
+    }
 }
 
 /// Native filesystem services.
@@ -230,8 +241,19 @@ pub struct Session {
     pub mask_jobs: Vec<masks::PendingTrack>,
     /// Effect presets (built-in + the user's, persisted in the data directory).
     pub presets: presets::PresetLibrary,
+    /// Exports run a batch at a time by [`Session::pump_jobs`] (hosts without threads: web).
+    pub stepped: Vec<SteppedJob>,
     /// Nesting depth of [`Session::execute`] (commands that run other commands).
     exec_depth: u32,
+}
+
+/// An export advanced a batch at a time on the host's thread ([`Session::pump_jobs`]).
+pub struct SteppedJob {
+    pub job: u64,
+    pub exporter: filmcraft_export::Exporter,
+    pub provider: media_pool::PoolProvider,
+    pub progress: Arc<filmcraft_export::Progress>,
+    pub result: Arc<std::sync::Mutex<Option<std::result::Result<filmcraft_export::Report, String>>>>,
 }
 
 /// A background job with shared progress.
@@ -299,8 +321,36 @@ impl Session {
             media_jobs: Vec::new(),
             mask_jobs: Vec::new(),
             presets: Default::default(),
+            stepped: Vec::new(),
             exec_depth: 0,
         }
+    }
+
+    /// Advance stepped jobs ([`SteppedJob`]) for up to `budget` (at least one step). Returns
+    /// whether jobs remain. A job whose media is still loading waits for the next call.
+    pub fn pump_jobs(&mut self, budget: std::time::Duration) -> bool {
+        let t0 = web_time::Instant::now();
+        while let Some(j) = self.stepped.first_mut() {
+            match j.exporter.step(&j.provider, &j.progress) {
+                Ok(filmcraft_export::Step::Progress) => {}
+                Ok(filmcraft_export::Step::Pending) => return true,
+                Ok(filmcraft_export::Step::Done(r)) => {
+                    *j.result.lock().unwrap_or_else(|e| e.into_inner()) = Some(Ok(r));
+                    self.stepped.remove(0);
+                }
+                Err(e) => {
+                    let e = e.to_string();
+                    *j.progress.error.lock().unwrap_or_else(|x| x.into_inner()) = Some(e.clone());
+                    j.progress.finished.store(true, std::sync::atomic::Ordering::Relaxed);
+                    *j.result.lock().unwrap_or_else(|x| x.into_inner()) = Some(Err(e));
+                    self.stepped.remove(0);
+                }
+            }
+            if t0.elapsed() >= budget {
+                break;
+            }
+        }
+        !self.stepped.is_empty()
     }
 
     /// Start auto-save and the crash-recovery journal (native frontends). Loads preferences from

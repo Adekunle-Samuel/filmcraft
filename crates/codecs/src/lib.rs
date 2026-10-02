@@ -88,6 +88,48 @@ pub fn openers() -> Vec<filmcraft_media::Opener> {
     vec![mp4::opener, mkv::opener, audio::opener]
 }
 
+fn reader_registry() -> &'static RwLock<Vec<filmcraft_media::ReaderOpener>> {
+    static R: std::sync::OnceLock<RwLock<Vec<filmcraft_media::ReaderOpener>>> = std::sync::OnceLock::new();
+    R.get_or_init(|| RwLock::new(vec![mp4::reader_opener, mkv::reader_opener]))
+}
+
+/// Openers that read containers through a [`filmcraft_media::ByteReader`] (index now, samples on
+/// demand) instead of the whole file, in the order they are tried.
+pub fn reader_openers() -> Vec<filmcraft_media::ReaderOpener> {
+    reader_registry().read().unwrap_or_else(|e| e.into_inner()).clone()
+}
+
+/// Register a reader opener tried before the built-in ones (platform media sources such as the
+/// web app's WebCodecs-decoded MP4).
+pub fn register_reader_opener(f: filmcraft_media::ReaderOpener) {
+    let mut g = reader_registry().write().unwrap_or_else(|e| e.into_inner());
+    if !g.iter().any(|x| std::ptr::fn_addr_eq(*x, f)) {
+        g.insert(0, f);
+    }
+}
+
+/// A media reader as the demuxers' byte source.
+#[derive(Clone)]
+pub(crate) struct Src(pub filmcraft_media::SharedReader);
+
+impl filmcraft_isobmff::ByteSource for Src {
+    fn len(&self) -> u64 {
+        self.0.len()
+    }
+    fn read_at(&self, offset: u64, buf: &mut [u8]) -> std::io::Result<()> {
+        self.0.read_at(offset, buf)
+    }
+}
+
+impl filmcraft_matroska::ByteSource for Src {
+    fn len(&self) -> u64 {
+        self.0.len()
+    }
+    fn read_at(&self, offset: u64, buf: &mut [u8]) -> std::io::Result<()> {
+        self.0.read_at(offset, buf)
+    }
+}
+
 /// Convenience: an `Arc` media source from bytes (tries MP4/MOV then audio files).
 pub fn open_bytes(name: &str, bytes: Arc<[u8]>) -> std::result::Result<filmcraft_media::SharedSource, filmcraft_media::MediaError> {
     filmcraft_media::open_bytes(name, bytes, &openers())

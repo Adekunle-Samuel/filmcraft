@@ -5,11 +5,13 @@
 //! control-channel handlers. Swap it for another toolkit without touching the engine.
 
 pub mod automation;
+pub mod brand;
 pub mod control;
 pub mod dock;
 pub mod frames;
 pub mod header;
 pub mod icons;
+pub mod links;
 pub mod menus;
 pub mod panels;
 pub mod state;
@@ -173,7 +175,7 @@ impl FilmcraftApp {
         {
             return Some((t, g.size));
         }
-        let t0 = std::time::Instant::now();
+        let t0 = web_time::Instant::now();
         let (view, size) = g.compositor.composite_prepared(&plan.plan, Some(&plan.prepared));
         let view = view.clone();
         g.last_ms = t0.elapsed().as_secs_f32() * 1000.0;
@@ -989,6 +991,9 @@ impl eframe::App for FilmcraftApp {
             ui.ctx().request_repaint();
             return;
         }
+        // No frame worker threads on the web: render queued frames here, within a time budget
+        // that leaves room for the UI pass (a no-op where workers run).
+        self.frames.pump(std::time::Duration::from_millis(if self.playback.playing { 24 } else { 40 }));
         self.frame(ui);
         let ctx = ui.ctx().clone();
         self.last_ui_time = ctx.input(|i| i.time);

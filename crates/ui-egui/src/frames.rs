@@ -11,7 +11,9 @@ use std::cell::Cell;
 use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
-use std::time::{Duration, Instant};
+use std::time::Duration;
+
+use web_time::Instant;
 
 use filmcraft_engine::previews::PreviewStore;
 use filmcraft_engine::{MediaPool, Services};
@@ -409,8 +411,6 @@ impl FrameServer {
         q.push_back(Job { key, queued: Instant::now(), cancel: Default::default(), prefetch, time, scale, project: project.clone(), prio });
         drop(q);
         self.shared.cv.notify_one();
-        #[cfg(target_arch = "wasm32")]
-        self.run_one_sync();
     }
 
     /// Playback scheduling for the monitor showing `key` (the frame due now): request it first,
@@ -489,19 +489,43 @@ impl FrameServer {
         None
     }
 
-    #[cfg(target_arch = "wasm32")]
-    fn run_one_sync(&self) {
-        let job = { self.shared.queue.lock().unwrap_or_else(|e| e.into_inner()).pop_front() };
-        if let Some(job) = job {
-            if let Target::SequencePlan(seq) = job.key.target {
-                let (plan, _) = plan_job(&job, seq, &self.pool, &self.services, &self.previews);
-                let prepared = filmcraft_gpu::prepare(&plan);
-                self.shared.plans.lock().unwrap_or_else(|e| e.into_inner()).insert(job.key, GpuPlan { plan, prepared });
+    /// Without worker threads (wasm32): run queued jobs on the calling (UI) thread, highest
+    /// priority first, until `budget` has passed (at least one job). Jobs whose media is still
+    /// loading go back to the queue. Returns the number of jobs finished. A no-op with workers.
+    pub fn pump(&self, budget: Duration) -> usize {
+        if cfg!(not(target_arch = "wasm32")) {
+            return 0;
+        }
+        let t0 = Instant::now();
+        let mut done = 0;
+        let mut retry = Vec::new();
+        loop {
+            let job = {
+                let mut q = self.shared.queue.lock().unwrap_or_else(|e| e.into_inner());
+                if q.is_empty() {
+                    break;
+                }
+                let best = q.iter().enumerate().min_by_key(|(i, j)| (j.prio, *i)).map(|(i, _)| i).unwrap_or(0);
+                q.remove(best).expect("index valid")
+            };
+            if run_job(&self.shared, &job, &self.pool, &self.services, &self.previews) {
+                done += 1;
             } else {
-                let (img, _) = render_job(&job, &self.pool, &self.services, &self.previews);
-                self.shared.done.lock().unwrap_or_else(|e| e.into_inner()).insert(job.key, Arc::new(img));
+                retry.push(job);
+            }
+            if t0.elapsed() >= budget {
+                break;
             }
         }
+        if !retry.is_empty() {
+            let mut q = self.shared.queue.lock().unwrap_or_else(|e| e.into_inner());
+            for j in retry.into_iter().rev() {
+                if !q.iter().any(|x| x.key == j.key) {
+                    q.push_front(j);
+                }
+            }
+        }
+        done
     }
 }
 
@@ -595,61 +619,74 @@ fn worker(
                 q = sh.cv.wait(q).unwrap_or_else(|e| e.into_inner());
             }
         };
-        sh.in_flight.lock().unwrap_or_else(|e| e.into_inner()).push((job.key, job.cancel.clone(), job.prefetch));
-        let profiling = sh.profiling.load(Ordering::Relaxed);
-        let (started, cpu0) = (Instant::now(), if profiling { thread_cpu_time().unwrap_or_default() } else { Duration::ZERO });
-        SOURCE_TIME.with(|s| s.set((Duration::ZERO, Duration::ZERO)));
-        PROFILING.with(|p| p.set(profiling));
-        // A cancelled job may have missed layers (its source gave up): its result is not cached.
-        let preview = filmcraft_media::cancel::with_cancel(&job.cancel, || {
-            if let Target::SequencePlan(seq) = job.key.target {
-                let (plan, pv) = plan_job(&job, seq, &pool, &services, &previews);
-                if !job.cancel.load(Ordering::Relaxed) {
-                    // Convert texels for upload here, not on the UI thread when the frame is shown.
-                    let prepared = filmcraft_gpu::prepare(&plan);
-                    sh.plans.lock().unwrap_or_else(|e| e.into_inner()).insert(job.key, GpuPlan { plan, prepared });
-                }
-                pv
-            } else {
-                let (img, pv) = render_job(&job, &pool, &services, &previews);
-                if !job.cancel.load(Ordering::Relaxed) {
-                    sh.done.lock().unwrap_or_else(|e| e.into_inner()).insert(job.key, Arc::new(img));
-                }
-                pv
-            }
-        });
-        let cancelled = job.cancel.load(Ordering::Relaxed);
-        sh.in_flight.lock().unwrap_or_else(|e| e.into_inner()).retain(|(k, c, _)| !(*k == job.key && Arc::ptr_eq(c, &job.cancel)));
-        if job.prefetch {
-            // Work beyond fetching source frames (decoding is sequential per source and is
-            // not saved by skipping frames, so it is left out of the estimate). A cancelled job
-            // only tells that the work takes at least this long.
-            let cost = started.elapsed().saturating_sub(SOURCE_TIME.with(|s| s.get()).0).as_secs_f64();
-            let mut c = sh.render_cost.lock().unwrap_or_else(|e| e.into_inner());
-            if !cancelled || cost > *c {
-                *c = if *c == 0.0 { cost } else { *c * 0.8 + cost * 0.2 };
-            }
-        }
-        if profiling {
-            let (source_wall, source_cpu) = SOURCE_TIME.with(|s| s.get());
-            let rec = JobRecord {
-                key: job.key,
-                prio: job.prio,
-                queued: job.queued,
-                started,
-                finished: Instant::now(),
-                cpu: thread_cpu_time().unwrap_or_default().saturating_sub(cpu0),
-                source_wall,
-                source_cpu,
-                preview,
-                cancelled,
-            };
-            sh.records.lock().unwrap_or_else(|e| e.into_inner()).push(rec);
-        }
+        run_job(&sh, &job, &pool, &services, &previews);
         if let Some(f) = repaint.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
             f();
         }
     }
+}
+
+/// Run one job and cache its result. Returns false when the job's media was still loading (an
+/// asynchronous web read): nothing was cached and the job should be retried.
+fn run_job(sh: &Shared, job: &Job, pool: &Arc<MediaPool>, services: &Arc<dyn Services>, previews: &PreviewStore) -> bool {
+    sh.in_flight.lock().unwrap_or_else(|e| e.into_inner()).push((job.key, job.cancel.clone(), job.prefetch));
+    let profiling = sh.profiling.load(Ordering::Relaxed);
+    let (started, cpu0) = (Instant::now(), if profiling { thread_cpu_time().unwrap_or_default() } else { Duration::ZERO });
+    SOURCE_TIME.with(|s| s.set((Duration::ZERO, Duration::ZERO)));
+    PROFILING.with(|p| p.set(profiling));
+    // A cancelled job may have missed layers (its source gave up): its result is not cached.
+    // A job whose media bytes were still loading (web) rendered with missing layers: like a
+    // cancelled one, its result is not cached (the caller retries it).
+    let _ = filmcraft_media::pending::take();
+    let mut loading = false;
+    let preview = filmcraft_media::cancel::with_cancel(&job.cancel, || {
+        if let Target::SequencePlan(seq) = job.key.target {
+            let (plan, pv) = plan_job(job, seq, pool, services, previews);
+            loading = filmcraft_media::pending::take();
+            if !job.cancel.load(Ordering::Relaxed) && !loading {
+                // Convert texels for upload here, not on the UI thread when the frame is shown.
+                let prepared = filmcraft_gpu::prepare(&plan);
+                sh.plans.lock().unwrap_or_else(|e| e.into_inner()).insert(job.key, GpuPlan { plan, prepared });
+            }
+            pv
+        } else {
+            let (img, pv) = render_job(job, pool, services, previews);
+            loading = filmcraft_media::pending::take();
+            if !job.cancel.load(Ordering::Relaxed) && !loading {
+                sh.done.lock().unwrap_or_else(|e| e.into_inner()).insert(job.key, Arc::new(img));
+            }
+            pv
+        }
+    });
+    let cancelled = job.cancel.load(Ordering::Relaxed);
+    sh.in_flight.lock().unwrap_or_else(|e| e.into_inner()).retain(|(k, c, _)| !(*k == job.key && Arc::ptr_eq(c, &job.cancel)));
+    if job.prefetch {
+        // Work beyond fetching source frames (decoding is sequential per source and is
+        // not saved by skipping frames, so it is left out of the estimate). A cancelled job
+        // only tells that the work takes at least this long.
+        let cost = started.elapsed().saturating_sub(SOURCE_TIME.with(|s| s.get()).0).as_secs_f64();
+        let mut c = sh.render_cost.lock().unwrap_or_else(|e| e.into_inner());
+        if !cancelled || cost > *c {
+            *c = if *c == 0.0 { cost } else { *c * 0.8 + cost * 0.2 };
+        }
+    }
+    if profiling {
+        let (source_wall, source_cpu) = SOURCE_TIME.with(|s| s.get());
+        let rec = JobRecord {
+            key: job.key,
+            prio: job.prio,
+            queued: job.queued,
+            started,
+            finished: Instant::now(),
+            cpu: thread_cpu_time().unwrap_or_default().saturating_sub(cpu0),
+            source_wall,
+            source_cpu,
+            preview,
+            cancelled,
+        };
+        sh.records.lock().unwrap_or_else(|e| e.into_inner()).push(rec);
+    }
+    !loading
 }
 
 /// The preview frame for a sequence job, when its segment has been rendered.
