@@ -48,9 +48,8 @@
 <p align="center"><sub><i>Apollo 11 - Tranquility</i>: a three-minute documentary edit of NASA's 1969 launch, landing and moonwalk film, with subtitles from the mission transcript. Every frame in these screenshots comes from public-domain footage, decoded, composited and graded by FilmCraft's own code.</sub></p>
 
 > [!NOTE]
-> **ArtCraft is a community of artists from all walks of life.** Painters, photographers,
-> filmmakers, illustrators, designers, animators, hobbyists, and people who picked up a pencil
-> last week. If you make things, you're one of us. **[Come say hi on Discord](https://discord.gg/artcraft).**
+> **ArtCraft is a community of artists from all walks of life.** Digital, generative, music,
+> games &mdash; if you make things, you're one of us. **[Come say hi on Discord](https://discord.gg/artcraft).**
 
 <p align="center">
   <a href="#edit">Edit</a> ·
