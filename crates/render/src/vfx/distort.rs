@@ -507,7 +507,9 @@ pub fn mosaic(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
     img.px.par_chunks_mut(w * 4).enumerate().for_each(|(y, row)| {
         for x in 0..w {
             let (u, v) = ((x as f32 + 0.5) / bw, (y as f32 + 0.5) / bh);
-            let sharp = small.get((u as usize).min(small.w - 1), (v as usize).min(small.h - 1));
+            // tile index as in the original Mosaic (pixel x belongs to tile floor(x / bw))
+            let (ti, tj) = ((x as f32 / bw) as usize, (y as f32 / bh) as usize);
+            let sharp = small.get(ti.min(small.w - 1), tj.min(small.h - 1));
             let p = if soft > 0.0 {
                 let sm = small.sample_bilinear_clamped(u, v);
                 [0, 1, 2, 3].map(|k| sharp[k] + (sm[k] - sharp[k]) * soft)
