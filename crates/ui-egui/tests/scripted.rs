@@ -187,6 +187,49 @@ fn apply_effect_appears_in_effect_controls() {
 }
 
 #[test]
+fn effects_panel_lists_the_premiere_transition_folders() {
+    let mut d = Driver::demo();
+    d.ok("ui.panel.show", json!({"panel": "Effects"}));
+    d.frames(3);
+    let folders = d.element_ids("effects.folder.");
+    for f in filmcraft_project::vtransition::VIDEO_TRANSITION_FOLDERS {
+        assert!(folders.contains(&format!("effects.folder.Video Transitions/{f}")), "{f}: {folders:?}");
+    }
+    assert!(folders.iter().any(|f| f == "effects.folder.Legacy"), "{folders:?}");
+    // search opens the matching folders: every modern wipe, and the legacy ones
+    d.ok("ui.set", json!({"effectsSearch": "wipe"}));
+    d.frames(3);
+    let items = d.element_ids("effects.item.");
+    for id in
+        ["clock_wipe", "linear_wipe", "neon_wipe", "panel_wipe", "plateau_wipe", "radial_wipe", "soft_wipe", "star_wipe", "stretch_wipe", "vr_gradient_wipe"]
+    {
+        assert!(items.iter().any(|i| i == &format!("effects.item.{id}")), "{id}: {items:?}");
+    }
+    d.ok("ui.set", json!({"effectsSearch": "legacy"}));
+    d.frames(3);
+    let items = d.element_ids("effects.item.");
+    for id in ["additive_dissolve_legacy", "clock_wipe_legacy", "cross_dissolve_legacy", "push_legacy", "whip_legacy"] {
+        assert!(items.iter().any(|i| i == &format!("effects.item.{id}")), "{id}: {items:?}");
+    }
+    // obsolete transitions stay out of the panel
+    d.ok("ui.set", json!({"effectsSearch": "venetian"}));
+    d.frames(3);
+    assert!(d.element_ids("effects.item.").is_empty());
+    // clicking a sub-folder toggles it
+    d.ok("ui.set", json!({"effectsSearch": ""}));
+    d.frames(2);
+    d.ok("ui.click", json!({"id": "effects.folder.Video Transitions/Dissolve"}));
+    d.frames(2);
+    assert!(!d.element_ids("effects.item.").iter().any(|i| i == "effects.item.cross_dissolve"));
+    // applying from the panel's command path works for a legacy transition
+    let cut = track_clips(&d.sequence(), 0)[1]["start"].as_i64().unwrap();
+    d.exec("playhead.set", json!({"time": cut}));
+    d.exec("sequence.applyVideoTransition", json!({"effect": "Iris Round"}));
+    let seq = d.sequence();
+    assert!(seq["video"][0]["transitions"].as_array().unwrap().iter().any(|t| t["effect"] == "iris_round"), "{seq}");
+}
+
+#[test]
 fn playback_toggle_and_stop() {
     let mut d = Driver::demo();
     assert_eq!(d.inspect()["playback"]["playing"], json!(false));

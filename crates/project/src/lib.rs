@@ -16,6 +16,7 @@ pub mod mask;
 pub mod mixer;
 pub mod multicam;
 pub mod transcript;
+pub mod vtransition;
 
 use std::collections::BTreeMap;
 

@@ -109,6 +109,15 @@ Each codec README has the full fixture matrix and the measured results.
   (identity at neutral parameters, determinism, range, a known value each, temporal/track effects through
   the compositor). `scenes_are_distinct` guards against blank or duplicate
   scenes.
+- **Video transitions** (`crates/render/src/transitions/tests.rs`) are checked for every transition
+  (84 modern, 21 Legacy, 7 hidden Obsolete): p = 0 is exactly the outgoing frame and p = 1 exactly
+  the incoming one, near both ends the output is close to that frame (continuity), the midpoint differs
+  from both, the output is finite and deterministic (also on 1×1 / odd sizes and NaN progress), every
+  parameter visibly changes the picture, and every direction differs. Golden *fingerprints* (4×4 mean
+  RGB grid at p = 0.25/0.5/0.75, ±4 levels) live in `src/transitions/goldens.txt`; re-bless with
+  `FILMCRAFT_BLESS=1 cargo test -p filmcraft-render golden_fingerprints` and review the diff.
+  `FILMCRAFT_TRANSITION_SHEETS=<dir> cargo test -p filmcraft-render contact_sheets -- --ignored`
+  writes one contact-sheet PNG per folder for eyeballing (never commit them).
 - **Blessing:** `FILMCRAFT_BLESS=1 cargo test -p filmcraft-golden` rewrites the references (and
   writes a `.attribution` sidecar for any new one; it prints the `ATTRIBUTION.md` row to add).
   References are original work rendered by FilmCraft, must stay under 50 KB (enforced on bless),
