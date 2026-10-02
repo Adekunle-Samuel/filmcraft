@@ -19,6 +19,7 @@ finish-args:
   - --share=ipc
   - --socket=wayland
   - --socket=fallback-x11
+  - --socket=pulseaudio
   - --device=dri
   # Open/Save dialogs use the file-chooser portal (rfd), and drag-and-drop uses the document
   # portal, so broad filesystem access isn't needed. Pictures is granted for opening files by

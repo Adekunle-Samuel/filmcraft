@@ -171,7 +171,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            libxkbcommon-dev libwayland-dev libx11-dev libxrandr-dev libxi-dev libgl1-mesa-dev \
+            libxkbcommon-dev libwayland-dev libx11-dev libxrandr-dev libxi-dev libgl1-mesa-dev libasound2-dev \
             desktop-file-utils appstream python3-yaml
           curl -fsSL -o "$RUNNER_TEMP/nfpm.deb" \
             "https://github.com/goreleaser/nfpm/releases/download/v${NFPM_VERSION}/nfpm_${NFPM_VERSION}_${{ matrix.deb }}.deb"
@@ -209,7 +209,7 @@ jobs:
     env:
       FILMCRAFT_VERSION: ${{ needs.version.outputs.version }}
       FILMCRAFT_BUILD_DATE: ${{ needs.version.outputs.date }}
-      TRUNK_VERSION: 0.21.14
+      WASM_BINDGEN_VERSION: 0.2.129
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -218,11 +218,12 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           key: release-web
-      - name: Install trunk
+      - name: Install wasm-bindgen CLI
         run: |
-          curl -fsSL "https://github.com/trunk-rs/trunk/releases/download/v${TRUNK_VERSION}/trunk-x86_64-unknown-linux-gnu.tar.gz" \
-            | tar -xz -C "$HOME/.cargo/bin" trunk
-          trunk --version
+          # Must match the wasm-bindgen crate version exactly (WASM_BINDGEN in xtask/src/main.rs).
+          command -v wasm-bindgen >/dev/null && wasm-bindgen --version | grep -q "$WASM_BINDGEN_VERSION" \
+            || cargo install wasm-bindgen-cli --version "$WASM_BINDGEN_VERSION" --locked
+          wasm-bindgen --version
       - name: Apply version override
         if: inputs.version != ''
         run: cargo xtask version set "$FILMCRAFT_VERSION"

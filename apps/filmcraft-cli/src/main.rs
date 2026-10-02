@@ -30,6 +30,7 @@ SUBCOMMANDS
   bench-decode <media> [--frames N]
   mcp                           MCP server on stdio (headless, or --bridge to the live app)
   help                          this text
+  --version                     print the version
 
 OPTIONS
   --project <p.fcproj>          open this project first (headless)
@@ -130,10 +131,15 @@ fn format_for(path: &str) -> Option<&'static str> {
 
 #[tokio::main]
 async fn main() {
+    if matches!(std::env::args().nth(1).as_deref(), Some("--version" | "-V")) {
+        println!("filmcraft-cli {}", env!("CARGO_PKG_VERSION"));
+        return;
+    }
     let a = Args::parse(std::env::args().skip(1));
     let Some(cmd) = a.pos(0) else { usage("missing subcommand") };
     match cmd {
         "help" | "--help" | "-h" => print!("{HELP}"),
+        "version" => println!("filmcraft-cli {}", env!("CARGO_PKG_VERSION")),
         "probe" => {
             let path = a.pos(1).unwrap_or_else(|| usage("probe <media>"));
             let bytes = std::fs::read(path).unwrap_or_else(|e| fail(format!("{path}: {e}")));
