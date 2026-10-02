@@ -343,7 +343,10 @@ pub fn proxy_dir(media: &str, dest: Option<&str>) -> PathBuf {
 pub fn create(s: &mut Session, p: &Value) -> Result<Value> {
     let pr = preset(str_p(p, "preset").unwrap_or(DEFAULT_PROXY_PRESET)).ok_or_else(|| bad("media.createProxies", "unknown preset (see media.proxyPresets)"))?;
     let items = items_param(s, p);
-    let dest = str_p(p, "destination").map(str::to_string);
+    // default: Project Settings ▸ Scratch Disks ▸ Captured and Generated, else next to the media
+    let dest = str_p(p, "destination")
+        .map(str::to_string)
+        .or_else(|| s.project.settings.scratch.captured.clone().filter(|d| !d.is_empty()).map(|d| format!("{d}/Proxies")));
     let mut work = Vec::new();
     let mut taken = Vec::new();
     let mut skipped = Vec::new();

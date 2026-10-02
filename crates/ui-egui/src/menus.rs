@@ -77,6 +77,7 @@ pub const UI_COMMANDS: &[UiCommand] = &[
     uic!("view.guideTemplates.apply", "Apply Guide Template", [], None),
     uic!("view.guideTemplates.delete", "Delete Guide Template", [], None),
     uic!("view.compare.setReference", "Set Comparison Reference", [], None),
+    uic!("view.dynamicAudioWaveforms", "Dynamic Audio Waveforms", ["View"], None),
     uic!("multicam.toggleView", "Multi-Camera View", ["View"], Some("Shift+0")),
     uic!("multicam.recordToggle", "Multi-Camera Record On/Off Toggle", [], Some("0")),
     uic!("view.theme.dark", "Darkest", ["View", "Appearance"], None),
@@ -111,9 +112,26 @@ pub const UI_COMMANDS: &[UiCommand] = &[
     uic!("help.appPage", "FilmCraft on getartcraft.com", ["Help"], None),
     uic!("help.github", "FilmCraft on GitHub", ["Help"], None),
     uic!("help.reportIssue", "Report an Issue…", ["Help"], None),
+    uic!("help.revealLogFiles", "Reveal Log Files…", ["Help"], None),
+    uic!("help.systemCompatibilityReport", "System Compatibility Report…", ["Help"], None),
     uic!("app.about", "About FilmCraft", ["Help"], None),
     uic!("app.keyboardShortcuts", "Keyboard Shortcuts…", ["Edit"], Some("Cmd+Alt+K")),
-    uic!("app.preferences.autoSave", "Auto Save…", ["Edit", "Preferences"], Some("Cmd+,")),
+    uic!("app.settings.general", "General…", ["Edit", "Preferences"], Some("Cmd+,")),
+    uic!("app.settings.appearance", "Appearance…", ["Edit", "Preferences"], None),
+    uic!("app.settings.audio", "Audio…", ["Edit", "Preferences"], None),
+    uic!("app.settings.audioHardware", "Audio Hardware…", ["Edit", "Preferences"], None),
+    uic!("app.settings.autoSave", "Auto Save…", ["Edit", "Preferences"], None),
+    uic!("app.settings.color", "Color…", ["Edit", "Preferences"], None),
+    uic!("app.settings.graphics", "Graphics…", ["Edit", "Preferences"], None),
+    uic!("app.settings.labels", "Labels…", ["Edit", "Preferences"], None),
+    uic!("app.settings.media", "Media…", ["Edit", "Preferences"], None),
+    uic!("app.settings.mediaAnalysis", "Media Analysis & Transcription…", ["Edit", "Preferences"], None),
+    uic!("app.settings.mediaCache", "Media Cache…", ["Edit", "Preferences"], None),
+    uic!("app.settings.memory", "Memory…", ["Edit", "Preferences"], None),
+    uic!("app.settings.playback", "Playback…", ["Edit", "Preferences"], None),
+    uic!("app.settings.plugins", "Plugins…", ["Edit", "Preferences"], None),
+    uic!("app.settings.timeline", "Timeline…", ["Edit", "Preferences"], None),
+    uic!("app.settings.trim", "Trim…", ["Edit", "Preferences"], None),
 ];
 
 pub fn panel_command_id(p: PanelKind) -> String {
@@ -156,6 +174,15 @@ pub fn invoke(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, params: Val
         return r;
     }
     if let Some(r) = crate::panels::clip_dialogs::route(app, id, &params) {
+        return r;
+    }
+    if let Some(r) = crate::panels::settings::route(app, id) {
+        return r;
+    }
+    if let Some(r) = crate::panels::menu_dialogs::route(app, ctx, id, &params) {
+        if let Err(e) = &r {
+            app.ui.status = e.clone();
+        }
         return r;
     }
     if let Some(r) = crate::panels::media_dialogs::route(app, id, &params) {
@@ -240,11 +267,6 @@ pub fn invoke(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, params: Val
             crate::panels::shortcuts_dialog::open(app);
             return Ok(Value::Null);
         }
-        "app.preferences" | "app.preferences.autoSave" => {
-            app.file_dialogs.prefs_draft = Some(app.session.prefs.auto_save.clone());
-            app.dialog = Some(crate::Dialog::Preferences);
-            return Ok(Value::Null);
-        }
         // Audio Gain from the menu or G opens the dialog; with params it applies directly.
         "clip.audioGain" if params.as_object().is_none_or(|m| m.is_empty()) => {
             filmcraft_engine::find_command("clip.audioGain").map_or(Ok(()), |c| (c.enabled)(&app.session))?;
@@ -291,7 +313,7 @@ pub fn invoke(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, params: Val
     }
     if let Some(th) = id.strip_prefix("view.theme.") {
         let k = crate::theme::ThemeKind::from_name(th).ok_or("unknown theme")?;
-        app.set_theme(ctx, k);
+        crate::panels::settings::set_theme(app, ctx, k);
         return Ok(Value::Null);
     }
     // File dialogs for commands that need a path.
@@ -331,7 +353,7 @@ pub fn menu_items(app: &FilmcraftApp) -> Vec<MenuItem> {
     let mut v = menu_items_for(&app.session);
     for it in &mut v {
         if it.id.starts_with("view.") {
-            it.checked = crate::panels::monitor_view::checked(app, &it.id);
+            it.checked = crate::panels::monitor_view::checked(app, &it.id).or(crate::panels::menu_dialogs::checked(app, &it.id));
             it.enabled &= crate::panels::monitor_view::enabled(app, &it.id);
         }
     }
@@ -345,9 +367,14 @@ pub fn menu_items_for(session: &filmcraft_engine::Session) -> Vec<MenuItem> {
         if c.menu.is_empty() {
             continue;
         }
+        // Edit ▸ Label items carry the names from Settings ▸ Labels
+        let label = match c.id.strip_prefix("edit.label.").and_then(filmcraft_project::Label::from_name) {
+            Some(l) => session.prefs.labels.name(l),
+            None => c.label.into(),
+        };
         out.push(MenuItem {
             id: c.id.into(),
-            label: c.label.into(),
+            label,
             path: c.menu.iter().map(|s| s.to_string()).collect(),
             shortcut: session.shortcuts.primary(c.id),
             enabled: session.is_enabled(c.id),

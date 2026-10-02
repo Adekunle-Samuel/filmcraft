@@ -11,7 +11,13 @@ use filmcraft_geom::Vec2;
 use serde::{Deserialize, Serialize};
 
 use crate::keyframe::{Param, ParamValue};
+
+mod audio;
 use crate::mask::Mask;
+pub use audio::{GEQ10_LABELS, GEQ20_LABELS, GEQ30_LABELS, PREMIERE_AUDIO_EFFECTS};
+
+mod vfx;
+pub use vfx::{EASINGS, ECHO_OPERATORS, FRAME_LAYOUTS, LIGHT_IDS, SIMPLE_BLEND, TRACK_CHOICES, auto_point};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum EffectKind {
@@ -160,7 +166,7 @@ pub const BLEND_MODES: &[&str] = &[
     "Luminosity",
 ];
 
-fn f(id: &'static str, label: &'static str, def: f64, min: f64, max: f64, unit: &'static str) -> ParamDef {
+pub(crate) fn f(id: &'static str, label: &'static str, def: f64, min: f64, max: f64, unit: &'static str) -> ParamDef {
     ParamDef {
         id,
         label,
@@ -170,7 +176,15 @@ fn f(id: &'static str, label: &'static str, def: f64, min: f64, max: f64, unit: 
         group: None,
     }
 }
-fn fs(id: &'static str, label: &'static str, def: f64, (min, max): (f64, f64), (smin, smax): (f64, f64), unit: &'static str, decimals: u8) -> ParamDef {
+pub(crate) fn fs(
+    id: &'static str,
+    label: &'static str,
+    def: f64,
+    (min, max): (f64, f64),
+    (smin, smax): (f64, f64),
+    unit: &'static str,
+    decimals: u8,
+) -> ParamDef {
     ParamDef {
         id,
         label,
@@ -180,19 +194,19 @@ fn fs(id: &'static str, label: &'static str, def: f64, (min, max): (f64, f64), (
         group: None,
     }
 }
-fn pt(id: &'static str, label: &'static str, x: f64, y: f64) -> ParamDef {
+pub(crate) fn pt(id: &'static str, label: &'static str, x: f64, y: f64) -> ParamDef {
     ParamDef { id, label, kind: ParamKind::Point, default: ParamValue::Vec2(Vec2::new(x, y)), animatable: true, group: None }
 }
-fn col(id: &'static str, label: &'static str, c: [f32; 4]) -> ParamDef {
+pub(crate) fn col(id: &'static str, label: &'static str, c: [f32; 4]) -> ParamDef {
     ParamDef { id, label, kind: ParamKind::Color, default: ParamValue::Color(c), animatable: true, group: None }
 }
-fn b(id: &'static str, label: &'static str, v: bool) -> ParamDef {
+pub(crate) fn b(id: &'static str, label: &'static str, v: bool) -> ParamDef {
     ParamDef { id, label, kind: ParamKind::Bool, default: ParamValue::Bool(v), animatable: false, group: None }
 }
-fn ch(id: &'static str, label: &'static str, opts: &'static [&'static str], def: u32) -> ParamDef {
+pub(crate) fn ch(id: &'static str, label: &'static str, opts: &'static [&'static str], def: u32) -> ParamDef {
     ParamDef { id, label, kind: ParamKind::Choice(opts), default: ParamValue::Choice(def), animatable: false, group: None }
 }
-fn ang(id: &'static str, label: &'static str, def: f64) -> ParamDef {
+pub(crate) fn ang(id: &'static str, label: &'static str, def: f64) -> ParamDef {
     ParamDef { id, label, kind: ParamKind::Angle, default: ParamValue::Float(def), animatable: true, group: None }
 }
 fn curve(id: &'static str, label: &'static str, hue: bool) -> ParamDef {
@@ -202,7 +216,7 @@ fn curve(id: &'static str, label: &'static str, hue: bool) -> ParamDef {
 fn wheel(id: &'static str, label: &'static str) -> ParamDef {
     ParamDef { id, label, kind: ParamKind::Wheel, default: ParamValue::Vec2(Vec2::new(0.0, 0.0)), animatable: true, group: None }
 }
-fn txt(id: &'static str, label: &'static str) -> ParamDef {
+pub(crate) fn txt(id: &'static str, label: &'static str) -> ParamDef {
     ParamDef { id, label, kind: ParamKind::Text, default: ParamValue::Text(String::new()), animatable: false, group: None }
 }
 fn grp(mut p: ParamDef, g: &'static str) -> ParamDef {
@@ -212,9 +226,6 @@ fn grp(mut p: ParamDef, g: &'static str) -> ParamDef {
 
 fn video(id: &'static str, name: &'static str, cat: &'static [&'static str], params: Vec<ParamDef>) -> EffectDef {
     EffectDef { id, name, kind: EffectKind::Video, category: cat, params, intrinsic: false, accelerated: true, float32: true, yuv: false }
-}
-fn vtrans(id: &'static str, name: &'static str, cat: &'static [&'static str], params: Vec<ParamDef>) -> EffectDef {
-    EffectDef { id, name, kind: EffectKind::VideoTransition, category: cat, params, intrinsic: false, accelerated: true, float32: true, yuv: false }
 }
 fn audio(id: &'static str, name: &'static str, cat: &'static [&'static str], params: Vec<ParamDef>) -> EffectDef {
     EffectDef { id, name, kind: EffectKind::Audio, category: cat, params, intrinsic: false, accelerated: false, float32: true, yuv: false }
@@ -232,13 +243,6 @@ const PERSPECTIVE: &[&str] = &["Video Effects", "Perspective"];
 const STYLIZE: &[&str] = &["Video Effects", "Stylize"];
 const TRANSFORM: &[&str] = &["Video Effects", "Transform"];
 const VIDEO: &[&str] = &["Video Effects", "Video"];
-const DISSOLVE: &[&str] = &["Video Transitions", "Dissolve"];
-const IRIS: &[&str] = &["Video Transitions", "Iris"];
-const SLIDE: &[&str] = &["Video Transitions", "Slide"];
-const WIPE: &[&str] = &["Video Transitions", "Wipe"];
-const ZOOM: &[&str] = &["Video Transitions", "Zoom"];
-const PAGE_PEEL: &[&str] = &["Video Transitions", "Page Peel"];
-const MOTION3D: &[&str] = &["Video Transitions", "3D Motion"];
 const A_AMP: &[&str] = &["Audio Effects", "Amplitude and Compression"];
 const A_DELAY: &[&str] = &["Audio Effects", "Delay and Echo"];
 const A_FILTER: &[&str] = &["Audio Effects", "Filter and EQ"];
@@ -248,8 +252,6 @@ const A_SPECIAL: &[&str] = &["Audio Effects", "Special"];
 const A_STEREO: &[&str] = &["Audio Effects", "Stereo Imagery"];
 const A_TIME: &[&str] = &["Audio Effects", "Time and Pitch"];
 const A_TRANS: &[&str] = &["Audio Transitions", "Crossfade"];
-
-const DIR_OPTS: &[&str] = &["From North", "From East", "From South", "From West"];
 
 fn build_effects() -> Vec<EffectDef> {
     let mut v = vec![
@@ -352,7 +354,7 @@ fn build_effects() -> Vec<EffectDef> {
         video(
             "color_balance",
             "Color Balance",
-            COLOR_CORR,
+            vfx::OBSOLETE,
             vec![
                 f("shadow_r", "Shadow Red Balance", 0.0, -100.0, 100.0, ""),
                 f("shadow_g", "Shadow Green Balance", 0.0, -100.0, 100.0, ""),
@@ -369,7 +371,7 @@ fn build_effects() -> Vec<EffectDef> {
         video(
             "leave_color",
             "Leave Color",
-            COLOR_CORR,
+            vfx::OBSOLETE,
             vec![
                 f("amount", "Amount to Decolor", 0.0, 0.0, 100.0, "%"),
                 col("color", "Color To Leave", [1.0, 0.0, 0.0, 1.0]),
@@ -380,7 +382,7 @@ fn build_effects() -> Vec<EffectDef> {
         video(
             "change_to_color",
             "Change to Color",
-            COLOR_CORR,
+            vfx::OBSOLETE,
             vec![
                 col("from", "From", [1.0, 0.0, 0.0, 1.0]),
                 col("to", "To", [0.0, 0.0, 1.0, 1.0]),
@@ -485,7 +487,7 @@ fn build_effects() -> Vec<EffectDef> {
                 fs("threshold", "Threshold", 0.0, (0.0, 255.0), (0.0, 255.0), "", 0),
             ],
         ),
-        video("camera_blur", "Camera Blur", BLUR, vec![f("percent", "Percent Blur", 0.0, 0.0, 100.0, "")]),
+        video("camera_blur", "Camera Blur", vfx::LEGACY, vec![f("percent", "Percent Blur", 0.0, 0.0, 100.0, "")]),
         video("black_white", "Black & White", IMAGE_CONTROL, vec![]),
         video(
             "color_pass",
@@ -497,7 +499,7 @@ fn build_effects() -> Vec<EffectDef> {
         video(
             "invert",
             "Invert",
-            &["Video Effects", "Channel"],
+            IMAGE_CONTROL,
             vec![ch("channel", "Channel", &["RGB", "Red", "Green", "Blue", "Alpha"], 0), f("blend", "Blend With Original", 0.0, 0.0, 100.0, "%")],
         ),
         video(
@@ -549,7 +551,7 @@ fn build_effects() -> Vec<EffectDef> {
         video(
             "emboss",
             "Emboss",
-            STYLIZE,
+            vfx::OBSOLETE,
             vec![
                 ang("direction", "Direction", 45.0),
                 fs("relief", "Relief", 1.8, (0.0, 10.0), (0.0, 10.0), "", 1),
@@ -557,7 +559,7 @@ fn build_effects() -> Vec<EffectDef> {
                 f("blend", "Blend With Original", 0.0, 0.0, 100.0, "%"),
             ],
         ),
-        video("replicate", "Replicate", STYLIZE, vec![fs("count", "Count", 2.0, (2.0, 16.0), (2.0, 16.0), "", 0)]),
+        video("replicate", "Replicate", vfx::LEGACY, vec![fs("count", "Count", 2.0, (2.0, 16.0), (2.0, 16.0), "", 0)]),
         video(
             "strobe",
             "Strobe Light",
@@ -575,11 +577,11 @@ fn build_effects() -> Vec<EffectDef> {
             NOISE,
             vec![f("amount", "Amount of Noise", 0.0, 0.0, 100.0, "%"), b("color", "Use Color Noise", true), b("clip", "Clipping", true)],
         ),
-        video("median", "Median", NOISE, vec![fs("radius", "Radius", 0.0, (0.0, 100.0), (0.0, 20.0), "", 0)]),
+        video("median", "Median", vfx::OBSOLETE, vec![fs("radius", "Radius", 0.0, (0.0, 100.0), (0.0, 20.0), "", 0)]),
         video(
             "crop",
             "Crop",
-            TRANSFORM,
+            vfx::LEGACY,
             vec![
                 f("left", "Left", 0.0, 0.0, 100.0, "%"),
                 f("top", "Top", 0.0, 0.0, 100.0, "%"),
@@ -591,11 +593,11 @@ fn build_effects() -> Vec<EffectDef> {
         ),
         video("horizontal_flip", "Horizontal Flip", TRANSFORM, vec![]),
         video("vertical_flip", "Vertical Flip", TRANSFORM, vec![]),
-        video("edge_feather", "Edge Feather", TRANSFORM, vec![fs("amount", "Amount", 0.0, (0.0, 100.0), (0.0, 100.0), "", 0)]),
+        video("edge_feather", "Edge Feather", vfx::LEGACY, vec![fs("amount", "Amount", 0.0, (0.0, 100.0), (0.0, 100.0), "", 0)]),
         video(
             "transform",
             "Transform",
-            DISTORT,
+            TRANSFORM,
             vec![
                 pt("anchor", "Anchor Point", f64::NAN, f64::NAN),
                 pt("position", "Position", f64::NAN, f64::NAN),
@@ -610,7 +612,7 @@ fn build_effects() -> Vec<EffectDef> {
             ],
         ),
         video("mirror", "Mirror", DISTORT, vec![pt("center", "Reflection Center", f64::NAN, f64::NAN), ang("angle", "Reflection Angle", 0.0)]),
-        video("offset", "Offset", DISTORT, vec![pt("shift", "Shift Center To", f64::NAN, f64::NAN), f("blend", "Blend With Original", 0.0, 0.0, 100.0, "%")]),
+        video("offset", "Offset", TRANSFORM, vec![pt("shift", "Shift Center To", f64::NAN, f64::NAN), f("blend", "Blend With Original", 0.0, 0.0, 100.0, "%")]),
         video(
             "lens_distortion",
             "Lens Distortion",
@@ -664,7 +666,7 @@ fn build_effects() -> Vec<EffectDef> {
         video(
             "bevel_alpha",
             "Bevel Alpha",
-            PERSPECTIVE,
+            vfx::OBSOLETE,
             vec![
                 fs("thickness", "Edge Thickness", 2.0, (0.0, 200.0), (0.0, 10.0), "", 1),
                 ang("angle", "Light Angle", -60.0),
@@ -728,7 +730,7 @@ fn build_effects() -> Vec<EffectDef> {
         video(
             "ramp",
             "Ramp",
-            GENERATE,
+            vfx::LEGACY,
             vec![
                 pt("start", "Start of Ramp", f64::NAN, 0.0),
                 col("start_color", "Start Color", [0.0, 0.0, 0.0, 1.0]),
@@ -741,7 +743,7 @@ fn build_effects() -> Vec<EffectDef> {
         video(
             "circle",
             "Circle",
-            GENERATE,
+            vfx::OBSOLETE,
             vec![
                 pt("center", "Center", f64::NAN, f64::NAN),
                 fs("radius", "Radius", 75.0, (0.0, 4000.0), (0.0, 400.0), "", 1),
@@ -752,7 +754,7 @@ fn build_effects() -> Vec<EffectDef> {
         video(
             "grid",
             "Grid",
-            GENERATE,
+            vfx::OBSOLETE,
             vec![
                 fs("size", "Width", 60.0, (1.0, 4000.0), (1.0, 400.0), "", 0),
                 fs("border", "Border", 2.0, (0.0, 100.0), (0.0, 20.0), "", 1),
@@ -763,7 +765,7 @@ fn build_effects() -> Vec<EffectDef> {
         video(
             "lens_flare",
             "Lens Flare",
-            GENERATE,
+            vfx::LIGHTS,
             vec![
                 pt("center", "Flare Center", f64::NAN, f64::NAN),
                 f("brightness", "Flare Brightness", 100.0, 0.0, 300.0, "%"),
@@ -773,7 +775,7 @@ fn build_effects() -> Vec<EffectDef> {
         video(
             "timecode",
             "Timecode",
-            VIDEO,
+            vfx::OBSOLETE,
             vec![
                 pt("position", "Position", f64::NAN, f64::NAN),
                 fs("size", "Size", 15.0, (1.0, 100.0), (1.0, 50.0), "%", 1),
@@ -783,146 +785,12 @@ fn build_effects() -> Vec<EffectDef> {
         video(
             "clip_name",
             "Clip Name",
-            VIDEO,
+            vfx::OBSOLETE,
             vec![pt("position", "Position", f64::NAN, f64::NAN), fs("size", "Size", 15.0, (1.0, 100.0), (1.0, 50.0), "%", 1)],
         ),
-        video("simple_text", "Simple Text", VIDEO, vec![]),
-        // ---- video transitions ----
-        vtrans("cross_dissolve", "Cross Dissolve", DISSOLVE, vec![]),
-        vtrans("additive_dissolve", "Additive Dissolve", DISSOLVE, vec![]),
-        vtrans("dip_to_black", "Dip to Black", DISSOLVE, vec![]),
-        vtrans("dip_to_white", "Dip to White", DISSOLVE, vec![]),
-        vtrans("film_dissolve", "Film Dissolve", DISSOLVE, vec![]),
-        vtrans("morph_cut", "Morph Cut", DISSOLVE, vec![]),
-        vtrans("non_additive_dissolve", "Non-Additive Dissolve", DISSOLVE, vec![]),
-        vtrans("iris_box", "Iris Box", IRIS, vec![]),
-        vtrans("iris_cross", "Iris Cross", IRIS, vec![]),
-        vtrans("iris_diamond", "Iris Diamond", IRIS, vec![]),
-        vtrans("iris_round", "Iris Round", IRIS, vec![]),
-        vtrans("push", "Push", SLIDE, vec![ch("direction", "Direction", DIR_OPTS, 3)]),
-        vtrans("slide", "Slide", SLIDE, vec![ch("direction", "Direction", DIR_OPTS, 3)]),
-        vtrans("split", "Split", SLIDE, vec![]),
-        vtrans("center_split", "Center Split", SLIDE, vec![]),
-        vtrans("band_slide", "Band Slide", SLIDE, vec![]),
-        vtrans("whip", "Whip", SLIDE, vec![ch("direction", "Direction", DIR_OPTS, 3)]),
-        vtrans("wipe", "Wipe", WIPE, vec![ch("direction", "Direction", DIR_OPTS, 3)]),
-        vtrans("barn_doors", "Barn Doors", WIPE, vec![]),
-        vtrans("clock_wipe", "Clock Wipe", WIPE, vec![]),
-        vtrans("gradient_wipe", "Gradient Wipe", WIPE, vec![f("softness", "Softness", 10.0, 0.0, 100.0, "")]),
-        vtrans("inset", "Inset", WIPE, vec![]),
-        vtrans("radial_wipe", "Radial Wipe", WIPE, vec![]),
-        vtrans("venetian_blinds", "Venetian Blinds", WIPE, vec![]),
-        vtrans("checker_wipe", "Checker Wipe", WIPE, vec![]),
-        vtrans("cross_zoom", "Cross Zoom", ZOOM, vec![]),
-        vtrans("page_peel", "Page Peel", PAGE_PEEL, vec![]),
-        vtrans("page_turn", "Page Turn", PAGE_PEEL, vec![]),
-        vtrans("cube_spin", "Cube Spin", MOTION3D, vec![]),
-        vtrans("flip_over", "Flip Over", MOTION3D, vec![]),
+        video("simple_text", "Simple Text", vfx::UTILITY, vec![]),
         // ---- audio effects ----
-        audio("amplify", "Amplify", A_AMP, vec![fs("gain", "Gain", 0.0, (-96.0, 48.0), (-24.0, 24.0), "dB", 1)]),
-        audio(
-            "dynamics",
-            "Dynamics Processing",
-            A_AMP,
-            vec![
-                fs("threshold", "Threshold", -20.0, (-60.0, 0.0), (-60.0, 0.0), "dB", 1),
-                fs("ratio", "Ratio", 4.0, (1.0, 30.0), (1.0, 30.0), ":1", 1),
-                fs("attack", "Attack", 10.0, (0.1, 500.0), (0.1, 500.0), "ms", 1),
-                fs("release", "Release", 100.0, (1.0, 5000.0), (1.0, 5000.0), "ms", 0),
-            ],
-        ),
-        audio(
-            "hard_limiter",
-            "Hard Limiter",
-            A_AMP,
-            vec![
-                fs("max", "Maximum Amplitude", -0.1, (-30.0, 0.0), (-30.0, 0.0), "dB", 1),
-                fs("boost", "Input Boost", 0.0, (-30.0, 30.0), (-30.0, 30.0), "dB", 1),
-                fs("lookahead", "Look-Ahead Time", 7.0, (0.0, 30.0), (0.0, 30.0), "ms", 1),
-                fs("release", "Release Time", 100.0, (1.0, 1000.0), (1.0, 1000.0), "ms", 0),
-            ],
-        ),
-        audio("multiband_compressor", "Multiband Compressor", A_AMP, vec![]),
-        audio("channel_mixer_a", "Channel Mixer", A_AMP, vec![]),
-        audio(
-            "delay",
-            "Delay",
-            A_DELAY,
-            vec![
-                fs("delay", "Delay", 1.0, (0.0, 2.0), (0.0, 2.0), "s", 2),
-                f("feedback", "Feedback", 0.0, 0.0, 100.0, "%"),
-                f("mix", "Mix", 50.0, 0.0, 100.0, "%"),
-            ],
-        ),
-        audio("analog_delay", "Analog Delay", A_DELAY, vec![]),
-        audio(
-            "parametric_eq",
-            "Parametric Equalizer",
-            A_FILTER,
-            vec![
-                fs("low_freq", "Low Frequency", 100.0, (20.0, 20000.0), (20.0, 1000.0), "Hz", 0),
-                fs("low_gain", "Low Gain", 0.0, (-24.0, 24.0), (-24.0, 24.0), "dB", 1),
-                fs("mid_freq", "Mid Frequency", 1000.0, (20.0, 20000.0), (200.0, 8000.0), "Hz", 0),
-                fs("mid_gain", "Mid Gain", 0.0, (-24.0, 24.0), (-24.0, 24.0), "dB", 1),
-                fs("mid_q", "Mid Q", 1.0, (0.1, 20.0), (0.1, 10.0), "", 2),
-                fs("high_freq", "High Frequency", 8000.0, (20.0, 20000.0), (2000.0, 20000.0), "Hz", 0),
-                fs("high_gain", "High Gain", 0.0, (-24.0, 24.0), (-24.0, 24.0), "dB", 1),
-            ],
-        ),
-        audio("highpass", "Highpass", A_FILTER, vec![fs("cutoff", "Cutoff", 80.0, (20.0, 20000.0), (20.0, 2000.0), "Hz", 0)]),
-        audio("lowpass", "Lowpass", A_FILTER, vec![fs("cutoff", "Cutoff", 8000.0, (20.0, 20000.0), (500.0, 20000.0), "Hz", 0)]),
-        audio(
-            "bandpass",
-            "Bandpass",
-            A_FILTER,
-            vec![fs("center", "Center", 1000.0, (20.0, 20000.0), (20.0, 20000.0), "Hz", 0), fs("q", "Q", 1.0, (0.1, 20.0), (0.1, 20.0), "", 2)],
-        ),
-        audio("notch", "Notch Filter", A_FILTER, vec![]),
-        audio("simple_eq", "Simple Parametric EQ", A_FILTER, vec![]),
-        audio("graphic_eq", "Graphic Equalizer (10 Bands)", A_FILTER, vec![]),
-        audio("denoise", "DeNoise", A_NOISE, vec![f("amount", "Amount", 40.0, 0.0, 100.0, "%")]),
-        audio("dehummer", "DeHummer", A_NOISE, vec![ch("freq", "Frequency", &["50 Hz", "60 Hz"], 1), f("gain", "Gain", -40.0, -80.0, 0.0, "dB")]),
-        audio("declicker", "Automatic Click Remover", A_NOISE, vec![]),
-        audio(
-            "dereverb",
-            "DeReverb",
-            A_NOISE,
-            vec![f("amount", "Amount", 50.0, 0.0, 100.0, "%"), fs("rt60", "Decay Time (RT60)", 0.8, (0.1, 5.0), (0.1, 3.0), "s", 2)],
-        ),
-        audio(
-            "deesser",
-            "DeEsser",
-            A_AMP,
-            vec![
-                fs("frequency", "Frequency", 6000.0, (2000.0, 12000.0), (2000.0, 12000.0), "Hz", 0),
-                fs("threshold", "Threshold", -12.0, (-40.0, 0.0), (-40.0, 0.0), "dB", 1),
-                fs("reduction", "Maximum Reduction", 8.0, (0.0, 24.0), (0.0, 24.0), "dB", 1),
-            ],
-        ),
-        audio("speech_enhance", "Enhance Speech", A_NOISE, vec![f("mix", "Mix", 100.0, 0.0, 100.0, "%"), ch("tone", "Voice", &["Low Tone", "High Tone"], 0)]),
-        audio("stereo_width", "Stereo Width", A_STEREO, vec![fs("width", "Width", 100.0, (0.0, 200.0), (0.0, 200.0), "%", 0)]),
-        audio(
-            "studio_reverb",
-            "Studio Reverb",
-            A_REVERB,
-            vec![
-                f("room", "Room Size", 50.0, 0.0, 100.0, "%"),
-                f("decay", "Decay", 50.0, 0.0, 100.0, "%"),
-                f("damping", "High Frequency Damping", 50.0, 0.0, 100.0, "%"),
-                f("dry", "Dry", 90.0, 0.0, 100.0, "%"),
-                f("wet", "Wet", 35.0, 0.0, 100.0, "%"),
-            ],
-        ),
-        audio("convolution_reverb", "Convolution Reverb", A_REVERB, vec![]),
-        audio("surround_reverb", "Surround Reverb", A_REVERB, vec![]),
-        audio("loudness_radar", "Loudness Meter", A_SPECIAL, vec![]),
-        audio("invert_a", "Invert", A_SPECIAL, vec![]),
-        audio(
-            "pitch_shifter",
-            "Pitch Shifter",
-            A_TIME,
-            vec![fs("semitones", "Semi-tones", 0.0, (-12.0, 12.0), (-12.0, 12.0), "", 0), fs("cents", "Cents", 0.0, (-100.0, 100.0), (-100.0, 100.0), "", 0)],
-        ),
+        // (defined in effect/audio.rs; appended below)
         EffectDef {
             id: "constant_power",
             name: "Constant Power",
@@ -957,6 +825,10 @@ fn build_effects() -> Vec<EffectDef> {
             yuv: false,
         },
     ];
+    v.extend(audio::defs());
+    v.extend(vfx::defs());
+    vfx::extend_core(&mut v);
+    v.extend(crate::vtransition::video_transition_defs());
     v.extend(crate::graphic::layer_defs());
     // YUV badge for the colour/intrinsic set
     for e in &mut v {
@@ -964,6 +836,7 @@ fn build_effects() -> Vec<EffectDef> {
             e.yuv = true;
         }
     }
+    vfx::apply_badges(&mut v);
     v
 }
 

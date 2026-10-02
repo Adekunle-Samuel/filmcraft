@@ -43,6 +43,25 @@ pub trait AudioOut {
     fn sample_rate(&self) -> u32;
     /// Frames played since `start` (the playback master clock), if the device reports it.
     fn played_frames(&self) -> Option<u64>;
+    /// Hosts and devices that can be chosen in Settings ▸ Audio Hardware.
+    fn devices(&self) -> AudioDevices {
+        AudioDevices::default()
+    }
+    /// Apply Settings ▸ Audio Hardware (device class/output, buffer size, sample rate). Takes
+    /// effect at the next `start`; `document_rate` is the sequence sample rate for "Attempt to
+    /// force hardware to document sample rate".
+    fn configure(&mut self, _hw: &filmcraft_engine::settings::AudioHardwarePrefs, _document_rate: Option<u32>) {}
+}
+
+/// What the platform audio layer can open (Settings ▸ Audio Hardware).
+#[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct AudioDevices {
+    /// Audio hosts / device classes (`CoreAudio`, `WASAPI`, `ALSA`…).
+    pub hosts: Vec<String>,
+    pub inputs: Vec<String>,
+    pub outputs: Vec<String>,
+    /// Output channels of the selected output device.
+    pub output_channels: u16,
 }
 
 /// Host hooks for native file dialogs etc.
@@ -63,6 +82,9 @@ pub struct HostHooks {
     /// (macOS: `orderFrontRegardless`). Without it the app only requests a repaint: it never
     /// activates itself for an agent, because the user's keystrokes would land here.
     pub raise_without_focus: Option<Box<dyn FnMut()>>,
+    /// Open a file in its default application, or (`true`) reveal it in the file manager (Edit ▸
+    /// Edit Original, Help ▸ Reveal Log Files).
+    pub open_path: Option<Box<dyn FnMut(&str, bool) -> Result<(), String>>>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -70,7 +92,7 @@ pub enum Dialog {
     About,
     Shortcuts,
     NewSequence,
-    /// Preferences ▸ Auto Save.
+    /// Settings (Preferences window; page in `UiState::settings`).
     Preferences,
     /// "Recover unsaved changes from <time>?" (shown at startup when a dead session left some).
     Recovery,
@@ -151,6 +173,8 @@ pub struct FilmcraftApp {
     pub gpu: Option<GpuState>,
     /// Preview render job being watched (job id, where to start playing when it completes).
     watched_render: Option<(u64, Tick)>,
+    /// Settings last applied to the UI (theme, tooltips, frame cache, audio device).
+    applied_prefs: Option<filmcraft_engine::autosave::Preferences>,
 }
 
 pub struct GpuState {
@@ -239,6 +263,7 @@ impl FilmcraftApp {
             command_inbox: None,
             gpu: None,
             watched_render: None,
+            applied_prefs: None,
         }
     }
 
@@ -262,13 +287,52 @@ impl FilmcraftApp {
             ));
             self.textures.clear();
             self.tl.reset_media_caches();
+            // the new frame server needs the Memory settings
+            self.applied_prefs = None;
         }
     }
 
+    /// Show theme `k` with the Settings ▸ Appearance highlight colour and contrast.
     pub fn set_theme(&mut self, ctx: &egui::Context, k: ThemeKind) {
-        self.tokens = Tokens::for_kind(k);
+        let a = &self.session.prefs.appearance;
+        let highlight = filmcraft_engine::settings::parse_hex(&a.highlight_color);
+        self.tokens = Tokens::for_kind(k).with_appearance(highlight, a.accessible_contrast);
         theme::apply_visuals(ctx, &self.tokens);
+        self.apply_tooltips(ctx);
         self.ui.dark = k != ThemeKind::Light;
+    }
+
+    fn apply_tooltips(&self, ctx: &egui::Context) {
+        // Settings ▸ General ▸ Show Tool Tips
+        let delay = if self.session.prefs.general.show_tool_tips { 0.5 } else { 1.0e9 };
+        ctx.global_style_mut(|s| s.interaction.tooltip_delay = delay);
+    }
+
+    /// Make the UI follow the settings after they change (theme, tooltips, frame cache budget,
+    /// play after rendering, audio device).
+    pub fn apply_prefs(&mut self, ctx: &egui::Context) {
+        if self.applied_prefs.as_ref() == Some(&self.session.prefs) {
+            return;
+        }
+        let p = self.session.prefs.clone();
+        let prev = self.applied_prefs.take();
+        if prev.as_ref().is_none_or(|q| q.appearance != p.appearance || q.general.show_tool_tips != p.general.show_tool_tips) {
+            self.set_theme(ctx, ThemeKind::from_pref(&p.appearance.color_theme));
+        }
+        self.frames.set_cache_budget(p.memory.frame_cache_mb as usize * (1 << 20));
+        self.ui.play_after_render = p.timeline.play_after_rendering;
+        if prev.as_ref().is_none_or(|q| q.audio_hardware != p.audio_hardware) {
+            let rate = self.session.active_sequence().map(|q| q.settings.sample_rate);
+            let playing = self.playback.playing && self.playback.audio_clock;
+            if let Some(a) = self.audio.as_mut() {
+                a.stop();
+                a.configure(&p.audio_hardware, rate);
+            }
+            if playing {
+                self.start_audio();
+            }
+        }
+        self.applied_prefs = Some(p);
     }
 
     pub fn set_workspace(&mut self, name: &str) {
@@ -316,9 +380,10 @@ impl FilmcraftApp {
         if self.session.active_sequence().is_none() {
             return;
         }
-        // restart from the end → from the start
+        // restart from the end → from the start (Settings ▸ Timeline ▸ "At playback end, return to
+        // beginning when restarting playback")
         let dur = self.session.active_sequence().map(|q| q.duration()).unwrap_or_default();
-        if speed > 0.0 && self.session.playhead() >= dur - self.session.sequence_rate().frame_duration() {
+        if speed > 0.0 && self.session.prefs.timeline.return_to_beginning && self.session.playhead() >= dur - self.session.sequence_rate().frame_duration() {
             self.session.set_playhead(Tick::ZERO);
         }
         // A loop restart keeps counting into the same meter.
@@ -383,6 +448,8 @@ impl FilmcraftApp {
         let provider = self.session.media.provider(project.clone(), self.session.services.clone());
         let previews = self.session.previews.clone();
         let start_tick = self.session.playhead();
+        // Settings ▸ Audio Hardware ▸ Output Mapping
+        let map = [self.session.prefs.audio_hardware.map_left, self.session.prefs.audio_hardware.map_right];
         let Some(a) = self.audio.as_mut() else { return };
         let sr = a.sample_rate();
         let mut cursor = start_tick.to_units_floor(sr as i64);
@@ -409,11 +476,7 @@ impl FilmcraftApp {
                 }
                 out
             };
-            for i in 0..n {
-                for c in 0..ch {
-                    buf[i * ch + c] = mix.channels[c.min(1)][i].clamp(-1.0, 1.0);
-                }
-            }
+            filmcraft_engine::settings::map_output(&mix.channels[0], &mix.channels[1.min(mix.channels.len() - 1)], buf, ch, map);
             cursor += n as i64;
         });
         match a.start(fill) {
@@ -805,6 +868,7 @@ impl FilmcraftApp {
             ctx.request_repaint_after(std::time::Duration::from_secs(1));
         }
         self.sync_pool();
+        self.apply_prefs(&ctx);
         for ev in self.session.drain_events() {
             match ev {
                 filmcraft_engine::Event::OpenSequence(_) => {

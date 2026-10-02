@@ -23,8 +23,10 @@ pub mod multicam;
 pub mod offline;
 pub mod plan;
 pub mod preview;
+pub mod scene;
 pub mod track;
 pub mod transitions;
+pub mod vfx;
 
 use std::sync::Arc;
 
@@ -113,11 +115,14 @@ pub(crate) fn render_seq_tracks(project: &Project, seq: &Sequence, t: Tick, opts
                 .and_then(|i| item_layer(project, seq, i, t, opts, sources, &tc))
                 .map(|(img, op, _)| with_opacity(img, op))
                 .unwrap_or_else(|| Image::new(w, h));
-            let mut p = tr.progress(t) as f32;
-            if tr.reverse {
-                p = 1.0 - p;
-            }
-            let mixed = transitions::apply(&tr.effect, &la, &lb, p);
+            let p = tr.progress(t) as f32;
+            // Reverse plays the transition backwards (e.g. an iris closing on the outgoing clip)
+            // while still going from A to B.
+            let mixed = if tr.reverse {
+                transitions::apply_scaled(&tr.effect, &lb, &la, 1.0 - p, opts.scale)
+            } else {
+                transitions::apply_scaled(&tr.effect, &la, &lb, p, opts.scale)
+            };
             blend::composite(&mut canvas, &mixed, 1.0, Blend::Normal);
             continue;
         }
@@ -141,6 +146,7 @@ pub(crate) fn render_seq_tracks(project: &Project, seq: &Sequence, t: Tick, opts
                 timecode: &tc,
                 clip_name: &item.name,
                 project: Some(project),
+                env: None,
             };
             for e in item.effects.iter().filter(|e| e.def().is_some_and(|d| !d.intrinsic)) {
                 mask::apply_effect(&mut adjusted, e, &cx);
@@ -276,9 +282,8 @@ pub(crate) fn item_layer(
     tc: &str,
 ) -> Option<(Image, f32, Blend)> {
     let (w, h) = output_size(seq, opts.scale);
-    // `ft`: the media time of the frame shown; `mt`: where effects and Motion/Opacity are evaluated
-    // (they differ inside a frame hold without Hold Filters).
-    let ft = item.source_time_at(t);
+    // `mt`: where effects and Motion/Opacity are evaluated (differs from the shown frame's media
+    // time inside a frame hold without Hold Filters).
     let mt = item.effect_time_at(t);
     let src_size = source_size(project, item.item)?;
     let motion = motion_matrix(seq, item, src_size, mt);
@@ -286,7 +291,71 @@ pub(crate) fn item_layer(
     let lin = ((motion.a * motion.a + motion.b * motion.b).sqrt()).max((motion.c * motion.c + motion.d * motion.d).sqrt());
     let want = (lin * opts.scale as f64).clamp(1.0 / 64.0, 1.0) as f32;
     let pi = project.item(item.item)?;
-    let mut layer = match &pi.kind {
+    if matches!(pi.kind, ItemKind::Graphic { .. }) && !(item.has_opacity_masks() || opts.effects && item.has_standard_effects()) {
+        // vectors straight to the output: no resampling, crisp at any Motion scale
+        let m = Affine::scale(opts.scale as f64, opts.scale as f64).then_apply(&motion);
+        let mut canvas = Image::new(w, h);
+        graphic_clip::render_graphic(&item.effects, mt, src_size, &m, &mut canvas);
+        let (op, bl) = opacity_blend(item, mt);
+        return Some((canvas, op, bl));
+    }
+    let mut layer = base_layer(project, seq, item, t, opts, sources, want)?;
+    let px_scale = layer.w as f32 / src_size.0.max(1) as f32;
+    // layer px → source px → sequence px → output px
+    let m = Affine::scale(opts.scale as f64, opts.scale as f64).then_apply(&motion).then_apply(&Affine::scale(1.0 / px_scale as f64, 1.0 / px_scale as f64));
+    if opts.effects {
+        let env = vfx::ItemEnv { project, seq, item, t, opts, sources, want, layer_size: (layer.w, layer.h), layer_to_output: m, tc };
+        let cx = effects::FxCtx {
+            t: mt,
+            px_scale,
+            seconds: (t - item.start).seconds(),
+            timecode: tc,
+            clip_name: &item.name,
+            project: Some(project),
+            env: Some(&env),
+        };
+        for e in item.effects.iter().filter(|e| e.def().is_some_and(|d| !d.intrinsic) && !filmcraft_project::graphic::is_layer(e)) {
+            if filmcraft_media::cancel::cancelled() {
+                return None;
+            }
+            mask::apply_effect(&mut layer, e, &cx);
+        }
+    }
+    mask::apply_opacity_masks(&mut layer, item, mt, px_scale);
+    let placed = if layer.w == w
+        && layer.h == h
+        && (m.a - 1.0).abs() < 1e-9
+        && (m.d - 1.0).abs() < 1e-9
+        && m.b == 0.0
+        && m.c == 0.0
+        && m.e.abs() < 1e-9
+        && m.f.abs() < 1e-9
+    {
+        layer
+    } else {
+        layer.transformed(w, h, &m)
+    };
+    let (op, bl) = opacity_blend(item, mt);
+    Some((placed, op, bl))
+}
+
+/// A track item's picture at timeline `t` before any effect (decoded, colour managed, frame
+/// blended; nested sequences rendered; graphics rasterised), at `want` of its source size.
+pub(crate) fn base_layer(
+    project: &Project,
+    seq: &Sequence,
+    item: &TrackItem,
+    t: Tick,
+    opts: RenderOptions,
+    sources: &dyn SourceProvider,
+    want: f32,
+) -> Option<Image> {
+    // `ft`: the media time of the frame shown
+    let ft = item.source_time_at(t);
+    let mt = item.effect_time_at(t);
+    let src_size = source_size(project, item.item)?;
+    let pi = project.item(item.item)?;
+    Some(match &pi.kind {
         ItemKind::Media(_) | ItemKind::Subclip { .. } => {
             let src = sources.source(item.item)?;
             let frame = src.video_frame(FrameRequest { time: ft, scale: want }).ok()?;
@@ -319,49 +388,13 @@ pub(crate) fn item_layer(
         }
         ItemKind::AdjustmentLayer { .. } => return None,
         ItemKind::Graphic { .. } => {
-            if !(item.has_opacity_masks() || opts.effects && item.has_standard_effects()) {
-                // vectors straight to the output: no resampling, crisp at any Motion scale
-                let m = Affine::scale(opts.scale as f64, opts.scale as f64).then_apply(&motion);
-                let mut canvas = Image::new(w, h);
-                graphic_clip::render_graphic(&item.effects, mt, src_size, &m, &mut canvas);
-                let (op, bl) = opacity_blend(item, mt);
-                return Some((canvas, op, bl));
-            }
             // standard effects work on the graphic at source resolution, then Motion places it
             let (gw, gh) = (((src_size.0 as f32 * want).ceil() as usize).max(1), ((src_size.1 as f32 * want).ceil() as usize).max(1));
             let mut img = Image::new(gw, gh);
             graphic_clip::render_graphic(&item.effects, mt, src_size, &Affine::scale(want as f64, want as f64), &mut img);
             img
         }
-    };
-    let px_scale = layer.w as f32 / src_size.0.max(1) as f32;
-    if opts.effects {
-        let cx = effects::FxCtx { t: mt, px_scale, seconds: (t - item.start).seconds(), timecode: tc, clip_name: &item.name, project: Some(project) };
-        for e in item.effects.iter().filter(|e| e.def().is_some_and(|d| !d.intrinsic) && !filmcraft_project::graphic::is_layer(e)) {
-            if filmcraft_media::cancel::cancelled() {
-                return None;
-            }
-            mask::apply_effect(&mut layer, e, &cx);
-        }
-    }
-    mask::apply_opacity_masks(&mut layer, item, mt, px_scale);
-    // layer px → source px → sequence px → output px
-    let m = Affine::scale(opts.scale as f64, opts.scale as f64).then_apply(&motion).then_apply(&Affine::scale(1.0 / px_scale as f64, 1.0 / px_scale as f64));
-    let placed = if layer.w == w
-        && layer.h == h
-        && (m.a - 1.0).abs() < 1e-9
-        && (m.d - 1.0).abs() < 1e-9
-        && m.b == 0.0
-        && m.c == 0.0
-        && m.e.abs() < 1e-9
-        && m.f.abs() < 1e-9
-    {
-        layer
-    } else {
-        layer.transformed(w, h, &m)
-    };
-    let (op, bl) = opacity_blend(item, mt);
-    Some((placed, op, bl))
+    })
 }
 
 /// The layer of one clip at timeline `t` with its effects applied, on a canvas the size of the

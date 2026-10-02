@@ -111,9 +111,8 @@ pub fn zoom_about(v: &mut TimelineView, factor: f64, anchor_secs: f64, width: f3
     v.target_scroll = (anchor_secs - x as f64 / new).max(0.0);
 }
 
-fn label_color(l: filmcraft_project::Label) -> Color32 {
-    let c = l.rgb();
-    Color32::from_rgb(c[0], c[1], c[2])
+fn label_color(app: &FilmcraftApp, l: filmcraft_project::Label) -> Color32 {
+    crate::panels::settings::label_color(app, l)
 }
 
 pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
@@ -163,12 +162,21 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
             v.scroll = v.target_scroll;
         }
     }
-    // follow playhead while playing (page scroll)
-    if app.playback.playing && app.ui.timeline.follow {
+    // follow playhead while playing (Settings ▸ Timeline ▸ Timeline Playback Auto-Scrolling)
+    let auto_scroll = app.session.prefs.timeline.auto_scroll.clone();
+    if app.playback.playing && app.ui.timeline.follow && auto_scroll != "noScroll" {
         let v = &mut app.ui.timeline;
-        let px = (app.session.playhead().seconds() - v.scroll) * v.pps;
-        if px > content.width() as f64 * 0.95 || px < 0.0 {
-            v.target_scroll = (app.session.playhead().seconds() - content.width() as f64 * 0.05 / v.pps).max(0.0);
+        let ph = app.session.playhead().seconds();
+        let w = content.width() as f64;
+        let px = (ph - v.scroll) * v.pps;
+        if auto_scroll == "smoothScroll" {
+            // the playhead stays in the middle once it gets there
+            if px > w * 0.5 || px < 0.0 {
+                v.target_scroll = (ph - w * 0.5 / v.pps).max(0.0);
+                v.scroll = v.target_scroll;
+            }
+        } else if px > w * 0.95 || px < 0.0 {
+            v.target_scroll = (ph - w * 0.05 / v.pps).max(0.0);
             v.scroll = v.target_scroll;
         }
     }
@@ -442,7 +450,7 @@ fn draw_clip(
     t: &Tokens,
     rate: FrameRate,
 ) {
-    let base = label_color(it.label);
+    let base = label_color(app, it.label);
     let inr = in_range(app, it);
     let fill = if !it.enabled {
         Color32::from_rgb(0x2a, 0x2a, 0x2a)
@@ -565,6 +573,7 @@ fn draw_waveform(app: &mut FilmcraftApp, p: &egui::Painter, body: Rect, it: &Tra
         }
     };
     let gain = waveform_display_gain(peak, it.gain_db);
+    let dynamic = app.ui.extras.dynamic_waveforms;
     let mut mesh = egui::Mesh::default();
     let dur_px = body.width().max(1.0);
     for x in (clip.min.x.floor() as i32)..(clip.max.x.ceil() as i32) {
@@ -578,9 +587,14 @@ fn draw_waveform(app: &mut FilmcraftApp, p: &egui::Painter, body: Rect, it: &Tra
         for (a, b) in peaks.iter().skip(s0).take(s1 - s0) {
             m = m.max(a.abs()).max(b.abs());
         }
-        // logarithmic display scale (Premiere's default): −48 dB → 0, 0 dB → full
-        let db = 20.0 * (m * gain).max(1e-5).log10();
-        let h = ((db + 48.0) / 48.0).clamp(0.0, 1.0) * area.height();
+        // View ▸ Dynamic Audio Waveforms (default): logarithmic scale, −48 dB → 0, 0 dB → full;
+        // off: linear amplitude
+        let h = if dynamic {
+            let db = 20.0 * (m * gain).max(1e-5).log10();
+            ((db + 48.0) / 48.0).clamp(0.0, 1.0) * area.height()
+        } else {
+            (m * gain).clamp(0.0, 1.0) * area.height()
+        };
         if h > 0.3 {
             mesh.add_colored_rect(Rect::from_min_max(pos2(x as f32, area.max.y - h), pos2(x as f32 + 1.0, area.max.y)), col);
         }
@@ -1118,6 +1132,37 @@ fn vertical_scrollbar(ui: &mut egui::Ui, bar: Rect, value: &mut f32, max: f32, i
     let _ = t;
 }
 
+/// How close (px) to a cut the Selection tool rolls instead of rippling when Settings ▸ Trim ▸
+/// "Allow Selection tool to choose Roll and Ripple trims without modifier key" is on.
+pub const ROLL_PX: f32 = 2.5;
+
+/// The trim the Selection tool starts at an edit point: Cmd+Shift = roll, Cmd = ripple. With the
+/// Trim setting on (`no_modifier`), no modifier is needed: right on the cut (when a clip is on the
+/// other side) rolls, elsewhere on the edge ripples. Otherwise a plain drag is a regular trim.
+pub fn selection_trim_kind(no_modifier: bool, cmd: bool, shift: bool, dist_px: f32, has_neighbour: bool) -> &'static str {
+    if cmd && shift {
+        "roll"
+    } else if cmd {
+        "ripple"
+    } else if no_modifier {
+        if has_neighbour && dist_px <= ROLL_PX { "roll" } else { "ripple" }
+    } else {
+        "trim"
+    }
+}
+
+/// Distance (px) from `x` to the cut at `clip`'s `edge`, and whether a clip touches that cut on
+/// the other side.
+fn edge_geometry(seq: &Sequence, layout: &Layout, track: filmcraft_project::TrackId, clip: ClipId, edge: filmcraft_edit::Edge, x: f32) -> (f32, bool) {
+    let Some(tr) = seq.track(track) else { return (f32::MAX, false) };
+    let Some(it) = tr.item(clip) else { return (f32::MAX, false) };
+    let (cut, neighbour) = match edge {
+        filmcraft_edit::Edge::Out => (it.end(), tr.items.iter().any(|x| x.start == it.end())),
+        filmcraft_edit::Edge::In => (it.start, tr.items.iter().any(|x| x.end() == it.start)),
+    };
+    ((layout.x_of(cut) - x).abs(), neighbour)
+}
+
 /// Snap `t` to nearby candidates (edits, playhead, markers, in/out). Returns snapped tick.
 fn snap(app: &mut FilmcraftApp, seq: &Sequence, layout: &Layout, t: Tick, exclude: &[ClipId]) -> Tick {
     if !app.session.state.snapping {
@@ -1384,14 +1429,15 @@ fn interact(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, layout: &
                 let _ = app.session.execute("timeline.select", json!({"clips": ids}));
                 None
             }
-            (Tool::Selection | Tool::Ripple | Tool::Rolling, Hit::Clip { clip, edge: Some(edge), .. }) if resp.clicked() => {
+            (Tool::Selection | Tool::Ripple | Tool::Rolling, Hit::Clip { clip, edge: Some(edge), track }) if resp.clicked() => {
                 // click an edge = select it as an edit point (trim mode); Shift adds
-                let kind = if tool == Tool::Rolling || (mods.command && mods.shift) {
-                    "roll"
-                } else if tool == Tool::Ripple || mods.command {
-                    "ripple"
-                } else {
-                    "trim"
+                let kind = match tool {
+                    Tool::Rolling => "roll",
+                    Tool::Ripple => "ripple",
+                    _ => {
+                        let (dist, neighbour) = edge_geometry(seq, layout, track, clip, edge, p.x);
+                        selection_trim_kind(app.session.prefs.trim.selection_tool_roll_ripple, mods.command, mods.shift, dist, neighbour)
+                    }
                 };
                 let e = if edge == filmcraft_edit::Edge::In { "in" } else { "out" };
                 let r = app.session.execute("trim.selectEditPoint", json!({"clip": clip.0, "edge": e, "kind": kind, "add": mods.shift && !mods.command}));
@@ -1402,12 +1448,14 @@ fn interact(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, layout: &
             }
             (Tool::Selection | Tool::Ripple | Tool::Rolling | Tool::RateStretch, Hit::Clip { clip, edge: Some(edge), track }) => {
                 let tr = seq.track(track).expect("track");
-                let mode = if tool == Tool::Ripple || (tool == Tool::Selection && mods.command) {
-                    filmcraft_edit::TrimMode::Ripple
+                let sel_kind = if tool == Tool::Selection {
+                    let (dist, neighbour) = edge_geometry(seq, layout, track, clip, edge, p.x);
+                    selection_trim_kind(app.session.prefs.trim.selection_tool_roll_ripple, mods.command, mods.shift, dist, neighbour)
                 } else {
-                    filmcraft_edit::TrimMode::Regular
+                    ""
                 };
-                if tool == Tool::Rolling || (tool == Tool::Selection && mods.command && mods.shift) {
+                let mode = if tool == Tool::Ripple || sel_kind == "ripple" { filmcraft_edit::TrimMode::Ripple } else { filmcraft_edit::TrimMode::Regular };
+                if tool == Tool::Rolling || sel_kind == "roll" {
                     // roll the cut between this and its neighbour
                     let it = tr.item(clip).expect("clip");
                     let (l, r) = match edge {
@@ -1478,7 +1526,8 @@ fn interact(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, layout: &
         let new = match d {
             Drag::Scrub => {
                 let mut tt = rate.snap_nearest(t_here.max(Tick::ZERO));
-                if mods.shift {
+                // Shift snaps; Settings ▸ Timeline ▸ "Snap playhead in Timeline when Snap is enabled"
+                if mods.shift || app.session.prefs.timeline.snap_playhead {
                     tt = snap(app, seq, layout, tt, &[]);
                 }
                 app.session.set_playhead(tt);
@@ -1646,7 +1695,9 @@ fn interact(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, layout: &
     {
         let row = layout.row_at(p.y).cloned();
         let t = snap(app, seq, layout, rate.snap_nearest(layout.tick_at(p.x).max(Tick::ZERO)), &[]);
-        let dur = app.session.project.item(item).map(|i| i.duration()).filter(|d| d.0 > 0).unwrap_or(app.session.project.settings.default_still_duration);
+        let still = app.session.prefs.timeline.still_duration(rate);
+        let is_still = app.session.project.item(item).and_then(|i| i.as_media()).is_some_and(|m| m.info.kind == filmcraft_media::MediaKind::Still);
+        let dur = app.session.project.item(item).map(|i| i.duration()).filter(|d| d.0 > 0 && !is_still).unwrap_or(still);
         if let Some(row) = &row {
             let r = Rect::from_min_max(pos2(layout.x_of(t), row.rect.min.y + 1.0), pos2(layout.x_of(t + dur), row.rect.max.y - 1.0));
             ui.painter().rect_filled(r, 3.0, Color32::from_white_alpha(40));

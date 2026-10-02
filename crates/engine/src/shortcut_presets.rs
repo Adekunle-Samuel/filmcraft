@@ -57,7 +57,7 @@ pub const PREMIERE: &[Entry] = &[
     ("multicam.recordToggle", "0", ""),
     ("multicam.toggleView", "Shift+0", ""),
     // Application
-    ("app.preferences.autoSave", "Cmd+,", ""),
+    ("app.settings.general", "Cmd+,", ""),
     ("app.keyboardShortcuts", "Cmd+Alt+K", ""),
     // File
     ("file.newProject", "Cmd+Alt+N", ""),

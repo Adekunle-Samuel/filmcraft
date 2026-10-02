@@ -141,6 +141,9 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
             if !open {
                 continue;
             }
+            if crate::panels::audio_fx_editor::has_editor(&e.effect) {
+                custom_setup_row(app, bui, body, clip, idx, &e.effect);
+            }
             for pd in &def.params {
                 param_row(app, bui, body, clip, idx, e, None, pd, mt_now, &mut actions, &lane, &lx, &it);
                 if app.ui.expanded_fx.contains(&graph_key(clip, idx, pd.id))
@@ -167,6 +170,22 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         if let Err(e) = app.session.execute(&cmd, p) {
             app.ui.status = e.to_string();
         }
+    }
+}
+
+/// Premiere's "Custom Setup ▸ Edit…" row: opens the effect's Clip Fx Editor window.
+fn custom_setup_row(app: &mut FilmcraftApp, ui: &mut egui::Ui, body: Rect, clip: ClipId, idx: usize, effect: &str) {
+    let t = app.tokens;
+    let (r, _) = ui.allocate_exact_size(vec2(body.width(), ROW_H), Sense::hover());
+    ui.painter().text(pos2(r.min.x + 42.0, r.center().y), Align2::LEFT_CENTER, "Custom Setup", Tokens::ui(12.0), t.text_dim);
+    let br = Rect::from_min_size(pos2(r.min.x + 160.0, r.min.y + 2.0), vec2(60.0, ROW_H - 4.0));
+    let resp = ui.interact(br, egui::Id::new(("fx-custom-setup", clip.0, idx)), Sense::click());
+    ui.painter().rect_filled(br, 3.0, if resp.hovered() { t.hover } else { t.field_bg });
+    ui.painter().rect_stroke(br, 3.0, Stroke::new(1.0, t.field_border), egui::StrokeKind::Inside);
+    ui.painter().text(br.center(), Align2::CENTER_CENTER, "Edit…", Tokens::ui(11.5), t.text);
+    app.auto.add(&format!("effectControls.effect.{effect}.edit"), br, "Edit…");
+    if resp.clicked() {
+        crate::panels::audio_fx_editor::open(app, crate::panels::audio_fx_editor::FxTarget::Clip { clip: clip.0, index: idx });
     }
 }
 
@@ -292,6 +311,22 @@ pub(crate) fn param_row(
         }
         (ParamKind::Path, _) => {
             crate::panels::masks::path_value(app, &mut vui, clip, idx, mask, actions);
+        }
+        (ParamKind::Text, ParamValue::Text(s)) if !pd.id.ends_with("_lut") => {
+            // edited in a buffer; committed (one undo step) when the field loses focus
+            let mut buf = vui.data_mut(|d| d.get_temp::<String>(id)).unwrap_or_else(|| s.clone());
+            let r = vui.add(egui::TextEdit::singleline(&mut buf).desired_width(160.0));
+            app.auto.add(&format!("effectControls.text.{}.{}", idx, pd.id), r.rect, pd.label);
+            if r.lost_focus() {
+                if buf != *s {
+                    set = Some(json!(buf));
+                }
+                vui.data_mut(|d| d.remove::<String>(id));
+            } else if r.has_focus() {
+                vui.data_mut(|d| d.insert_temp(id, buf));
+            } else {
+                vui.data_mut(|d| d.remove::<String>(id));
+            }
         }
         _ => {
             vui.label(param_text(&app.session.project, pd.id, &value));
@@ -511,7 +546,7 @@ pub fn properties_panel(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     // header: clip name + menu
     let (hr, _) = bui.allocate_exact_size(vec2(bui.available_width(), 30.0), Sense::hover());
     let sw = Rect::from_center_size(pos2(hr.min.x + 8.0, hr.center().y), vec2(12.0, 12.0));
-    let lc = it.label.rgb();
+    let lc = app.session.prefs.labels.rgb(it.label);
     bui.painter().rect_filled(sw, 2.0, Color32::from_rgb(lc[0], lc[1], lc[2]));
     bui.painter().text(pos2(hr.min.x + 22.0, hr.center().y), Align2::LEFT_CENTER, &it.name, Tokens::semibold(12.5), t.text);
     let row = |ui: &mut egui::Ui, label: &str| -> Rect {

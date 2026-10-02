@@ -21,11 +21,11 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let filter = q.to_ascii_lowercase();
     let defs = filmcraft_project::effect_defs();
     // folder tree: top-level categories in Premiere's order
-    let tops = ["Presets", "Lumetri Presets", "Audio Effects", "Audio Transitions", "Video Effects", "Video Transitions"];
+    let tops = filmcraft_project::vtransition::EFFECT_TOP_FOLDERS;
     let mut apply: Option<String> = None;
     let mut preset_action: Option<(String, String)> = None;
     egui::ScrollArea::vertical().id_salt("fx-scroll").auto_shrink([false, false]).show(&mut bui, |ui| {
-        for top in tops {
+        for &top in tops {
             if top == "Presets" {
                 let any = filter.is_empty() || app.session.presets.all().iter().any(|p| p.name.to_ascii_lowercase().contains(&filter));
                 if any && folder_row(app, ui, top, 0, &filter) {
@@ -33,11 +33,15 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                 }
                 continue;
             }
-            let items: Vec<_> = defs
+            let mut items: Vec<_> = defs
                 .iter()
                 .filter(|d| d.category.first() == Some(&top))
                 .filter(|d| filter.is_empty() || d.name.to_ascii_lowercase().contains(&filter))
                 .collect();
+            // Premiere lists effect folders and effects alphabetically (obsolete ones last)
+            if top == "Video Effects" || top == "Legacy" {
+                items.sort_by_key(|d| (d.category.get(1) == Some(&"Obsolete"), d.category.get(1).copied().unwrap_or(""), d.name.to_ascii_lowercase()));
+            }
             if !filter.is_empty() && items.is_empty() {
                 continue;
             }
@@ -45,8 +49,12 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
             if !open {
                 continue;
             }
-            let mut subs: Vec<&str> = items.iter().filter_map(|d| d.category.get(1).copied()).collect();
+            // Sub-folders in definition order; loose items (no sub-folder, e.g. Audio Effects ▸
+            // Balance / Mute / Volume) come last, outside any folder.
+            let sub = |d: &filmcraft_project::EffectDef| d.category.get(1).copied().unwrap_or("");
+            let mut subs: Vec<&str> = items.iter().map(|d| sub(d)).collect();
             subs.dedup();
+            subs.sort_by_key(|s| s.is_empty());
             let mut seen = Vec::new();
             for s in subs {
                 if seen.contains(&s) {
@@ -54,10 +62,10 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                 }
                 seen.push(s);
                 let key = format!("{top}/{s}");
-                if !folder_row(app, ui, &key, 1, &filter) {
+                if !s.is_empty() && !folder_row(app, ui, &key, 1, &filter) {
                     continue;
                 }
-                for d in items.iter().filter(|d| d.category.get(1) == Some(&s)) {
+                for d in items.iter().filter(|d| sub(d) == s) {
                     let (r, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 20.0), Sense::click_and_drag());
                     if resp.hovered() {
                         ui.painter().rect_filled(r, 0.0, t.hover);
@@ -75,7 +83,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                     // badges: accelerated / 32-bit / YUV
                     let mut bx = r.max.x - 8.0;
                     for (on, label) in [(d.yuv, "YUV"), (d.float32, "32"), (d.accelerated, "⚡")] {
-                        if on && !is_tr || (is_tr && label == "⚡") {
+                        if on {
                             let br = Rect::from_min_size(pos2(bx - 22.0, r.min.y + 3.0), vec2(20.0, 14.0));
                             ui.painter().rect_filled(br, 2.0, Color32::from_rgb(48, 48, 48));
                             ui.painter().text(br.center(), Align2::CENTER_CENTER, label, Tokens::ui(8.5), t.text_dim);

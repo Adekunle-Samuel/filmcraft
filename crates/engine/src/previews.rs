@@ -69,6 +69,8 @@ type AudioMemo = (Arc<Project>, ItemId, Arc<Vec<AudioSegment>>);
 #[derive(Default)]
 pub struct PreviewStore {
     dir: RwLock<Option<PathBuf>>,
+    /// Where unsaved projects' previews go (Settings ▸ Media Cache); None = the system temp dir.
+    temp_root: RwLock<Option<PathBuf>>,
     /// File names present: `<hash>.mov` (video) and `<hash>.wav` (audio).
     files: RwLock<HashSet<String>>,
     /// Opened preview files (most recent last).
@@ -100,7 +102,20 @@ impl PreviewStore {
 
     /// Switch to a fresh temp folder (new unsaved project).
     pub fn reset_temp(&self) {
-        self.set_dir(default_temp_dir());
+        let root = self.temp_root();
+        self.set_dir(match root {
+            Some(r) => Some(untitled_dir(&r)),
+            None => default_temp_dir(),
+        });
+    }
+
+    /// The folder unsaved projects' previews go into (None = the system temp dir).
+    pub fn temp_root(&self) -> Option<PathBuf> {
+        self.temp_root.read().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+
+    pub fn set_temp_root(&self, root: Option<PathBuf>) {
+        *self.temp_root.write().unwrap_or_else(|e| e.into_inner()) = root;
     }
 
     pub fn dir(&self) -> Option<PathBuf> {
@@ -136,7 +151,7 @@ impl PreviewStore {
             return;
         }
         if let Some(old) = &old
-            && old.starts_with(std::env::temp_dir())
+            && (old.starts_with(std::env::temp_dir()) || self.temp_root().is_some_and(|r| old.starts_with(r)))
         {
             let _ = std::fs::create_dir_all(&dir);
             for name in self.files.read().unwrap_or_else(|e| e.into_inner()).iter() {
@@ -373,8 +388,13 @@ fn default_temp_dir() -> Option<PathBuf> {
     if cfg!(target_arch = "wasm32") {
         return None;
     }
+    Some(untitled_dir(&std::env::temp_dir().join("FilmCraft Previews")))
+}
+
+/// A fresh per-process folder for an unsaved project's previews under `root`.
+fn untitled_dir(root: &Path) -> PathBuf {
     let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
-    Some(std::env::temp_dir().join("FilmCraft Previews").join(format!("untitled-{}-{nanos:x}", std::process::id())))
+    root.join(format!("untitled-{}-{nanos:x}", std::process::id()))
 }
 
 /// The preview folder of a project saved at `project_path`.

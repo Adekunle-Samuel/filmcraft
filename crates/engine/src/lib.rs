@@ -25,9 +25,13 @@ pub mod perf;
 pub mod presets;
 pub mod previews;
 pub mod project_manager;
+pub mod project_tools;
 pub mod proxies;
 pub mod relink;
+pub mod scene_detect;
+pub mod sequence_extras;
 pub mod sequence_tools;
+pub mod settings;
 pub mod shortcut_presets;
 pub mod shortcuts;
 pub mod sync;
@@ -213,6 +217,9 @@ pub struct EditorState {
     /// Sequence markers copied with the clipboard clips (start relative to the copied range).
     #[serde(skip)]
     pub clipboard_markers: Vec<filmcraft_project::Marker>,
+    /// The last Edit ▸ Find… (Find Next continues it).
+    #[serde(default)]
+    pub find: Option<project_tools::FindState>,
 }
 
 /// Events for frontends (drained each frame).
@@ -262,6 +269,8 @@ pub struct Session {
     pub media_jobs: Vec<proxies::PendingJob>,
     /// Mask tracking jobs whose keyframes are still being written.
     pub mask_jobs: Vec<masks::PendingTrack>,
+    /// Scene Edit Detection jobs whose results are applied when they finish.
+    pub scene_jobs: Vec<scene_detect::PendingScene>,
     /// Effect presets (built-in + the user's, persisted in the data directory).
     pub presets: presets::PresetLibrary,
     /// Exports run a batch at a time by [`Session::pump_jobs`] (hosts without threads: web).
@@ -346,6 +355,7 @@ impl Session {
             offline: Default::default(),
             media_jobs: Vec::new(),
             mask_jobs: Vec::new(),
+            scene_jobs: Vec::new(),
             presets: Default::default(),
             stepped: Vec::new(),
             transcriber: None,
@@ -390,6 +400,7 @@ impl Session {
         self.shortcuts.set_dir(&cfg.data_dir);
         self.presets.set_dir(&cfg.data_dir);
         self.prefs_path = Some(prefs_path);
+        self.apply_media_cache();
         self.persistence = Some(autosave::Persistence::start(&cfg, self.prefs.auto_save.clone())?);
         self.sync_persistence();
         Ok(())
@@ -430,6 +441,7 @@ impl Session {
     pub fn poll_persistence(&mut self) {
         proxies::poll(self);
         masks::poll(self);
+        scene_detect::poll(self);
         let Some(p) = self.persistence.as_mut() else { return };
         for ev in p.drain_events() {
             match ev {
@@ -447,7 +459,11 @@ impl Session {
 
     /// Replace preferences (persisting them and updating the worker).
     pub fn set_prefs(&mut self, p: autosave::Preferences) -> std::io::Result<()> {
+        let cache_changed = self.prefs.media_cache != p.media_cache;
         self.prefs = p;
+        if cache_changed {
+            self.apply_media_cache();
+        }
         if self.media.use_proxies() != self.prefs.media.enable_proxies {
             self.media.set_use_proxies(self.prefs.media.enable_proxies);
             self.bump_view();
@@ -466,7 +482,7 @@ impl Session {
         if let Some(p) = &self.path
             && !cfg!(target_arch = "wasm32")
         {
-            self.previews.move_to(previews::dir_for_project(p));
+            self.previews.move_to(project_tools::previews_dir(self).unwrap_or_else(|| previews::dir_for_project(p)));
         }
     }
 
@@ -724,6 +740,8 @@ pub fn media_duration(p: &Project, _pool: &MediaPool, id: ItemId) -> Option<Tick
 }
 
 #[cfg(test)]
+mod audio_effects_tests;
+#[cfg(test)]
 mod autosave_tests;
 #[cfg(test)]
 mod clip_ops_tests;
@@ -754,6 +772,8 @@ mod relink_tests;
 #[cfg(test)]
 mod sequence_tools_tests;
 #[cfg(test)]
+mod settings_tests;
+#[cfg(test)]
 mod shortcuts_tests;
 #[cfg(test)]
 mod tests;
@@ -761,3 +781,5 @@ mod tests;
 mod transcript_tests;
 #[cfg(test)]
 mod trim_tests;
+#[cfg(test)]
+mod vfx_tests;

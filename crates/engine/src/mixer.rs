@@ -452,7 +452,7 @@ pub fn strip_json(s: &Session, seq: &Sequence, id: TrackId, t: Tick) -> Value {
         "soloSafe": tr.mixer.solo_safe,
         "inputMap": tr.mixer.input_map.label(),
         "output": tr.mixer.output.map(|o| strip_label(seq, o)).unwrap_or_else(|| if id == MASTER_STRIP { String::new() } else { "Mix".into() }),
-        "inserts": tr.effects.iter().enumerate().map(|(i, e)| json!({"slot": i, "effect": e.effect, "name": e.def().map(|d| d.name).unwrap_or(""), "enabled": e.enabled, "postFader": e.post_fader})).collect::<Vec<_>>(),
+        "inserts": tr.effects.iter().enumerate().map(|(i, e)| json!({"slot": i, "effect": e.effect, "name": e.def().map(|d| d.name).unwrap_or(""), "enabled": e.enabled, "postFader": e.post_fader, "params": insert_params(e)})).collect::<Vec<_>>(),
         "sends": tr.mixer.sends.iter().enumerate().map(|(i, sd)| json!({"send": i, "target": strip_label(seq, sd.target), "levelDb": sd.level_db, "pan": sd.pan, "preFader": sd.pre_fader, "muted": sd.muted})).collect::<Vec<_>>(),
         "at": {"time": t.0, "volumeDb": shown(LANE_VOLUME), "pan": shown(LANE_PAN), "mute": shown(LANE_MUTE) >= 0.5},
         "lanes": lanes,
@@ -583,6 +583,19 @@ fn slot_p(p: &Value, cmd: &str) -> Result<usize> {
     u64_p(p, "slot").map(|v| v as usize).ok_or_else(|| bad(cmd, "need `slot` (0-based)"))
 }
 
+/// An insert's scalar parameter values (numbers; toggles as booleans) for `mixer.inspect`.
+fn insert_params(e: &filmcraft_project::EffectInstance) -> Value {
+    let mut m = serde_json::Map::new();
+    for (k, p) in &e.params {
+        let v = match &p.value {
+            ParamValue::Bool(b) => json!(b),
+            v => v.as_f64().map_or(Value::Null, |x| json!(x)),
+        };
+        m.insert(k.clone(), v);
+    }
+    Value::Object(m)
+}
+
 fn add_insert(s: &mut Session, p: &Value) -> Result<Value> {
     let id = strip_p(s, p, "mixer.addInsert")?;
     let eid = str_p(p, "effect").ok_or_else(|| bad("mixer.addInsert", "need `effect` (an audio effect id)"))?;
@@ -628,6 +641,12 @@ fn set_insert(s: &mut Session, p: &Value) -> Result<Value> {
             }
             if let Some(obj) = p.get("params").and_then(Value::as_object) {
                 for (k, v) in obj {
+                    // instances saved before a parameter existed get it from the definition
+                    if e.param(k).is_none()
+                        && let Some(d) = e.def().and_then(|d| d.param(k))
+                    {
+                        e.params.insert(k.clone(), filmcraft_project::Param::new(d.default.clone()));
+                    }
                     let par = e.param_mut(k).ok_or_else(|| bad("mixer.setInsert", format!("no parameter `{k}`")))?;
                     par.value = match (&par.value, v) {
                         (ParamValue::Bool(_), Value::Bool(b)) => ParamValue::Bool(*b),
@@ -971,7 +990,10 @@ pub fn audio_gain(s: &mut Session, p: &Value) -> Result<Value> {
 /// Effects panel ▸ Set Selected as Default Transition (video or audio, from the effect's kind).
 fn set_default_transition(s: &mut Session, p: &Value) -> Result<Value> {
     let id = str_p(p, "effect").ok_or_else(|| bad("effects.setDefaultTransition", "need `effect`"))?;
+    use filmcraft_project::vtransition::find_transition;
     let def = find_effect(id)
+        .or_else(|| find_transition(id, filmcraft_project::EffectKind::VideoTransition))
+        .or_else(|| find_transition(id, filmcraft_project::EffectKind::AudioTransition))
         .or_else(|| filmcraft_project::effect_defs().iter().find(|d| d.name.eq_ignore_ascii_case(id)))
         .ok_or_else(|| bad("effects.setDefaultTransition", format!("no effect `{id}`")))?;
     match def.kind {

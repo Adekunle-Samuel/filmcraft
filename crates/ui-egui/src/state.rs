@@ -387,6 +387,9 @@ pub struct UiState {
     /// Preferences ▸ Playback: play the rendered range when a preview render finishes.
     #[serde(default = "yes")]
     pub play_after_render: bool,
+    /// Settings dialog (open when Some): page and the values being edited.
+    #[serde(default)]
+    pub settings: Option<crate::panels::settings::SettingsDraft>,
     /// Audio Track Mixer: effects and sends section expanded.
     #[serde(default)]
     pub mixer_fx_open: bool,
@@ -423,6 +426,9 @@ pub struct UiState {
     /// Effect presets: the preset being renamed / the Save Preset dialog (open when Some).
     #[serde(default)]
     pub save_preset: Option<SavePresetDraft>,
+    /// Open Clip / Track Fx Editor windows (graphical audio-effect editors).
+    #[serde(default)]
+    pub audio_fx_editors: Vec<crate::panels::audio_fx_editor::FxTarget>,
     /// Synchronize / Merge Clips / Create Multi-Camera Source Sequence dialog (open when Some).
     #[serde(default)]
     pub sync_dialog: Option<SyncDraft>,
@@ -436,6 +442,10 @@ pub struct UiState {
     /// open when Some). See `panels::clip_dialogs`.
     #[serde(default)]
     pub clip_dialog: Option<ClipDialogDraft>,
+    /// M3.11 menu items: their dialog, Dynamic Audio Waveforms, the Media Browser selection. See
+    /// `panels::menu_dialogs`.
+    #[serde(default)]
+    pub extras: crate::panels::menu_dialogs::Extras,
 }
 
 /// An open Edit / Clip / File menu dialog: the engine command it runs on OK and the parameters
@@ -698,6 +708,7 @@ impl Default for UiState {
             transcript_search: String::new(),
             play_after_render: true,
             mixer_fx_open: false,
+            settings: None,
             audio_gain: AudioGainDraft::default(),
             delete_tracks: DeleteTracksDraft::default(),
             gfx_edit: None,
@@ -709,10 +720,12 @@ impl Default for UiState {
             color_dialog: None,
             mask_pen: None,
             save_preset: None,
+            audio_fx_editors: Vec::new(),
             sync_dialog: None,
             multicam_record: true,
             guide_dialog: None,
             clip_dialog: None,
+            extras: Default::default(),
         }
     }
 }

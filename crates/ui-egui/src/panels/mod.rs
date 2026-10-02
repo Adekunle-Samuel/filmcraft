@@ -1,6 +1,7 @@
 //! Panel bodies. `show` dispatches on [`PanelKind`]; drag-and-drop between panels (project items,
 //! effects) is carried in egui temp data so the timeline/monitors can accept drops.
 
+pub mod audio_fx_editor;
 pub mod clip_dialogs;
 pub mod color_dialogs;
 pub mod dialogs;
@@ -14,6 +15,7 @@ pub mod import_mode;
 pub mod lumetri;
 pub mod masks;
 pub mod media_dialogs;
+pub mod menu_dialogs;
 pub mod meters;
 pub mod misc;
 pub mod mixer;
@@ -22,6 +24,7 @@ pub mod monitor_view;
 pub mod multicam;
 pub mod presets;
 pub mod project;
+pub mod settings;
 pub mod shortcuts_dialog;
 pub mod text;
 pub mod timeline;

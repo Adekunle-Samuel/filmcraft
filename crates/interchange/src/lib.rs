@@ -18,6 +18,7 @@
 //! This crate is L2: it does no file I/O. Media references are strings (absolute paths, or paths
 //! resolved against the `base_dir` passed to the importer); the engine probes/relinks them.
 
+pub mod ale;
 pub mod edl;
 pub mod fcp7;
 pub mod fcpxml;

@@ -60,6 +60,11 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                 ui.painter().line_segment([hr.left_bottom(), hr.right_bottom()], Stroke::new(1.0, t.separator));
                 let mut row = 0usize;
                 list_bin(app, ui, &root, 0, &filter, &mut row, &mut actions, true);
+                // search bins: saved queries listing their live matches
+                let mut draw = |app: &mut FilmcraftApp, ui: &mut egui::Ui, bin: &Bin, row: &mut usize, actions: &mut Vec<(String, serde_json::Value)>| {
+                    list_bin(app, ui, bin, 1, "", row, actions, false);
+                };
+                crate::panels::menu_dialogs::search_bin_rows(app, ui, &mut row, &mut actions, &mut draw);
             }
             _ => icon_view(app, ui, &root, &filter, &mut actions),
         }
@@ -75,6 +80,9 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         resp.context_menu(|ui| {
             for (label, cmd) in [
                 ("New Bin", "file.newBin"),
+                ("New Search Bin", "file.newSearchBin"),
+                ("Find…", "edit.find"),
+                ("Automate to Sequence…", "clip.automateToSequence"),
                 ("New Sequence…", "file.newSequence"),
                 ("Import…", "file.import"),
                 ("Bars and Tone", "file.newBarsAndTone"),
@@ -146,8 +154,8 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                     }
                 }
             });
-        } else if resp.clicked() && cmd != "find" {
-            actions.push((cmd.into(), json!({})));
+        } else if resp.clicked() {
+            actions.push((if cmd == "find" { "edit.find" } else { cmd }.into(), json!({})));
         }
         rx -= 26.0;
     }
@@ -279,7 +287,7 @@ fn list_bin(
                 let cols = columns(r);
                 let x = r.min.x + 6.0 + depth as f32 * 14.0;
                 // label swatch
-                let lc = it.label.rgb();
+                let lc = app.session.prefs.labels.rgb(it.label);
                 ui.painter().rect_filled(Rect::from_center_size(pos2(x + 5.0, r.center().y), vec2(8.0, 12.0)), 1.5, Color32::from_rgb(lc[0], lc[1], lc[2]));
                 icons::paint(ui.painter(), Rect::from_center_size(pos2(x + 20.0, r.center().y), vec2(14.0, 14.0)), item_icon(&it.kind), t.icon);
                 let name_clip = ui.painter().with_clip_rect(Rect::from_min_max(r.min, pos2(cols[1] - 6.0, r.max.y)));
@@ -444,7 +452,7 @@ fn icon_view(app: &mut FilmcraftApp, ui: &mut egui::Ui, root: &Bin, filter: &str
             if selected {
                 ui.painter().rect_stroke(r, 3.0, Stroke::new(2.0, t.accent), StrokeKind::Outside);
             }
-            let lc = it.label.rgb();
+            let lc = app.session.prefs.labels.rgb(it.label);
             ui.painter().rect_filled(Rect::from_min_size(pos2(r.min.x, r.max.y + 6.0), vec2(8.0, 12.0)), 1.5, Color32::from_rgb(lc[0], lc[1], lc[2]));
             let secs = dur.seconds().max(0.0) as u64;
             let dtext =

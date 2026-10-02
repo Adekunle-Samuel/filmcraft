@@ -134,6 +134,17 @@ fn cross_dissolve_midpoint() {
     let img = render_sequence(&p, seq, r.tick_of(24), RenderOptions::default(), &map);
     let c = img.get(10, 10);
     assert!((c[0] - 0.5).abs() < 0.05 && (c[2] - 0.5).abs() < 0.05, "{c:?}");
+    // Iris Round at 50 %: B opens in the centre; reversed, A closes into the centre instead.
+    for reverse in [false, true] {
+        let trs = &mut p.sequence_mut(seq).unwrap().video_tracks[0].transitions;
+        trs[0].effect = filmcraft_project::find_effect("iris_round").unwrap().instance();
+        trs[0].reverse = reverse;
+        let opts = RenderOptions { scale: 0.25, ..RenderOptions::default() };
+        let img = render_sequence(&p, seq, r.tick_of(24), opts, &map);
+        let (mid, corner) = (img.get(img.w / 2, img.h / 2), img.get(2, 2));
+        let (centre_is_b, corner_is_b) = (mid[2] > 0.9 && mid[0] < 0.1, corner[2] > 0.9 && corner[0] < 0.1);
+        assert_eq!((centre_is_b, corner_is_b), (!reverse, reverse), "reverse={reverse}: {mid:?} {corner:?}");
+    }
 }
 
 #[test]

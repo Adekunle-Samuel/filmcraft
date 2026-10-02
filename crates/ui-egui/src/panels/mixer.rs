@@ -285,6 +285,7 @@ fn strip(app: &mut FilmcraftApp, ui: &mut egui::Ui, cx: &mut Ctx, id: TrackId, s
 
     // ---- effect and send slots
     if app.ui.mixer_fx_open {
+        let mut open_editor = None;
         for k in 0..filmcraft_project::mixer::MAX_INSERTS {
             let r = Rect::from_min_size(pos2(x + 4.0, y), vec2(w - 8.0, SLOT_H - 2.0));
             let fx = tr.effects.get(k);
@@ -299,6 +300,14 @@ fn strip(app: &mut FilmcraftApp, ui: &mut egui::Ui, cx: &mut Ctx, id: TrackId, s
                 ui.set_min_width(180.0);
                 match fx {
                     Some(e) => {
+                        if crate::panels::audio_fx_editor::has_editor(&e.effect) {
+                            let r0 = ui.button("Edit…");
+                            app.auto.add(&format!("{ap}.fx.{k}.edit"), r0.rect, "Edit…");
+                            if r0.clicked() {
+                                open_editor = Some(crate::panels::audio_fx_editor::FxTarget::Insert { strip: id.0, slot: k });
+                            }
+                            ui.separator();
+                        }
                         let on = e.enabled;
                         let r1 = ui.selectable_label(!on, "Bypass");
                         app.auto.add(&format!("{ap}.fx.{k}.bypass"), r1.rect, "Bypass");
@@ -318,11 +327,32 @@ fn strip(app: &mut FilmcraftApp, ui: &mut egui::Ui, cx: &mut Ctx, id: TrackId, s
                         }
                     }
                     None if can_add => {
-                        for d in insert_effects() {
-                            let r = ui.button(d.name);
-                            app.auto.add(&format!("{ap}.fx.{k}.{}", d.id), r.rect, d.name);
-                            if r.clicked() {
-                                cx.cmd("mixer.addInsert", json!({"strip": sid, "effect": d.id}));
+                        // Premiere's effect-slot menu: one submenu per Audio Effects folder.
+                        let fx = insert_effects();
+                        let mut folders: Vec<&str> = Vec::new();
+                        for d in &fx {
+                            let f = d.category.get(1).copied().unwrap_or("");
+                            if !folders.contains(&f) {
+                                folders.push(f);
+                            }
+                        }
+                        for folder in folders {
+                            let items: Vec<_> = fx.iter().filter(|d| d.category.get(1).copied().unwrap_or("") == folder).collect();
+                            let mut add = |ui: &mut egui::Ui| {
+                                for d in &items {
+                                    let r = ui.button(d.name);
+                                    app.auto.add(&format!("{ap}.fx.{k}.{}", d.id), r.rect, d.name);
+                                    if r.clicked() {
+                                        cx.cmd("mixer.addInsert", json!({"strip": sid, "effect": d.id}));
+                                        ui.close();
+                                    }
+                                }
+                            };
+                            if folder.is_empty() {
+                                add(ui);
+                            } else {
+                                let mr = ui.menu_button(folder, |ui| add(ui));
+                                app.auto.add(&format!("{ap}.fx.{k}.folder.{folder}"), mr.response.rect, folder);
                             }
                         }
                     }
@@ -331,7 +361,16 @@ fn strip(app: &mut FilmcraftApp, ui: &mut egui::Ui, cx: &mut Ctx, id: TrackId, s
                     }
                 }
             });
+            if resp.double_clicked()
+                && let Some(e) = fx
+                && crate::panels::audio_fx_editor::has_editor(&e.effect)
+            {
+                open_editor = Some(crate::panels::audio_fx_editor::FxTarget::Insert { strip: id.0, slot: k });
+            }
             y += SLOT_H;
+        }
+        if let Some(target) = open_editor {
+            crate::panels::audio_fx_editor::open(app, target);
         }
         y += 4.0;
         for k in 0..filmcraft_project::mixer::MAX_SENDS {

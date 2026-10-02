@@ -215,7 +215,22 @@ pub fn media_browser(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                 if !ok {
                     continue;
                 }
-                let resp = ui.selectable_label(false, format!("{} {name}", if *is_dir { "📁" } else { "🎞" }));
+                let sel = app.ui.extras.media_browser_selection.contains(&path);
+                let resp = ui.selectable_label(sel, format!("{} {name}", if *is_dir { "📁" } else { "🎞" }));
+                app.auto.add(&format!("mediaBrowser.entry.{name}"), resp.rect, name);
+                if resp.clicked() && !*is_dir {
+                    let multi = ui.input(|i| i.modifiers.command);
+                    let s = &mut app.ui.extras.media_browser_selection;
+                    if multi {
+                        if sel {
+                            s.retain(|p| *p != path);
+                        } else {
+                            s.push(path.clone());
+                        }
+                    } else {
+                        *s = vec![path.clone()];
+                    }
+                }
                 if resp.double_clicked() {
                     if *is_dir {
                         dir = path.clone();

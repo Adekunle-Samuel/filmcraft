@@ -34,6 +34,7 @@ writing them is `crates/format` (`filmcraft-format`); the engine's `file.*` comm
 | 8 | M12 | multi-camera source sequences and clips, merged clips; no-op step |
 | 9 | M10.5 | transcripts of media items (`project.transcripts`); no-op step |
 | 10 | M3.10 | clip time interpolation, Hold Filters, Field Options, audio source channels, Modify ▸ Audio Channels map, subclip Restrict Trims; no-op step |
+| 11 | M3.11 | search bins (`project.search_bins`), Flash Cue markers, Project Settings safe areas, capture format and scratch disks; no-op step |
 
 ### Migrations
 
@@ -61,8 +62,8 @@ on disk is unchanged until you save. The **first save over it** keeps the origin
 
 A file with a `schema_version` newer than the build supports is **refused**, not half-read:
 
-> this project was saved by a newer version of FilmCraft (project schema v11); this build reads up to
-> v10. Update FilmCraft to open it.
+> this project was saved by a newer version of FilmCraft (project schema v12); this build reads up to
+> v11. Update FilmCraft to open it.
 
 Reading it partially and saving it back would silently drop whatever the newer version added.
 
@@ -170,13 +171,55 @@ write (two fsynced files).
 | `file.autoSaveNow` | write an auto-save now (if anything is unsaved) |
 | `file.autoSaveStatus` | prefs, folders, last auto-save / journal times, last encode/write ms and bytes |
 | `file.listAutoSaves` | auto-save files of the current project, newest first |
-| `prefs.get {key?}` / `prefs.set {key, value}` or `{values:{…}}` / `prefs.reset` | preferences |
+| `prefs.get {key?}` / `prefs.set {key, value}` or `{values:{…}}` / `prefs.reset {category?}` | settings (below) |
 
-UI automation ids: `prefs.autoSave.enabled`, `prefs.autoSave.intervalMinutes`,
-`prefs.autoSave.maxVersions`, `prefs.autoSave.saveCurrentProject`, `prefs.autoSave.recoveryJournal`,
-`prefs.autoSave.recoveryIntervalSeconds`, `prefs.ok`, `prefs.cancel`, `prefs.reset`;
-`recovery.recover`, `recovery.later`, `recovery.discard`, `recovery.item.<n>`; `revert.yes`,
-`revert.no` (File ▸ Revert asks first when invoked without params).
+UI automation ids: `recovery.recover`, `recovery.later`, `recovery.discard`, `recovery.item.<n>`;
+`revert.yes`, `revert.no` (File ▸ Revert asks first when invoked without params).
+
+## Settings
+
+Premiere's Settings dialog (app menu ▸ Settings ▸ <category> on macOS, Edit ▸ Preferences
+elsewhere; General is Cmd+,; the window is titled "Preferences"). The values are user preferences,
+not project data: they live in `preferences.json` in the per-user data directory (written
+atomically on every change) and never touch the `.fcproj` schema. The file carries a `version`
+(currently 2); older files are migrated on load, unknown dropdown values, bad colours and
+out-of-range numbers are repaired to defaults/limits, and an unreadable file falls back to the
+defaults.
+
+Every value is a dotted key whose first segment is its category: `timeline.stillImageDuration`,
+`labels.colors.rose.name`. `prefs.get` / `prefs.set` / `prefs.reset {category?}` reach them from the
+CLI, the control channel and MCP; `prefs.set` rejects values that are not one of a dropdown's
+choices. `prefs.schema {category?}` lists every category with its fields (label, kind, choices,
+range, unit, current value, and `wired`: whether FilmCraft acts on it yet). `app.settings.<category>`
+opens the dialog on a page.
+
+| Category | Takes effect |
+|---|---|
+| General | At Startup (Show Home = demo project, Open Most Recent, empty project; recent projects are remembered on open/save), Show Tool Tips |
+| Appearance | Color Theme (Darkest / Dark / Light; View ▸ Appearance writes it too), highlight colour, accessible contrast |
+| Audio | Automatch Time, Large Volume Adjustment, automation keyframe thinning (linear, minimum time) |
+| Audio Hardware | device class (cpal host), output device, I/O buffer size, sample rate, force document rate, Output Mapping (programme L/R → device channels) |
+| Auto Save | the auto-save ring and the crash-recovery journal |
+| Color | stored only (display colour management, EDR monitoring, HDR graphics white) |
+| Graphics | new text layers: smart quotes, ligatures, default font |
+| Labels | the 16 label names and colours (timeline, Project panel, Edit ▸ Label), label defaults for imported movies / video / audio / stills and new sequences |
+| Media | Indeterminate Media Timebase (frame rate of stills), Default Media Scaling (Scale to / Set to frame size when a clip of another size is edited in), Enable proxies |
+| Media Analysis & Transcription | auto-transcribe imported clips (scope "all imported"), speech model, default language / auto-detect, speaker labelling (defaults of `transcript.generate`) |
+| Media Cache | location (`<data dir>/Media Cache` by default; unsaved projects' render previews live there), automatic deletion (older than N days / beyond N GB), Delete… (`mediaCache.clean {all?}`, `mediaCache.info`) |
+| Memory | frame cache budget of the monitors and thumbnails |
+| Playback | preroll / postroll (Play Around, trim loop), Step forward/back many |
+| Plugins | stub (no plugins) |
+| Timeline | video / audio transition and still image default durations (frames or seconds), playback auto-scrolling (none / page / smooth), snap playhead, return to beginning at playback end, play after rendering previews |
+| Trim | Large Trim Offset, Selection tool picks roll (on the cut) / ripple (on the edge) without a modifier, playhead determines trim loop |
+
+The remaining fields are kept for parity and shown, but have no effect yet (`wired: false`).
+
+UI automation ids: `settings.category.<id>`; `settings.<key>` for every control (for example
+`settings.timeline.autoScroll`, `settings.labels.colors.rose.color`); `settings.<key>.<value>` for
+the items of an open dropdown; `settings.<key>.browse`, `settings.<key>.hex`;
+`settings.mediaCache.clean`; `settings.help`, `settings.reset` (this page back to its defaults),
+`settings.cancel`, `settings.ok`. The open dialog's page and draft are `ui.settings` in `ui.inspect`;
+`ui.set {"settings": {"page": id, "values": {key: value}}}` edits the draft (OK applies it).
 
 ## Media: offline, relinking, proxies, ingest
 

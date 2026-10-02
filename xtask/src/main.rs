@@ -11,7 +11,11 @@
 //! - `fixtures [crate…]`: pre-generate the ffmpeg fixture matrix of the oracle tests (runs each
 //!   crate's ignored `generate_fixtures` test, i.e. the same generators the tests use) and print
 //!   what was made, reused or skipped.
+//! - `ico <out.ico> <in.png>…`: pack PNGs into a Windows `.ico` (used by `packaging/icons.sh`).
 //! - `ci`: fmt check, clippy -D warnings, tests, layers, assets, wasm.
+
+mod ico;
+mod version;
 
 use std::process::{Command, ExitCode};
 
@@ -346,6 +350,7 @@ fn serve_dir(dir: &std::path::Path, port: u16) -> Result<(), String> {
                 "js" => "text/javascript",
                 "wasm" => "application/wasm",
                 "svg" => "image/svg+xml",
+                "png" => "image/png",
                 "json" => "application/json",
                 "mp4" => "video/mp4",
                 "webm" => "video/webm",
@@ -433,6 +438,11 @@ fn bench() -> Result<(), String> {
     run(Command::new(env!("CARGO")).args(["run", "--release", "-p", "filmcraft-ui-egui", "--example", "bench", "--"]).args(&extra))
 }
 
+/// The workspace root (the parent of `xtask/`).
+fn root() -> std::path::PathBuf {
+    std::path::Path::new(env!("CARGO_MANIFEST_DIR")).parent().expect("xtask lives in the workspace").to_path_buf()
+}
+
 fn main() -> ExitCode {
     let task = std::env::args().nth(1).unwrap_or_default();
     let r = match task.as_str() {
@@ -444,7 +454,18 @@ fn main() -> ExitCode {
         "bench" => bench(),
         "bench-playback" => bench_playback(),
         "web" => web(&std::env::args().skip(2).collect::<Vec<_>>()),
-        _ => Err("usage: cargo xtask <layers|assets|wasm|web [--dev] [--serve PORT]|fixtures [crate…]|ci|bench [args]|bench-playback [args]>".into()),
+        "version" => {
+            let rest: Vec<String> = std::env::args().skip(2).collect();
+            version::run(&root(), &rest.iter().map(String::as_str).collect::<Vec<_>>())
+        }
+        "ico" => {
+            let rest: Vec<String> = std::env::args().skip(2).collect();
+            ico::run(&rest.iter().map(String::as_str).collect::<Vec<_>>())
+        }
+        _ => Err(
+            "usage: cargo xtask <layers|assets|wasm|web [--dev] [--serve PORT]|fixtures [crate…]|ico OUT IN…|version [set X.Y.Z]|ci|bench [args]|bench-playback [args]>"
+                .into(),
+        ),
     };
     match r {
         Ok(()) => ExitCode::SUCCESS,

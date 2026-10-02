@@ -126,9 +126,15 @@ pub fn handle(app: &mut FilmcraftApp, ctx: &egui::Context, req: &ControlRequest)
             }
             if let Some(th) = s("theme") {
                 match crate::theme::ThemeKind::from_name(th) {
-                    Some(k) => app.set_theme(ctx, k),
+                    Some(k) => crate::panels::settings::set_theme(app, ctx, k),
                     None => return err("unknown theme (dark, medium, light)"),
                 }
+            }
+            // the open Settings dialog: page and draft values (`{"page": id, "values": {key: value}}`)
+            if let Some(st) = p.get("settings")
+                && let Err(e) = crate::panels::settings::patch(app, st)
+            {
+                return err(e);
             }
             if let Some(f) = s("focused").and_then(PanelKind::from_name) {
                 app.ui.focused = f;
@@ -156,6 +162,9 @@ pub fn handle(app: &mut FilmcraftApp, ctx: &egui::Context, req: &ControlRequest)
                     app.ui.timeline.audio_track_h = v as f32;
                 }
             }
+            if let Some(q) = s("effectsSearch") {
+                app.ui.effects_search = q.to_string();
+            }
             if let Some(v) = p.get("safeMargins").and_then(Value::as_bool) {
                 app.ui.program.safe_margins = v;
             }
@@ -177,6 +186,13 @@ pub fn handle(app: &mut FilmcraftApp, ctx: &egui::Context, req: &ControlRequest)
             // fields of the open Edit / Clip / File dialog (`panels::clip_dialogs`)
             if let Some(m) = p.get("clipDialog").and_then(Value::as_object) {
                 let Some(d) = app.ui.clip_dialog.as_mut() else { return err("no clip dialog is open") };
+                for (k, v) in m {
+                    d.params[k.as_str()] = v.clone();
+                }
+            }
+            // fields of the open M3.11 menu dialog (`panels::menu_dialogs`)
+            if let Some(m) = p.get("menuDialog").and_then(Value::as_object) {
+                let Some(d) = app.ui.extras.dialog.as_mut() else { return err("no menu dialog is open") };
                 for (k, v) in m {
                     d.params[k.as_str()] = v.clone();
                 }

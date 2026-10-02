@@ -39,7 +39,7 @@ fn cpu_frame(img: crate::Image) -> Arc<VideoFrame> {
 }
 
 fn simple_transition(id: &str) -> bool {
-    matches!(id, "cross_dissolve" | "dip_to_black" | "dip_to_white" | "non_additive_dissolve" | "morph_cut")
+    matches!(id, "cross_dissolve" | "dip_to_black" | "dip_to_white" | "morph_cut")
 }
 
 /// Whether a track item can be drawn by the GPU as-is (no standard effects, Normal blend).
@@ -83,10 +83,8 @@ pub fn plan_frame(project: &Project, seq_id: ItemId, t: Tick, opts: RenderOption
             continue;
         }
         if let Some(trn) = tr.transitions.iter().find(|x| x.range().contains(t)) {
-            let mut p = trn.progress(t) as f32;
-            if trn.reverse {
-                p = 1.0 - p;
-            }
+            // These dissolves are symmetric: Reverse (play B→A backwards) renders the same frames.
+            let p = trn.progress(t) as f32;
             let a = trn.from.and_then(|id| tr.item(id)).filter(|i| i.enabled);
             let b = trn.to.and_then(|id| tr.item(id)).filter(|i| i.enabled);
             match trn.effect.effect.as_str() {
