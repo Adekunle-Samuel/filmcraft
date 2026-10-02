@@ -3,6 +3,7 @@
 //! Run `filmcraft-cli help` for the full reference (also in docs/agents.md).
 
 mod args;
+mod probe;
 
 use args::{Args, parse_value};
 use filmcraft_automation::BridgeClient;
@@ -26,7 +27,9 @@ SUBCOMMANDS
   export <out> [--format f]     export the active sequence (h264|prores|dnxhr|mjpeg|png|gif|wav;
                                 guessed from the extension) and wait for it to finish
   render --seconds S --out f.png [--scale 0.5]   render one Program frame to PNG
-  probe <media>                 media info as JSON
+  probe <media> [--image-sequence]
+                                media info as JSON, with MXF / Ogg / BWF details; with
+                                --image-sequence <media> is the first numbered still of a sequence
   bench-decode <media> [--frames N]
   mcp                           MCP server on stdio (headless, or --bridge to the live app)
   help                          this text
@@ -141,11 +144,10 @@ async fn main() {
         "help" | "--help" | "-h" => print!("{HELP}"),
         "version" => println!("filmcraft-cli {}", env!("CARGO_PKG_VERSION")),
         "probe" => {
-            let path = a.pos(1).unwrap_or_else(|| usage("probe <media>"));
-            let bytes = std::fs::read(path).unwrap_or_else(|e| fail(format!("{path}: {e}")));
-            match filmcraft_codecs::open_bytes(path, bytes.into()) {
-                Ok(src) => print(&a, &serde_json::to_value(src.info()).unwrap_or_default()),
-                Err(e) => fail(format!("{path}: {e}")),
+            let path = a.pos(1).unwrap_or_else(|| usage("probe <media> [--image-sequence]"));
+            match probe::probe(path, a.flag("--image-sequence")) {
+                Ok(v) => print(&a, &v),
+                Err(e) => fail(e),
             }
         }
         "bench-decode" => {

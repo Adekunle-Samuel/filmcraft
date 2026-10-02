@@ -1745,6 +1745,8 @@ dependencies = [
  "filmcraft-codecs",
  "filmcraft-engine",
  "filmcraft-media",
+ "filmcraft-mxf",
+ "filmcraft-ogg",
  "filmcraft-time",
  "serde_json",
  "tokio",
@@ -1765,8 +1767,11 @@ dependencies = [
  "filmcraft-isobmff",
  "filmcraft-matroska",
  "filmcraft-media",
+ "filmcraft-mxf",
+ "filmcraft-ogg",
  "filmcraft-opus",
  "filmcraft-prores",
+ "filmcraft-testkit",
  "filmcraft-time",
  "filmcraft-vp9",
  "image",
@@ -2000,6 +2005,20 @@ dependencies = [
  "rayon",
  "serde",
  "thiserror 2.0.21",
+]
+
+[[package]]
+name = "filmcraft-mxf"
+version = "0.1.0"
+dependencies = [
+ "filmcraft-testkit",
+]
+
+[[package]]
+name = "filmcraft-ogg"
+version = "0.1.0"
+dependencies = [
+ "filmcraft-testkit",
 ]
 
 [[package]]

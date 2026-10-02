@@ -93,6 +93,16 @@ pub trait Services: Send + Sync {
     fn reader(&self, _path: &str) -> Option<std::io::Result<filmcraft_media::SharedReader>> {
         None
     }
+    /// File names in a directory (image sequence detection). `None`: the host cannot list
+    /// directories; sequences are then found by probing consecutive frame numbers.
+    fn list_dir(&self, _dir: &str) -> Option<std::io::Result<Vec<String>>> {
+        None
+    }
+    /// A loader the media pool keeps for reading files later (image sequence frames on demand).
+    /// `None`: the frames are read when the sequence is opened.
+    fn file_loader(&self) -> Option<filmcraft_media::sequence::FrameLoader> {
+        None
+    }
     /// Exports are encoded in memory and handed to [`Services::write_file`] (hosts without a
     /// filesystem, e.g. the web: the file is then offered as a download). Otherwise they stream
     /// to the output path.
@@ -114,6 +124,13 @@ impl Services for FsServices {
     fn file_size(&self, path: &str) -> std::io::Result<u64> {
         let m = std::fs::metadata(path)?;
         if m.is_file() { Ok(m.len()) } else { Err(std::io::Error::new(std::io::ErrorKind::NotFound, format!("{path} is not a file"))) }
+    }
+    fn list_dir(&self, dir: &str) -> Option<std::io::Result<Vec<String>>> {
+        let dir = if dir.is_empty() { "." } else { dir };
+        Some(std::fs::read_dir(dir).map(|rd| rd.flatten().map(|e| e.file_name().to_string_lossy().to_string()).collect()))
+    }
+    fn file_loader(&self) -> Option<filmcraft_media::sequence::FrameLoader> {
+        Some(std::sync::Arc::new(|p: &str| std::fs::read(p)))
     }
     fn read_range(&self, path: &str, offset: u64, len: usize) -> std::io::Result<Vec<u8>> {
         use std::io::{Read, Seek, SeekFrom};
@@ -751,6 +768,8 @@ mod color_tests;
 mod essential_sound_tests;
 #[cfg(test)]
 mod file_tests;
+#[cfg(test)]
+mod image_sequence_tests;
 #[cfg(test)]
 mod masks_tests;
 #[cfg(test)]

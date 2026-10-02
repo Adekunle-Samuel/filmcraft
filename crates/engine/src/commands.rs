@@ -243,6 +243,25 @@ pub fn import_streamed(s: &mut Session, path: &str, bin: Option<filmcraft_projec
     import_source(s, path, name, src, identity, bin)
 }
 
+/// Import the image sequence that the numbered still `path` starts (File ▸ Import with Image
+/// Sequence): one movie item at Settings ▸ Media ▸ Indeterminate Media Timebase. Returns the item,
+/// the frame count and the missing frame numbers (relative to the first).
+pub fn import_image_sequence(s: &mut Session, path: &str, bin: Option<filmcraft_project::BinId>) -> Result<(ItemId, usize, Vec<usize>)> {
+    let name = std::path::Path::new(path).file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| path.to_string());
+    let rate = crate::settings::timebase_rate(&s.prefs.media.indeterminate_timebase);
+    let frames = crate::media_pool::image_sequence_frames(path, &*s.services)?;
+    let missing: Vec<usize> = frames.iter().enumerate().filter(|(_, f)| f.is_none()).map(|(i, _)| i).collect();
+    let src = crate::media_pool::open_image_sequence(path, &*s.services, rate, &name)?;
+    let identity = crate::relink::identity_of(&*s.services, path).map_err(|e| EngineError::Other(format!("{path}: {e}")))?;
+    let id = import_source(s, path, name, src, identity, bin)?;
+    Ok((id, frames.len(), missing))
+}
+
+/// Settings ▸ Media ▸ Import image sequences: a single numbered still with later frames beside it.
+fn detect_image_sequence(s: &Session, path: &str) -> bool {
+    filmcraft_media::sequence::Numbered::parse(path).is_some() && crate::media_pool::image_sequence_frames(path, &*s.services).is_ok_and(|f| f.len() > 1)
+}
+
 fn import_source(
     s: &mut Session,
     path: &str,
@@ -593,7 +612,7 @@ fn build() -> Vec<CommandSpec> {
                 Ok(json!({"items": ids.iter().map(|i| i.0).collect::<Vec<_>>()}))
             }
         ),
-        cmd!("file.import", "Import…", ["File"], Some("Cmd+I"), r#"{"paths":[str],"bin":binId?}"#, always, |s, p| {
+        cmd!("file.import", "Import…", ["File"], Some("Cmd+I"), r#"{"paths":[str],"bin":binId?,"imageSequence":bool?}"#, always, |s, p| {
             let bin = u64_p(p, "bin").map(filmcraft_project::BinId);
             let paths: Vec<String> = match p.get("paths").and_then(Value::as_array) {
                 Some(a) => a.iter().filter_map(|v| v.as_str().map(str::to_string)).collect(),
@@ -606,7 +625,22 @@ fn build() -> Vec<CommandSpec> {
             let mut errors = Vec::new();
             let mut sequences = Vec::new();
             let mut reports = Vec::new();
+            let mut image_sequences = Vec::new();
+            // Image Sequence: each path is the first frame of a numbered still sequence. With
+            // Settings ▸ Media ▸ Import image sequences on, a single numbered still is detected.
+            let as_sequence = p.get("imageSequence").and_then(Value::as_bool).unwrap_or(false);
+            let detect = !as_sequence && s.prefs.media.import_image_sequences && paths.len() == 1;
             for path in paths {
+                if as_sequence || (detect && detect_image_sequence(s, &path)) {
+                    match import_image_sequence(s, &path, bin) {
+                        Ok((id, frames, missing)) => {
+                            ids.push(id.0);
+                            image_sequences.push(json!({"item": id.0, "frames": frames, "missing": missing}));
+                        }
+                        Err(e) => errors.push(format!("{path}: {e}")),
+                    }
+                    continue;
+                }
                 // Media files through the host's reader (no whole-file read) when it has one.
                 let streamed = filmcraft_media::is_importable(std::path::Path::new(&path)) && s.services.reader(&path).is_some();
                 let read = if streamed { Ok(Vec::new()) } else { s.services.read_file(&path) };
@@ -643,7 +677,8 @@ fn build() -> Vec<CommandSpec> {
                 return Err(EngineError::Other(errors.join("; ")));
             }
             // Project Settings ▸ Ingest: copy / transcode / create proxies
-            let item_ids: Vec<ItemId> = ids.iter().map(|i| ItemId(*i)).collect();
+            // (image sequences are many files: ingest copies and transcodes single files only)
+            let item_ids: Vec<ItemId> = ids.iter().filter(|i| !image_sequences.iter().any(|q| q["item"].as_u64() == Some(**i))).map(|i| ItemId(*i)).collect();
             // Settings ▸ Media Analysis & Transcription ▸ Automatically transcribe clips
             let ma = &s.prefs.media_analysis;
             if ma.auto_transcribe
@@ -665,14 +700,17 @@ fn build() -> Vec<CommandSpec> {
                     Value::Null
                 }
             };
-            if !ingest.is_null() {
-                return Ok(json!({"items": ids, "sequences": sequences, "documents": reports, "errors": errors, "ingest": ingest}));
-            }
-            if reports.is_empty() {
-                Ok(json!({"items": ids, "errors": errors}))
+            let mut out = if !ingest.is_null() {
+                json!({"items": ids, "sequences": sequences, "documents": reports, "errors": errors, "ingest": ingest})
+            } else if reports.is_empty() {
+                json!({"items": ids, "errors": errors})
             } else {
-                Ok(json!({"items": ids, "sequences": sequences, "documents": reports, "errors": errors}))
+                json!({"items": ids, "sequences": sequences, "documents": reports, "errors": errors})
+            };
+            if !image_sequences.is_empty() {
+                out["imageSequences"] = json!(image_sequences);
             }
+            Ok(out)
         }),
         cmd!("file.exportInterchange", "Export Interchange", [], None, r#"{"format":"edl|xml|fcpxml|otio","path":str,"sequence":id?}"#, has_seq, |s, p| {
             crate::interchange::export(s, p)

@@ -30,6 +30,8 @@ const LAYERS: &[(&str, u8)] = &[
     ("bitstream", 0),
     ("isobmff", 0),
     ("matroska", 0),
+    ("mxf", 0),
+    ("ogg", 0),
     ("riff", 0),
     ("h264", 0),
     ("h264enc", 0),
@@ -374,6 +376,8 @@ const FIXTURE_GENERATORS: &[(&str, &str)] = &[
     ("matroska", "oracle"),
     ("prores", "oracle_decode"),
     ("dnx", "oracle_decode"),
+    ("codecs", "mxf_oracle"),
+    ("codecs", "ogg_oracle"),
 ];
 
 fn fixtures(only: &[String]) -> Result<(), String> {

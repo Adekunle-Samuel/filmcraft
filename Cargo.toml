@@ -18,6 +18,8 @@ filmcraft-color = { path = "crates/color" }
 filmcraft-bitstream = { path = "crates/bitstream" }
 filmcraft-isobmff = { path = "crates/isobmff" }
 filmcraft-matroska = { path = "crates/matroska" }
+filmcraft-mxf = { path = "crates/mxf" }
+filmcraft-ogg = { path = "crates/ogg" }
 filmcraft-h264 = { path = "crates/h264" }
 filmcraft-hevc = { path = "crates/hevc" }
 filmcraft-vp9 = { path = "crates/vp9" }
@@ -101,6 +103,9 @@ opt-level = 3
 
 # Audio effects: realtime-factor tests and long convolution / spectral runs.
 [profile.dev.package.filmcraft-audio-dsp]
+opt-level = 3
+
+[profile.dev.package.filmcraft-mxf]
 opt-level = 3
 
 [profile.dev.package.filmcraft-opus]
