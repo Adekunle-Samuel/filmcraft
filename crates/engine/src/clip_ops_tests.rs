@@ -55,7 +55,7 @@ fn menus_and_shortcuts_follow_premiere() {
     assert_eq!(pos("file.newBinFromSelection"), pos("file.newBin") + 1);
     // Close Project, Close All Projects, Close All Other Projects (M3.11), Save
     assert_eq!(pos("file.closeProject") + 3, pos("file.save"));
-    assert_eq!(pos("file.saveAll"), pos("file.saveCopy") + 1);
+    assert_eq!(pos("file.saveAll"), pos("file.saveCopy") + 2, "Save a Copy, Save as Template (M3.11), Save All");
     assert_eq!(menu_of("clip.timeInterpolation.opticalFlow"), ["Clip", "Video Options", "Time Interpolation"]);
     assert_eq!(menu_of("clip.audioGain"), ["Clip", "Audio Options"]);
     assert_eq!(menu_of("clip.replaceFromSourceMatchFrame"), ["Clip", "Replace With Clip"]);

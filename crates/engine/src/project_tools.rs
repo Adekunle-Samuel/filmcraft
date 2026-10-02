@@ -139,7 +139,7 @@ pub(crate) fn commands() -> Vec<CommandSpec> {
         // ---------------- Edit ----------------
         spec("edit.find", "Find…", &["Edit"], Some("Cmd+F"), FIND_PARAMS, always, find),
         spec("edit.findNext", "Find Next", &["Edit"], None, "{}", has_find, find_next),
-        query("edit.editOriginal", "Edit Original", &["Edit"], Some("Cmd+E"), r#"{"items":[id]?}"#, has_original, edit_original),
+        spec("edit.editOriginal", "Edit Original", &["Edit"], Some("Cmd+E"), r#"{"items":[id]?}"#, has_original, edit_original),
         // ---------------- Clip ----------------
         spec(
             "clip.editOffline",
