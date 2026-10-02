@@ -432,7 +432,7 @@ impl FrameServer {
     }
 
     /// (cached images, their bytes, cached GPU plans, their bytes).
-    pub fn cache_usage(&self) -> (usize, usize, usize, usize) {
+    pub fn cache_entries(&self) -> (usize, usize, usize, usize) {
         let (n, b) = {
             let c = self.shared.done.lock().unwrap_or_else(|e| e.into_inner());
             (c.map.len(), c.bytes)
