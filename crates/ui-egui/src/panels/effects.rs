@@ -21,7 +21,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let filter = q.to_ascii_lowercase();
     let defs = filmcraft_project::effect_defs();
     // folder tree: top-level categories in Premiere's order
-    let tops = ["Presets", "Lumetri Presets", "Audio Effects", "Audio Transitions", "Video Effects", "Video Transitions"];
+    let tops = ["Presets", "Lumetri Presets", "Audio Effects", "Audio Transitions", "Video Effects", "Video Transitions", "Legacy"];
     let mut apply: Option<String> = None;
     let mut preset_action: Option<(String, String)> = None;
     egui::ScrollArea::vertical().id_salt("fx-scroll").auto_shrink([false, false]).show(&mut bui, |ui| {
@@ -33,11 +33,15 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                 }
                 continue;
             }
-            let items: Vec<_> = defs
+            let mut items: Vec<_> = defs
                 .iter()
                 .filter(|d| d.category.first() == Some(&top))
                 .filter(|d| filter.is_empty() || d.name.to_ascii_lowercase().contains(&filter))
                 .collect();
+            // Premiere lists effect folders and effects alphabetically (obsolete ones last)
+            if top == "Video Effects" || top == "Legacy" {
+                items.sort_by_key(|d| (d.category.get(1) == Some(&"Obsolete"), d.category.get(1).copied().unwrap_or(""), d.name.to_ascii_lowercase()));
+            }
             if !filter.is_empty() && items.is_empty() {
                 continue;
             }

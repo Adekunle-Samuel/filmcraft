@@ -312,6 +312,22 @@ pub(crate) fn param_row(
         (ParamKind::Path, _) => {
             crate::panels::masks::path_value(app, &mut vui, clip, idx, mask, actions);
         }
+        (ParamKind::Text, ParamValue::Text(s)) if !pd.id.ends_with("_lut") => {
+            // edited in a buffer; committed (one undo step) when the field loses focus
+            let mut buf = vui.data_mut(|d| d.get_temp::<String>(id)).unwrap_or_else(|| s.clone());
+            let r = vui.add(egui::TextEdit::singleline(&mut buf).desired_width(160.0));
+            app.auto.add(&format!("effectControls.text.{}.{}", idx, pd.id), r.rect, pd.label);
+            if r.lost_focus() {
+                if buf != *s {
+                    set = Some(json!(buf));
+                }
+                vui.data_mut(|d| d.remove::<String>(id));
+            } else if r.has_focus() {
+                vui.data_mut(|d| d.insert_temp(id, buf));
+            } else {
+                vui.data_mut(|d| d.remove::<String>(id));
+            }
+        }
         _ => {
             vui.label(param_text(&app.session.project, pd.id, &value));
         }

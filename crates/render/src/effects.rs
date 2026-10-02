@@ -26,6 +26,9 @@ pub struct FxCtx<'a> {
     pub clip_name: &'a str,
     /// The project (LUT library for Lumetri); `None` in isolated effect tests.
     pub project: Option<&'a filmcraft_project::Project>,
+    /// The clip's surroundings (other frames, other tracks, sequence geometry) for temporal,
+    /// track-reading and reframing effects; `None` in isolated tests and adjustment layers.
+    pub env: Option<&'a dyn crate::vfx::FxEnv>,
 }
 
 fn f(e: &EffectInstance, id: &str, cx: &FxCtx) -> f32 {
@@ -63,15 +66,15 @@ fn point(e: &EffectInstance, id: &str, cx: &FxCtx, img: &Image) -> Vec2 {
 }
 
 #[inline]
-fn enc(c: [f32; 3]) -> [f32; 3] {
+pub(crate) fn enc(c: [f32; 3]) -> [f32; 3] {
     [linear_to_srgb(c[0].max(0.0)), linear_to_srgb(c[1].max(0.0)), linear_to_srgb(c[2].max(0.0))]
 }
 #[inline]
-fn dec(c: [f32; 3]) -> [f32; 3] {
+pub(crate) fn dec(c: [f32; 3]) -> [f32; 3] {
     [srgb_to_linear(c[0].clamp(0.0, 1.0)), srgb_to_linear(c[1].clamp(0.0, 1.0)), srgb_to_linear(c[2].clamp(0.0, 1.0))]
 }
 
-fn hash3(x: usize, y: usize, z: u64) -> f32 {
+pub(crate) fn hash3(x: usize, y: usize, z: u64) -> f32 {
     let mut h = (x as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15) ^ (y as u64).wrapping_mul(0xC2B2_AE3D_27D4_EB4F) ^ z.wrapping_mul(0x1656_67B1_9E37_79F9);
     h ^= h >> 31;
     h = h.wrapping_mul(0xBF58_476D_1CE4_E5B9);
@@ -82,6 +85,9 @@ fn hash3(x: usize, y: usize, z: u64) -> f32 {
 /// Apply one effect. Unknown/unimplemented ids are a no-op (they still round-trip in the project).
 pub fn apply(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
     if !e.enabled || img.w == 0 || img.h == 0 {
+        return;
+    }
+    if crate::vfx::apply(img, e, cx) {
         return;
     }
     match e.effect.as_str() {
@@ -739,7 +745,7 @@ pub fn apply(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
 }
 
 /// Fill an opaque generated colour over the image at `op` opacity (Generate category).
-fn fill_over(img: &mut Image, op: f32, f: impl Fn(f32, f32) -> [f32; 3] + Sync) {
+pub(crate) fn fill_over(img: &mut Image, op: f32, f: impl Fn(f32, f32) -> [f32; 3] + Sync) {
     let w = img.w;
     img.px.par_chunks_mut(w * 4).enumerate().for_each(|(y, row)| {
         for x in 0..w {
@@ -753,11 +759,11 @@ fn fill_over(img: &mut Image, op: f32, f: impl Fn(f32, f32) -> [f32; 3] + Sync) 
     });
 }
 
-fn warp(img: &mut Image, f: impl Fn(f64, f64) -> (f64, f64) + Sync) {
+pub(crate) fn warp(img: &mut Image, f: impl Fn(f64, f64) -> (f64, f64) + Sync) {
     warp_opt(img, |x, y| Some(f(x, y)));
 }
 
-fn warp_opt(img: &mut Image, f: impl Fn(f64, f64) -> Option<(f64, f64)> + Sync) {
+pub(crate) fn warp_opt(img: &mut Image, f: impl Fn(f64, f64) -> Option<(f64, f64)> + Sync) {
     let src = img.clone();
     let w = img.w;
     img.px.par_chunks_mut(w * 4).enumerate().for_each(|(y, row)| {
@@ -771,7 +777,7 @@ fn warp_opt(img: &mut Image, f: impl Fn(f64, f64) -> Option<(f64, f64)> + Sync) 
     });
 }
 
-fn crop(img: &mut Image, l: f32, t: f32, r: f32, b: f32, feather: f32) {
+pub(crate) fn crop(img: &mut Image, l: f32, t: f32, r: f32, b: f32, feather: f32) {
     let (w, h) = (img.w as f32, img.h as f32);
     let (x0, x1, y0, y1) = (l * w, w * (1.0 - r), t * h, h * (1.0 - b));
     let fe = feather.max(0.0);
@@ -791,7 +797,7 @@ fn crop(img: &mut Image, l: f32, t: f32, r: f32, b: f32, feather: f32) {
     });
 }
 
-fn key(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
+pub(crate) fn key(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
     let ultra = e.effect == "ultra_key";
     let kc = if ultra { color(e, "key_color", cx) } else { color(e, "color", cx) };
     let kycc = filmcraft_color::rgb_to_ycbcr(kc[0], kc[1], kc[2], filmcraft_color::Matrix::Bt709);
@@ -1006,6 +1012,9 @@ fn transpose(img: &Image) -> Image {
 
 /// Gaussian blur via 3 box passes per axis (O(1) per pixel for any radius).
 pub fn gaussian(img: &mut Image, sigma_x: f32, sigma_y: f32, repeat_edge: bool) {
+    // beyond a few image sizes every radius gives the same (flat) result; cap to keep box sizes sane
+    let sigma_x = if sigma_x.is_finite() { sigma_x.min(img.w.max(8) as f32 * 2.0) } else { 0.0 };
+    let sigma_y = if sigma_y.is_finite() { sigma_y.min(img.h.max(8) as f32 * 2.0) } else { 0.0 };
     if sigma_x > 0.3 {
         for r in boxes_for_gauss(sigma_x, 3) {
             box_rows(&mut img.px, img.w, r, repeat_edge);
@@ -1020,7 +1029,7 @@ pub fn gaussian(img: &mut Image, sigma_x: f32, sigma_y: f32, repeat_edge: bool) 
     }
 }
 
-fn unsharp(img: &mut Image, radius: f32, amount: f32, threshold: f32) {
+pub(crate) fn unsharp(img: &mut Image, radius: f32, amount: f32, threshold: f32) {
     let mut blurred = img.clone();
     gaussian(&mut blurred, radius, radius, true);
     img.px.par_chunks_mut(4).zip(blurred.px.par_chunks(4)).for_each(|(p, bq)| {
@@ -1034,7 +1043,7 @@ fn unsharp(img: &mut Image, radius: f32, amount: f32, threshold: f32) {
     });
 }
 
-fn directional_blur(img: &mut Image, len: f32, dir: f64) {
+pub(crate) fn directional_blur(img: &mut Image, len: f32, dir: f64) {
     if len < 0.5 {
         return;
     }
@@ -1059,7 +1068,7 @@ fn directional_blur(img: &mut Image, len: f32, dir: f64) {
     });
 }
 
-fn median(img: &mut Image, r: isize) {
+pub(crate) fn median(img: &mut Image, r: isize) {
     let src = img.clone();
     let w = img.w;
     img.px.par_chunks_mut(w * 4).enumerate().for_each_init(Vec::new, |buf: &mut Vec<f32>, (y, row)| {
@@ -1079,7 +1088,7 @@ fn median(img: &mut Image, r: isize) {
     });
 }
 
-fn mosaic(img: &mut Image, bx: usize, by: usize) {
+pub(crate) fn mosaic(img: &mut Image, bx: usize, by: usize) {
     let (w, h) = (img.w, img.h);
     let bw = (w as f32 / bx as f32).max(1.0);
     let bh = (h as f32 / by as f32).max(1.0);
@@ -1100,7 +1109,7 @@ mod tests {
     use filmcraft_project::find_effect;
 
     fn cx() -> FxCtx<'static> {
-        FxCtx { t: Tick::ZERO, px_scale: 1.0, seconds: 0.0, timecode: "00:00:01:00", clip_name: "x", project: None }
+        FxCtx { t: Tick::ZERO, px_scale: 1.0, seconds: 0.0, timecode: "00:00:01:00", clip_name: "x", project: None, env: None }
     }
 
     #[test]
