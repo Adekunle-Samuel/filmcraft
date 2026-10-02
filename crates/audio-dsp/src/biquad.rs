@@ -14,6 +14,10 @@ pub enum FilterType {
     Notch,
     BandPass,
     AllPass,
+    /// Constant-bandwidth cut: `1 + (g − 1)·BP(s)` — the −3 dB width of the band-pass stays
+    /// `f/Q` however deep the cut (`gain_db` ≤ 0), unlike the RBJ peaking filter whose cut
+    /// widens with depth. Used by the Notch Filter.
+    Cut,
 }
 
 impl FilterType {
@@ -58,6 +62,10 @@ impl Coeffs {
             FilterType::BandPass => Self::norm(alpha, 0.0, -alpha, 1.0 + alpha, -2.0 * cs, 1.0 - alpha),
             FilterType::Notch => Self::norm(1.0, -2.0 * cs, 1.0, 1.0 + alpha, -2.0 * cs, 1.0 - alpha),
             FilterType::AllPass => Self::norm(1.0 - alpha, -2.0 * cs, 1.0 + alpha, 1.0 + alpha, -2.0 * cs, 1.0 - alpha),
+            FilterType::Cut => {
+                let g = 10f64.powf(gain_db / 20.0);
+                Self::norm(1.0 + g * alpha, -2.0 * cs, 1.0 - g * alpha, 1.0 + alpha, -2.0 * cs, 1.0 - alpha)
+            }
             FilterType::Peaking => Self::norm(1.0 + alpha * a, -2.0 * cs, 1.0 - alpha * a, 1.0 + alpha / a, -2.0 * cs, 1.0 - alpha / a),
             FilterType::LowShelf => {
                 let k = 2.0 * a.sqrt() * alpha;

@@ -62,7 +62,7 @@ impl Compressor {
         ParamSpec::new("knee", "Knee", 0.0, 24.0, 6.0, Unit::Decibels),
         ParamSpec::log("attack", "Attack", 0.01, 300.0, 10.0, Unit::Milliseconds),
         ParamSpec::log("release", "Release", 1.0, 3000.0, 100.0, Unit::Milliseconds),
-        ParamSpec::new("makeup", "Make-up Gain", 0.0, 40.0, 0.0, Unit::Decibels),
+        ParamSpec::new("makeup", "Make-up Gain", -40.0, 40.0, 0.0, Unit::Decibels),
         ParamSpec::choice("detector", "Detector", &["Peak", "RMS"], 0),
     ];
 
@@ -112,6 +112,9 @@ impl Compressor {
 
 impl AudioEffect for Compressor {
     param_plumbing!("compressor");
+    fn transfer_db(&self, band: usize, input_db: f32) -> Option<f32> {
+        (band == 0).then(|| self.curve(input_db) + self.pv.v("makeup"))
+    }
     fn reset(&mut self) {
         self.makeup.snap();
         self.ms = 0.0;
@@ -211,6 +214,9 @@ impl Gate {
 
 impl AudioEffect for Gate {
     param_plumbing!("gate");
+    fn transfer_db(&self, band: usize, input_db: f32) -> Option<f32> {
+        (band == 0).then(|| self.curve(input_db))
+    }
     fn reset(&mut self) {
         self.env = 0.0;
         self.hold_left = 0;

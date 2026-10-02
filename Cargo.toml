@@ -99,6 +99,10 @@ opt-level = 3
 [profile.dev.package.filmcraft-aac]
 opt-level = 3
 
+# Audio effects: realtime-factor tests and long convolution / spectral runs.
+[profile.dev.package.filmcraft-audio-dsp]
+opt-level = 3
+
 [profile.dev.package.filmcraft-opus]
 opt-level = 3
 

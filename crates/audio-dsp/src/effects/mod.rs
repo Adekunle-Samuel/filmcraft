@@ -1,20 +1,33 @@
 //! Audio effects and their registry.
 
 pub mod channel;
+pub mod declick;
 pub mod dynamics;
 pub mod eq;
 pub mod essential;
+pub mod filters;
+pub mod modulation;
+pub mod multiband;
 pub mod pitch;
 pub mod restoration;
+pub mod reverbs;
+pub mod special;
 mod stft;
 pub mod time;
+pub(crate) mod util;
 
 pub use channel::{Amplify, Balance, ChannelVolume, Invert, Route, Routing};
+pub use declick::ClickRemover;
 pub use dynamics::{Compressor, Gate, Limiter};
 pub use eq::{ParametricEq, SimpleEq};
 pub use essential::{DeEsser, DeReverb, SpeechEnhance, StereoWidth};
+pub use filters::{FftFilter, FullParametricEq, GraphicEq, NotchFilter, ScientificFilter};
+pub use modulation::{AnalogDelay, ChorusFlanger, Flanger, MultitapDelay, Phaser};
+pub use multiband::{DynamicsRack, MultibandCompressor, TubeCompressor};
 pub use pitch::PitchShifter;
 pub use restoration::{DeHum, DeNoise};
+pub use reverbs::{ConvolutionReverb, SurroundReverb};
+pub use special::{AmbisonicsPanner, Binauralizer, ChannelMixer, Distortion, GuitarSuite, LoudnessMeterFx, Mastering, Mute, StereoExpander, VocalEnhancer};
 pub use time::{Delay, Reverb};
 
 use crate::{AudioEffect, ParamSpec};
@@ -28,6 +41,9 @@ pub enum Category {
     Channel,
     Restoration,
     Pitch,
+    Modulation,
+    Reverb,
+    Special,
 }
 
 /// Registry entry describing one effect type.
@@ -98,6 +114,35 @@ static REGISTRY: &[EffectInfo] = &[
     entry!("dereverb", "DeReverb", Restoration, DeReverb),
     entry!("speech_enhance", "Enhance Speech", Filter, SpeechEnhance),
     entry!("stereo_width", "Stereo Width", Channel, StereoWidth),
+    // Premiere audio-effect set (M7.7)
+    entry!("graphic_eq_10", "Graphic Equalizer (10 Bands)", Filter, GraphicEq<10>),
+    entry!("graphic_eq_20", "Graphic Equalizer (20 Bands)", Filter, GraphicEq<20>),
+    entry!("graphic_eq_30", "Graphic Equalizer (30 Bands)", Filter, GraphicEq<30>),
+    entry!("parametric_eq_full", "Parametric Equalizer (full)", Filter, FullParametricEq),
+    entry!("notch_filter", "Notch Filter", Filter, NotchFilter),
+    entry!("scientific_filter", "Scientific Filter", Filter, ScientificFilter),
+    entry!("fft_filter", "FFT Filter", Filter, FftFilter),
+    entry!("dynamics_rack", "Dynamics", Dynamics, DynamicsRack),
+    entry!("multiband_compressor", "Multiband Compressor", Dynamics, MultibandCompressor),
+    entry!("tube_compressor", "Tube-modeled Compressor", Dynamics, TubeCompressor),
+    entry!("chorus_flanger", "Chorus/Flanger", Modulation, ChorusFlanger),
+    entry!("flanger", "Flanger", Modulation, Flanger),
+    entry!("phaser", "Phaser", Modulation, Phaser),
+    entry!("analog_delay", "Analog Delay", Time, AnalogDelay),
+    entry!("multitap_delay", "Multitap Delay", Time, MultitapDelay),
+    entry!("convolution_reverb", "Convolution Reverb", Reverb, ConvolutionReverb),
+    entry!("surround_reverb", "Surround Reverb", Reverb, SurroundReverb),
+    entry!("click_remover", "Automatic Click Remover", Restoration, ClickRemover),
+    entry!("channel_mixer", "Channel Mixer", Channel, ChannelMixer),
+    entry!("distortion", "Distortion", Special, Distortion),
+    entry!("guitar_suite", "GuitarSuite", Special, GuitarSuite),
+    entry!("mastering", "Mastering", Special, Mastering),
+    entry!("vocal_enhancer", "Vocal Enhancer", Special, VocalEnhancer),
+    entry!("stereo_expander", "Stereo Expander", Channel, StereoExpander),
+    entry!("binauralizer", "Binauralizer - Ambisonics", Special, Binauralizer),
+    entry!("ambisonics_panner", "Panner - Ambisonics", Special, AmbisonicsPanner),
+    entry!("loudness_meter", "Loudness Meter", Special, LoudnessMeterFx),
+    entry!("mute", "Mute", Channel, Mute),
 ];
 
 /// All registered effects.
@@ -271,3 +316,6 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+mod premiere_tests;

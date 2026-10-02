@@ -16,6 +16,7 @@
 //! portable to wasm).
 
 pub mod biquad;
+pub mod design;
 pub mod ducking;
 pub mod effects;
 pub mod fft;
@@ -125,6 +126,16 @@ pub trait AudioEffect: Send {
     /// Processing latency in samples (look-ahead / STFT delay) for delay compensation.
     fn latency(&self) -> usize {
         0
+    }
+    /// Analytic magnitude response (dB) at `freq` Hz for the current target settings, for
+    /// filter/EQ effects (drives the graphical EQ editors). `None` when not applicable.
+    fn response_db(&self, _freq: f64) -> Option<f64> {
+        None
+    }
+    /// Static input → output level curve (dB) of a dynamics effect for `band` (0 for
+    /// single-band processors), at the current settings. `None` when not applicable.
+    fn transfer_db(&self, _band: usize, _input_db: f32) -> Option<f32> {
+        None
     }
 }
 
