@@ -56,6 +56,10 @@ impl Fx {
             scale_to_frame: false,
             essential: None,
             multicam: None,
+            time_interpolation: Default::default(),
+            hold_filters: false,
+            field_options: None,
+            source_channels: Vec::new(),
         }
     }
     fn put(&mut self, track: TrackId, start: i64, dur: i64, src_in: i64) -> ClipId {

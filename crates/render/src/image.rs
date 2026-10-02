@@ -135,6 +135,17 @@ impl Image {
         out
     }
 
+    /// `self × (1 − w) + other × w` (same size; premultiplied, so this is a proper cross-fade).
+    pub fn lerp(mut self, other: &Image, w: f32) -> Image {
+        if other.w != self.w || other.h != self.h {
+            return self;
+        }
+        for (a, b) in self.px.iter_mut().zip(&other.px) {
+            *a += (*b - *a) * w;
+        }
+        self
+    }
+
     pub fn scale_alpha(&mut self, a: f32) {
         if (a - 1.0).abs() < 1e-6 {
             return;

@@ -41,22 +41,26 @@ pub fn install(app: &FilmcraftApp, ctx: egui::Context) -> (Receiver<String>, Sho
     for top in MENUS {
         let sub = Submenu::new(top, true);
         let mine: Vec<&Item> = items.iter().filter(|i| i.path.first().map(String::as_str) == Some(top)).collect();
-        let mut subs: Vec<(String, Submenu)> = Vec::new();
+        // submenus by path prefix (e.g. Clip ▸ Video Options ▸ Time Interpolation), created where
+        // their first item appears
+        let mut subs: Vec<(Vec<String>, Submenu)> = Vec::new();
         for it in mine {
             let mi = MenuItem::with_id(it.id.clone(), &it.label, true, it.shortcut.as_deref().and_then(accel));
             native.push((it.id.clone(), mi.clone()));
-            if let Some(name) = it.path.get(1) {
-                if let Some((_, s)) = subs.iter().find(|(n, _)| n == name) {
-                    let _ = s.append(&mi);
-                } else {
-                    let s = Submenu::new(name, true);
-                    let _ = s.append(&mi);
-                    let _ = sub.append(&s);
-                    subs.push((name.clone(), s));
-                }
-            } else {
-                let _ = sub.append(&mi);
+            let mut parent = sub.clone();
+            for depth in 1..it.path.len() {
+                let key = it.path[..=depth].to_vec();
+                parent = match subs.iter().find(|(k, _)| *k == key) {
+                    Some((_, s)) => s.clone(),
+                    None => {
+                        let s = Submenu::new(&it.path[depth], true);
+                        let _ = parent.append(&s);
+                        subs.push((key, s.clone()));
+                        s
+                    }
+                };
             }
+            let _ = parent.append(&mi);
         }
         let _ = bar.append(&sub);
     }

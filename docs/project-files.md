@@ -8,7 +8,7 @@ writing them is `crates/format` (`filmcraft-format`); the engine's `file.*` comm
 ```json
 {
   "format": "filmcraft.project",
-  "schema_version": 8,
+  "schema_version": 9,
   "generator": "FilmCraft 0.1.0",
   "project": { "name": "…", "settings": { … }, "root": { … }, "items": { … }, "next_id": 48 }
 }
@@ -32,6 +32,7 @@ writing them is `crates/format` (`filmcraft-format`); the engine's `file.*` comm
 | 6 | M11.7/M11.9 | media identity fingerprints, ingest settings; no-op step |
 | 7 | M5.5 | effect masks: `masks` on effect instances with keyframable Bézier `Path` values; no-op step |
 | 8 | M12 | multi-camera source sequences and clips, merged clips; no-op step |
+| 9 | M3.10 | clip time interpolation, Hold Filters, Field Options, audio source channels, Modify ▸ Audio Channels map, subclip Restrict Trims; no-op step |
 
 ### Migrations
 
@@ -59,8 +60,8 @@ on disk is unchanged until you save. The **first save over it** keeps the origin
 
 A file with a `schema_version` newer than the build supports is **refused**, not half-read:
 
-> this project was saved by a newer version of FilmCraft (project schema v9); this build reads up to
-> v8. Update FilmCraft to open it.
+> this project was saved by a newer version of FilmCraft (project schema v10); this build reads up to
+> v9. Update FilmCraft to open it.
 
 Reading it partially and saving it back would silently drop whatever the newer version added.
 

@@ -79,7 +79,7 @@ fn media_of(p: &Project, item: ItemId) -> Option<(ItemId, &filmcraft_project::Me
     let it = p.item(item)?;
     match &it.kind {
         ItemKind::Media(m) => Some((item, m, None)),
-        ItemKind::Subclip { parent, range } => media_of(p, *parent).map(|(i, m, _)| (i, m, Some(*range))),
+        ItemKind::Subclip { parent, range, .. } => media_of(p, *parent).map(|(i, m, _)| (i, m, Some(*range))),
         _ => None,
     }
 }

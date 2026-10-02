@@ -132,7 +132,7 @@ pub(crate) fn render_seq_tracks(project: &Project, seq: &Sequence, t: Tick, opts
             if !opts.effects {
                 continue;
             }
-            let mt = item.source_time_at(t);
+            let mt = item.effect_time_at(t);
             let mut adjusted = canvas.clone();
             let cx = effects::FxCtx {
                 t: mt,
@@ -276,7 +276,10 @@ pub(crate) fn item_layer(
     tc: &str,
 ) -> Option<(Image, f32, Blend)> {
     let (w, h) = output_size(seq, opts.scale);
-    let mt = item.source_time_at(t);
+    // `ft`: the media time of the frame shown; `mt`: where effects and Motion/Opacity are evaluated
+    // (they differ inside a frame hold without Hold Filters).
+    let ft = item.source_time_at(t);
+    let mt = item.effect_time_at(t);
     let src_size = source_size(project, item.item)?;
     let motion = motion_matrix(seq, item, src_size, mt);
     // How many output pixels one source pixel covers → request a reduced frame when possible.
@@ -286,22 +289,32 @@ pub(crate) fn item_layer(
     let mut layer = match &pi.kind {
         ItemKind::Media(_) | ItemKind::Subclip { .. } => {
             let src = sources.source(item.item)?;
-            let frame = src.video_frame(FrameRequest { time: mt, scale: want }).ok()?;
+            let frame = src.video_frame(FrameRequest { time: ft, scale: want }).ok()?;
             let n = decimation(frame.width as f32, src_size.0 as f32 * want);
-            colorman::decode(project, item.item, &frame, n, &seq.settings.color)
+            let img = colorman::decode(project, item.item, &frame, n, &seq.settings.color);
+            match interpolation_blend(item, t, src.info().frame_rate()) {
+                Some((next_time, wgt)) => match src.video_frame(FrameRequest { time: next_time, scale: want }) {
+                    Ok(f2) if f2.width == frame.width && f2.height == frame.height => {
+                        let b = colorman::decode(project, item.item, &f2, n, &seq.settings.color);
+                        img.lerp(&b, wgt)
+                    }
+                    _ => img,
+                },
+                None => img,
+            }
         }
         ItemKind::Sequence(nested) => {
             let sub = RenderOptions { scale: want, effects: opts.effects, depth: opts.depth + 1, captions: false, working_output: true };
             match item.multicam_angle(nested) {
                 // a multi-camera clip shows its angle's track only (nothing for an audio-only angle)
                 Some(angle) => match nested.angle_video_track_index(angle) {
-                    Some(ti) => render_seq_tracks(project, nested, mt, sub, sources, Some(ti)),
+                    Some(ti) => render_seq_tracks(project, nested, ft, sub, sources, Some(ti)),
                     None => {
                         let (nw, nh) = output_size(nested, want);
                         Image::new(nw, nh)
                     }
                 },
-                None => render_seq(project, nested, mt, sub, sources),
+                None => render_seq(project, nested, ft, sub, sources),
             }
         }
         ItemKind::AdjustmentLayer { .. } => return None,
@@ -365,6 +378,33 @@ pub fn render_clip(
     let (_, item) = seq.find_item(clip)?;
     let tc = format_time(t, seq.settings.frame_rate, seq.settings.drop_frame, TimeDisplay::Timecode, seq.settings.sample_rate as i64);
     item_layer(project, seq, item, t, opts, sources, &tc).map(|(img, _, _)| img)
+}
+
+/// Frame Blending / Optical Flow on a speed-changed clip: the later source frame to mix in and
+/// its weight (0..1) at timeline `t`, or None when the exact media time falls on a source frame
+/// (or the clip plays at 100 %, is frame-held, or uses Frame Sampling).
+///
+/// TODO(optical flow): motion-compensated interpolation; Optical Flow renders as Frame Blending.
+pub fn interpolation_blend(item: &TrackItem, t: Tick, src_rate: filmcraft_time::FrameRate) -> Option<(Tick, f32)> {
+    if item.time_interpolation == filmcraft_project::TimeInterpolation::FrameSampling || item.frame_hold.is_some() {
+        return None;
+    }
+    if (item.speed.abs() - 1.0).abs() < 1e-9 {
+        return None;
+    }
+    let mt = item.source_time_at(t);
+    if src_rate.frame_duration().0 <= 0 {
+        return None;
+    }
+    // position in source frames from the media origin
+    let f = src_rate.frame_at(mt);
+    let f0 = src_rate.tick_of(f);
+    let frac = (mt - f0).0 as f64 / (src_rate.tick_of(f + 1) - f0).0.max(1) as f64;
+    if frac <= 1e-6 {
+        return None;
+    }
+    // the mix depends only on the media position, so reversed clips blend the same pair
+    Some((src_rate.tick_of(f + 1), frac.clamp(0.0, 1.0) as f32))
 }
 
 /// Largest power-of-two box decimation that keeps at least `target_w` pixels of width.

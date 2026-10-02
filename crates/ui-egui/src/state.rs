@@ -325,6 +325,23 @@ pub struct UiState {
     /// Multi-Camera Record On/Off (key 0): playing in the Multi-Camera view records cuts.
     #[serde(default = "yes")]
     pub multicam_record: bool,
+    /// Edit / Clip / File menu dialog (Paste Attributes, Make Subclip, Frame Hold Options, …;
+    /// open when Some). See `panels::clip_dialogs`.
+    #[serde(default)]
+    pub clip_dialog: Option<ClipDialogDraft>,
+}
+
+/// An open Edit / Clip / File menu dialog: the engine command it runs on OK and the parameters
+/// being edited (the same JSON the command takes, so agents can fill it with `ui.set`).
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct ClipDialogDraft {
+    pub command: String,
+    pub params: serde_json::Value,
+    /// Extra data shown by the dialog (effect names, channel count, …); not sent.
+    #[serde(default)]
+    pub info: serde_json::Value,
+    #[serde(default)]
+    pub error: String,
 }
 
 /// A pen mask in progress: vertices placed so far, in clip pixels (`[x, y, tangent x, tangent y]`).
@@ -567,6 +584,7 @@ impl Default for UiState {
             save_preset: None,
             sync_dialog: None,
             multicam_record: true,
+            clip_dialog: None,
         }
     }
 }

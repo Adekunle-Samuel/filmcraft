@@ -257,7 +257,7 @@ fn new_generator(s: &mut Session, g: Generator, name: &str, label: Label, p: &Va
 }
 
 /// Place a project item on the timeline (drag from Project, or Insert/Overwrite from source).
-fn place_item(
+pub(crate) fn place_item(
     s: &mut Session,
     item: ItemId,
     range: TimeRange,
@@ -297,9 +297,26 @@ fn place_item(
             placements.push((vdest.expect("checked"), v));
         }
         if has_a {
+            let adest = adest.expect("checked");
             let mut a = p.make_track_item(item, TrackKind::Audio, at, range, rate).ok_or_else(|| bad(label, "bad item"))?;
-            a.link = link;
-            placements.push((adest.expect("checked"), a));
+            // Modify ▸ Audio Channels with several audio clips: one per clip, on the tracks below
+            let extra: Vec<Vec<u16>> = p
+                .item(item)
+                .and_then(|i| i.as_media())
+                .and_then(|m| m.interpret.audio_channels.as_ref())
+                .map(|m| m.clips.iter().skip(1).cloned().collect())
+                .unwrap_or_default();
+            let tracks: Vec<TrackId> = p.sequence(seq_id).map(|q| q.audio_tracks.iter().map(|t| t.id).collect()).unwrap_or_default();
+            let first = tracks.iter().position(|t| *t == adest).unwrap_or(0);
+            a.link = if link.is_none() && !extra.is_empty() { Some(p.alloc_id()) } else { link };
+            placements.push((adest, a.clone()));
+            for (k, chans) in extra.into_iter().enumerate() {
+                let Some(tid) = tracks.get(first + k + 1) else { break };
+                let mut b = a.clone();
+                b.id = ClipId(p.alloc_id());
+                b.source_channels = chans;
+                placements.push((*tid, b));
+            }
         }
         let snapshot = p.clone();
         let durations = move |id: ItemId| crate::media_duration(&snapshot, &media, id);
@@ -314,7 +331,7 @@ fn place_item(
     })
 }
 
-fn source_range(s: &Session) -> Option<(ItemId, TimeRange)> {
+pub(crate) fn source_range(s: &Session) -> Option<(ItemId, TimeRange)> {
     let item = s.state.source_item?;
     let pi = s.project.item(item)?;
     let dur = match &pi.kind {
@@ -326,6 +343,10 @@ fn source_range(s: &Session) -> Option<(ItemId, TimeRange)> {
         ItemKind::Sequence(q) => (q.mark_in, q.mark_out),
         _ => (None, None),
     };
+    // a subclip shows its range of the parent's media (its clips use the parent's media time)
+    if let ItemKind::Subclip { range, .. } = &pi.kind {
+        return Some((item, *range));
+    }
     let start = mi.unwrap_or(Tick::ZERO);
     let rate = pi.frame_rate();
     let end = mo.map(|o| o + rate.frame_duration()).unwrap_or(dur).min(if dur.0 > 0 { dur } else { Tick::MAX });
@@ -768,7 +789,7 @@ fn build() -> Vec<CommandSpec> {
             })?;
             Ok(json!({"items": ids.iter().map(|i| i.0).collect::<Vec<_>>()}))
         }),
-        cmd!("edit.label", "Label", ["Edit"], None, r#"{"label":"Violet|Iris|…"}"#, always, |s, p| {
+        cmd!("edit.label", "Label", [], None, r#"{"label":"Violet|Iris|…"}"#, always, |s, p| {
             let l = str_p(p, "label").and_then(Label::from_name).ok_or_else(|| bad("edit.label", "unknown label"))?;
             let clips = s.state.selection.clone();
             let items = s.state.project_selection.clone();
@@ -811,16 +832,23 @@ fn build() -> Vec<CommandSpec> {
             "Speed/Duration…",
             ["Clip"],
             Some("Cmd+R"),
-            r#"{"clips":[id]?,"speed":percent=100,"reverse":bool,"ripple":bool}"#,
+            r#"{"clips":[id]?,"speed":percent=100,"reverse":bool,"ripple":bool,"interpolation":"frameSampling|frameBlending|opticalFlow"?}"#,
             has_selection,
             |s, p| {
                 let speed = f64_p(p, "speed").unwrap_or(100.0) / 100.0;
                 let reverse = bool_p(p, "reverse").unwrap_or(false);
                 let ripple = bool_p(p, "ripple").unwrap_or(false);
+                let interp = match str_p(p, "interpolation") {
+                    Some(m) => Some(filmcraft_project::TimeInterpolation::from_name(m).ok_or_else(|| bad("clip.speedDuration", "unknown interpolation"))?),
+                    None => None,
+                };
                 let sel = with_links(s, &clips_p(s, p));
                 s.edit_sequence("Speed/Duration", |q, ctx, _| {
                     for c in &sel {
                         edit::set_speed(q, *c, speed, reverse, ripple, ctx)?;
+                        if let (Some(m), Some((_, it))) = (interp, q.find_item_mut(*c)) {
+                            it.time_interpolation = m;
+                        }
                     }
                     Ok(())
                 })?;
@@ -894,25 +922,15 @@ fn build() -> Vec<CommandSpec> {
         cmd!(
             "clip.audioGain",
             "Audio Gain…",
-            ["Clip"],
+            ["Clip", "Audio Options"],
             Some("G"),
             r#"{"mode":"set|adjust|normalizeMax|normalizeAll"?,"db":f64,"relative":bool?}"#,
             has_selection,
             |s, p| crate::mixer::audio_gain(s, p)
         ),
         query!("clip.audioPeak", "Audio Clip Peak Amplitude", r#"{"clips":[id]?}"#, |s, p| crate::mixer::audio_peak(s, p)),
-        cmd!("clip.frameHold", "Add Frame Hold", ["Clip", "Video Options"], None, "{}", has_selection, |s, _| {
-            let t = s.playhead();
-            let sel = s.state.selection.clone();
-            s.edit_sequence("Add Frame Hold", |q, _, _| {
-                for c in &sel {
-                    if let Some((_, i)) = q.find_item_mut(*c) {
-                        i.frame_hold = Some(i.source_time_at(t.clamp(i.start, i.end() - Tick(1))));
-                    }
-                }
-                Ok(())
-            })?;
-            Ok(Value::Null)
+        cmd!("clip.frameHold", "Add Frame Hold", ["Clip", "Video Options"], None, r#"{"clips":[id]?,"time":ticks?}"#, has_seq, |s, p| {
+            crate::clip_ops::add_frame_hold(s, p)
         }),
         cmd!("clip.nest", "Nest…", ["Clip"], None, r#"{"name":str}"#, has_selection, |s, p| nest(s, p)),
         // ================= Sequence =================
@@ -1314,6 +1332,7 @@ fn build() -> Vec<CommandSpec> {
                 };
                 let (mi, mo) = match &pi.kind {
                     ItemKind::Media(m) => (m.mark_in, m.mark_out.map(|o| o + pi.frame_rate().frame_duration())),
+                    ItemKind::Subclip { range, .. } => (Some(range.start), Some(range.end())),
                     _ => (None, None),
                 };
                 let sin = p.get("sourceIn").and_then(Value::as_i64).map(Tick).or(mi).unwrap_or_default();
@@ -1899,10 +1918,9 @@ fn build() -> Vec<CommandSpec> {
     v.extend(crate::project_manager::commands());
     v.extend(crate::masks::commands());
     v.extend(crate::presets::commands());
-    // Labels as individual commands (Edit ▸ Label ▸ <name>)
-    for l in Label::ALL {
-        let _ = l;
-    }
+    // Edit ▸ Label ▸ <colour>, Paste Attributes, subclips, Video / Audio Options, Replace With Clip…
+    // and their menu order
+    crate::clip_ops::apply_layout(&mut v);
     v.shrink_to_fit();
     v
 }

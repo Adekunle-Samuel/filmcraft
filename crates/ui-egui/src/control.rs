@@ -158,6 +158,13 @@ pub fn handle(app: &mut FilmcraftApp, ctx: &egui::Context, req: &ControlRequest)
             if let Some(v) = p.get("safeMargins").and_then(Value::as_bool) {
                 app.ui.program.safe_margins = v;
             }
+            // fields of the open Edit / Clip / File dialog (`panels::clip_dialogs`)
+            if let Some(m) = p.get("clipDialog").and_then(Value::as_object) {
+                let Some(d) = app.ui.clip_dialog.as_mut() else { return err("no clip dialog is open") };
+                for (k, v) in m {
+                    d.params[k.as_str()] = v.clone();
+                }
+            }
             ok(Value::Null)
         }
         "ui.panel.show" | "ui.panel.close" => {
