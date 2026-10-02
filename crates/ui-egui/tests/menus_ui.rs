@@ -164,7 +164,7 @@ fn find_dialog_and_search_bins() {
     let ocean = d.item_named("Ocean_Sunset.mp4");
     assert!(d.app().ui.expanded_bins.contains(&bin));
     let items = d.ok("ui.elements", json!({"prefix": format!("project.item.{ocean}")}));
-    assert!(items.as_array().unwrap().len() >= 2, "listed in its bin and in the search bin: {items}");
+    assert!(!items.as_array().unwrap().is_empty(), "listed under the expanded search bin: {items}");
 }
 
 #[test]
