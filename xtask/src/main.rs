@@ -425,6 +425,14 @@ fn bench_playback() -> Result<(), String> {
     run(Command::new(env!("CARGO")).args(["run", "--release", "-p", "filmcraft-ui-egui", "--example", "bench_playback", "--"]).args(&extra))
 }
 
+/// The benchmark suite (`crates/ui-egui/examples/bench/`): decode, playback, scrubbing, timeline
+/// UI, export, project save/open and peak memory, written to `target/bench/bench-<label>.{json,md}`
+/// (`cargo xtask bench --sections decode,scrub --repeat 3 --label after`). See docs/performance.md.
+fn bench() -> Result<(), String> {
+    let extra: Vec<String> = std::env::args().skip(2).collect();
+    run(Command::new(env!("CARGO")).args(["run", "--release", "-p", "filmcraft-ui-egui", "--example", "bench", "--"]).args(&extra))
+}
+
 fn main() -> ExitCode {
     let task = std::env::args().nth(1).unwrap_or_default();
     let r = match task.as_str() {
@@ -433,9 +441,10 @@ fn main() -> ExitCode {
         "assets" => assets(),
         "fixtures" => fixtures(&std::env::args().skip(2).collect::<Vec<_>>()),
         "ci" => ci(),
+        "bench" => bench(),
         "bench-playback" => bench_playback(),
         "web" => web(&std::env::args().skip(2).collect::<Vec<_>>()),
-        _ => Err("usage: cargo xtask <layers|assets|wasm|web [--dev] [--serve PORT]|fixtures [crate…]|ci|bench-playback [args]>".into()),
+        _ => Err("usage: cargo xtask <layers|assets|wasm|web [--dev] [--serve PORT]|fixtures [crate…]|ci|bench [args]|bench-playback [args]>".into()),
     };
     match r {
         Ok(()) => ExitCode::SUCCESS,
