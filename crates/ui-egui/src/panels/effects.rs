@@ -21,11 +21,11 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let filter = q.to_ascii_lowercase();
     let defs = filmcraft_project::effect_defs();
     // folder tree: top-level categories in Premiere's order
-    let tops = ["Presets", "Lumetri Presets", "Audio Effects", "Audio Transitions", "Video Effects", "Video Transitions"];
+    let tops = filmcraft_project::vtransition::EFFECT_TOP_FOLDERS;
     let mut apply: Option<String> = None;
     let mut preset_action: Option<(String, String)> = None;
     egui::ScrollArea::vertical().id_salt("fx-scroll").auto_shrink([false, false]).show(&mut bui, |ui| {
-        for top in tops {
+        for &top in tops {
             if top == "Presets" {
                 let any = filter.is_empty() || app.session.presets.all().iter().any(|p| p.name.to_ascii_lowercase().contains(&filter));
                 if any && folder_row(app, ui, top, 0, &filter) {
@@ -75,7 +75,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                     // badges: accelerated / 32-bit / YUV
                     let mut bx = r.max.x - 8.0;
                     for (on, label) in [(d.yuv, "YUV"), (d.float32, "32"), (d.accelerated, "⚡")] {
-                        if on && !is_tr || (is_tr && label == "⚡") {
+                        if on {
                             let br = Rect::from_min_size(pos2(bx - 22.0, r.min.y + 3.0), vec2(20.0, 14.0));
                             ui.painter().rect_filled(br, 2.0, Color32::from_rgb(48, 48, 48));
                             ui.painter().text(br.center(), Align2::CENTER_CENTER, label, Tokens::ui(8.5), t.text_dim);

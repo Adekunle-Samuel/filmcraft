@@ -1,4 +1,6 @@
-//! Video transitions: combine the outgoing (A) and incoming (B) layers at progress `p` ∈ [0,1].
+//! The original (pre-26) transition implementations, kept bit-for-bit for the Legacy and Obsolete
+//! folders and for the dissolves whose output the golden images pin (Cross Dissolve, Dip to
+//! Black/White, Film/Additive Dissolve, Wipe).
 
 use filmcraft_geom::Affine;
 use filmcraft_project::{EffectInstance, ParamValue};
@@ -46,12 +48,52 @@ fn step(edge: f32, x: f32) -> f32 {
     ((x - edge) / EDGE + 0.5).clamp(0.0, 1.0)
 }
 
-pub fn apply(e: &EffectInstance, a: &Image, b: &Image, p: f32) -> Image {
+/// Render `e` if it is one of the legacy implementations; `None` for every other id.
+pub(super) fn apply(e: &EffectInstance, a: &Image, b: &Image, p: f32) -> Option<Image> {
+    let id = e.effect.as_str();
+    let base = id.strip_suffix("_legacy").unwrap_or(id);
+    let known = matches!(
+        id,
+        "cross_dissolve"
+            | "cross_dissolve_legacy"
+            | "morph_cut"
+            | "film_dissolve"
+            | "film_dissolve_legacy"
+            | "additive_dissolve"
+            | "additive_dissolve_legacy"
+            | "dip_to_black"
+            | "dip_to_black_legacy"
+            | "dip_to_white"
+            | "dip_to_white_legacy"
+            | "wipe"
+            | "clock_wipe_legacy"
+            | "radial_wipe_legacy"
+            | "venetian_blinds"
+            | "checker_wipe"
+            | "gradient_wipe"
+            | "center_split"
+            | "split_legacy"
+            | "band_slide"
+            | "push_legacy"
+            | "whip_legacy"
+            | "slide_legacy"
+            | "cross_zoom_legacy"
+            | "flip_over"
+            | "cube_spin"
+            | "page_turn"
+    );
+    if !known {
+        return None;
+    }
+    Some(legacy(base, e, a, b, p))
+}
+
+fn legacy(id: &str, e: &EffectInstance, a: &Image, b: &Image, p: f32) -> Image {
     let (w, h) = (a.w as f64, a.h as f64);
     let aspect = (a.w as f32) / (a.h as f32).max(1.0);
     let pd = p as f64;
-    match e.effect.as_str() {
-        "cross_dissolve" | "non_additive_dissolve" | "morph_cut" => masked(a, b, |_, _| p),
+    match id {
+        "cross_dissolve" | "morph_cut" => masked(a, b, |_, _| p),
         "film_dissolve" => {
             // blend in a gamma-2.2-like space for a filmic, less-dippy dissolve
             let mut out = Image::new(a.w, a.h);
@@ -69,7 +111,7 @@ pub fn apply(e: &EffectInstance, a: &Image, b: &Image, p: f32) -> Image {
             out
         }
         "dip_to_black" | "dip_to_white" => {
-            let col = if e.effect == "dip_to_black" { [0.0, 0.0, 0.0, 1.0] } else { [1.0, 1.0, 1.0, 1.0] };
+            let col = if id == "dip_to_black" { [0.0, 0.0, 0.0, 1.0] } else { [1.0, 1.0, 1.0, 1.0] };
             let mut out = Image::filled(a.w, a.h, col);
             let (src, k) = if p < 0.5 { (a, 1.0 - p * 2.0) } else { (b, (p - 0.5) * 2.0) };
             let mut s = src.clone();
@@ -86,19 +128,11 @@ pub fn apply(e: &EffectInstance, a: &Image, b: &Image, p: f32) -> Image {
                 _ => 1.0 - step(p, u),
             })
         }
-        "barn_doors" => masked(a, b, |u, _| 1.0 - step(p * 0.5, (u - 0.5).abs())),
         "clock_wipe" | "radial_wipe" => masked(a, b, |u, v| {
             let ang = ((u - 0.5) * aspect).atan2(-(v - 0.5)) / std::f32::consts::TAU;
             let ang = ang.rem_euclid(1.0);
             1.0 - step(p, ang)
         }),
-        "iris_round" => {
-            let r = p * 0.8;
-            masked(a, b, move |u, v| 1.0 - step(r, (((u - 0.5) * aspect).powi(2) + (v - 0.5).powi(2)).sqrt()))
-        }
-        "iris_box" => masked(a, b, |u, v| 1.0 - step(p * 0.5, (u - 0.5).abs().max((v - 0.5).abs()))),
-        "iris_diamond" => masked(a, b, |u, v| 1.0 - step(p, (u - 0.5).abs() + (v - 0.5).abs())),
-        "iris_cross" => masked(a, b, |u, v| 1.0 - step(p * 0.5, (u - 0.5).abs().min((v - 0.5).abs()) * 2.0 - p * 0.0).min(1.0)),
         "venetian_blinds" => masked(a, b, |_, v| 1.0 - step(p, (v * 10.0).fract())),
         "checker_wipe" => masked(a, b, |u, v| {
             let cxv = (u * 8.0).floor() as i32 + (v * 8.0).floor() as i32;
@@ -112,7 +146,6 @@ pub fn apply(e: &EffectInstance, a: &Image, b: &Image, p: f32) -> Image {
                 ((p * (1.0 + soft) - g) / soft).clamp(0.0, 1.0)
             })
         }
-        "inset" => masked(a, b, |u, v| if u < p && v < p { 1.0 } else { 0.0 }),
         "center_split" => {
             let mut out = b.clone();
             let off_x = w * 0.5 * pd;
@@ -151,10 +184,10 @@ pub fn apply(e: &EffectInstance, a: &Image, b: &Image, p: f32) -> Image {
                 2 => (0.0, -h),
                 _ => (w, 0.0),
             };
-            let ease = if e.effect == "whip" { ease_in_out(pd) } else { pd };
+            let ease = if id == "whip" { ease_in_out(pd) } else { pd };
             let mut out = shifted(a, dx * ease, dy * ease);
             over(&mut out, &shifted(b, dx * (ease - 1.0), dy * (ease - 1.0)));
-            if e.effect == "whip" {
+            if id == "whip" {
                 let s = (1.0 - (2.0 * pd - 1.0).abs()) as f32 * 40.0 * (a.w as f32 / 1920.0);
                 if s > 0.5 {
                     crate::effects::gaussian(&mut out, s, 0.0, true);
@@ -188,9 +221,9 @@ pub fn apply(e: &EffectInstance, a: &Image, b: &Image, p: f32) -> Image {
             // Horizontal squeeze approximating a 3D rotation (A shrinks, then B grows).
             let (src, k) = if pd < 0.5 { (a, 1.0 - pd * 2.0) } else { (b, (pd - 0.5) * 2.0) };
             let k = k.max(0.001);
-            let cxp = if e.effect == "cube_spin" { if pd < 0.5 { 0.0 } else { w } } else { w / 2.0 };
+            let cxp = if id == "cube_spin" { if pd < 0.5 { 0.0 } else { w } } else { w / 2.0 };
             let m = Affine::translate(cxp, 0.0).then_apply(&Affine::scale(k, 1.0)).then_apply(&Affine::translate(-cxp, 0.0));
-            if e.effect == "cube_spin" {
+            if id == "cube_spin" {
                 let ma = Affine::scale(1.0 - pd, 1.0);
                 let mb = Affine::translate(w * (1.0 - pd), 0.0).then_apply(&Affine::scale(pd.max(0.001), 1.0));
                 let mut out = a.transformed(a.w, a.h, &ma);
@@ -199,7 +232,7 @@ pub fn apply(e: &EffectInstance, a: &Image, b: &Image, p: f32) -> Image {
             }
             src.transformed(a.w, a.h, &m)
         }
-        "page_peel" | "page_turn" => {
+        "page_turn" => {
             // Diagonal fold line sweeping from the bottom-right corner, with a shaded curl band.
             let mut out = masked(a, b, |u, v| step(1.0 - p * 1.1, 1.0 - (u + v) * 0.5 + 0.0) * 0.0 + if (u + v) * 0.5 > 1.0 - p { 1.0 } else { 0.0 });
             let w_ = a.w;
@@ -224,38 +257,4 @@ pub fn apply(e: &EffectInstance, a: &Image, b: &Image, p: f32) -> Image {
 
 fn ease_in_out(t: f64) -> f64 {
     if t < 0.5 { 4.0 * t * t * t } else { 1.0 - (-2.0 * t + 2.0).powi(3) / 2.0 }
-}
-
-/// Audio crossfade gains (out, in) for progress p.
-pub fn audio_gains(kind: &str, p: f32) -> (f32, f32) {
-    match kind {
-        "constant_gain" => (1.0 - p, p),
-        "exponential_fade" => ((1.0 - p).powi(3), 1.0 - (1.0 - p).powi(3)),
-        _ => ((p * std::f32::consts::FRAC_PI_2).cos(), (p * std::f32::consts::FRAC_PI_2).sin()),
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn endpoints() {
-        let a = Image::filled(16, 8, [1.0, 0.0, 0.0, 1.0]);
-        let b = Image::filled(16, 8, [0.0, 0.0, 1.0, 1.0]);
-        for def in filmcraft_project::effect_defs().iter().filter(|d| d.kind == filmcraft_project::EffectKind::VideoTransition) {
-            let e = def.instance();
-            let end = apply(&e, &a, &b, 1.0);
-            let c = end.get(8, 4);
-            assert!(c.iter().all(|v| v.is_finite()), "{}", def.id);
-            if !matches!(
-                def.id,
-                "center_split" | "band_slide" | "page_peel" | "page_turn" | "cube_spin" | "iris_cross" | "inset" | "checker_wipe" | "venetian_blinds"
-            ) {
-                assert!(c[2] > 0.9 && c[0] < 0.1, "{} at p=1 shows B: {c:?}", def.id);
-            }
-            let start = apply(&e, &a, &b, 0.0);
-            assert!(start.px.iter().all(|v| v.is_finite()));
-        }
-    }
 }

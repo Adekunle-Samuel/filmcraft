@@ -155,6 +155,9 @@ pub fn handle(app: &mut FilmcraftApp, ctx: &egui::Context, req: &ControlRequest)
                     app.ui.timeline.audio_track_h = v as f32;
                 }
             }
+            if let Some(q) = s("effectsSearch") {
+                app.ui.effects_search = q.to_string();
+            }
             if let Some(v) = p.get("safeMargins").and_then(Value::as_bool) {
                 app.ui.program.safe_margins = v;
             }

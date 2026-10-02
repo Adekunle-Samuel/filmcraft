@@ -130,11 +130,18 @@ stream is cut into blocks (there are tests for this).
 
 ### A transition
 
-1. Define it with `vtrans(id, name, CATEGORY, params)` in `crates/project/src/effect.rs`. Audio
-   transitions use `EffectKind::AudioTransition`.
-2. Implement it in `render::transitions::apply(e, a, b, p)`: outgoing image `a`, incoming image `b`,
-   progress `p` in 0..1. Audio crossfade curves go in `transitions::audio_gains`.
-3. It can then be applied with `sequence.applyVideoTransition {"effect": "<id>"}`.
+1. Define video transitions with `tr(id, name, FOLDER, badges, params)` in
+   `crates/project/src/vtransition.rs` (folders follow Premiere 26: ten `Video Transitions/*`
+   folders plus `Legacy/Video Transitions`). Parameters are not animatable. Never rename an id:
+   projects store it. Audio transitions are `EffectKind::AudioTransition` defs in `effect.rs`.
+2. Implement it in the matching module of `crates/render/src/transitions/` (`wipe`, `motion`,
+   `dissolve`, `lights`, `grunge`, `special`): read params through `Tx`, build pixels with `paint`,
+   shape wipes with `wipe::field_wipe` (feather/border/anti-aliasing for free) and 3D moves with
+   `cards`. Audio crossfade curves go in `transitions::audio_gains`. The property tests run over
+   every transition automatically; re-bless `goldens.txt` (see testing.md).
+3. It can then be applied with `sequence.applyVideoTransition {"effect": "<id or name>", "params":
+   {...}, "reverse": bool}` and edited with `sequence.setTransition`; `effects.list {"folder":
+   "Video Transitions/Wipe", "detail": true}` lists it with its parameters.
 
 ### A codec or container crate
 

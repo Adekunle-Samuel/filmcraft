@@ -971,7 +971,10 @@ pub fn audio_gain(s: &mut Session, p: &Value) -> Result<Value> {
 /// Effects panel ▸ Set Selected as Default Transition (video or audio, from the effect's kind).
 fn set_default_transition(s: &mut Session, p: &Value) -> Result<Value> {
     let id = str_p(p, "effect").ok_or_else(|| bad("effects.setDefaultTransition", "need `effect`"))?;
+    use filmcraft_project::vtransition::find_transition;
     let def = find_effect(id)
+        .or_else(|| find_transition(id, filmcraft_project::EffectKind::VideoTransition))
+        .or_else(|| find_transition(id, filmcraft_project::EffectKind::AudioTransition))
         .or_else(|| filmcraft_project::effect_defs().iter().find(|d| d.name.eq_ignore_ascii_case(id)))
         .ok_or_else(|| bad("effects.setDefaultTransition", format!("no effect `{id}`")))?;
     match def.kind {

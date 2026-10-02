@@ -160,7 +160,7 @@ pub const BLEND_MODES: &[&str] = &[
     "Luminosity",
 ];
 
-fn f(id: &'static str, label: &'static str, def: f64, min: f64, max: f64, unit: &'static str) -> ParamDef {
+pub(crate) fn f(id: &'static str, label: &'static str, def: f64, min: f64, max: f64, unit: &'static str) -> ParamDef {
     ParamDef {
         id,
         label,
@@ -170,7 +170,15 @@ fn f(id: &'static str, label: &'static str, def: f64, min: f64, max: f64, unit: 
         group: None,
     }
 }
-fn fs(id: &'static str, label: &'static str, def: f64, (min, max): (f64, f64), (smin, smax): (f64, f64), unit: &'static str, decimals: u8) -> ParamDef {
+pub(crate) fn fs(
+    id: &'static str,
+    label: &'static str,
+    def: f64,
+    (min, max): (f64, f64),
+    (smin, smax): (f64, f64),
+    unit: &'static str,
+    decimals: u8,
+) -> ParamDef {
     ParamDef {
         id,
         label,
@@ -180,19 +188,19 @@ fn fs(id: &'static str, label: &'static str, def: f64, (min, max): (f64, f64), (
         group: None,
     }
 }
-fn pt(id: &'static str, label: &'static str, x: f64, y: f64) -> ParamDef {
+pub(crate) fn pt(id: &'static str, label: &'static str, x: f64, y: f64) -> ParamDef {
     ParamDef { id, label, kind: ParamKind::Point, default: ParamValue::Vec2(Vec2::new(x, y)), animatable: true, group: None }
 }
-fn col(id: &'static str, label: &'static str, c: [f32; 4]) -> ParamDef {
+pub(crate) fn col(id: &'static str, label: &'static str, c: [f32; 4]) -> ParamDef {
     ParamDef { id, label, kind: ParamKind::Color, default: ParamValue::Color(c), animatable: true, group: None }
 }
-fn b(id: &'static str, label: &'static str, v: bool) -> ParamDef {
+pub(crate) fn b(id: &'static str, label: &'static str, v: bool) -> ParamDef {
     ParamDef { id, label, kind: ParamKind::Bool, default: ParamValue::Bool(v), animatable: false, group: None }
 }
-fn ch(id: &'static str, label: &'static str, opts: &'static [&'static str], def: u32) -> ParamDef {
+pub(crate) fn ch(id: &'static str, label: &'static str, opts: &'static [&'static str], def: u32) -> ParamDef {
     ParamDef { id, label, kind: ParamKind::Choice(opts), default: ParamValue::Choice(def), animatable: false, group: None }
 }
-fn ang(id: &'static str, label: &'static str, def: f64) -> ParamDef {
+pub(crate) fn ang(id: &'static str, label: &'static str, def: f64) -> ParamDef {
     ParamDef { id, label, kind: ParamKind::Angle, default: ParamValue::Float(def), animatable: true, group: None }
 }
 fn curve(id: &'static str, label: &'static str, hue: bool) -> ParamDef {
@@ -202,7 +210,7 @@ fn curve(id: &'static str, label: &'static str, hue: bool) -> ParamDef {
 fn wheel(id: &'static str, label: &'static str) -> ParamDef {
     ParamDef { id, label, kind: ParamKind::Wheel, default: ParamValue::Vec2(Vec2::new(0.0, 0.0)), animatable: true, group: None }
 }
-fn txt(id: &'static str, label: &'static str) -> ParamDef {
+pub(crate) fn txt(id: &'static str, label: &'static str) -> ParamDef {
     ParamDef { id, label, kind: ParamKind::Text, default: ParamValue::Text(String::new()), animatable: false, group: None }
 }
 fn grp(mut p: ParamDef, g: &'static str) -> ParamDef {
@@ -212,9 +220,6 @@ fn grp(mut p: ParamDef, g: &'static str) -> ParamDef {
 
 fn video(id: &'static str, name: &'static str, cat: &'static [&'static str], params: Vec<ParamDef>) -> EffectDef {
     EffectDef { id, name, kind: EffectKind::Video, category: cat, params, intrinsic: false, accelerated: true, float32: true, yuv: false }
-}
-fn vtrans(id: &'static str, name: &'static str, cat: &'static [&'static str], params: Vec<ParamDef>) -> EffectDef {
-    EffectDef { id, name, kind: EffectKind::VideoTransition, category: cat, params, intrinsic: false, accelerated: true, float32: true, yuv: false }
 }
 fn audio(id: &'static str, name: &'static str, cat: &'static [&'static str], params: Vec<ParamDef>) -> EffectDef {
     EffectDef { id, name, kind: EffectKind::Audio, category: cat, params, intrinsic: false, accelerated: false, float32: true, yuv: false }
@@ -232,13 +237,6 @@ const PERSPECTIVE: &[&str] = &["Video Effects", "Perspective"];
 const STYLIZE: &[&str] = &["Video Effects", "Stylize"];
 const TRANSFORM: &[&str] = &["Video Effects", "Transform"];
 const VIDEO: &[&str] = &["Video Effects", "Video"];
-const DISSOLVE: &[&str] = &["Video Transitions", "Dissolve"];
-const IRIS: &[&str] = &["Video Transitions", "Iris"];
-const SLIDE: &[&str] = &["Video Transitions", "Slide"];
-const WIPE: &[&str] = &["Video Transitions", "Wipe"];
-const ZOOM: &[&str] = &["Video Transitions", "Zoom"];
-const PAGE_PEEL: &[&str] = &["Video Transitions", "Page Peel"];
-const MOTION3D: &[&str] = &["Video Transitions", "3D Motion"];
 const A_AMP: &[&str] = &["Audio Effects", "Amplitude and Compression"];
 const A_DELAY: &[&str] = &["Audio Effects", "Delay and Echo"];
 const A_FILTER: &[&str] = &["Audio Effects", "Filter and EQ"];
@@ -248,8 +246,6 @@ const A_SPECIAL: &[&str] = &["Audio Effects", "Special"];
 const A_STEREO: &[&str] = &["Audio Effects", "Stereo Imagery"];
 const A_TIME: &[&str] = &["Audio Effects", "Time and Pitch"];
 const A_TRANS: &[&str] = &["Audio Transitions", "Crossfade"];
-
-const DIR_OPTS: &[&str] = &["From North", "From East", "From South", "From West"];
 
 fn build_effects() -> Vec<EffectDef> {
     let mut v = vec![
@@ -787,37 +783,6 @@ fn build_effects() -> Vec<EffectDef> {
             vec![pt("position", "Position", f64::NAN, f64::NAN), fs("size", "Size", 15.0, (1.0, 100.0), (1.0, 50.0), "%", 1)],
         ),
         video("simple_text", "Simple Text", VIDEO, vec![]),
-        // ---- video transitions ----
-        vtrans("cross_dissolve", "Cross Dissolve", DISSOLVE, vec![]),
-        vtrans("additive_dissolve", "Additive Dissolve", DISSOLVE, vec![]),
-        vtrans("dip_to_black", "Dip to Black", DISSOLVE, vec![]),
-        vtrans("dip_to_white", "Dip to White", DISSOLVE, vec![]),
-        vtrans("film_dissolve", "Film Dissolve", DISSOLVE, vec![]),
-        vtrans("morph_cut", "Morph Cut", DISSOLVE, vec![]),
-        vtrans("non_additive_dissolve", "Non-Additive Dissolve", DISSOLVE, vec![]),
-        vtrans("iris_box", "Iris Box", IRIS, vec![]),
-        vtrans("iris_cross", "Iris Cross", IRIS, vec![]),
-        vtrans("iris_diamond", "Iris Diamond", IRIS, vec![]),
-        vtrans("iris_round", "Iris Round", IRIS, vec![]),
-        vtrans("push", "Push", SLIDE, vec![ch("direction", "Direction", DIR_OPTS, 3)]),
-        vtrans("slide", "Slide", SLIDE, vec![ch("direction", "Direction", DIR_OPTS, 3)]),
-        vtrans("split", "Split", SLIDE, vec![]),
-        vtrans("center_split", "Center Split", SLIDE, vec![]),
-        vtrans("band_slide", "Band Slide", SLIDE, vec![]),
-        vtrans("whip", "Whip", SLIDE, vec![ch("direction", "Direction", DIR_OPTS, 3)]),
-        vtrans("wipe", "Wipe", WIPE, vec![ch("direction", "Direction", DIR_OPTS, 3)]),
-        vtrans("barn_doors", "Barn Doors", WIPE, vec![]),
-        vtrans("clock_wipe", "Clock Wipe", WIPE, vec![]),
-        vtrans("gradient_wipe", "Gradient Wipe", WIPE, vec![f("softness", "Softness", 10.0, 0.0, 100.0, "")]),
-        vtrans("inset", "Inset", WIPE, vec![]),
-        vtrans("radial_wipe", "Radial Wipe", WIPE, vec![]),
-        vtrans("venetian_blinds", "Venetian Blinds", WIPE, vec![]),
-        vtrans("checker_wipe", "Checker Wipe", WIPE, vec![]),
-        vtrans("cross_zoom", "Cross Zoom", ZOOM, vec![]),
-        vtrans("page_peel", "Page Peel", PAGE_PEEL, vec![]),
-        vtrans("page_turn", "Page Turn", PAGE_PEEL, vec![]),
-        vtrans("cube_spin", "Cube Spin", MOTION3D, vec![]),
-        vtrans("flip_over", "Flip Over", MOTION3D, vec![]),
         // ---- audio effects ----
         audio("amplify", "Amplify", A_AMP, vec![fs("gain", "Gain", 0.0, (-96.0, 48.0), (-24.0, 24.0), "dB", 1)]),
         audio(
@@ -957,6 +922,7 @@ fn build_effects() -> Vec<EffectDef> {
             yuv: false,
         },
     ];
+    v.extend(crate::vtransition::video_transition_defs());
     v.extend(crate::graphic::layer_defs());
     // YUV badge for the colour/intrinsic set
     for e in &mut v {

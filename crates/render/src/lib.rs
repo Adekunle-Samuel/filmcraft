@@ -113,11 +113,14 @@ pub(crate) fn render_seq_tracks(project: &Project, seq: &Sequence, t: Tick, opts
                 .and_then(|i| item_layer(project, seq, i, t, opts, sources, &tc))
                 .map(|(img, op, _)| with_opacity(img, op))
                 .unwrap_or_else(|| Image::new(w, h));
-            let mut p = tr.progress(t) as f32;
-            if tr.reverse {
-                p = 1.0 - p;
-            }
-            let mixed = transitions::apply(&tr.effect, &la, &lb, p);
+            let p = tr.progress(t) as f32;
+            // Reverse plays the transition backwards (e.g. an iris closing on the outgoing clip)
+            // while still going from A to B.
+            let mixed = if tr.reverse {
+                transitions::apply_scaled(&tr.effect, &lb, &la, 1.0 - p, opts.scale)
+            } else {
+                transitions::apply_scaled(&tr.effect, &la, &lb, p, opts.scale)
+            };
             blend::composite(&mut canvas, &mixed, 1.0, Blend::Normal);
             continue;
         }

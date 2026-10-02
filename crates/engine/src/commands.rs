@@ -1048,7 +1048,7 @@ fn build() -> Vec<CommandSpec> {
             "Apply Video Transition",
             ["Sequence"],
             Some("Cmd+D"),
-            r#"{"clip":id?,"effect":str?,"frames":i64?}"#,
+            r#"{"clip":id?,"effect":"cross_dissolve|Cross Dissolve|…"?,"frames":i64?,"edge":"in"|"out"?,"params":{param:value}?,"reverse":bool?}"#,
             has_seq,
             |s, p| apply_transition(s, p, TrackKind::Video)
         ),
@@ -1060,6 +1060,15 @@ fn build() -> Vec<CommandSpec> {
             r#"{"clip":id?,"effect":str?,"frames":i64?}"#,
             has_seq,
             |s, p| apply_transition(s, p, TrackKind::Audio)
+        ),
+        cmd!(
+            "sequence.setTransition",
+            "Edit Transition Settings",
+            [],
+            None,
+            r#"{"transition":id,"params":{param:value}?,"reverse":bool?,"reset":bool?}"#,
+            has_seq,
+            set_transition
         ),
         cmd!("sequence.closeGap", "Close Gap", ["Sequence"], None, r#"{"track":"V1"|id,"time":ticks}"#, has_seq, |s, p| {
             let tr = track_p(s, p, "track").ok_or_else(|| bad("sequence.closeGap", "need `track`"))?;
@@ -1995,9 +2004,12 @@ fn build() -> Vec<CommandSpec> {
             Ok(inspect_sequence(s, id, q))
         }),
         query!("state.inspect", "Inspect Editor State", "{}", |s, _| Ok(serde_json::to_value(&s.state).unwrap_or_default())),
-        query!("effects.list", "List Effects", "{}", |_, _| {
-            Ok(Value::Array(filmcraft_project::effect_defs().iter().map(|d| json!({"id": d.id, "name": d.name, "kind": format!("{:?}", d.kind), "category": d.category, "params": d.params.iter().map(|p| p.id).collect::<Vec<_>>()})).collect()))
-        }),
+        query!(
+            "effects.list",
+            "List Effects",
+            r#"{"kind":"Video"|"Audio"|"VideoTransition"|"AudioTransition"?,"folder":"Video Transitions/Wipe"?,"detail":bool?}"#,
+            |_, p| Ok(list_effects(p))
+        ),
         query!("history.list", "List History", "{}", |s, _| Ok(
             json!({"undo": s.history.undo.iter().map(|h| &h.0).collect::<Vec<_>>(), "redo": s.history.redo.iter().map(|h| &h.0).collect::<Vec<_>>()})
         )),
@@ -2356,11 +2368,133 @@ fn nest(s: &mut Session, p: &Value) -> Result<Value> {
     .map(|n| json!({"sequence": n.0}))
 }
 
+/// `effects.list`: every effect definition with its Effects-panel folder (optionally filtered by
+/// kind or folder prefix); `detail` adds each parameter's label, type, default and choices.
+fn list_effects(p: &Value) -> Value {
+    let kind = str_p(p, "kind");
+    let folder = str_p(p, "folder");
+    let detail = p.get("detail").and_then(Value::as_bool).unwrap_or(false);
+    let out = filmcraft_project::effect_defs()
+        .iter()
+        .filter(|d| kind.is_none_or(|k| format!("{:?}", d.kind).eq_ignore_ascii_case(k)))
+        .filter(|d| folder.is_none_or(|f| d.category.join("/").starts_with(f)))
+        .map(|d| {
+            let mut v = json!({
+                "id": d.id,
+                "name": d.name,
+                "kind": format!("{:?}", d.kind),
+                "category": d.category,
+                "folder": d.category.join("/"),
+                "params": d.params.iter().map(|p| p.id).collect::<Vec<_>>(),
+                "badges": {"accelerated": d.accelerated, "float32": d.float32, "yuv": d.yuv},
+            });
+            if detail {
+                v["paramInfo"] = Value::Array(d.params.iter().map(param_info).collect());
+            }
+            v
+        })
+        .collect();
+    Value::Array(out)
+}
+
+fn param_info(p: &filmcraft_project::ParamDef) -> Value {
+    use filmcraft_project::ParamKind as K;
+    let mut j = json!({"id": p.id, "label": p.label, "animatable": p.animatable, "default": serde_json::to_value(&p.default).unwrap_or_default()});
+    let ty = match &p.kind {
+        K::Choice(opts) => {
+            j["options"] = json!(opts);
+            "choice"
+        }
+        K::Float { min, max, unit, .. } => {
+            j["min"] = json!(min);
+            j["max"] = json!(max);
+            j["unit"] = json!(unit);
+            "float"
+        }
+        K::Point => "point",
+        K::Color => "color",
+        K::Bool => "bool",
+        K::Angle => "angle",
+        K::Text => "text",
+        K::Curve { .. } => "curve",
+        K::Wheel => "wheel",
+        K::Path => "path",
+    };
+    j["type"] = json!(ty);
+    j
+}
+
+/// Set transition parameters from a JSON object (`{"direction": 1}` or `{"direction": "From East"}`,
+/// colours as `"#rrggbb"` or `[r,g,b]`, points as `[x,y]`). Floats are clamped to their range.
+fn set_transition_params(e: &mut filmcraft_project::EffectInstance, params: &Value, cmd: &str) -> Result<()> {
+    use filmcraft_project::{ParamKind as K, ParamValue as V};
+    let Some(obj) = params.as_object() else { return Err(bad(cmd, "`params` must be an object")) };
+    let def = e.def().ok_or_else(|| bad(cmd, "unknown transition"))?;
+    for (k, v) in obj {
+        let pd = def.param(k).ok_or_else(|| bad(cmd, format!("`{}` has no param `{k}`", def.name)))?;
+        let val = match (&pd.kind, v) {
+            (K::Choice(opts), Value::String(sv)) => {
+                V::Choice(opts.iter().position(|o| o.eq_ignore_ascii_case(sv)).ok_or_else(|| bad(cmd, format!("`{k}` must be one of {opts:?}")))? as u32)
+            }
+            _ => json_to_param(&pd.default, v).ok_or_else(|| bad(cmd, format!("`{k}`: value has the wrong type")))?,
+        };
+        let val = match (&pd.kind, val) {
+            (K::Choice(opts), V::Choice(c)) if c as usize >= opts.len() => return Err(bad(cmd, format!("`{k}` must be < {}", opts.len()))),
+            (K::Float { min, max, .. }, V::Float(f)) => V::Float(f.clamp(*min, *max)),
+            (_, v) => v,
+        };
+        match e.param_mut(k) {
+            Some(prm) => prm.value = val,
+            None => {
+                e.params.insert(k.clone(), filmcraft_project::Param::new(val));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// `sequence.setTransition`: edit an applied transition's settings (Effect Controls).
+fn set_transition(s: &mut Session, p: &Value) -> Result<Value> {
+    const CMD: &str = "sequence.setTransition";
+    let id = p.get("transition").and_then(Value::as_u64).ok_or_else(|| bad(CMD, "need `transition`"))?;
+    let q = s.active_sequence().ok_or(EngineError::NoSequence)?;
+    let found = q.video_tracks.iter().chain(q.audio_tracks.iter()).find_map(|tr| tr.transitions.iter().find(|x| x.id.0 == id)).cloned();
+    let mut cur = found.ok_or_else(|| bad(CMD, format!("no transition {id}")))?;
+    if p.get("reset").and_then(Value::as_bool).unwrap_or(false)
+        && let Some(def) = cur.effect.def()
+    {
+        cur.effect = def.instance();
+    }
+    if let Some(params) = p.get("params") {
+        set_transition_params(&mut cur.effect, params, CMD)?;
+    }
+    if let Some(r) = p.get("reverse").and_then(Value::as_bool) {
+        cur.reverse = r;
+    }
+    let name = cur.effect.def().map_or("Transition", |d| d.name).to_string();
+    s.edit_sequence(&format!("Edit {name}"), |q, _, _| {
+        for tr in q.video_tracks.iter_mut().chain(q.audio_tracks.iter_mut()) {
+            if let Some(x) = tr.transitions.iter_mut().find(|x| x.id.0 == id) {
+                x.effect = cur.effect.clone();
+                x.reverse = cur.reverse;
+            }
+        }
+        Ok(())
+    })?;
+    Ok(json!({"transition": id, "effect": cur.effect.effect, "reverse": cur.reverse}))
+}
+
 fn apply_transition(s: &mut Session, p: &Value, kind: TrackKind) -> Result<Value> {
     let eff_id = str_p(p, "effect")
         .map(str::to_string)
         .unwrap_or_else(|| if kind == TrackKind::Video { s.state.default_video_transition.clone() } else { s.state.default_audio_transition.clone() });
-    let def = filmcraft_project::effect::find_effect_by_name(&eff_id).ok_or_else(|| bad("transition", format!("unknown transition `{eff_id}`")))?;
+    let ekind = if kind == TrackKind::Video { filmcraft_project::EffectKind::VideoTransition } else { filmcraft_project::EffectKind::AudioTransition };
+    let def = filmcraft_project::vtransition::find_transition(&eff_id, ekind).ok_or_else(|| bad("transition", format!("unknown transition `{eff_id}`")))?;
+    let mut instance = def.instance();
+    if let Some(params) = p.get("params") {
+        set_transition_params(&mut instance, params, "transition")?;
+    }
+    let reverse = p.get("reverse").and_then(Value::as_bool).unwrap_or(false);
     let rate = s.sequence_rate();
     let frames = p.get("frames").and_then(Value::as_i64).unwrap_or(s.project.settings.default_transition_duration_frames);
     let dur = rate.tick_of(frames);
@@ -2404,8 +2538,7 @@ fn apply_transition(s: &mut Session, p: &Value, kind: TrackKind) -> Result<Value
     } else {
         cut - dur
     };
-    let tr =
-        Transition { id: TransitionId(0), effect: def.instance(), start: rate.snap(start), duration: dur, from, to, align: Default::default(), reverse: false };
+    let tr = Transition { id: TransitionId(0), effect: instance, start: rate.snap(start), duration: dur, from, to, align: Default::default(), reverse };
     let label = format!("Apply {}", def.name);
     let id = s.edit_sequence(&label, |q, ctx, _| Ok(edit::add_transition(q, track, tr, ctx)?))?;
     Ok(json!({"transition": id.0}))
@@ -2449,7 +2582,7 @@ pub fn inspect_sequence(s: &Session, id: ItemId, q: &filmcraft_project::Sequence
                 "enabled": i.enabled, "link": i.link, "label": i.label.name(),
                 "effects": i.effects.iter().map(|e| json!({"effect": e.effect, "enabled": e.enabled, "masks": e.masks.len(), "params": e.params.iter().map(|(k, p)| (k.clone(), json!({"value": format!("{:?}", p.value), "keyframes": p.keyframes.len()}))).collect::<serde_json::Map<_, _>>()})).collect::<Vec<_>>(),
             })).collect::<Vec<_>>(),
-            "transitions": t.transitions.iter().map(|x| json!({"id": x.id.0, "effect": x.effect.effect, "start": x.start.0, "duration": x.duration.0, "from": x.from.map(|c| c.0), "to": x.to.map(|c| c.0)})).collect::<Vec<_>>(),
+            "transitions": t.transitions.iter().map(|x| json!({"id": x.id.0, "effect": x.effect.effect, "start": x.start.0, "duration": x.duration.0, "from": x.from.map(|c| c.0), "to": x.to.map(|c| c.0), "reverse": x.reverse, "params": x.effect.params.iter().map(|(k, v)| (k.clone(), serde_json::to_value(&v.value).unwrap_or_default())).collect::<serde_json::Map<_, _>>()})).collect::<Vec<_>>(),
         })
     };
     json!({
