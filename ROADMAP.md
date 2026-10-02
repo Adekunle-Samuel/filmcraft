@@ -2,7 +2,7 @@
 
 Progress toward feature parity with Adobe Premiere Pro, with estimates. Updated as milestones land.
 
-**Last updated:** 2026-10-02 · **Overall parity:** ~62% (measured scorecard below) · **Code:** 34 crates, 1095 tests
+**Last updated:** 2026-10-02 · **Overall parity:** ~72% (measured scorecard below) · **Code:** 34 crates, 1258 tests
 
 ## Parity scorecard
 
@@ -12,18 +12,18 @@ matched against `filmcraft-cli commands` and the UI command table. Effects: the 
 
 | Area | Weight | Measured | Coverage |
 |---|---|---|---|
-| Editing, timeline, trimming, multicam | 20% | core edit algebra, trim modes, sync, multicam, menu long tail | ~75% |
-| Menus / commands | (cross-check) | ~285 of 344 in-scope menu items | ~82% |
-| Effects and transitions | 12% | video effects 56/93, audio effects 30/53, video transitions 30/84, audio transitions 3/3 | ~51% |
+| Editing, timeline, trimming, multicam | 20% | core edit algebra, trim modes, sync, multicam, menu long tail, Scene Edit Detection, Automate to Sequence | ~80% |
+| Menus / commands | (cross-check) | ~325 of 344 in-scope menu items | ~95% |
+| Effects and transitions | 12% | video effects 93/93 (+Legacy, Obsolete), audio effects 53/53, video transitions 84/84 (+21 Legacy), audio transitions 3/3; some approximations (Warp Stabilizer 2-D, Morph Cut, Auto Reframe) | ~92% |
 | Media I/O and codecs | 12% | H.264, HEVC, VP9, AV1, ProRes, DNx, MJPEG, Opus, AAC, MP4/MOV/MKV/WebM; no MXF, image sequences, HW decode | ~70% |
-| Panels and UI fidelity | 12% | all main panels; Metadata, Media Browser, scopes (parade/histogram), Timecode, Events, Search panels thin or missing | ~60% |
-| Audio | 10% | mixer, automation, Essential Sound, meters, 30 effects | ~60% |
+| Panels and UI fidelity | 12% | all main panels, audio effect editor windows; Metadata, Media Browser, scopes (parade/histogram), Timecode, Events panels thin or missing | ~65% |
+| Audio | 10% | mixer, automation, Essential Sound, meters, all 53 effects; no 5.1 buses, voice-over record | ~70% |
 | Colour | 8% | Lumetri complete, LUTs, colour management, HDR | ~80% |
 | Graphics and captions | 8% | text engine, shapes, captions, transcripts; no MOGRT, rolls/crawls, responsive design | ~60% |
 | Export | 8% | own H.264/AAC, ProRes, DNxHR, PNG/GIF/WAV; no preset library/queue UI, AAF/OMF, MXF | ~60% |
-| Preferences and project management | 5% | Auto Save, shortcuts, project manager, proxies; 18 of 20 Settings categories missing | ~55% |
+| Preferences and project management | 5% | Settings dialog with 16 categories (most settings wired), project settings, scratch disks, search bins, templates | ~80% |
 | Performance | 5% | 1080p real-time, 3×1080p; 4K/8K and AV1 real-time not yet | ~50% |
-| **Weighted total** | | | **~62%** |
+| **Weighted total** | | | **~72%** |
 
 ## Estimate to parity
 
@@ -35,9 +35,13 @@ small, but there are many), so the estimate applies a 1.3–1.5× tail factor.
 
 | | Opus 5.5 agent-hours | Wall-clock (4–5 parallel agents + integrator) |
 |---|---|---|
-| Feature parity by checklist (~38 points left) | ~190–260 | **~45–65 h** |
+| Feature parity by checklist (~28 points left) | ~130–180 | **~30–45 h** |
 | Robust on real-world material (codec edge cases, 4K/8K performance, pro workflows) | +120–200 | **+30–50 h** |
-| **Total to "100% and better"** | **~310–460** | **~75–115 h (≈3–5 days, 24/7)** |
+| **Total to "100% and better"** | **~250–380** | **~60–95 h (≈2.5–4 days, 24/7)** |
+
+The 2026-10-02 block moved parity ~62% → ~72% with six agents in ~6 wall-clock hours, despite the
+disk filling twice; the remaining work is mostly panels (scopes, Metadata, Media Browser), export
+presets/queue, codecs (MXF, image sequences, hardware decode), performance and graphics templates.
 
 Limits on speed: CPU and disk on one machine (more than ~5 agents slows everyone down: each worktree
 build is 6–7 GB and a full `cargo xtask ci` takes 20–60 min under load), and a single integrator
@@ -72,6 +76,8 @@ Status: ✅ done · 🟡 in progress · ⬜ not started. Estimates are remaining
 - Nothing; next: remaining Premiere menu items (Settings categories, Scene Edit Detection, Normalize Mix Track, OMF/AAF, Find), AV1 single-thread re-measure on an idle machine
 
 ## Log
+
+- **2026-10-02 (later):** all 93 video effects (+Legacy/Obsolete bins), all 53 audio effects with Parametric/Graphic EQ, Multiband Compressor and Dynamics editor windows, all 84 video transitions (+21 Legacy), Settings dialog (16 categories, most wired), remaining menu items (Scene Edit Detection, Find, Normalize Mix Track, Simplify Sequence, Automate to Sequence, search bins, templates, Project Settings with scratch disks, ALE and selection-as-project export, system report); project schema v11. 1258 tests.
 
 - **2026-10-02:** Premiere menu long tail: Sequence/Markers (gaps, split edits, through edits, subsequence, Delete Tracks, range/chapter markers, ripple sequence markers), Clip/Edit/File (Paste/Remove Attributes, subclips, Frame Hold Options, Time Interpolation with frame blending, Audio Channels, Breakout to Mono, Extract Audio, Replace With Clip, Remove Unused, Consolidate Duplicates), View/monitors (paused resolution, alpha/RGB display modes, comparison view, magnification, rulers, guides + templates, snapping), Graphics and Titles (vertical text, shape layers, align/distribute/arrange). Transcripts and text-based editing (Text panel, optional local Whisper). AV1 tile/frame/post-filter threading. Agent-friendly CLI (`exec`, `inspect`, `describe`, `import`, `export`, `run -`, `--save`, `--bridge`). Project schema v10.
 
