@@ -723,6 +723,8 @@ pub fn media_duration(p: &Project, _pool: &MediaPool, id: ItemId) -> Option<Tick
 }
 
 #[cfg(test)]
+mod audio_effects_tests;
+#[cfg(test)]
 mod autosave_tests;
 #[cfg(test)]
 mod clip_ops_tests;

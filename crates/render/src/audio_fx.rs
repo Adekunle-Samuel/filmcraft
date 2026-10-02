@@ -92,6 +92,8 @@ pub(crate) fn mapping(id: &str) -> Option<Mapping> {
             apply: |d, e, t| {
                 d.set_param("frequency", e.param("freq").and_then(|p| p.value_at(t).as_f64()).unwrap_or(1.0) as f32);
                 d.set_param("amount", (1.0 - 10f32.powf(f(e, "gain", t).min(0.0) / 20.0)) * 100.0);
+                set_if_changed(d, "harmonics", f(e, "harmonics", t));
+                set_if_changed(d, "q", f(e, "q", t));
             },
         },
         "deesser" => Mapping {
@@ -137,8 +139,159 @@ pub(crate) fn mapping(id: &str) -> Option<Mapping> {
             preroll: |_, _| 0.1,
             apply: |d, e, t| ignore(d.set_param("semitones", (f(e, "semitones", t) + f(e, "cents", t) / 100.0).clamp(-12.0, 12.0))),
         },
-        _ => return None,
+        "single_band_compressor" => Mapping {
+            dsp: "compressor",
+            preroll: |e, t| (f(e, "release", t) as f64 / 1000.0 * 5.0).clamp(0.05, 3.0),
+            apply: |d, e, t| {
+                set_if_changed(d, "knee", 0.0);
+                for id in ["threshold", "ratio", "attack", "release"] {
+                    set_if_changed(d, id, f(e, id, t));
+                }
+                set_if_changed(d, "makeup", f(e, "output", t));
+            },
+        },
+        "bass" => Mapping { dsp: "parametric_eq", preroll: |_, _| 0.05, apply: |d, e, t| shelf(d, 1.0, 200.0, f(e, "boost", t)) },
+        "treble" => Mapping { dsp: "parametric_eq", preroll: |_, _| 0.05, apply: |d, e, t| shelf(d, 2.0, 4000.0, f(e, "boost", t)) },
+        "simple_notch" => Mapping { dsp: "parametric_eq", preroll: |_, _| 0.1, apply: |d, e, t| band(d, 5.0, f(e, "center", t), f(e, "q", t)) },
+        "simple_eq" => Mapping {
+            dsp: "parametric_eq",
+            preroll: |_, _| 0.05,
+            apply: |d, e, t| {
+                band(d, 0.0, f(e, "center", t), f(e, "q", t));
+                set_if_changed(d, "b1.gain", f(e, "boost", t));
+            },
+        },
+        "volume_a" => Mapping {
+            dsp: "amplify",
+            preroll: |_, _| 0.0,
+            apply: |d, e, t| {
+                let bypass = e.f64_at("bypass", t) >= 0.5;
+                set_if_changed(d, "gain", if bypass { 0.0 } else { f(e, "level", t).clamp(-96.0, 24.0) });
+            },
+        },
+        "analog_delay" => Mapping {
+            dsp: "analog_delay",
+            preroll: |e, t| {
+                let time = f(e, "delay", t).max(1.0) as f64 / 1000.0;
+                let fb = (f(e, "feedback", t) as f64 / 100.0).clamp(0.0, 0.95);
+                let repeats = if fb > 0.001 { (-4.0 / fb.log10()).clamp(1.0, 60.0) } else { 1.0 };
+                (time * repeats).clamp(0.12, 8.0)
+            },
+            apply: direct,
+        },
+        "multitap_delay" => Mapping {
+            dsp: "multitap_delay",
+            preroll: |e, t| {
+                let mut worst = 0.0f64;
+                for k in 1..=4 {
+                    let time = e.f64_at(["delay1", "delay2", "delay3", "delay4"][k - 1], t).max(1.0) / 1000.0;
+                    let fb = (e.f64_at(["feedback1", "feedback2", "feedback3", "feedback4"][k - 1], t) / 100.0).clamp(0.0, 0.95);
+                    let repeats = if fb > 0.001 { (-4.0 / fb.log10()).clamp(1.0, 60.0) } else { 1.0 };
+                    worst = worst.max(time * repeats);
+                }
+                worst.clamp(0.12, 8.0)
+            },
+            apply: direct,
+        },
+        "convolution_reverb" => Mapping {
+            dsp: "convolution_reverb",
+            preroll: |e, t| {
+                let rt = [0.45, 0.8, 1.9, 3.2, 1.6, 0.3, 0.2][(e.f64_at("impulse", t) as usize).min(6)];
+                (rt * 1.1 * e.f64_at("room_size", t) / 100.0 + e.f64_at("predelay", t) / 1000.0).clamp(0.12, 4.0)
+            },
+            apply: direct,
+        },
+        "surround_reverb" => {
+            Mapping { dsp: "surround_reverb", preroll: |e, t| (e.f64_at("decay", t) + e.f64_at("predelay", t) / 1000.0).clamp(0.12, 8.0), apply: direct }
+        }
+        _ => {
+            let &(_, dsp, _) = DIRECT.iter().find(|(p, _, _)| *p == id)?;
+            Mapping { dsp, preroll: |e, _| direct_preroll(&e.effect), apply: direct }
+        }
     })
+}
+
+/// Project effects whose parameters map one-to-one (same ids, same units) onto a DSP effect:
+/// (project id, DSP id, pre-roll seconds for a fresh chain).
+pub const DIRECT: &[(&str, &str, f64)] = &[
+    ("channel_mixer_a", "channel_mixer", 0.0),
+    ("channel_volume_a", "channel_volume", 0.0),
+    ("dynamics_rack", "dynamics_rack", 1.0),
+    ("multiband_compressor", "multiband_compressor", 1.0),
+    ("tube_compressor", "tube_compressor", 1.5),
+    ("fft_filter", "fft_filter", 0.1),
+    ("graphic_eq", "graphic_eq_10", 0.1),
+    ("graphic_eq_20", "graphic_eq_20", 0.1),
+    ("graphic_eq_30", "graphic_eq_30", 0.1),
+    ("notch", "notch_filter", 0.1),
+    ("parametric_eq", "parametric_eq_full", 0.1),
+    ("scientific_filter", "scientific_filter", 0.2),
+    ("chorus_flanger", "chorus_flanger", 0.1),
+    ("flanger", "flanger", 0.2),
+    ("phaser", "phaser", 0.1),
+    ("declicker", "click_remover", 0.05),
+    ("binauralizer", "binauralizer", 0.01),
+    ("distortion", "distortion", 0.05),
+    ("fill_left", "fill_left", 0.0),
+    ("fill_right", "fill_right", 0.0),
+    ("swap_channels", "swap_channels", 0.0),
+    ("guitar_suite", "guitar_suite", 0.2),
+    ("loudness_radar", "loudness_meter", 0.0),
+    ("mastering", "mastering", 2.0),
+    ("panner_ambisonics", "ambisonics_panner", 0.0),
+    ("vocal_enhancer", "vocal_enhancer", 0.3),
+    ("stereo_expander", "stereo_expander", 0.0),
+    ("balance_a", "balance", 0.0),
+    ("mute", "mute", 0.0),
+    ("analog_delay", "analog_delay", 0.0),
+    ("multitap_delay", "multitap_delay", 0.0),
+    ("convolution_reverb", "convolution_reverb", 0.0),
+    ("surround_reverb", "surround_reverb", 0.0),
+];
+
+/// Pre-roll of a direct mapping: its own tail, and at least long enough for the DSP's
+/// parameter smoothing (≤ 100 ms) to settle from the defaults to the clip's settings.
+fn direct_preroll(id: &str) -> f64 {
+    DIRECT.iter().find(|(p, _, _)| *p == id).map_or(0.0, |d| d.2).max(0.12)
+}
+
+/// Set a DSP parameter only when it changed (keeps parameter-dependent rebuilds — impulse
+/// responses, filter designs — off the per-block path).
+fn set_if_changed(d: &mut dyn AudioEffect, id: &str, v: f32) {
+    if d.param(id) != Some(v) {
+        d.set_param(id, v);
+    }
+}
+
+/// Copy every scalar project parameter (Float / Choice / Bool) to the DSP parameter of the
+/// same id.
+fn direct(d: &mut dyn AudioEffect, e: &EffectInstance, t: Tick) {
+    let Some(def) = e.def() else { return };
+    for p in &def.params {
+        let v = e.params.get(p.id).map_or_else(|| p.default.as_f64().unwrap_or(0.0), |q| q.scalar_at(t));
+        // sanitise like the DSP would, so unchanged values compare equal
+        let v = d.params().iter().find(|s| s.id == p.id).map_or(v as f32, |s| s.sanitize(v as f32));
+        set_if_changed(d, p.id, v);
+    }
+}
+
+/// A DSP instance configured like the project effect `e` at media time `t` (for the graphical
+/// effect editors: [`AudioEffect::response_db`] / [`AudioEffect::transfer_db`]).
+pub fn configured(e: &EffectInstance, t: Tick, sample_rate: u32) -> Option<Box<dyn AudioEffect>> {
+    let m = mapping(&e.effect)?;
+    let mut d = filmcraft_audio_dsp::create_effect(m.dsp, sample_rate as f32, 2)?;
+    (m.apply)(d.as_mut(), e, t);
+    Some(d)
+}
+
+/// Processing latency (samples) of a project audio effect at `sample_rate`.
+pub fn latency(effect_id: &str, sample_rate: u32) -> usize {
+    mapping(effect_id).and_then(|m| filmcraft_audio_dsp::create_effect(m.dsp, sample_rate as f32, 2)).map_or(0, |d| d.latency())
+}
+
+fn shelf(d: &mut dyn AudioEffect, kind: f32, freq: f32, gain: f32) {
+    band(d, kind, freq, std::f32::consts::FRAC_1_SQRT_2);
+    set_if_changed(d, "b1.gain", gain);
 }
 
 /// Whether a project audio effect has a DSP implementation (clip effects and mixer inserts).
@@ -256,4 +409,68 @@ pub fn process(item: &TrackItem, a0: i64, n: usize, sr: u32, read: &dyn Fn(i64, 
         c.clear();
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use filmcraft_audio_dsp::Unit;
+    use filmcraft_project::{EffectKind, ParamKind, effect_defs};
+
+    #[test]
+    fn every_audio_effect_has_dsp() {
+        for d in effect_defs().iter().filter(|d| d.kind == EffectKind::Audio && !d.intrinsic) {
+            let m = mapping(d.id).unwrap_or_else(|| panic!("{} has no DSP mapping", d.id));
+            assert!(filmcraft_audio_dsp::effect_info(m.dsp).is_some(), "{} → unknown DSP {}", d.id, m.dsp);
+            let inst = d.instance();
+            let mut fx = configured(&inst, Tick::ZERO, 48000).unwrap();
+            let mut l: Vec<f32> = (0..4800).map(|i| ((i * 7919 % 1000) as f32 / 1000.0 - 0.5) * 0.5).collect();
+            let mut r = l.clone();
+            fx.process(&mut [&mut l, &mut r]);
+            assert!(l.iter().chain(&r).all(|v| v.is_finite()), "{}", d.id);
+        }
+        assert_eq!(filmcraft_project::effect::PREMIERE_AUDIO_EFFECTS.len(), 53);
+    }
+
+    #[test]
+    fn direct_mappings_match_dsp_parameters() {
+        for &(pid, dsp, _) in DIRECT {
+            let def = filmcraft_project::find_effect(pid).unwrap_or_else(|| panic!("{pid}"));
+            let info = filmcraft_audio_dsp::effect_info(dsp).unwrap_or_else(|| panic!("{dsp}"));
+            for p in &def.params {
+                let s = info.params.iter().find(|s| s.id == p.id).unwrap_or_else(|| panic!("{pid}.{} missing in {dsp}", p.id));
+                match &p.kind {
+                    ParamKind::Float { min, max, .. } => {
+                        assert!(*min >= s.min as f64 - 1e-3 && *max <= s.max as f64 + 1e-3, "{pid}.{}: range {min}..{max} vs {}..{}", p.id, s.min, s.max);
+                        let dv = p.default.as_f64().unwrap();
+                        assert!((dv - s.default as f64).abs() < 0.02, "{pid}.{}: default {dv} vs {}", p.id, s.default);
+                    }
+                    ParamKind::Choice(opts) => {
+                        assert_eq!(s.unit, Unit::Choice, "{pid}.{}", p.id);
+                        assert_eq!(opts.len(), s.choices.len(), "{pid}.{}", p.id);
+                        assert_eq!(p.default.as_f64().unwrap(), s.default as f64, "{pid}.{}", p.id);
+                    }
+                    ParamKind::Bool => {
+                        assert_eq!(s.unit, Unit::Toggle, "{pid}.{}", p.id);
+                        assert_eq!(p.default.as_f64().unwrap(), s.default as f64, "{pid}.{}", p.id);
+                    }
+                    k => panic!("{pid}.{}: unsupported kind {k:?}", p.id),
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn editor_curves_follow_project_parameters() {
+        let def = filmcraft_project::find_effect("graphic_eq").unwrap();
+        let mut inst = def.instance();
+        inst.param_mut("b6").unwrap().value = filmcraft_project::ParamValue::Float(9.0);
+        let fx = configured(&inst, Tick::ZERO, 48000).unwrap();
+        assert!((fx.response_db(1000.0).unwrap() - 9.0).abs() < 1.0);
+        let def = filmcraft_project::find_effect("dynamics_rack").unwrap();
+        let fx = configured(&def.instance(), Tick::ZERO, 48000).unwrap();
+        assert!((fx.transfer_db(0, 0.0).unwrap() + 10.0).abs() < 1e-3, "−20 dB threshold, 2:1");
+        assert_eq!(latency("fft_filter", 48000), 2048);
+        assert_eq!(latency("amplify", 48000), 0);
+    }
 }
