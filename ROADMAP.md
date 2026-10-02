@@ -2,7 +2,7 @@
 
 Progress toward feature parity with Adobe Premiere Pro, with estimates. Updated as milestones land.
 
-**Last updated:** 2026-10-01 (night) · **Overall parity:** ~55% · **Code:** ~167k lines of Rust in 33 crates, 988 tests
+**Last updated:** 2026-10-02 · **Overall parity:** ~58% · **Code:** 34 crates, 1095 tests
 
 ## Estimate to parity
 
@@ -44,11 +44,11 @@ Status: ✅ done · 🟡 in progress · ⬜ not started. Estimates are remaining
 
 ## Running now
 
-- AV1 decode speed (tile/frame threading)
-- Transcripts: speech-to-text and text-based editing (M10.5)
-- Web app shell (WASM)
+- Nothing; next: remaining Premiere menu items (Settings categories, Scene Edit Detection, Normalize Mix Track, OMF/AAF, Find), AV1 single-thread re-measure on an idle machine
 
 ## Log
+
+- **2026-10-02:** Premiere menu long tail: Sequence/Markers (gaps, split edits, through edits, subsequence, Delete Tracks, range/chapter markers, ripple sequence markers), Clip/Edit/File (Paste/Remove Attributes, subclips, Frame Hold Options, Time Interpolation with frame blending, Audio Channels, Breakout to Mono, Extract Audio, Replace With Clip, Remove Unused, Consolidate Duplicates), View/monitors (paused resolution, alpha/RGB display modes, comparison view, magnification, rulers, guides + templates, snapping), Graphics and Titles (vertical text, shape layers, align/distribute/arrange). Transcripts and text-based editing (Text panel, optional local Whisper). AV1 tile/frame/post-filter threading. Agent-friendly CLI (`exec`, `inspect`, `describe`, `import`, `export`, `run -`, `--save`, `--bridge`). Project schema v10.
 
 - **2026-10-01 (night):** new README hero (Apollo 11 documentary edit, NASA public domain); agents never steal keyboard focus; masks + tracking, adjustment layers, effect presets; multicam + audio sync; DNxHD/DNxHR decode/encode; AV1 decoder bit-exact against libdav1d (all stages, film grain, superres, SVC).
 
