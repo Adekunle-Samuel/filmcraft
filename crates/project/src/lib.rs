@@ -164,6 +164,32 @@ pub struct Interpretation {
     /// Color Management ▸ override the colour space detected from the file's metadata.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub color_space: Option<filmcraft_color::ColorSpace>,
+    /// Modify ▸ Audio Channels: how the source channels map to the audio clips made when the item
+    /// is edited into a sequence. None = one stereo clip of the first two channels.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub audio_channels: Option<AudioChannelMap>,
+}
+
+/// Modify ▸ Audio Channels: the clip channel format and, per audio clip, the source channels it
+/// plays (0-based). A mono clip has one channel (played on both sides); a stereo clip two.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AudioChannelMap {
+    pub format: AudioChannels,
+    pub clips: Vec<Vec<u16>>,
+}
+
+impl AudioChannelMap {
+    /// The default mapping of a source with `channels` channels in `format`: mono = one clip per
+    /// channel, stereo = channel pairs, 5.1 / adaptive = one clip with every channel.
+    pub fn for_format(format: AudioChannels, channels: u16) -> Self {
+        let n = channels.max(1);
+        let clips = match format {
+            AudioChannels::Mono => (0..n).map(|c| vec![c]).collect(),
+            AudioChannels::Stereo => (0..n).step_by(2).map(|c| if c + 1 < n { vec![c, c + 1] } else { vec![c] }).collect(),
+            AudioChannels::Surround51 | AudioChannels::Adaptive => vec![(0..n).collect()],
+        };
+        Self { format, clips }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -227,6 +253,10 @@ pub enum ItemKind {
     Subclip {
         parent: ItemId,
         range: TimeRange,
+        /// Make Subclip ▸ Restrict Trims To Subclip Boundaries: clips of the subclip can't be
+        /// trimmed past its end (otherwise the parent's media is the limit).
+        #[serde(default)]
+        restrict_trims: bool,
     },
     AdjustmentLayer {
         width: u32,
@@ -483,6 +513,74 @@ pub struct TrackItem {
     /// Multi-camera clip (a nested multi-camera source sequence): enabled flag and angle.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub multicam: Option<MulticamSel>,
+    /// Video Options ▸ Time Interpolation: how frames are made when the clip's speed is changed.
+    #[serde(default, skip_serializing_if = "TimeInterpolation::is_default")]
+    pub time_interpolation: TimeInterpolation,
+    /// Frame Hold Options ▸ Hold Filters: effects are evaluated at the held frame's time instead
+    /// of animating through the hold.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub hold_filters: bool,
+    /// Video Options ▸ Field Options… (stored; FilmCraft renders progressive frames).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub field_options: Option<FieldOptions>,
+    /// Audio clips: the source channels this clip plays (0-based; one = mono on both sides, two =
+    /// left/right). Empty = the first two channels (mono sources on both sides).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub source_channels: Vec<u16>,
+}
+
+/// Time interpolation for speed-changed clips (Clip ▸ Video Options ▸ Time Interpolation).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum TimeInterpolation {
+    /// Show the nearest earlier source frame (repeats or drops frames).
+    #[default]
+    FrameSampling,
+    /// Cross-fade the two source frames around the exact media time.
+    FrameBlending,
+    /// Motion-compensated in-between frames. Rendered as frame blending for now.
+    OpticalFlow,
+}
+
+impl TimeInterpolation {
+    pub const ALL: [TimeInterpolation; 3] = [TimeInterpolation::FrameSampling, TimeInterpolation::FrameBlending, TimeInterpolation::OpticalFlow];
+    pub fn is_default(&self) -> bool {
+        *self == TimeInterpolation::FrameSampling
+    }
+    pub fn name(self) -> &'static str {
+        match self {
+            TimeInterpolation::FrameSampling => "frameSampling",
+            TimeInterpolation::FrameBlending => "frameBlending",
+            TimeInterpolation::OpticalFlow => "opticalFlow",
+        }
+    }
+    pub fn label(self) -> &'static str {
+        match self {
+            TimeInterpolation::FrameSampling => "Frame Sampling",
+            TimeInterpolation::FrameBlending => "Frame Blending",
+            TimeInterpolation::OpticalFlow => "Optical Flow",
+        }
+    }
+    pub fn from_name(s: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|t| t.name().eq_ignore_ascii_case(s) || t.label().eq_ignore_ascii_case(s))
+    }
+}
+
+/// Field Options… (stored with the clip).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FieldOptions {
+    pub reverse_field_dominance: bool,
+    pub processing: FieldProcessing,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum FieldProcessing {
+    #[default]
+    None,
+    AlwaysDeinterlace,
+    FlickerRemoval,
 }
 
 impl TrackItem {
@@ -497,6 +595,19 @@ impl TrackItem {
         if let Some(h) = self.frame_hold {
             return h;
         }
+        self.moving_source_time_at(t)
+    }
+    /// Media time at which effects and intrinsic attributes are evaluated at timeline time `t`: a
+    /// frame hold freezes them only with Hold Filters on; otherwise they animate through the hold.
+    pub fn effect_time_at(&self, t: Tick) -> Tick {
+        match self.frame_hold {
+            Some(h) if self.hold_filters => h,
+            Some(_) => self.moving_source_time_at(t),
+            None => self.source_time_at(t),
+        }
+    }
+    /// Media time at timeline time `t` ignoring any frame hold.
+    pub fn moving_source_time_at(&self, t: Tick) -> Tick {
         let rel = t - self.start;
         let scaled = Tick((rel.0 as f64 * self.speed.abs()).round() as i64);
         if self.reverse {
@@ -1059,7 +1170,7 @@ impl Project {
         }
         let mut users = vec![item];
         for it in self.items.values_mut() {
-            if let ItemKind::Subclip { parent, range } = &mut it.kind
+            if let ItemKind::Subclip { parent, range, .. } = &mut it.kind
                 && *parent == item
             {
                 range.start -= delta;
@@ -1104,6 +1215,10 @@ impl Project {
         // a multi-camera source sequence edits in as a multi-camera clip showing its first angle
         let multicam =
             it.as_sequence().and_then(|q| q.multicam.as_ref()).map(|m| MulticamSel { enabled: true, angle: m.first_video_angle().unwrap_or(0) as u32 });
+        let source_channels = match (kind, &it.kind) {
+            (TrackKind::Audio, ItemKind::Media(m)) => m.interpret.audio_channels.as_ref().and_then(|a| a.clips.first().cloned()).unwrap_or_default(),
+            _ => Vec::new(),
+        };
         let id = ClipId(self.alloc_id());
         let dur = seq_rate.snap_nearest(source.duration).max(seq_rate.frame_duration());
         Some(TrackItem {
@@ -1126,6 +1241,10 @@ impl Project {
             scale_to_frame: false,
             essential: None,
             multicam,
+            time_interpolation: TimeInterpolation::default(),
+            hold_filters: false,
+            field_options: None,
+            source_channels,
         })
     }
 

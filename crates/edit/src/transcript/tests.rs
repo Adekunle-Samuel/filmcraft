@@ -53,6 +53,10 @@ fn clip(id: u64, start: f64, dur: f64, src_in: f64) -> TrackItem {
         scale_to_frame: false,
         essential: None,
         multicam: None,
+        time_interpolation: Default::default(),
+        hold_filters: false,
+        field_options: None,
+        source_channels: Vec::new(),
     }
 }
 

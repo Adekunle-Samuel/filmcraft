@@ -151,6 +151,9 @@ pub fn invoke(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, params: Val
         }
         return r;
     }
+    if let Some(r) = crate::panels::clip_dialogs::route(app, id, &params) {
+        return r;
+    }
     if let Some(r) = crate::panels::media_dialogs::route(app, id, &params) {
         if let Err(e) = &r {
             app.ui.status = e.clone();
@@ -464,32 +467,34 @@ pub fn menu_bar(app: &mut FilmcraftApp, ui: &mut egui::Ui) {
                 if mine.is_empty() {
                     ui.add_enabled(false, egui::Button::new("(empty)"));
                 }
-                let mut subs: Vec<&str> = Vec::new();
-                for it in &mine {
-                    if it.path.len() > 1 {
-                        let sub = it.path[1].as_str();
-                        if !subs.contains(&sub) {
-                            subs.push(sub);
-                            ui.menu_button(sub, |ui| {
-                                ui.set_min_width(220.0);
-                                for s in mine.iter().filter(|x| x.path.get(1).map(String::as_str) == Some(sub)) {
-                                    if menu_entry(ui, s) {
-                                        clicked = Some(s.id.clone());
-                                        ui.close();
-                                    }
-                                }
-                            });
-                        }
-                    } else if menu_entry(ui, it) {
-                        clicked = Some(it.id.clone());
-                        ui.close();
-                    }
-                }
+                menu_level(ui, &mine, 1, &mut clicked);
             });
         }
     });
     if let Some(id) = clicked {
         let _ = invoke(app, &ctx, &id, json!({}));
+    }
+}
+
+/// One menu level: items whose path ends here, and a submenu (at its first item's position) for
+/// each deeper path segment, recursively (e.g. Clip ▸ Video Options ▸ Time Interpolation).
+fn menu_level(ui: &mut egui::Ui, items: &[&MenuItem], depth: usize, clicked: &mut Option<String>) {
+    let mut subs: Vec<&str> = Vec::new();
+    for it in items {
+        if let Some(sub) = it.path.get(depth).map(String::as_str) {
+            if subs.contains(&sub) {
+                continue;
+            }
+            subs.push(sub);
+            let inner: Vec<&MenuItem> = items.iter().copied().filter(|x| x.path.get(depth).map(String::as_str) == Some(sub)).collect();
+            ui.menu_button(sub, |ui| {
+                ui.set_min_width(220.0);
+                menu_level(ui, &inner, depth + 1, clicked);
+            });
+        } else if menu_entry(ui, it) {
+            *clicked = Some(it.id.clone());
+            ui.close();
+        }
     }
 }
 

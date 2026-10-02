@@ -143,7 +143,9 @@ fn push_item(
     extra_opacity: f32,
     out: &mut Vec<PlanLayer>,
 ) {
-    let mt = item.source_time_at(t);
+    // frame time (`ft`) vs. effect time (`mt`): they differ inside a frame hold without Hold Filters
+    let ft = item.source_time_at(t);
+    let mt = item.effect_time_at(t);
     let (op, bl) = crate::opacity_blend(item, mt);
     // A multi-camera clip that only shows its angle (no effects, untransformed, same frame size)
     // draws the angle's clip directly: no CPU pass over the nested sequence.
@@ -154,10 +156,10 @@ fn push_item(
         && (nested.settings.width, nested.settings.height) == (seq.settings.width, seq.settings.height)
         && near_identity(&motion_matrix(seq, item, (nested.settings.width, nested.settings.height), mt))
         && let Some(tr) = nested.angle_video_track_index(angle).and_then(|i| nested.video_tracks.get(i))
-        && !tr.transitions.iter().any(|x| x.range().contains(mt))
+        && !tr.transitions.iter().any(|x| x.range().contains(ft))
     {
-        if let Some(inner) = tr.item_at(mt).filter(|i| i.enabled) {
-            push_item(project, nested, inner, mt, opts, sources, extra_opacity * op, out);
+        if let Some(inner) = tr.item_at(ft).filter(|i| i.enabled) {
+            push_item(project, nested, inner, ft, opts, sources, extra_opacity * op, out);
         }
         return;
     }
@@ -182,10 +184,11 @@ fn push_item(
         let motion = motion_matrix(seq, item, size, mt);
         let lin = ((motion.a * motion.a + motion.b * motion.b).sqrt()).max((motion.c * motion.c + motion.d * motion.d).sqrt());
         let want = (lin * opts.scale as f64).clamp(1.0 / 64.0, 1.0) as f32;
-        let Ok(frame) = src.video_frame(FrameRequest { time: mt, scale: want }) else { return };
+        let Ok(frame) = src.video_frame(FrameRequest { time: ft, scale: want }) else { return };
         let cs = crate::colorman::source_space(project, item.item, &frame);
-        // log / HDR / wide-gamut media is converted on the CPU (below)
-        if !crate::colorman::needs_management(&seq.settings.color, cs, &frame) {
+        // log / HDR / wide-gamut media is converted on the CPU (below), and so are blended
+        // in-between frames (Frame Blending / Optical Flow on speed-changed clips)
+        if !crate::colorman::needs_management(&seq.settings.color, cs, &frame) && crate::interpolation_blend(item, t, src.info().frame_rate()).is_none() {
             let px_scale = frame.width as f64 / size.0.max(1) as f64;
             let m = Affine::scale(opts.scale as f64, opts.scale as f64).then_apply(&motion).then_apply(&Affine::scale(1.0 / px_scale, 1.0 / px_scale));
             out.push(PlanLayer { frame, matrix: m, opacity: op * extra_opacity });

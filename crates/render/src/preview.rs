@@ -336,7 +336,7 @@ fn hash_source(h: &mut Fnv128, project: &Project, id: ItemId, depth: u32) {
                 h.json(&pi.name);
             }
         }
-        ItemKind::Subclip { parent, range } => {
+        ItemKind::Subclip { parent, range, .. } => {
             h.json(&("subclip", range));
             hash_source(h, project, *parent, depth + 1);
         }

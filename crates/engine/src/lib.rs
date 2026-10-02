@@ -10,6 +10,7 @@
 
 pub mod autosave;
 pub mod captions;
+pub mod clip_ops;
 pub mod color;
 pub mod commands;
 pub mod demo;
@@ -714,13 +715,17 @@ pub fn media_duration(p: &Project, _pool: &MediaPool, id: ItemId) -> Option<Tick
             _ => Some(m.info.duration),
         },
         filmcraft_project::ItemKind::Sequence(s) => Some(s.duration()),
-        filmcraft_project::ItemKind::Subclip { range, .. } => Some(range.end()),
+        // a subclip that restricts trims ends at its Out point; otherwise its parent's media is the limit
+        filmcraft_project::ItemKind::Subclip { range, restrict_trims: true, .. } => Some(range.end()),
+        filmcraft_project::ItemKind::Subclip { parent, .. } => media_duration(p, _pool, *parent),
         filmcraft_project::ItemKind::AdjustmentLayer { .. } | filmcraft_project::ItemKind::Graphic { .. } => None,
     }
 }
 
 #[cfg(test)]
 mod autosave_tests;
+#[cfg(test)]
+mod clip_ops_tests;
 #[cfg(test)]
 mod color_tests;
 #[cfg(test)]

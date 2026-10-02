@@ -209,13 +209,25 @@ fn raw_stereo(item: &TrackItem, src: &dyn filmcraft_media::MediaSource, x0: i64,
         })
     };
     let Some(buf) = buf else { return out };
-    let right = if buf.channel_count() >= 2 { 1 } else { 0 };
+    let (left, right) = source_pair(item, buf.channel_count());
     for (c, dst) in out.iter_mut().enumerate() {
-        let ch = &buf.channels[if c == 0 { 0 } else { right }];
+        let ch = &buf.channels[if c == 0 { left } else { right }];
         let m = n.min(ch.len());
         dst[off..off + m].copy_from_slice(&ch[..m]);
     }
     out
+}
+
+/// The source channels (left, right) an audio clip plays: its `source_channels` (one = mono on
+/// both sides; Modify ▸ Audio Channels, Breakout to Mono), else the first two (mono sources on
+/// both sides). Channels the source doesn't have fall back to the first.
+pub fn source_pair(item: &TrackItem, available: usize) -> (usize, usize) {
+    let ok = |c: u16| if (c as usize) < available { c as usize } else { 0 };
+    match item.source_channels.as_slice() {
+        [] => (0, if available >= 2 { 1 } else { 0 }),
+        [m] => (ok(*m), ok(*m)),
+        [l, r, ..] => (ok(*l), ok(*r)),
+    }
 }
 
 /// Peak (min, max) pairs per bucket of `bucket` samples for channel `ch` — waveform display.

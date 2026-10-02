@@ -426,6 +426,10 @@ impl Builder {
             scale_to_frame: false,
             essential: None,
             multicam: None,
+            time_interpolation: Default::default(),
+            hold_filters: false,
+            field_options: None,
+            source_channels: Vec::new(),
         }
     }
 

@@ -52,6 +52,26 @@ fn v1_edit_loads_with_defaults_for_later_fields() {
     seq.check().unwrap();
 }
 
+/// Schema 8 (before M3.10): no time interpolation / Hold Filters / Field Options / source channels
+/// on clips, no audio channel map, subclips without Restrict Trims.
+#[test]
+fn v8_subclip_loads_with_m3_10_defaults() {
+    let l = decode(&fixture("v8-subclip.fcproj")).unwrap();
+    assert_eq!(l.schema_version, 8);
+    assert!(l.migrated());
+    let p = &l.project;
+    assert_eq!(p.name, "Schema 8 Edit");
+    let ItemKind::Subclip { parent, range, restrict_trims } = &p.item(ItemId(48)).unwrap().kind else { panic!("not a subclip") };
+    assert_eq!((*parent, range.duration.0 > 0, *restrict_trims), (ItemId(5), true, false));
+    assert!(p.item(ItemId(5)).unwrap().as_media().unwrap().interpret.audio_channels.is_none());
+    let clip = &p.sequence(ItemId(21)).unwrap().video_tracks[0].items[0];
+    assert!(clip.time_interpolation.is_default() && !clip.hold_filters && clip.field_options.is_none() && clip.source_channels.is_empty());
+    // resaved in the current schema, losslessly
+    let again = decode(&encode(p, true)).unwrap();
+    assert_eq!(again.schema_version, SCHEMA_VERSION);
+    assert_eq!(&again.project, p);
+}
+
 #[test]
 fn upgraded_file_resaves_in_current_schema_losslessly() {
     let old = decode(&fixture("v1-edit.fcproj")).unwrap().project;
