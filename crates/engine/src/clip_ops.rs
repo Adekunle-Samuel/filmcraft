@@ -440,7 +440,7 @@ fn items_p(s: &Session, p: &Value) -> Vec<ItemId> {
 }
 
 /// Fold the undo steps pushed since the history had `n0` entries into one step named `label`.
-fn collapse_history(s: &mut Session, n0: usize, label: &str) {
+pub(crate) fn collapse_history(s: &mut Session, n0: usize, label: &str) {
     if s.history.undo.len() > n0 {
         let first = s.history.undo[n0].1.clone();
         s.history.undo.truncate(n0);
@@ -482,7 +482,7 @@ fn used_items(p: &Project) -> BTreeSet<ItemId> {
 }
 
 /// Item ids mentioned in a JSON value (keys named `item`/`items`/`video`/`audio` holding ids).
-fn collect_ids(v: &Value, out: &mut BTreeSet<ItemId>, p: &Project) {
+pub(crate) fn collect_ids(v: &Value, out: &mut BTreeSet<ItemId>, p: &Project) {
     match v {
         Value::Object(m) => {
             for (k, x) in m {
@@ -590,7 +590,7 @@ fn sequence_from_clip(s: &mut Session, p: &Value) -> Result<Value> {
 }
 
 /// The media range an item edits in with: its In/Out marks, a subclip's range, or the whole item.
-fn item_range(p: &Project, id: ItemId) -> Option<TimeRange> {
+pub(crate) fn item_range(p: &Project, id: ItemId) -> Option<TimeRange> {
     let it = p.item(id)?;
     let rate = item_rate(p, id);
     Some(match &it.kind {

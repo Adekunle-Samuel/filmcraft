@@ -116,6 +116,7 @@ fn main() -> eframe::Result {
                 rfd::FileDialog::new().add_filter(filter, exts).set_file_name(name).save_file().map(|p| p.to_string_lossy().to_string())
             }));
             app.hooks.pick_folder = Some(Box::new(|| rfd::FileDialog::new().pick_folder().map(|p| p.to_string_lossy().to_string())));
+            app.hooks.open_path = Some(Box::new(open_path));
             app.hooks.raise_without_focus = Some(Box::new(|| {
                 window_raise::raise_without_focus();
             }));
@@ -138,6 +139,33 @@ fn main() -> eframe::Result {
             Ok(Box::new(app))
         }),
     )
+}
+
+/// Open a file in its default application, or reveal it in the file manager (Edit Original,
+/// Reveal Log Files).
+fn open_path(path: &str, reveal: bool) -> Result<(), String> {
+    let mut cmd = if cfg!(target_os = "macos") {
+        let mut c = std::process::Command::new("open");
+        if reveal {
+            c.arg("-R");
+        }
+        c.arg(path);
+        c
+    } else if cfg!(target_os = "windows") {
+        let mut c = std::process::Command::new("explorer");
+        if reveal {
+            c.arg(format!("/select,{path}"));
+        } else {
+            c.arg(path);
+        }
+        c
+    } else {
+        let mut c = std::process::Command::new("xdg-open");
+        let p = std::path::Path::new(path);
+        c.arg(if reveal { p.parent().unwrap_or(p) } else { p });
+        c
+    };
+    cmd.spawn().map(|_| ()).map_err(|e| format!("can't open {path}: {e}"))
 }
 
 /// Local UTC offset at a unix time (auto-save file names and recovery times use local time).

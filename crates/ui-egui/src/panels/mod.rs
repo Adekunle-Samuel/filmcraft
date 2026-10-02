@@ -14,6 +14,7 @@ pub mod import_mode;
 pub mod lumetri;
 pub mod masks;
 pub mod media_dialogs;
+pub mod menu_dialogs;
 pub mod meters;
 pub mod misc;
 pub mod mixer;

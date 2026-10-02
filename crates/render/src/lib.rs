@@ -23,6 +23,7 @@ pub mod multicam;
 pub mod offline;
 pub mod plan;
 pub mod preview;
+pub mod scene;
 pub mod track;
 pub mod transitions;
 

@@ -802,7 +802,16 @@ impl Worker {
 
     fn auto_save(&mut self) -> Result<PathBuf, String> {
         let Some(s) = &self.latest else { return Err("nothing to save".into()) };
+        let scratch = s.project.settings.scratch.auto_save.clone().filter(|d| !d.is_empty());
         let (dir, name) = match &s.path {
+            // Project Settings ▸ Scratch Disks ▸ Project Auto Save
+            Some(p) if scratch.is_some() => {
+                let p = Path::new(p);
+                (
+                    PathBuf::from(scratch.clone().unwrap_or_default()),
+                    p.file_stem().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| s.project.name.clone()),
+                )
+            }
             Some(p) => {
                 let p = Path::new(p);
                 (names::auto_save_dir(p), p.file_stem().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| s.project.name.clone()))

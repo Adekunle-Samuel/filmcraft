@@ -148,7 +148,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, which: Which)
         };
         let size_key = (scale * 1000.0) as u32;
         let channel = display.is_channel();
-        let use_gpu = which == Which::Program && app.gpu.is_some() && !channel;
+        let use_gpu = which == Which::Program && app.gpu.is_some() && !channel && !crate::panels::menu_dialogs::software_renderer(app);
         let cpu_target = target;
         let target = match (use_gpu, target) {
             (true, Target::Sequence(s)) => Target::SequencePlan(s),

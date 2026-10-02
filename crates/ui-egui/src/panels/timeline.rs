@@ -553,6 +553,7 @@ fn draw_waveform(app: &mut FilmcraftApp, p: &egui::Painter, body: Rect, it: &Tra
     }
     let peak = peaks.iter().fold(0f32, |m, (a, b)| m.max(a.abs()).max(b.abs()));
     let gain = waveform_display_gain(peak, it.gain_db);
+    let dynamic = app.ui.extras.dynamic_waveforms;
     let mut mesh = egui::Mesh::default();
     let dur_px = body.width().max(1.0);
     for x in (clip.min.x.floor() as i32)..(clip.max.x.ceil() as i32) {
@@ -566,9 +567,14 @@ fn draw_waveform(app: &mut FilmcraftApp, p: &egui::Painter, body: Rect, it: &Tra
         for (a, b) in peaks.iter().skip(s0).take(s1 - s0) {
             m = m.max(a.abs()).max(b.abs());
         }
-        // logarithmic display scale (Premiere's default): −48 dB → 0, 0 dB → full
-        let db = 20.0 * (m * gain).max(1e-5).log10();
-        let h = ((db + 48.0) / 48.0).clamp(0.0, 1.0) * area.height();
+        // View ▸ Dynamic Audio Waveforms (default): logarithmic scale, −48 dB → 0, 0 dB → full;
+        // off: linear amplitude
+        let h = if dynamic {
+            let db = 20.0 * (m * gain).max(1e-5).log10();
+            ((db + 48.0) / 48.0).clamp(0.0, 1.0) * area.height()
+        } else {
+            (m * gain).clamp(0.0, 1.0) * area.height()
+        };
         if h > 0.3 {
             mesh.add_colored_rect(Rect::from_min_max(pos2(x as f32, area.max.y - h), pos2(x as f32 + 1.0, area.max.y)), col);
         }

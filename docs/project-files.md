@@ -34,6 +34,7 @@ writing them is `crates/format` (`filmcraft-format`); the engine's `file.*` comm
 | 8 | M12 | multi-camera source sequences and clips, merged clips; no-op step |
 | 9 | M10.5 | transcripts of media items (`project.transcripts`); no-op step |
 | 10 | M3.10 | clip time interpolation, Hold Filters, Field Options, audio source channels, Modify ▸ Audio Channels map, subclip Restrict Trims; no-op step |
+| 11 | M3.11 | search bins (`project.search_bins`), Flash Cue markers, Project Settings safe areas, capture format and scratch disks; no-op step |
 
 ### Migrations
 
@@ -61,8 +62,8 @@ on disk is unchanged until you save. The **first save over it** keeps the origin
 
 A file with a `schema_version` newer than the build supports is **refused**, not half-read:
 
-> this project was saved by a newer version of FilmCraft (project schema v11); this build reads up to
-> v10. Update FilmCraft to open it.
+> this project was saved by a newer version of FilmCraft (project schema v12); this build reads up to
+> v11. Update FilmCraft to open it.
 
 Reading it partially and saving it back would silently drop whatever the newer version added.
 

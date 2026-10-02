@@ -10,6 +10,7 @@
 pub mod caption;
 pub mod effect;
 pub mod essential;
+pub mod find;
 pub mod graphic;
 pub mod keyframe;
 pub mod mask;
@@ -27,6 +28,7 @@ use serde::{Deserialize, Serialize};
 pub use caption::{Caption, CaptionAlign, CaptionAnchor, CaptionFormat, CaptionStyle, CaptionTrack, plain_text};
 pub use effect::{EffectDef, EffectInstance, EffectKind, ParamDef, ParamKind, effect_defs, find_effect};
 pub use essential::{AudioType, EssentialSound};
+pub use find::{FindOp, FindQuery, FindRow, SearchBin};
 pub use keyframe::{Interpolation, Keyframe, Param, ParamValue};
 pub use mask::{Mask, MaskMode, MaskPath, MaskVertex, TrackMethod};
 pub use mixer::{AutomationMode, InputMap, MixerStrip, TrackSend};
@@ -443,6 +445,9 @@ pub enum MarkerKind {
     Chapter,
     Segmentation,
     WebLink,
+    /// Markers ▸ Add Flash Cue Marker… (a cue point for interactive / Flash-style playback; kept
+    /// for interchange). Schema v11.
+    FlashCue,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -974,6 +979,42 @@ pub struct ProjectSettings {
     /// Project Settings ▸ Ingest Settings: what happens to media on import.
     #[serde(default)]
     pub ingest: IngestSettings,
+    /// Project Settings ▸ General ▸ Action and Title Safe Areas: (horizontal, vertical) percent.
+    #[serde(default = "title_safe_default")]
+    pub title_safe: (f64, f64),
+    #[serde(default = "action_safe_default")]
+    pub action_safe: (f64, f64),
+    /// Project Settings ▸ General ▸ Capture Format (`DV` or `HDV`; informational, FilmCraft has no
+    /// tape capture). Schema v11.
+    #[serde(default = "capture_format_default")]
+    pub capture_format: String,
+    /// Project Settings ▸ Scratch Disks. Schema v11.
+    #[serde(default)]
+    pub scratch: ScratchDisks,
+}
+
+fn title_safe_default() -> (f64, f64) {
+    (20.0, 20.0)
+}
+fn action_safe_default() -> (f64, f64) {
+    (10.0, 10.0)
+}
+fn capture_format_default() -> String {
+    "DV".into()
+}
+
+/// Project Settings ▸ Scratch Disks: where generated files go. `None` = Same as Project (next to
+/// the project file; the data directory for an unsaved project).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct ScratchDisks {
+    /// Captured and Generated media: proxies (when no ingest destination is set), Extract Audio.
+    pub captured: Option<String>,
+    /// Video and audio render previews (`<dir>/<project name>`).
+    pub video_previews: Option<String>,
+    pub audio_previews: Option<String>,
+    /// Project Auto Save versions.
+    pub auto_save: Option<String>,
 }
 
 /// Ingest on import (Project Settings ▸ Ingest Settings).
@@ -1013,6 +1054,10 @@ impl Default for ProjectSettings {
             default_transition_duration_frames: 24,
             default_audio_transition_duration: Tick(TICKS_PER_SECOND),
             ingest: IngestSettings::default(),
+            title_safe: title_safe_default(),
+            action_safe: action_safe_default(),
+            capture_format: capture_format_default(),
+            scratch: ScratchDisks::default(),
         }
     }
 }
@@ -1033,6 +1078,10 @@ pub struct Project {
     /// are media time. Shared (`Arc`) so undo snapshots don't copy them.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub transcripts: BTreeMap<ItemId, std::sync::Arc<Transcript>>,
+    /// Search bins (File ▸ New ▸ Search Bin): saved Find queries listed in the Project panel.
+    /// Schema v11.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub search_bins: Vec<SearchBin>,
 }
 
 /// A LUT imported into the project (`lut.import`). Lumetri refers to it as `lib:<id>`.
@@ -1065,6 +1114,7 @@ impl Project {
             next_id: 1,
             luts: Vec::new(),
             transcripts: BTreeMap::new(),
+            search_bins: Vec::new(),
         }
     }
 

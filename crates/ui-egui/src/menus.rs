@@ -77,6 +77,7 @@ pub const UI_COMMANDS: &[UiCommand] = &[
     uic!("view.guideTemplates.apply", "Apply Guide Template", [], None),
     uic!("view.guideTemplates.delete", "Delete Guide Template", [], None),
     uic!("view.compare.setReference", "Set Comparison Reference", [], None),
+    uic!("view.dynamicAudioWaveforms", "Dynamic Audio Waveforms", ["View"], None),
     uic!("multicam.toggleView", "Multi-Camera View", ["View"], Some("Shift+0")),
     uic!("multicam.recordToggle", "Multi-Camera Record On/Off Toggle", [], Some("0")),
     uic!("view.theme.dark", "Darkest", ["View", "Appearance"], None),
@@ -111,6 +112,8 @@ pub const UI_COMMANDS: &[UiCommand] = &[
     uic!("help.appPage", "FilmCraft on getartcraft.com", ["Help"], None),
     uic!("help.github", "FilmCraft on GitHub", ["Help"], None),
     uic!("help.reportIssue", "Report an Issue…", ["Help"], None),
+    uic!("help.revealLogFiles", "Reveal Log Files…", ["Help"], None),
+    uic!("help.systemCompatibilityReport", "System Compatibility Report…", ["Help"], None),
     uic!("app.about", "About FilmCraft", ["Help"], None),
     uic!("app.keyboardShortcuts", "Keyboard Shortcuts…", ["Edit"], Some("Cmd+Alt+K")),
     uic!("app.preferences.autoSave", "Auto Save…", ["Edit", "Preferences"], Some("Cmd+,")),
@@ -152,6 +155,12 @@ pub fn invoke(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, params: Val
         return r;
     }
     if let Some(r) = crate::panels::clip_dialogs::route(app, id, &params) {
+        return r;
+    }
+    if let Some(r) = crate::panels::menu_dialogs::route(app, ctx, id, &params) {
+        if let Err(e) = &r {
+            app.ui.status = e.clone();
+        }
         return r;
     }
     if let Some(r) = crate::panels::media_dialogs::route(app, id, &params) {
@@ -327,7 +336,7 @@ pub fn menu_items(app: &FilmcraftApp) -> Vec<MenuItem> {
     let mut v = menu_items_for(&app.session);
     for it in &mut v {
         if it.id.starts_with("view.") {
-            it.checked = crate::panels::monitor_view::checked(app, &it.id);
+            it.checked = crate::panels::monitor_view::checked(app, &it.id).or(crate::panels::menu_dialogs::checked(app, &it.id));
             it.enabled &= crate::panels::monitor_view::enabled(app, &it.id);
         }
     }
