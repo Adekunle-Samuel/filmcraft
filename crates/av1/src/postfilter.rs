@@ -5,7 +5,8 @@ use crate::spec_tables::*;
 use crate::state::FrameState;
 use crate::stats::{DecodeStats, Stage, Timer};
 
-pub(crate) fn apply(fs: &mut FrameState, stats: &mut DecodeStats) {
+/// The post-filters run on the frame worker; `_pool` is for row-parallel filtering (not yet used).
+pub(crate) fn apply(fs: &mut FrameState, stats: &mut DecodeStats, _pool: &crate::par::Pool) {
     let mut t = Timer::start();
     let lvl = fs.fh.lf.level;
     if lvl[0] != 0 || lvl[1] != 0 {

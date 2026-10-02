@@ -28,7 +28,7 @@ impl TileDecoder<'_, '_> {
     pub(crate) fn inter_frame_mode_info_impl(&mut self) -> Result<()> {
         self.b.use_intrabc = false;
         let (r, c) = (self.b.mi_row, self.b.mi_col);
-        let mi = &self.fs.mi;
+        let mi = &self.t.mi;
         let mut n = Neighbours {
             left: if self.b.avail_l { mi.ref_frame[mi.idx(r, c - 1)] } else { [INTRA_FRAME as i8, -1] },
             above: if self.b.avail_u { mi.ref_frame[mi.idx(r - 1, c)] } else { [INTRA_FRAME as i8, -1] },
@@ -72,7 +72,7 @@ impl TileDecoder<'_, '_> {
         let mut seg = 7u8;
         for y in 0..y_mis {
             for x in 0..x_mis {
-                let i = (self.b.mi_row + y) * self.fs.mi.cols + self.b.mi_col + x;
+                let i = (self.b.mi_row + y) * self.t.mi.cols + self.b.mi_col + x;
                 seg = seg.min(self.fs.prev_segment_ids[i]);
             }
         }
@@ -81,13 +81,13 @@ impl TileDecoder<'_, '_> {
 
     fn set_seg_pred_context(&mut self, v: u8) {
         for i in 0..self.b.bw4 {
-            if self.b.mi_col + i < self.fs.above_seg_pred.len() {
-                self.fs.above_seg_pred[self.b.mi_col + i] = v;
+            if self.b.mi_col + i < self.t.above_seg_pred.len() {
+                self.t.above_seg_pred[self.b.mi_col + i] = v;
             }
         }
         for i in 0..self.b.bh4 {
-            if self.b.mi_row + i < self.fs.left_seg_pred.len() {
-                self.fs.left_seg_pred[self.b.mi_row + i] = v;
+            if self.b.mi_row + i < self.t.left_seg_pred.len() {
+                self.t.left_seg_pred[self.b.mi_row + i] = v;
             }
         }
     }
@@ -110,7 +110,7 @@ impl TileDecoder<'_, '_> {
                 return;
             }
             if seg.temporal_update {
-                let ctx = self.fs.left_seg_pred[self.b.mi_row] as usize + self.fs.above_seg_pred[self.b.mi_col] as usize;
+                let ctx = self.t.left_seg_pred[self.b.mi_row] as usize + self.t.above_seg_pred[self.b.mi_col] as usize;
                 let pred_flag = self.sd.read_symbol(&mut self.cdf.segment_id_predicted[ctx]);
                 if pred_flag == 1 {
                     self.b.segment_id = predicted;
@@ -138,7 +138,7 @@ impl TileDecoder<'_, '_> {
             self.b.skip_mode = false;
         } else {
             let (r, c) = (self.b.mi_row, self.b.mi_col);
-            let mi = &self.fs.mi;
+            let mi = &self.t.mi;
             let mut ctx = 0;
             if self.b.avail_u {
                 ctx += mi.skip_mode[mi.idx(r - 1, c)] as usize;
@@ -490,7 +490,7 @@ impl TileDecoder<'_, '_> {
         let mut left_type = 3u8;
         let mut above_type = 3u8;
         let (r, c) = (self.b.mi_row, self.b.mi_col);
-        let mi = &self.fs.mi;
+        let mi = &self.t.mi;
         let rf0 = self.b.ref_frame[0];
         if self.b.avail_l {
             let i = mi.idx(r, c - 1);
@@ -718,7 +718,7 @@ impl TileDecoder<'_, '_> {
 
     fn comp_group_idx_ctx(&self) -> usize {
         let n = self.nb;
-        let mi = &self.fs.mi;
+        let mi = &self.t.mi;
         let (r, c) = (self.b.mi_row, self.b.mi_col);
         let mut ctx = 0;
         if self.b.avail_u {
@@ -745,7 +745,7 @@ impl TileDecoder<'_, '_> {
         let bck = crate::header::relative_dist(seq, fh.order_hints[self.b.ref_frame[1] as usize], fh.order_hint).abs();
         let mut ctx = if fwd == bck { 3 } else { 0 };
         let n = self.nb;
-        let mi = &self.fs.mi;
+        let mi = &self.t.mi;
         let (r, c) = (self.b.mi_row, self.b.mi_col);
         if self.b.avail_u {
             if !n.above_single {

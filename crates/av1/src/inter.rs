@@ -180,7 +180,7 @@ impl TileDecoder<'_, '_> {
     }
 
     fn ref_plane(&self, ref_idx: i32, plane: usize) -> &Plane {
-        if ref_idx < 0 { &self.fs.cur.planes[plane] } else { &self.fs.refs[ref_idx as usize].as_ref().expect("reference frame").buf.planes[plane] }
+        if ref_idx < 0 { &self.t.cur.planes[plane] } else { &self.fs.refs[ref_idx as usize].as_ref().expect("reference frame").buf.planes[plane] }
     }
 
     /// Block inter prediction process (7.11.3.4) into `pred` (stride PRED_STRIDE); `tmp` holds
@@ -388,10 +388,10 @@ impl TileDecoder<'_, '_> {
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn predict_inter(&mut self, plane: usize, x: usize, y: usize, w: usize, h: usize, cand_row: usize, cand_col: usize) {
         let bd = self.fs.bit_depth;
-        let mi_i = self.fs.mi.idx(cand_row, cand_col);
-        let cand_refs = self.fs.mi.ref_frame[mi_i];
-        let cand_mvs = self.fs.mi.mv[mi_i];
-        let filters = self.fs.mi.interp_filter[mi_i];
+        let mi_i = self.t.mi.idx(cand_row, cand_col);
+        let cand_refs = self.t.mi.ref_frame[mi_i];
+        let cand_mvs = self.t.mi.mv[mi_i];
+        let filters = self.t.mi.interp_filter[mi_i];
         let is_compound = cand_refs[1] > INTRA_FRAME as i8;
         let rnd = rounding(is_compound, bd);
         if plane == 0 && self.b.motion_mode as usize == LOCALWARP {
@@ -471,26 +471,26 @@ impl TileDecoder<'_, '_> {
         let max = (1i32 << bd) - 1;
         let is_inter_intra = self.b.is_inter && self.b.ref_frame[1] == INTRA_FRAME as i8;
         if !is_compound && !is_inter_intra {
-            let pl = &mut self.fs.cur.planes[plane];
+            let pl = &mut self.t.cur.planes[plane];
             for i in 0..h {
-                let row = &mut pl.row_mut(y + i)[x..x + w];
+                let row = &mut pl.row_from_mut(y + i, x)[..w];
                 for j in 0..w {
                     row[j] = preds[0][i * PRED_STRIDE + j].clamp(0, max) as u16;
                 }
             }
         } else if ct == COMPOUND_AVERAGE {
-            let pl = &mut self.fs.cur.planes[plane];
+            let pl = &mut self.t.cur.planes[plane];
             for i in 0..h {
-                let row = &mut pl.row_mut(y + i)[x..x + w];
+                let row = &mut pl.row_from_mut(y + i, x)[..w];
                 for j in 0..w {
                     let k = i * PRED_STRIDE + j;
                     row[j] = round2(preds[0][k] + preds[1][k], 1 + rnd.2).clamp(0, max) as u16;
                 }
             }
         } else if ct == COMPOUND_DISTANCE {
-            let pl = &mut self.fs.cur.planes[plane];
+            let pl = &mut self.t.cur.planes[plane];
             for i in 0..h {
-                let row = &mut pl.row_mut(y + i)[x..x + w];
+                let row = &mut pl.row_from_mut(y + i, x)[..w];
                 for j in 0..w {
                     let k = i * PRED_STRIDE + j;
                     row[j] = round2(fwd * preds[0][k] + bck * preds[1][k], 4 + rnd.2).clamp(0, max) as u16;
@@ -533,7 +533,7 @@ impl TileDecoder<'_, '_> {
                     round2(mk(2 * yy, 2 * xx) + mk(2 * yy, 2 * xx + 1) + mk(2 * yy + 1, 2 * xx) + mk(2 * yy + 1, 2 * xx + 1), 2)
                 };
                 let k = yy * PRED_STRIDE + xx;
-                let pl = &mut self.fs.cur.planes[plane];
+                let pl = &mut self.t.cur.planes[plane];
                 if interintra {
                     let p0 = round2(preds[0][k], post).clamp(0, max);
                     let p1 = pl.at(dx + xx, dy + yy) as i32;
@@ -602,7 +602,7 @@ impl TileDecoder<'_, '_> {
             while n < limit && x4 < mi_cols.min(self.b.mi_col + w4) {
                 let cr = self.b.mi_row - 1;
                 let cc = x4 | 1;
-                let mi = &self.fs.mi;
+                let mi = &self.t.mi;
                 let ci = mi.idx(cr, cc);
                 let step4 = (NUM_4X4_BLOCKS_WIDE[mi.mi_size[ci] as usize] as usize).clamp(2, 16);
                 if mi.ref_frame[ci][0] > INTRA_FRAME as i8 {
@@ -623,7 +623,7 @@ impl TileDecoder<'_, '_> {
             while n < limit && y4 < mi_rows.min(self.b.mi_row + h4) {
                 let cc = self.b.mi_col - 1;
                 let cr = y4 | 1;
-                let mi = &self.fs.mi;
+                let mi = &self.t.mi;
                 let ci = mi.idx(cr, cc);
                 let step4 = (NUM_4X4_BLOCKS_HIGH[mi.mi_size[ci] as usize] as usize).clamp(2, 16);
                 if mi.ref_frame[ci][0] > INTRA_FRAME as i8 {
@@ -637,18 +637,18 @@ impl TileDecoder<'_, '_> {
         }
         // the above pass completes before the left pass reads samples; jobs keep that order
         for (pass, cr, cc, x4, y4, pw, ph) in jobs {
-            let ci = self.fs.mi.idx(cr, cc);
-            let m = self.fs.mi.mv[ci][0];
+            let ci = self.t.mi.idx(cr, cc);
+            let m = self.t.mi.mv[ci][0];
             let mv = [m.row as i32, m.col as i32];
-            let ref_idx = self.fs.fh.ref_frame_idx[self.fs.mi.ref_frame[ci][0] as usize - LAST_FRAME] as i32;
+            let ref_idx = self.fs.fh.ref_frame_idx[self.t.mi.ref_frame[ci][0] as usize - LAST_FRAME] as i32;
             let px = (x4 * 4) >> sx;
             let py = (y4 * 4) >> sy;
             let (stx, sty, sxs, sys) = self.mv_scaling(plane, ref_idx, px as i32, py as i32, mv);
-            let filters = self.fs.mi.interp_filter[ci];
+            let filters = self.t.mi.interp_filter[ci];
             let rnd = rounding(false, bd);
             self.block_inter_prediction(plane, ref_idx, stx, sty, sxs, sys, pw, ph, filters, rnd, &mut obmc, &mut tmp);
             let mask = get_mask(if pass == 0 { ph } else { pw });
-            let pl = &mut self.fs.cur.planes[plane];
+            let pl = &mut self.t.cur.planes[plane];
             for i in 0..ph {
                 for j in 0..pw {
                     let mm = if pass == 0 { mask[i] } else { mask[j] } as i32;

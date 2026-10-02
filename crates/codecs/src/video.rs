@@ -427,11 +427,25 @@ impl VideoDecoder for Av1Decoder {
                 self.dec.decode(&self.config_obus).map_err(|e| CodecError::Decode(e.to_string()))?;
             }
         }
-        let pics = self.dec.decode(sample).map_err(|e| CodecError::Decode(e.to_string()))?;
-        Ok(pics.into_iter().map(|p| Self::convert(p, pts)).collect())
+        // With frame threads pictures can come out of a later call; each carries its own pts.
+        let pics = self.dec.decode_pts(sample, pts).map_err(|e| CodecError::Decode(e.to_string()))?;
+        Ok(pics
+            .into_iter()
+            .map(|p| {
+                let pts = p.pts;
+                Self::convert(p, pts)
+            })
+            .collect())
     }
     fn flush(&mut self) -> Vec<DecodedFrame> {
-        Vec::new()
+        self.dec
+            .flush()
+            .into_iter()
+            .map(|p| {
+                let pts = p.pts;
+                Self::convert(p, pts)
+            })
+            .collect()
     }
     fn reset(&mut self) {
         self.dec = filmcraft_av1::Decoder::new();

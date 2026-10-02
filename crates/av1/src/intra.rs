@@ -57,9 +57,9 @@ pub(crate) fn predict_intra(pl: &mut Plane, p: &IntraParams) {
         above[EDGE..EDGE + n].iter_mut().for_each(|a| *a = v);
     } else {
         let above_limit = (p.max_x).min(x as i32 + if p.have_above_right { 2 * w as i32 } else { w as i32 } - 1);
-        let row = pl.row(y - 1);
+        let row = pl.row_from(y - 1, x);
         for i in 0..n {
-            above[EDGE + i] = row[(above_limit.min(x as i32 + i as i32)) as usize] as i32;
+            above[EDGE + i] = row[(above_limit.min(x as i32 + i as i32)) as usize - x] as i32;
         }
     }
     if !p.have_left && p.have_above {
@@ -117,7 +117,7 @@ pub(crate) fn predict_intra(pl: &mut Plane, p: &IntraParams) {
         }
     }
     for i in 0..h {
-        pl.row_mut(y + i)[x..x + w].copy_from_slice(&pred[i * w..i * w + w]);
+        pl.row_from_mut(y + i, x)[..w].copy_from_slice(&pred[i * w..i * w + w]);
     }
 }
 
