@@ -1,5 +1,5 @@
-//! Modal dialogs (About; Keyboard Shortcuts in `shortcuts_dialog`; Preferences/Recovery/Revert in
-//! `file_dialogs`).
+//! Modal dialogs (About; Keyboard Shortcuts in `shortcuts_dialog`; Settings in `settings`;
+//! Recovery/Revert in `file_dialogs`).
 
 use crate::{Dialog, FilmcraftApp};
 

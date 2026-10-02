@@ -387,6 +387,9 @@ pub struct UiState {
     /// Preferences ▸ Playback: play the rendered range when a preview render finishes.
     #[serde(default = "yes")]
     pub play_after_render: bool,
+    /// Settings dialog (open when Some): page and the values being edited.
+    #[serde(default)]
+    pub settings: Option<crate::panels::settings::SettingsDraft>,
     /// Audio Track Mixer: effects and sends section expanded.
     #[serde(default)]
     pub mixer_fx_open: bool,
@@ -701,6 +704,7 @@ impl Default for UiState {
             transcript_search: String::new(),
             play_after_render: true,
             mixer_fx_open: false,
+            settings: None,
             audio_gain: AudioGainDraft::default(),
             delete_tracks: DeleteTracksDraft::default(),
             gfx_edit: None,

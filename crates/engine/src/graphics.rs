@@ -725,6 +725,9 @@ pub fn commands() -> Vec<CommandSpec> {
             has_seq,
             |s, p| {
                 let text = str_p(p, "text").unwrap_or("New Text").to_string();
+                // Settings ▸ Graphics ▸ Text: smart quotes, ligatures, default font
+                let gp = s.prefs.graphics.clone();
+                let text = if gp.smart_quotes { crate::settings::smart_quotes(&text) } else { text };
                 let (w, h) = s.active_sequence().map(|q| (q.settings.width, q.settings.height)).unwrap_or((1920, 1080));
                 let pos = vec2_p(p, "position").unwrap_or(Vec2::new(w as f64 / 2.0, h as f64 / 2.0));
                 let size = f64_p(p, "size").unwrap_or(100.0);
@@ -733,6 +736,10 @@ pub fn commands() -> Vec<CommandSpec> {
                 } else {
                     new_text_layer(&text, pos, size)
                 };
+                layer.params.insert("ligatures".into(), filmcraft_project::Param::new(ParamValue::Bool(gp.ligatures)));
+                if !gp.default_font.trim().is_empty() {
+                    layer.params.insert("font".into(), filmcraft_project::Param::new(ParamValue::Text(gp.default_font.trim().into())));
+                }
                 for (k, id) in [("font", "font"), ("fontStyle", "font_style")] {
                     if let Some(v) = str_p(p, k) {
                         layer.params.insert(id.into(), filmcraft_project::Param::new(ParamValue::Text(v.into())));

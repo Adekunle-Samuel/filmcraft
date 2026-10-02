@@ -577,7 +577,8 @@ fn sequence_from_clip(s: &mut Session, p: &Value) -> Result<Value> {
     let mut at = Tick::ZERO;
     let mut placed = Vec::new();
     for item in items {
-        let Some(range) = item_range(&s.project, item) else { continue };
+        let still = s.prefs.timeline.still_duration(item_rate(&s.project, item));
+        let Some(range) = item_range(&s.project, item, still) else { continue };
         let tg = s.targeting();
         let ids = place_item(s, item, range, at, tg.video_dest, tg.audio_dest, false, "New Sequence From Clip", None)?;
         at = s.active_sequence().map(|q| q.duration()).unwrap_or(at);
@@ -590,12 +591,13 @@ fn sequence_from_clip(s: &mut Session, p: &Value) -> Result<Value> {
 }
 
 /// The media range an item edits in with: its In/Out marks, a subclip's range, or the whole item.
-fn item_range(p: &Project, id: ItemId) -> Option<TimeRange> {
+fn item_range(p: &Project, id: ItemId, still: Tick) -> Option<TimeRange> {
     let it = p.item(id)?;
     let rate = item_rate(p, id);
     Some(match &it.kind {
         ItemKind::Media(m) => {
-            let full = if m.info.duration.0 > 0 { m.info.duration } else { p.settings.default_still_duration };
+            let is_still = matches!(m.info.kind, filmcraft_media::MediaKind::Still);
+            let full = if m.info.duration.0 > 0 && !is_still { m.info.duration } else { still };
             let a = m.mark_in.unwrap_or(Tick::ZERO);
             let b = m.mark_out.map(|o| o + rate.frame_duration()).unwrap_or(full);
             TimeRange::from_bounds(a, b.max(a + rate.frame_duration()))
@@ -1018,7 +1020,9 @@ fn subclip_plan(s: &Session, p: &Value) -> Result<(ItemId, TimeRange, String, La
         let (root, m, sub) = media_root(&s.project, item).ok_or_else(|| bad("clip.makeSubclip", "only media clips can be subclipped"))?;
         let pi = s.project.item(item).expect("resolved");
         let rate = m.frame_rate();
-        let full = sub.unwrap_or(TimeRange::new(Tick::ZERO, if m.info.duration.0 > 0 { m.info.duration } else { s.project.settings.default_still_duration }));
+        let still = s.prefs.timeline.still_duration(rate);
+        let is_still = matches!(m.info.kind, filmcraft_media::MediaKind::Still);
+        let full = sub.unwrap_or(TimeRange::new(Tick::ZERO, if m.info.duration.0 > 0 && !is_still { m.info.duration } else { still }));
         let range = if sub.is_some() {
             full
         } else {
@@ -1575,7 +1579,7 @@ fn replace_with(s: &mut Session, p: &Value, how: Replace) -> Result<Value> {
     let (has_v, has_a) = (pi.has_video(), pi.has_audio());
     // where the replacement starts in its media: Source In (or the subclip / item start)
     let in_point = match how {
-        Replace::Bin => item_range(&s.project, new_item).map(|r| r.start).unwrap_or_default(),
+        Replace::Bin => item_range(&s.project, new_item, s.prefs.timeline.still_duration(s.sequence_rate())).map(|r| r.start).unwrap_or_default(),
         _ => source_range(s).map(|(_, r)| r.start).unwrap_or_default(),
     };
     let src_ph = s.state.source_playhead;

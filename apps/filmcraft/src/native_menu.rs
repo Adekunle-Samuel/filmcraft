@@ -27,11 +27,19 @@ pub fn install(app: &FilmcraftApp, ctx: egui::Context) -> (Receiver<String>, Sho
     let mut native: Vec<(String, MenuItem)> = Vec::new();
     let bar = Menu::new();
     let app_menu = Submenu::new("FilmCraft", true);
+    // FilmCraft ▸ Settings ▸ <category> (Premiere's app-menu layout; General is Cmd+,)
+    let settings = Submenu::new("Settings", true);
+    for it in items.iter().filter(|i| i.id.starts_with("app.settings.")) {
+        let label = it.label.trim_end_matches('…').to_string();
+        let mi = MenuItem::with_id(it.id.clone(), label, true, it.shortcut.as_deref().and_then(accel));
+        native.push((it.id.clone(), mi.clone()));
+        let _ = settings.append(&mi);
+    }
     let _ = app_menu.append_items(&[
         &MenuItem::with_id("app.about", "About FilmCraft", true, None),
         &MenuItem::with_id("help.discord", "Join the ArtCraft Discord…", true, None),
         &PredefinedMenuItem::separator(),
-        &MenuItem::with_id("app.preferences.autoSave", "Settings…", true, None),
+        &settings,
         &PredefinedMenuItem::separator(),
         &PredefinedMenuItem::hide(None),
         &PredefinedMenuItem::hide_others(None),
@@ -41,7 +49,7 @@ pub fn install(app: &FilmcraftApp, ctx: egui::Context) -> (Receiver<String>, Sho
     let _ = bar.append(&app_menu);
     for top in MENUS {
         let sub = Submenu::new(top, true);
-        let mine: Vec<&Item> = items.iter().filter(|i| i.path.first().map(String::as_str) == Some(top)).collect();
+        let mine: Vec<&Item> = items.iter().filter(|i| i.path.first().map(String::as_str) == Some(top) && !i.id.starts_with("app.settings.")).collect();
         // submenus by path prefix (e.g. Clip ▸ Video Options ▸ Time Interpolation), created where
         // their first item appears
         let mut subs: Vec<(Vec<String>, Submenu)> = Vec::new();

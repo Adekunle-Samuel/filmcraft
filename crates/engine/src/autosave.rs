@@ -29,6 +29,8 @@ use filmcraft_project::Project;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
+use crate::settings;
+
 // ------------------------------------------------------------------ preferences
 
 /// Preferences ▸ Auto Save.
@@ -63,7 +65,7 @@ impl AutoSavePrefs {
     }
 }
 
-/// Preferences ▸ Playback (the parts trim-mode loop playback uses).
+/// Settings ▸ Playback.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct PlaybackPrefs {
@@ -71,42 +73,110 @@ pub struct PlaybackPrefs {
     pub preroll_seconds: f64,
     /// "Postroll: N seconds".
     pub postroll_seconds: f64,
+    /// "Step forward/back many: N frames" (Shift+Right / Shift+Left).
+    pub step_many_frames: u32,
+    pub pause_encoder_queue: bool,
+    pub enable_transmit: bool,
+    pub disable_video_in_background: bool,
 }
 
 impl Default for PlaybackPrefs {
     fn default() -> Self {
-        Self { preroll_seconds: 3.0, postroll_seconds: 2.0 }
+        Self {
+            preroll_seconds: 3.0,
+            postroll_seconds: 2.0,
+            step_many_frames: 5,
+            pause_encoder_queue: true,
+            enable_transmit: false,
+            disable_video_in_background: true,
+        }
     }
 }
 
-/// Preferences ▸ Trim.
+/// Settings ▸ Trim.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct TrimPrefs {
     /// "Large Trim Offset: N frames" (Trim Forward/Backward Many, the Trim Monitor's ±N buttons).
     pub large_trim_offset: u32,
+    /// The audio Large Trim Offset (audio time units).
+    pub large_trim_offset_audio: u32,
+    /// "Allow Selection tool to choose Roll and Ripple trims without modifier key".
+    pub selection_tool_roll_ripple: bool,
+    pub tool_changes_trim_type: bool,
+    pub shift_overlapping_clips: bool,
+    pub ripple_adds_edits: bool,
     /// "Playhead position determines trim monitor loop playback" (else the edit point does).
     pub playhead_determines_loop: bool,
+    pub dynamic_ripple_updates: bool,
 }
 
 impl Default for TrimPrefs {
     fn default() -> Self {
-        Self { large_trim_offset: 5, playhead_determines_loop: false }
+        Self {
+            large_trim_offset: 5,
+            large_trim_offset_audio: 100,
+            selection_tool_roll_ripple: false,
+            tool_changes_trim_type: true,
+            shift_overlapping_clips: false,
+            ripple_adds_edits: false,
+            playhead_determines_loop: false,
+            dynamic_ripple_updates: true,
+        }
     }
 }
 
 /// User preferences (persisted as JSON in the per-user data directory). Keys are dotted camelCase
 /// paths: `autoSave.enabled`, `autoSave.intervalMinutes`, `playback.prerollSeconds`, …
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct Preferences {
-    pub auto_save: AutoSavePrefs,
+    /// File layout version ([`crate::settings::PREFS_VERSION`]); older files are migrated on load.
+    pub version: u32,
+    pub general: settings::GeneralPrefs,
+    pub appearance: settings::AppearancePrefs,
     pub audio: AudioPrefs,
-    pub playback: PlaybackPrefs,
-    pub trim: TrimPrefs,
+    pub audio_hardware: settings::AudioHardwarePrefs,
+    pub auto_save: AutoSavePrefs,
+    pub color: settings::ColorPrefs,
+    pub graphics: settings::GraphicsPrefs,
+    pub labels: settings::LabelPrefs,
     pub media: MediaPrefs,
+    pub media_analysis: settings::MediaAnalysisPrefs,
+    pub media_cache: settings::MediaCachePrefs,
+    pub memory: settings::MemoryPrefs,
+    pub playback: PlaybackPrefs,
+    pub plugins: settings::PluginPrefs,
+    pub timeline: settings::TimelinePrefs,
+    pub trim: TrimPrefs,
     pub essential_sound: EssentialSoundPrefs,
     pub guides: GuidePrefs,
+}
+
+impl Default for Preferences {
+    fn default() -> Self {
+        Self {
+            version: settings::PREFS_VERSION,
+            general: Default::default(),
+            appearance: Default::default(),
+            audio: Default::default(),
+            audio_hardware: Default::default(),
+            auto_save: Default::default(),
+            color: Default::default(),
+            graphics: Default::default(),
+            labels: Default::default(),
+            media: Default::default(),
+            media_analysis: Default::default(),
+            media_cache: Default::default(),
+            memory: Default::default(),
+            playback: Default::default(),
+            plugins: Default::default(),
+            timeline: Default::default(),
+            trim: Default::default(),
+            essential_sound: Default::default(),
+            guides: Default::default(),
+        }
+    }
 }
 
 /// View ▸ Guide Templates: guide sets saved from the Program Monitor.
@@ -132,13 +202,61 @@ pub struct Guide {
     pub position: f64,
 }
 
-/// Preferences ▸ Media.
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+/// Settings ▸ Media.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct MediaPrefs {
+    /// "Indeterminate Media Timebase": the frame rate of stills (`29.97df`, `25`, …).
+    pub indeterminate_timebase: String,
+    /// "Timecode": `useMediaSource` | `generate`.
+    pub timecode: String,
+    /// "Frame Count": `startAt0` | `startAt1` | `timecodeConversion`.
+    pub frame_count: String,
+    /// "Default Media Scaling": `none` | `scaleToFrameSize` | `setToFrameSize`.
+    pub default_media_scaling: String,
+    pub write_xmp_id: bool,
+    pub validate_content_credentials: bool,
+    pub write_clip_markers_to_xmp: bool,
+    pub enable_xmp_linking: bool,
+    pub include_captions_on_import: bool,
     /// "Enable proxies": playback and monitors read attached proxies (the monitors' Toggle
     /// Proxies button). Export always uses full-resolution media.
     pub enable_proxies: bool,
+    pub allow_duplicate_media: bool,
+    pub create_folder_for_imported_projects: bool,
+    pub auto_hide_dependent_clips: bool,
+    pub import_image_sequences: bool,
+    pub refresh_growing_files: bool,
+    pub resume_growing_playback: bool,
+    pub growing_refresh_seconds: u32,
+    pub hardware_decoding: bool,
+    pub prores_hardware_encoding: bool,
+}
+
+impl Default for MediaPrefs {
+    fn default() -> Self {
+        Self {
+            indeterminate_timebase: "29.97df".into(),
+            timecode: "useMediaSource".into(),
+            frame_count: "startAt0".into(),
+            default_media_scaling: "none".into(),
+            write_xmp_id: false,
+            validate_content_credentials: true,
+            write_clip_markers_to_xmp: false,
+            enable_xmp_linking: false,
+            include_captions_on_import: true,
+            enable_proxies: false,
+            allow_duplicate_media: false,
+            create_folder_for_imported_projects: false,
+            auto_hide_dependent_clips: false,
+            import_image_sequences: false,
+            refresh_growing_files: true,
+            resume_growing_playback: false,
+            growing_refresh_seconds: 60,
+            hardware_decoding: true,
+            prores_hardware_encoding: true,
+        }
+    }
 }
 
 /// Essential Sound: user presets saved from the panel (built-in presets live in
@@ -171,6 +289,19 @@ pub struct AudioPrefs {
     pub minimum_time_ms: u32,
     /// Track Mixer ▸ "Switch to Touch after Write".
     pub switch_to_touch_after_write: bool,
+    /// "5.1 Mixdown Type": `front` | `frontRear` | `frontLfe` | `frontRearLfe`.
+    pub mixdown_type: String,
+    pub sum_to_mono_in_source: bool,
+    pub scrub_audio: bool,
+    pub maintain_pitch_shuttling: bool,
+    pub mute_input_during_recording: bool,
+    pub generate_waveforms_on_import: bool,
+    pub multithreaded_waveforms: bool,
+    pub render_audio_with_video: bool,
+    pub auto_tag_audio_types: bool,
+    pub always_override_audio_tags: bool,
+    /// "Render Edit in Audition files to": `scratch` | `nextToMedia`.
+    pub edit_in_audition_location: String,
     /// Essential Sound Loudness Auto-Match targets (integrated LUFS) per audio type.
     pub dialogue_target_lufs: f64,
     pub music_target_lufs: f64,
@@ -187,6 +318,17 @@ impl Default for AudioPrefs {
             minimum_time_interval_thinning: false,
             minimum_time_ms: 20,
             switch_to_touch_after_write: true,
+            mixdown_type: "frontRear".into(),
+            sum_to_mono_in_source: true,
+            scrub_audio: true,
+            maintain_pitch_shuttling: true,
+            mute_input_during_recording: false,
+            generate_waveforms_on_import: true,
+            multithreaded_waveforms: false,
+            render_audio_with_video: false,
+            auto_tag_audio_types: true,
+            always_override_audio_tags: false,
+            edit_in_audition_location: "nextToMedia".into(),
             dialogue_target_lufs: -23.0,
             music_target_lufs: -25.0,
             sfx_target_lufs: -21.0,
@@ -228,6 +370,17 @@ impl Preferences {
         self.playback.preroll_seconds = secs(self.playback.preroll_seconds);
         self.playback.postroll_seconds = secs(self.playback.postroll_seconds);
         self.trim.large_trim_offset = self.trim.large_trim_offset.clamp(1, 1000);
+        self.labels.sanitize_labels();
+        self.version = settings::PREFS_VERSION;
+    }
+
+    /// Parse a preferences document: migrate older layouts, repair values against the schema.
+    pub fn from_value(mut v: Value) -> Self {
+        settings::migrate(&mut v);
+        settings::sanitize(&mut v, &Self::default().to_value());
+        let mut p: Preferences = serde_json::from_value(v).unwrap_or_default();
+        p.clamp();
+        p
     }
 
     pub fn to_value(&self) -> Value {
@@ -266,7 +419,10 @@ impl Preferences {
         if slot.is_object() {
             return Err(format!("`{key}` is a group; set one of its keys"));
         }
+        settings::validate(key, &value)?;
         let value = match (&*slot, value) {
+            // Numeric choices (buffer size, sample rate) arrive as strings from the dialog.
+            (Value::Number(_), Value::String(t)) if t.parse::<u64>().is_ok() => Value::from(t.parse::<u64>().unwrap_or_default()),
             // Accept 5.0 for integer prefs (agents often send floats).
             (Value::Number(n), Value::Number(m)) if n.is_u64() && !m.is_u64() => {
                 Value::from(m.as_f64().filter(|f| f.is_finite() && *f >= 0.0).ok_or_else(|| format!("`{key}` must be a non-negative number"))?.round() as u64)
@@ -274,6 +430,8 @@ impl Preferences {
             (_, v) => v,
         };
         *slot = value;
+        let _: Preferences = serde_json::from_value(v.clone()).map_err(|e| format!("`{key}`: {e}"))?;
+        settings::sanitize(&mut v, &Self::default().to_value());
         let mut p: Preferences = serde_json::from_value(v).map_err(|e| format!("`{key}`: {e}"))?;
         p.clamp();
         *self = p;
@@ -281,9 +439,7 @@ impl Preferences {
     }
 
     pub fn load(path: &Path) -> Self {
-        let mut p: Preferences = fs::read(path).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
-        p.clamp();
-        p
+        fs::read(path).ok().and_then(|b| serde_json::from_slice::<Value>(&b).ok()).map(Self::from_value).unwrap_or_default()
     }
 
     pub fn save(&self, path: &Path) -> io::Result<()> {

@@ -968,6 +968,8 @@ pub struct ProjectSettings {
     pub renderer: String,
     pub video_display: filmcraft_time::TimeDisplay,
     pub audio_display_samples: bool,
+    /// Kept for file compatibility; the editor uses Settings ▸ Timeline (user preferences) for
+    /// still and transition default durations, as Premiere does.
     pub default_still_duration: Tick,
     pub default_transition_duration_frames: i64,
     pub default_audio_transition_duration: Tick,

@@ -117,7 +117,8 @@ fn transcriber(s: &Session, p: &Value) -> Result<Arc<dyn Transcriber>> {
     if let Some(t) = &s.transcriber {
         return Ok(t.clone());
     }
-    let model = str_p(p, "model").unwrap_or(filmcraft_speech::models::DEFAULT_MODEL);
+    // Settings ▸ Media Analysis & Transcription ▸ Speech model
+    let model = str_p(p, "model").unwrap_or(&s.prefs.media_analysis.whisper_model);
     if filmcraft_speech::models::find(model).is_none() {
         return Err(speech_err(SpeechError::UnknownModel(model.into())));
     }
@@ -136,9 +137,15 @@ fn generate(s: &mut Session, p: &Value) -> Result<Value> {
         return Err(bad("transcript.generate", "nothing to transcribe (pass `items`, select clips, or open a sequence with audio)"));
     }
     let t = transcriber(s, p)?;
+    // Settings ▸ Media Analysis & Transcription: language (or auto-detect) and speaker labelling
+    let ma = &s.prefs.media_analysis;
+    let default_language = if ma.language_auto_detect { None } else { Some(ma.default_language.clone()) };
     let opts = Options {
-        language: str_p(p, "language").filter(|l| !l.is_empty() && *l != "auto").map(str::to_string),
-        diarize: bool_p(p, "diarize").unwrap_or(true),
+        language: match str_p(p, "language") {
+            Some(l) => Some(l).filter(|l| !l.is_empty() && *l != "auto").map(str::to_string),
+            None => default_language,
+        },
+        diarize: bool_p(p, "diarize").unwrap_or(ma.speaker_labeling != "off"),
         max_speakers: u64_p(p, "maxSpeakers").map(|n| n.clamp(1, 32) as usize).unwrap_or(Options::default().max_speakers),
     };
     let mut done: Vec<(ItemId, Transcript)> = Vec::new();

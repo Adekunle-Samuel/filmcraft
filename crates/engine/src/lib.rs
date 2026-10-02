@@ -27,6 +27,7 @@ pub mod project_manager;
 pub mod proxies;
 pub mod relink;
 pub mod sequence_tools;
+pub mod settings;
 pub mod shortcut_presets;
 pub mod shortcuts;
 pub mod sync;
@@ -389,6 +390,7 @@ impl Session {
         self.shortcuts.set_dir(&cfg.data_dir);
         self.presets.set_dir(&cfg.data_dir);
         self.prefs_path = Some(prefs_path);
+        self.apply_media_cache();
         self.persistence = Some(autosave::Persistence::start(&cfg, self.prefs.auto_save.clone())?);
         self.sync_persistence();
         Ok(())
@@ -446,7 +448,11 @@ impl Session {
 
     /// Replace preferences (persisting them and updating the worker).
     pub fn set_prefs(&mut self, p: autosave::Preferences) -> std::io::Result<()> {
+        let cache_changed = self.prefs.media_cache != p.media_cache;
         self.prefs = p;
+        if cache_changed {
+            self.apply_media_cache();
+        }
         if self.media.use_proxies() != self.prefs.media.enable_proxies {
             self.media.set_use_proxies(self.prefs.media.enable_proxies);
             self.bump_view();
@@ -754,6 +760,8 @@ mod proxies_tests;
 mod relink_tests;
 #[cfg(test)]
 mod sequence_tools_tests;
+#[cfg(test)]
+mod settings_tests;
 #[cfg(test)]
 mod shortcuts_tests;
 #[cfg(test)]

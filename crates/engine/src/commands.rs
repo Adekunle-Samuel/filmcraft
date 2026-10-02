@@ -251,12 +251,15 @@ fn import_source(
     identity: filmcraft_project::MediaIdentity,
     bin: Option<filmcraft_project::BinId>,
 ) -> Result<ItemId> {
-    let info = src.info().clone();
-    let label = match info.kind {
-        filmcraft_media::MediaKind::AudioOnly => Label::Caribbean,
-        filmcraft_media::MediaKind::Still | filmcraft_media::MediaKind::ImageSequence => Label::Lavender,
-        _ => Label::Iris,
-    };
+    let mut info = src.info().clone();
+    // Settings ▸ Labels ▸ Label Defaults
+    let label = s.prefs.labels.for_media(info.kind, info.has_video(), info.has_audio());
+    // Settings ▸ Media ▸ Indeterminate Media Timebase: the frame rate stills report
+    if info.kind == filmcraft_media::MediaKind::Still
+        && let Some(v) = info.video.as_mut()
+    {
+        v.frame_rate = crate::settings::timebase_rate(&s.prefs.media.indeterminate_timebase);
+    }
     let path_s = path.to_string();
     let id = s.edit(&format!("Import {name}"), |p, _| {
         Ok(p.add_item(
@@ -323,6 +326,8 @@ pub(crate) fn place_item(
     .unwrap_or((1920, 1080));
     let seq_id = s.state.active_sequence.ok_or(EngineError::NoSequence)?;
     let media = s.media.clone();
+    let scaling = s.prefs.media.default_media_scaling.clone();
+    let is_media = matches!(pi.kind, ItemKind::Media(_) | ItemKind::Subclip { .. });
     s.edit(label, |p, st| {
         let seq = p.sequence(seq_id).ok_or(EngineError::NoSequence)?;
         let rate = seq.settings.frame_rate;
@@ -334,6 +339,9 @@ pub(crate) fn place_item(
             v.link = link;
             for e in &mut v.effects {
                 resolve_auto_points(e, frame, src_size);
+            }
+            if is_media && src_size != frame {
+                crate::settings::apply_media_scaling(&mut v, &scaling, frame, src_size);
             }
             placements.push((vdest.expect("checked"), v));
         }
@@ -384,7 +392,7 @@ pub(crate) fn source_range(s: &Session) -> Option<(ItemId, TimeRange)> {
     let item = s.state.source_item?;
     let pi = s.project.item(item)?;
     let dur = match &pi.kind {
-        ItemKind::Media(m) if matches!(m.info.kind, filmcraft_media::MediaKind::Still) => s.project.settings.default_still_duration,
+        ItemKind::Media(m) if matches!(m.info.kind, filmcraft_media::MediaKind::Still) => s.prefs.timeline.still_duration(s.sequence_rate()),
         _ => pi.duration(),
     };
     let (mi, mo) = match &pi.kind {
@@ -490,8 +498,12 @@ fn build() -> Vec<CommandSpec> {
                 let na = u64_p(p, "audio").unwrap_or(3) as usize;
                 let n = s.project.sequences().count() + 1;
                 let name = str_p(p, "name").map(str::to_string).unwrap_or_else(|| format!("Sequence {n:02}"));
+                let seq_label = s.prefs.labels.defaults.sequence;
                 let id = s.edit("New Sequence", |pr, st2| {
                     let id = pr.new_sequence(&name, st, nv, na, None);
+                    if let Some(it) = pr.item_mut(id) {
+                        it.label = seq_label;
+                    }
                     st2.active_sequence = Some(id);
                     if !st2.open_sequences.contains(&id) {
                         st2.open_sequences.push(id);
@@ -632,6 +644,20 @@ fn build() -> Vec<CommandSpec> {
             }
             // Project Settings ▸ Ingest: copy / transcode / create proxies
             let item_ids: Vec<ItemId> = ids.iter().map(|i| ItemId(*i)).collect();
+            // Settings ▸ Media Analysis & Transcription ▸ Automatically transcribe clips
+            let ma = &s.prefs.media_analysis;
+            if ma.auto_transcribe
+                && ma.auto_transcribe_scope == "allImported"
+                && !ids.is_empty()
+                && (s.transcriber.is_some() || crate::transcript::speech_available())
+            {
+                let audio: Vec<u64> = ids.iter().copied().filter(|i| s.project.item(ItemId(*i)).is_some_and(|it| it.has_audio())).collect();
+                if !audio.is_empty()
+                    && let Err(e) = s.execute("transcript.generate", json!({"items": audio}))
+                {
+                    errors.push(format!("transcription: {e}"));
+                }
+            }
             let ingest = match crate::proxies::ingest(s, &item_ids) {
                 Ok(v) => v,
                 Err(e) => {
@@ -764,8 +790,16 @@ fn build() -> Vec<CommandSpec> {
             s.set_prefs(next).map_err(|e| EngineError::Other(format!("saving preferences: {e}")))?;
             Ok(s.prefs.to_value())
         }),
-        cmd!("prefs.reset", "Reset Preferences", [], None, "{}", always, |s, _| {
-            s.set_prefs(Default::default()).map_err(|e| EngineError::Other(format!("saving preferences: {e}")))?;
+        cmd!("prefs.reset", "Reset Preferences", [], None, r#"{"category":str?}"#, always, |s, p| {
+            let next = match str_p(p, "category") {
+                Some(c) => {
+                    let mut n = s.prefs.clone();
+                    n.reset_category(c).map_err(|e| bad("prefs.reset", e))?;
+                    n
+                }
+                None => Default::default(),
+            };
+            s.set_prefs(next).map_err(|e| EngineError::Other(format!("saving preferences: {e}")))?;
             Ok(s.prefs.to_value())
         }),
         cmd!(
@@ -1350,9 +1384,15 @@ fn build() -> Vec<CommandSpec> {
         }),
         cmd!("playhead.stepForward", "Step Forward One Frame", [], Some("Right"), "{}", has_seq, |s, _| s.execute("playhead.step", json!({"frames": 1}))),
         cmd!("playhead.stepBack", "Step Back One Frame", [], Some("Left"), "{}", has_seq, |s, _| s.execute("playhead.step", json!({"frames": -1}))),
-        cmd!("playhead.stepForward5", "Step Forward Five Frames", [], Some("Shift+Right"), "{}", has_seq, |s, _| s
-            .execute("playhead.step", json!({"frames": 5}))),
-        cmd!("playhead.stepBack5", "Step Back Five Frames", [], Some("Shift+Left"), "{}", has_seq, |s, _| s.execute("playhead.step", json!({"frames": -5}))),
+        // Settings ▸ Playback ▸ Step forward/back many
+        cmd!("playhead.stepForward5", "Step Forward Five Frames", [], Some("Shift+Right"), "{}", has_seq, |s, _| {
+            let n = s.prefs.playback.step_many_frames as i64;
+            s.execute("playhead.step", json!({"frames": n}))
+        }),
+        cmd!("playhead.stepBack5", "Step Back Five Frames", [], Some("Shift+Left"), "{}", has_seq, |s, _| {
+            let n = s.prefs.playback.step_many_frames as i64;
+            s.execute("playhead.step", json!({"frames": -n}))
+        }),
         cmd!("playhead.nextEdit", "Go to Next Edit Point", [], Some("Down"), "{}", has_seq, |s, _| {
             let t = s.playhead();
             if let Some(e) = s.active_sequence().and_then(|q| q.edit_points().into_iter().find(|e| *e > t)) {
@@ -1419,10 +1459,12 @@ fn build() -> Vec<CommandSpec> {
                 let a = track_p(s, p, "audioTrack").or(tg.audio_dest);
                 let pi = s.project.item(item).ok_or_else(|| bad("timeline.place", "no such item"))?;
                 let full = match &pi.kind {
+                    // Settings ▸ Timeline ▸ Still Image Default Duration
                     ItemKind::Media(m)
-                        if matches!(m.info.kind, filmcraft_media::MediaKind::Still | filmcraft_media::MediaKind::Synthetic) && m.info.duration.0 <= 0 =>
+                        if matches!(m.info.kind, filmcraft_media::MediaKind::Still)
+                            || (matches!(m.info.kind, filmcraft_media::MediaKind::Synthetic) && m.info.duration.0 <= 0) =>
                     {
-                        s.project.settings.default_still_duration
+                        s.prefs.timeline.still_duration(s.sequence_rate())
                     }
                     _ => pi.duration(),
                 };
@@ -2024,6 +2066,7 @@ fn build() -> Vec<CommandSpec> {
     ];
     crate::sequence_tools::splice(&mut v);
     v.extend(crate::captions::commands());
+    v.extend(crate::settings::commands());
     v.extend(crate::mixer::commands());
     v.extend(crate::multicam::commands());
     v.extend(crate::essential_sound::commands());
@@ -2382,8 +2425,12 @@ fn apply_transition(s: &mut Session, p: &Value, kind: TrackKind) -> Result<Value
         .unwrap_or_else(|| if kind == TrackKind::Video { s.state.default_video_transition.clone() } else { s.state.default_audio_transition.clone() });
     let def = filmcraft_project::effect::find_effect_by_name(&eff_id).ok_or_else(|| bad("transition", format!("unknown transition `{eff_id}`")))?;
     let rate = s.sequence_rate();
-    let frames = p.get("frames").and_then(Value::as_i64).unwrap_or(s.project.settings.default_transition_duration_frames);
-    let dur = rate.tick_of(frames);
+    // Settings ▸ Timeline ▸ Video / Audio Transition Default Duration
+    let dur = match p.get("frames").and_then(Value::as_i64) {
+        Some(frames) => rate.tick_of(frames),
+        None if kind == TrackKind::Video => s.prefs.timeline.video_transition_duration(rate),
+        None => s.prefs.timeline.audio_transition_duration(rate),
+    };
     let t = s.playhead();
     let clip = clip_p(p, "clip");
     let edge = str_p(p, "edge").map(str::to_string);
@@ -2535,6 +2582,7 @@ fn write_project(s: &mut Session, path: &str, adopt: bool) -> Result<Value> {
     if adopt {
         s.path = Some(path.to_string());
         s.previews_follow_path();
+        s.note_recent_project();
         s.saved_revision = s.revision;
         s.loaded_schema = filmcraft_format::SCHEMA_VERSION;
     }
@@ -2577,6 +2625,7 @@ fn open_project(s: &mut Session, path: &str) -> Result<Value> {
     let loaded = filmcraft_format::decode(&bytes).map_err(|e| EngineError::Other(format!("{path}: {e}")))?;
     let (from, migrated) = (loaded.schema_version, loaded.migrated());
     install_project(s, loaded.project, Some(path.to_string()), true);
+    s.note_recent_project();
     s.loaded_schema = from;
     if migrated {
         s.toast(format!("Upgraded project from schema v{from} to v{}; the original is kept as a backup when you save", filmcraft_format::SCHEMA_VERSION));

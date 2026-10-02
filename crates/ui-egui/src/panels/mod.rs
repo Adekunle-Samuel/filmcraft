@@ -23,6 +23,7 @@ pub mod monitor_view;
 pub mod multicam;
 pub mod presets;
 pub mod project;
+pub mod settings;
 pub mod shortcuts_dialog;
 pub mod text;
 pub mod timeline;
