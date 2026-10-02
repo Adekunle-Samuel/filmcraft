@@ -125,6 +125,7 @@ pub(crate) fn layer_defs() -> Vec<EffectDef> {
                 chc("caps", "Capitalisation", CAPS_OPTS, 0, X),
                 bo("underline", "Underline", false, X),
                 fl("box_width", "Text Box Width", 0.0, (0.0, 100_000.0), (0.0, 3840.0), "", X),
+                bo("vertical", "Vertical Text", false, X),
             ],
         ),
         layer_def(
@@ -193,6 +194,8 @@ pub struct TextProps {
     pub underline: bool,
     /// Area-text width (0 = point text).
     pub box_width: f32,
+    /// Vertical text (characters stacked top to bottom; columns right to left).
+    pub vertical: bool,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -273,6 +276,7 @@ pub fn eval_layer(e: &EffectInstance, t: Tick, frame: (u32, u32)) -> Option<Laye
             caps: ch(e, "caps", t),
             underline: bb(e, "underline", t),
             box_width: ff(e, "box_width", t).max(0.0),
+            vertical: bb(e, "vertical", t),
         }),
         SHAPE_LAYER => {
             let sz = vv(e, "size", t);
@@ -335,6 +339,27 @@ pub fn new_text_layer(text: &str, position: Vec2, size: f64) -> EffectInstance {
     set(&mut e, "position", ParamValue::Vec2(position));
     set(&mut e, "size", ParamValue::Float(size));
     e
+}
+
+/// A new vertical text layer (Graphics ▸ New Layer ▸ Vertical Text).
+pub fn new_vertical_text_layer(text: &str, position: Vec2, size: f64) -> EffectInstance {
+    let mut e = new_text_layer(text, position, size);
+    set(&mut e, "vertical", ParamValue::Bool(true));
+    e
+}
+
+/// Reset a layer's parameters to their defaults, keeping its content (name, text, shape kind,
+/// geometry and path) — Graphics ▸ Reset All Parameters.
+pub fn reset_layer_params(e: &mut EffectInstance) {
+    const KEEP: &[&str] = &["name", "text", "shape", "size", "sides", "points", "vertical"];
+    let Some(def) = crate::effect::find_effect(&e.effect) else { return };
+    let mut fresh = def.instance();
+    for k in KEEP {
+        if let Some(p) = e.params.remove(*k) {
+            fresh.params.insert((*k).to_string(), p);
+        }
+    }
+    e.params = fresh.params;
 }
 
 /// A new shape layer centred at `position`.

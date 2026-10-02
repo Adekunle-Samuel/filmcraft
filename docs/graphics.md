@@ -45,14 +45,26 @@ Timecode and Clip Name effects also draw with the text engine.
 
 | Command | Menu / shortcut | Params |
 |---|---|---|
-| `graphics.newText` | Graphics and Titles ▸ New Layer ▸ Text (⌘T) | `text`, `position`, `clip` (add to this graphic), `size`, `font`, `fontStyle`, `seconds` (5), `track`, `time` |
-| `graphics.newShape` | Graphics and Titles ▸ New Layer ▸ Shape | `shape` (rectangle/ellipse/polygon/path), `position`, `size`, `points`, `clip` |
+| `graphics.newText` | Graphics and Titles ▸ New Layer ▸ Text (⌘T) | `text`, `position`, `clip` (add to this graphic), `vertical`, `size`, `font`, `fontStyle`, `seconds` (5), `track`, `time` |
+| `graphics.newVerticalText` | New Layer ▸ Vertical Text | as `graphics.newText`; characters stack top to bottom, paragraphs are columns right to left |
+| `graphics.newRectangle`, `graphics.newEllipse`, `graphics.newPolygon` | New Layer ▸ Rectangle (⌥⌘R), Ellipse (⌥⌘E), Polygon | `position`, `size`, `clip`; polygon `sides` (6) |
+| `graphics.newFromFile` | New Layer ▸ From file… | `path` — imports the image or video and places it above the clips at the playhead (a separate clip; graphics have no media layers yet) |
+| `graphics.newShape` | (agents) | `shape` (rectangle/ellipse/polygon/path), `position`, `size`, `points`, `clip` |
 | `graphics.setText` | typing on the monitor | `clip`, `layer`, `text`, `merge` (coalesce one typing session into one undo step) |
 | `graphics.set` | Properties panel | `clip`, `layer`, `props` {parameter id or camelCase alias: value; choices by index or name}, `time` |
 | `graphics.selectLayer` | layer list / monitor click | `clip`, `layers` |
 | `graphics.deleteLayer`, `graphics.arrangeLayer` | layer list | `clip`, `layer`, `to` (front/back/forward/backward/index) |
-| `graphics.align` | Align and Transform | `align` (left/hcenter/right/top/vcenter/bottom), `to` (frame/selection), `layers` |
-| `graphics.distribute` | Align and Transform | `axis` (horizontal/vertical), `layers` (3+) |
+| `graphics.align` | Align and Transform | `align` (left/hcenter/right/top/vcenter/bottom), `to` (frame/group/selection), `layers` |
+| `graphics.alignFrame.<how>` | Align to Video Frame ▸ Left / Center Horizontally / Right / Top / Center Vertically / Bottom | each selected layer to the frame |
+| `graphics.alignGroup.<how>` | Align to Video Frame as Group ▸ … | the selected layers' union to the frame (2+ layers; relative positions kept) |
+| `graphics.alignSelection.<how>` | Align to Selection ▸ … | each selected layer to the selection's union (2+ layers) |
+| `graphics.distribute` | Align and Transform | `axis` (horizontal/vertical), `space` (equal gaps), `layers` (3+) |
+| `graphics.distributeVertically`, `…SpaceVertically`, `…Horizontally`, `…SpaceHorizontally` | Distribute ▸ … | the selected layers (3+): equal centre spacing or equal gaps |
+| `graphics.bringToFront`, `graphics.bringForward`, `graphics.sendBackward`, `graphics.sendToBack` | Arrange ▸ … (⇧⌘], ⌘], ⌘[, ⇧⌘[) | `clip`, `layer` |
+| `graphics.selectNextGraphic`, `graphics.selectPreviousGraphic` | Select ▸ Select Next / Previous Graphic | selects the next / previous graphic clip in timeline order (moves the playhead onto it) |
+| `graphics.selectNextLayer`, `graphics.selectPreviousLayer` | Select ▸ Select Next / Previous Layer (⌥⌘], ⌥⌘[) | cycles the selected layer |
+| `graphics.resetAllParameters` | Reset All Parameters | `layers` (default: the selected layers, else all) — appearance, text formatting and transform back to defaults; text, shape and geometry kept |
+| `graphics.resetDuration` | Reset Duration | `seconds` (5), limited by the next clip on the track |
 | `graphics.list` | (query) | `clip` — layers with names, kinds, text, position and on-canvas quads |
 | `fonts.list` | (query) | `system` (scan system font folders, default true) — families and styles |
 
@@ -69,6 +81,10 @@ duration (a track is added if needed).
 | Selection (V) | Click a layer to select it (box with handles and anchor point); drag to move; drag a corner handle to scale; double-click a text layer to edit it. |
 | Rectangle / Ellipse | Drag to draw a shape layer. |
 | Pen (P) | Click to place points; click the first point (or Return) to close the path; Esc cancels. |
+
+Moving a layer snaps its edges or centre to the frame edges, the frame centre and the guides
+(View ▸ Snap in Program Monitor, on by default; hold ⌘/Ctrl to move freely). See
+[monitors.md](monitors.md) for rulers and guides.
 
 Automation ids: `program.layer.<clip>.<layer>`, `program.layer.<clip>.<layer>.handle.<n>`,
 `program.textEdit` (while editing).
