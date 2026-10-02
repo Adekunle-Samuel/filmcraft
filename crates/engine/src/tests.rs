@@ -185,7 +185,8 @@ fn effects_list_reports_transition_folders() {
     let wipes = wipes.as_array().unwrap();
     assert_eq!(wipes.len(), 9);
     let lw = wipes.iter().find(|e| e["id"] == "linear_wipe").unwrap();
-    assert_eq!(lw["folder"], "Video Transitions/Wipe");
+    assert_eq!(lw["folder"], "Wipe");
+    assert_eq!(lw["path"], "Video Transitions/Wipe");
     let aa = lw["paramInfo"].as_array().unwrap().iter().find(|p| p["id"] == "antialias").unwrap();
     assert_eq!(aa["type"], "choice");
     assert_eq!(aa["options"].as_array().unwrap().len(), 4);
