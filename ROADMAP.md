@@ -2,22 +2,47 @@
 
 Progress toward feature parity with Adobe Premiere Pro, with estimates. Updated as milestones land.
 
-**Last updated:** 2026-10-02 · **Overall parity:** ~58% · **Code:** 34 crates, 1095 tests
+**Last updated:** 2026-10-02 · **Overall parity:** ~62% (measured scorecard below) · **Code:** 34 crates, 1095 tests
+
+## Parity scorecard
+
+Measured against Premiere Pro 26.5 on this machine. Menu items: the native menu bar dump, minus
+Adobe-cloud-only items (Team Projects, Productions, Firefly, Stock, Dynamic Link, account/help pages),
+matched against `filmcraft-cli commands` and the UI command table. Effects: the Effects panel tree.
+
+| Area | Weight | Measured | Coverage |
+|---|---|---|---|
+| Editing, timeline, trimming, multicam | 20% | core edit algebra, trim modes, sync, multicam, menu long tail | ~75% |
+| Menus / commands | (cross-check) | ~285 of 344 in-scope menu items | ~82% |
+| Effects and transitions | 12% | video effects 56/93, audio effects 30/53, video transitions 30/84, audio transitions 3/3 | ~51% |
+| Media I/O and codecs | 12% | H.264, HEVC, VP9, AV1, ProRes, DNx, MJPEG, Opus, AAC, MP4/MOV/MKV/WebM; no MXF, image sequences, HW decode | ~70% |
+| Panels and UI fidelity | 12% | all main panels; Metadata, Media Browser, scopes (parade/histogram), Timecode, Events, Search panels thin or missing | ~60% |
+| Audio | 10% | mixer, automation, Essential Sound, meters, 30 effects | ~60% |
+| Colour | 8% | Lumetri complete, LUTs, colour management, HDR | ~80% |
+| Graphics and captions | 8% | text engine, shapes, captions, transcripts; no MOGRT, rolls/crawls, responsive design | ~60% |
+| Export | 8% | own H.264/AAC, ProRes, DNxHR, PNG/GIF/WAV; no preset library/queue UI, AAF/OMF, MXF | ~60% |
+| Preferences and project management | 5% | Auto Save, shortcuts, project manager, proxies; 18 of 20 Settings categories missing | ~55% |
+| Performance | 5% | 1080p real-time, 3×1080p; 4K/8K and AV1 real-time not yet | ~50% |
+| **Weighted total** | | | **~62%** |
 
 ## Estimate to parity
 
-Throughput observed so far: ~25% parity in the first ~5 wall-clock hours (Sep 30, 05:22 → 10:00), with
-3–4 coding agents running in parallel and one integrator. The early percentage points were the cheap
-ones; the remaining work is broader, with a long tail of commands, dialogs and edge cases.
+Measured throughput in the last work block (2026-10-01 night → 10-02): five Opus 5.5 agents in
+parallel for ~4.5 wall-clock hours (~18 agent-hours including integration) moved parity by ~4 points
+(≈4–5 agent-hours per point), on a machine that was heavily overloaded (load 150–300 on 14 cores) and
+once ran out of disk. The remaining points are a long tail (each effect, dialog and preference page is
+small, but there are many), so the estimate applies a 1.3–1.5× tail factor.
 
-| | Agent-hours | Wall-clock (4–6 parallel agents, 24/7) |
+| | Opus 5.5 agent-hours | Wall-clock (4–5 parallel agents + integrator) |
 |---|---|---|
-| Feature parity by checklist | ~350–500 | **~100–150 h (4–6 days)** |
-| Robust on real-world material (codec edge cases, 4K/8K performance, pro workflows) | +150–300 | **+1–2 weeks** |
+| Feature parity by checklist (~38 points left) | ~190–260 | **~45–65 h** |
+| Robust on real-world material (codec edge cases, 4K/8K performance, pro workflows) | +120–200 | **+30–50 h** |
+| **Total to "100% and better"** | **~310–460** | **~75–115 h (≈3–5 days, 24/7)** |
 
-Limits on speed: machine load (builds and benchmarks slow down under many agents), disk space, and a
-single integrator merging and checking each agent's work. With one agent and no parallelism, multiply
-wall-clock by ~3–4.
+Limits on speed: CPU and disk on one machine (more than ~5 agents slows everyone down: each worktree
+build is 6–7 GB and a full `cargo xtask ci` takes 20–60 min under load), and a single integrator
+merging, resolving conflicts (e.g. two agents bumping the project schema) and re-running CI. With one
+agent and no parallelism, multiply wall-clock by ~3–4.
 
 Not reachable clean-room and locally: **Generative Extend** (needs a large video-generation model).
 **Enhance Speech** and **Auto Reframe** are feasible only with openly licensed models we can ship.
