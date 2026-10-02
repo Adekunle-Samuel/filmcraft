@@ -19,6 +19,21 @@ pub enum ThemeKind {
 }
 
 impl ThemeKind {
+    /// Settings ▸ Appearance ▸ Color Theme value (`darkest`, `dark`, `light`).
+    pub fn pref_name(self) -> &'static str {
+        match self {
+            ThemeKind::Dark => "darkest",
+            ThemeKind::Medium => "dark",
+            ThemeKind::Light => "light",
+        }
+    }
+    pub fn from_pref(s: &str) -> ThemeKind {
+        match s {
+            "dark" => ThemeKind::Medium,
+            "light" => ThemeKind::Light,
+            _ => ThemeKind::Dark,
+        }
+    }
     pub fn from_name(s: &str) -> Option<ThemeKind> {
         match s.to_ascii_lowercase().as_str() {
             "dark" | "darkest" => Some(ThemeKind::Dark),
@@ -176,6 +191,31 @@ impl Tokens {
                 ..dark
             },
         }
+    }
+
+    /// Settings ▸ Appearance on top of a theme: the highlight colour (selections, focus, primary
+    /// buttons) and accessible colour contrast (brighter secondary text and borders).
+    pub fn with_appearance(mut self, highlight: Option<[u8; 3]>, accessible_contrast: bool) -> Self {
+        if let Some([r, g, b]) = highlight {
+            let c = Color32::from_rgb(r, g, b);
+            let lift = |v: u8| v.saturating_add(16);
+            self.accent = c;
+            self.accent_hover = Color32::from_rgb(lift(r), lift(g), lift(b));
+        }
+        if accessible_contrast {
+            if self.kind == ThemeKind::Light {
+                self.text_dim = Color32::from_rgb(40, 40, 40);
+                self.text_faint = Color32::from_rgb(80, 80, 80);
+                self.field_border = Color32::from_rgb(110, 110, 110);
+            } else {
+                self.text_dim = self.text;
+                self.text_faint = Color32::from_rgb(0xa8, 0xa8, 0xa8);
+                self.tab_text = self.tab_text_active;
+                self.field_border = Color32::from_rgb(0x6a, 0x6a, 0x6a);
+                self.separator = Color32::from_rgb(0x50, 0x50, 0x50);
+            }
+        }
+        self
     }
 
     /// Mono font for timecode.

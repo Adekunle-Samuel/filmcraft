@@ -125,9 +125,15 @@ pub fn handle(app: &mut FilmcraftApp, ctx: &egui::Context, req: &ControlRequest)
             }
             if let Some(th) = s("theme") {
                 match crate::theme::ThemeKind::from_name(th) {
-                    Some(k) => app.set_theme(ctx, k),
+                    Some(k) => crate::panels::settings::set_theme(app, ctx, k),
                     None => return err("unknown theme (dark, medium, light)"),
                 }
+            }
+            // the open Settings dialog: page and draft values (`{"page": id, "values": {key: value}}`)
+            if let Some(st) = p.get("settings")
+                && let Err(e) = crate::panels::settings::patch(app, st)
+            {
+                return err(e);
             }
             if let Some(f) = s("focused").and_then(PanelKind::from_name) {
                 app.ui.focused = f;

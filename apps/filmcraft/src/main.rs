@@ -3,6 +3,9 @@
 //! Usage: `filmcraft [--control <port>] [--demo|--empty] [--recover|--no-recover] [--data-dir <dir>]
 //! [project.fcproj | media files…]`
 //!
+//! Without a project, `--demo` or `--empty`, Settings ▸ General ▸ At Startup decides: Show Home
+//! (the demo project), Open Most Recent, or an empty project.
+//!
 //! `--control <port>` (or `FILMCRAFT_CONTROL_PORT`) starts a localhost JSON-lines control server;
 //! see `filmcraft_ui_egui::control` for the methods.
 //!
@@ -30,14 +33,16 @@ fn main() -> eframe::Result {
     let mut control_port: Option<u16> = std::env::var("FILMCRAFT_CONTROL_PORT").ok().and_then(|p| p.parse().ok());
     let mut files = Vec::new();
     let mut demo = true;
+    // --demo / --empty given: skip Settings ▸ General ▸ At Startup
+    let mut startup_flag = false;
     let mut recover: Option<bool> = None;
     let mut data_dir = None;
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {
         match a.as_str() {
             "--control" => control_port = args.next().and_then(|p| p.parse().ok()),
-            "--demo" => demo = true,
-            "--empty" => demo = false,
+            "--demo" => (demo, startup_flag) = (true, true),
+            "--empty" => (demo, startup_flag) = (false, true),
             "--recover" => recover = Some(true),
             "--no-recover" => recover = Some(false),
             "--data-dir" => data_dir = args.next().map(std::path::PathBuf::from),
@@ -79,6 +84,20 @@ fn main() -> eframe::Result {
                 if let Err(e) = session.execute("file.open", json!({"path": p})) {
                     eprintln!("filmcraft: {e}");
                 }
+            } else if !startup_flag && session.prefs.general.at_startup == "openMostRecent" {
+                // Settings ▸ General ▸ At Startup ▸ Open Most Recent
+                let recent = session.prefs.general.recent_projects.iter().find(|p| std::path::Path::new(p).exists()).cloned();
+                match recent {
+                    Some(p) => {
+                        if let Err(e) = session.execute("file.open", json!({"path": p})) {
+                            eprintln!("filmcraft: {e}");
+                        }
+                    }
+                    None => {
+                        let _ = session.execute("file.openDemoProject", json!({}));
+                    }
+                }
+            } else if !startup_flag && session.prefs.general.at_startup == "emptyProject" {
             } else if demo {
                 let _ = session.execute("file.openDemoProject", json!({}));
             }
@@ -104,6 +123,7 @@ fn main() -> eframe::Result {
                 app.set_wgpu(rs);
             }
             if let Some(out) = audio::CpalOut::new() {
+                // Settings ▸ Audio Hardware is applied on the first frame (`apply_prefs`)
                 app.audio = Some(Box::new(out));
             }
             app.hooks.pick_files = Some(Box::new(|exts: &[&str]| {

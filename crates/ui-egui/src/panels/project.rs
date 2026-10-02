@@ -279,7 +279,7 @@ fn list_bin(
                 let cols = columns(r);
                 let x = r.min.x + 6.0 + depth as f32 * 14.0;
                 // label swatch
-                let lc = it.label.rgb();
+                let lc = app.session.prefs.labels.rgb(it.label);
                 ui.painter().rect_filled(Rect::from_center_size(pos2(x + 5.0, r.center().y), vec2(8.0, 12.0)), 1.5, Color32::from_rgb(lc[0], lc[1], lc[2]));
                 icons::paint(ui.painter(), Rect::from_center_size(pos2(x + 20.0, r.center().y), vec2(14.0, 14.0)), item_icon(&it.kind), t.icon);
                 let name_clip = ui.painter().with_clip_rect(Rect::from_min_max(r.min, pos2(cols[1] - 6.0, r.max.y)));
@@ -444,7 +444,7 @@ fn icon_view(app: &mut FilmcraftApp, ui: &mut egui::Ui, root: &Bin, filter: &str
             if selected {
                 ui.painter().rect_stroke(r, 3.0, Stroke::new(2.0, t.accent), StrokeKind::Outside);
             }
-            let lc = it.label.rgb();
+            let lc = app.session.prefs.labels.rgb(it.label);
             ui.painter().rect_filled(Rect::from_min_size(pos2(r.min.x, r.max.y + 6.0), vec2(8.0, 12.0)), 1.5, Color32::from_rgb(lc[0], lc[1], lc[2]));
             let secs = dur.seconds().max(0.0) as u64;
             let dtext =

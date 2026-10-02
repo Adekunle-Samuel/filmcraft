@@ -296,6 +296,24 @@ pub fn playback_plan(render_cost: f64, fps: f64, workers: usize) -> (i64, i64) {
 }
 
 impl FrameServer {
+    /// Settings ▸ Memory ▸ frame cache budget (bytes); evicts down to it right away.
+    pub fn set_cache_budget(&self, bytes: usize) {
+        let mut c = self.shared.done.lock().unwrap_or_else(|e| e.into_inner());
+        c.budget = bytes.max(16 << 20);
+        if c.bytes > c.budget
+            && let Some((k, v)) = c.map.iter().next().map(|(k, (v, _))| (*k, v.clone()))
+        {
+            // re-inserting an entry runs the eviction pass
+            c.insert(k, v);
+        }
+    }
+
+    /// (bytes cached, budget).
+    pub fn cache_usage(&self) -> (usize, usize) {
+        let c = self.shared.done.lock().unwrap_or_else(|e| e.into_inner());
+        (c.bytes, c.budget)
+    }
+
     pub fn new(pool: Arc<MediaPool>, services: Arc<dyn Services>, previews: Arc<PreviewStore>, workers: usize) -> Self {
         let shared = Arc::new(Shared {
             queue: Mutex::new(VecDeque::new()),
