@@ -21,6 +21,7 @@ pub mod masks;
 pub mod media_pool;
 pub mod mixer;
 pub mod multicam;
+pub mod panels;
 pub mod perf;
 pub mod presets;
 pub mod previews;
@@ -29,6 +30,7 @@ pub mod project_tools;
 pub mod proxies;
 pub mod relink;
 pub mod scene_detect;
+pub mod scopes;
 pub mod sequence_extras;
 pub mod sequence_tools;
 pub mod settings;
@@ -278,6 +280,8 @@ pub struct Session {
     /// Speech recogniser for `transcript.generate` (None = the Whisper model named by the command,
     /// feature `whisper`). Hosts and tests install one here.
     pub transcriber: Option<Arc<dyn filmcraft_speech::Transcriber>>,
+    /// The Events panel log: failed commands, job results, auto-save errors, messages.
+    pub log: panels::EventLog,
     /// Nesting depth of [`Session::execute`] (commands that run other commands).
     exec_depth: u32,
 }
@@ -359,6 +363,7 @@ impl Session {
             presets: Default::default(),
             stepped: Vec::new(),
             transcriber: None,
+            log: Default::default(),
             exec_depth: 0,
         }
     }
@@ -442,6 +447,7 @@ impl Session {
         proxies::poll(self);
         masks::poll(self);
         scene_detect::poll(self);
+        panels::log_jobs(self);
         let Some(p) = self.persistence.as_mut() else { return };
         for ev in p.drain_events() {
             match ev {
@@ -450,7 +456,10 @@ impl Session {
                         self.saved_revision = revision;
                     }
                 }
-                autosave::WorkerEvent::Error(m) => self.events.push(Event::Toast { message: m, error: true }),
+                autosave::WorkerEvent::Error(m) => {
+                    self.log.push(panels::Level::Error, "autosave", m.clone());
+                    self.events.push(Event::Toast { message: m, error: true });
+                }
                 _ => {}
             }
         }
@@ -506,10 +515,21 @@ impl Session {
         if self.exec_depth == 0 && spec.journal && self.trim_play.active() {
             self.settle_trim_playback(id);
         }
-        (spec.enabled)(self).map_err(|why| EngineError::Disabled(id.to_string(), why))?;
+        if let Err(why) = (spec.enabled)(self) {
+            let e = EngineError::Disabled(id.to_string(), why);
+            if self.exec_depth == 0 {
+                self.log.push(panels::Level::Warning, id, e.to_string());
+            }
+            return Err(e);
+        }
         self.exec_depth += 1;
         let r = (spec.run)(self, &params);
         self.exec_depth -= 1;
+        if self.exec_depth == 0
+            && let Err(e) = &r
+        {
+            self.log.push(panels::Level::Error, id, e.to_string());
+        }
         self.sync_persistence();
         // playback reads the newest snapshot (mixer moves, mutes… are heard while playing)
         self.previews.live.publish_project(self.project.clone());
@@ -655,7 +675,16 @@ impl Session {
     }
 
     pub fn toast(&mut self, msg: impl Into<String>) {
-        self.events.push(Event::Toast { message: msg.into(), error: false });
+        let message = msg.into();
+        self.log.push(panels::Level::Info, "app", message.clone());
+        self.events.push(Event::Toast { message, error: false });
+    }
+
+    /// An error message for the user (a toast, and an Events panel entry from `source`).
+    pub fn error_toast(&mut self, source: &str, msg: impl Into<String>) {
+        let message = msg.into();
+        self.log.push(panels::Level::Error, source, message.clone());
+        self.events.push(Event::Toast { message, error: true });
     }
 
     pub fn drain_events(&mut self) -> Vec<Event> {
@@ -760,6 +789,8 @@ mod mixer_tests;
 #[cfg(test)]
 mod multicam_tests;
 #[cfg(test)]
+mod panels_tests;
+#[cfg(test)]
 mod presets_tests;
 #[cfg(test)]
 mod previews_tests;
@@ -769,6 +800,8 @@ mod project_manager_tests;
 mod proxies_tests;
 #[cfg(test)]
 mod relink_tests;
+#[cfg(test)]
+mod scopes_tests;
 #[cfg(test)]
 mod sequence_tools_tests;
 #[cfg(test)]

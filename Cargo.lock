@@ -1823,6 +1823,7 @@ dependencies = [
  "filmcraft-media",
  "filmcraft-project",
  "filmcraft-render",
+ "filmcraft-scopes",
  "filmcraft-speech",
  "filmcraft-testkit",
  "filmcraft-text",
@@ -2054,6 +2055,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "filmcraft-scopes"
+version = "0.1.0"
+dependencies = [
+ "filmcraft-color",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "filmcraft-speech"
 version = "0.1.0"
 dependencies = [
@@ -2115,6 +2125,7 @@ dependencies = [
  "filmcraft-media",
  "filmcraft-project",
  "filmcraft-render",
+ "filmcraft-scopes",
  "filmcraft-text",
  "filmcraft-time",
  "image",
