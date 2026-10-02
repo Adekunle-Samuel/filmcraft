@@ -250,7 +250,8 @@ pub fn monitor_overlay(app: &mut FilmcraftApp, ui: &mut egui::Ui, pic: Rect, fra
 
     // ---- presses
     if graphics_tool && resp.drag_started() {
-        let p = resp.interact_pointer_pos().unwrap_or(pic.center());
+        // where the button went down (a drag starts only after the pointer has moved a little)
+        let p = ui.input(|i| i.pointer.press_origin()).or(resp.interact_pointer_pos()).unwrap_or(pic.center());
         let shift = ui.input(|i| i.modifiers.shift);
         let in_edit = edit_view.is_some_and(|v| v.hit(p));
         drag = None;
@@ -306,11 +307,19 @@ pub fn monitor_overlay(app: &mut FilmcraftApp, ui: &mut egui::Ui, pic: Rect, fra
     if let Some(d) = drag {
         let cur = resp.interact_pointer_pos().or(hover).unwrap_or(d.start);
         let v = views.iter().find(|v| v.clip == d.clip && v.layer == d.layer);
+        // Snap in Program Monitor (hold ⌘/Ctrl to move freely)
+        let snap_off = match (d.kind, v) {
+            (DragKind::Move, Some(v)) if !ui.input(|i| i.modifiers.command) => {
+                crate::panels::monitor_view::snap_move(app, pic, frame, Rect::from_points(&v.quad()), cur - d.start)
+            }
+            _ => (cur - d.start, Vec::new()),
+        };
         match d.kind {
             DragKind::Move => {
                 if let Some(v) = v {
-                    let off = cur - d.start;
+                    let off = snap_off.0;
                     painter.add(egui::Shape::closed_line(v.quad().iter().map(|q| *q + off).collect(), Stroke::new(1.0, Color32::WHITE)));
+                    crate::panels::monitor_view::draw_snap_lines(&painter, pic, &snap_off.1);
                 }
             }
             DragKind::Scale => {
@@ -345,7 +354,8 @@ pub fn monitor_overlay(app: &mut FilmcraftApp, ui: &mut egui::Ui, pic: Rect, fra
                 DragKind::Move if moved => {
                     if let Some(v) = v {
                         let lin = Affine { e: 0.0, f: 0.0, ..v.canvas_to_screen };
-                        let delta = lin.inverse().map(|i| i.apply(Vec2::new((cur.x - d.start.x) as f64, (cur.y - d.start.y) as f64))).unwrap_or_default();
+                        let off = snap_off.0;
+                        let delta = lin.inverse().map(|i| i.apply(Vec2::new(off.x as f64, off.y as f64))).unwrap_or_default();
                         let p0 = v.spec.transform.position;
                         actions.push((
                             "graphics.set".into(),

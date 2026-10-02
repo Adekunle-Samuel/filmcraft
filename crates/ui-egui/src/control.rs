@@ -158,6 +158,21 @@ pub fn handle(app: &mut FilmcraftApp, ctx: &egui::Context, req: &ControlRequest)
             if let Some(v) = p.get("safeMargins").and_then(Value::as_bool) {
                 app.ui.program.safe_margins = v;
             }
+            // Monitor view state (serde fields of `MonitorView`), merged into the current state.
+            for k in ["program", "source"] {
+                let Some(patch) = p.get(k).and_then(Value::as_object) else { continue };
+                let mv = if k == "program" { &mut app.ui.program } else { &mut app.ui.source };
+                let mut cur = serde_json::to_value(&*mv).unwrap_or_default();
+                if let Some(o) = cur.as_object_mut() {
+                    for (f, v) in patch {
+                        o.insert(f.clone(), v.clone());
+                    }
+                }
+                match serde_json::from_value(cur) {
+                    Ok(m) => *mv = m,
+                    Err(e) => return err(format!("`{k}`: {e}")),
+                }
+            }
             ok(Value::Null)
         }
         "ui.panel.show" | "ui.panel.close" => {

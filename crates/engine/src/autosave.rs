@@ -106,6 +106,30 @@ pub struct Preferences {
     pub trim: TrimPrefs,
     pub media: MediaPrefs,
     pub essential_sound: EssentialSoundPrefs,
+    pub guides: GuidePrefs,
+}
+
+/// View ▸ Guide Templates: guide sets saved from the Program Monitor.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct GuidePrefs {
+    pub templates: Vec<GuideTemplate>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct GuideTemplate {
+    pub name: String,
+    pub guides: Vec<Guide>,
+}
+
+/// A monitor guide: a vertical line at x = `position` or a horizontal line at y = `position`
+/// (frame pixels).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct Guide {
+    pub vertical: bool,
+    pub position: f64,
 }
 
 /// Preferences ▸ Media.

@@ -13,7 +13,8 @@ use serde_json::json;
 use crate::FilmcraftApp;
 use crate::frames::{FrameKey, Target};
 use crate::icons::{self, Icon};
-use crate::state::PlaybackRes;
+use crate::panels::monitor_view;
+use crate::state::{DisplayMode, PlaybackRes};
 use crate::theme::Tokens;
 
 #[derive(Clone, Copy, PartialEq)]
@@ -66,8 +67,10 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, which: Which)
         }
     };
     let prefix = if which == Which::Program { "program" } else { "source" };
+    let mv = monitor_view::view(app, which).clone();
+    let display = mv.display_mode().unwrap_or(DisplayMode::Composite);
     // Multi-Camera view: the angle grid on the left, the program on the right
-    let multicam = which == Which::Program && app.ui.program.multicam;
+    let multicam = which == Which::Program && mv.multicam;
     let (grid_area, video_area) = if multicam {
         let mid = video_area.center().x;
         (Some(Rect::from_min_max(video_area.min, pos2(mid - 2.0, video_area.max.y))), Rect::from_min_max(pos2(mid + 2.0, video_area.min.y), video_area.max))
@@ -78,13 +81,64 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, which: Which)
         crate::panels::multicam::grid(app, ui, g);
     }
     ui.painter().rect_filled(video_area, 0.0, t.panel_bg);
-    // ---- picture
     let has_video = frame_size.0 > 0;
-    let pic = if has_video { fit(video_area, frame_size.0 as f32, frame_size.1 as f32) } else { video_area };
-    ui.painter().rect_filled(pic, 0.0, t.monitor_bg);
-    let res = if which == Which::Program { app.ui.program.res } else { app.ui.source.res };
-    if has_video {
-        let ppp = ctx.pixels_per_point();
+    // Source waveform modes: Audio Waveform (or an audio-only clip) and the video/waveform split.
+    let source_item = if which == Which::Source { app.session.state.source_item } else { None };
+    let wave_only = source_item.is_some() && (!has_video || display == DisplayMode::AudioWaveform);
+    let (video_area, wave_area) = if wave_only {
+        (video_area, Some(video_area))
+    } else if source_item.is_some() && display == DisplayMode::VideoAndWaveform {
+        let split = video_area.min.y + video_area.height() * 0.62;
+        (Rect::from_min_max(video_area.min, pos2(video_area.max.x, split - 2.0)), Some(Rect::from_min_max(pos2(video_area.min.x, split + 2.0), video_area.max)))
+    } else {
+        (video_area, None)
+    };
+    if let (Some(wa), Some(item)) = (wave_area, source_item) {
+        monitor_view::waveform(app, ui, wa, item, time, duration, mark_in, mark_out);
+    }
+    let show_picture = has_video && !wave_only;
+    // Rulers along the top and left of the picture area.
+    let rulers = show_picture && mv.show_rulers;
+    let (ruler_rects, video_area) = if rulers {
+        let r = monitor_view::RULER;
+        (
+            Some((
+                Rect::from_min_max(pos2(video_area.min.x + r, video_area.min.y), pos2(video_area.max.x, video_area.min.y + r)),
+                Rect::from_min_max(pos2(video_area.min.x, video_area.min.y + r), pos2(video_area.min.x + r, video_area.max.y)),
+            )),
+            Rect::from_min_max(video_area.min + vec2(r, r), video_area.max),
+        )
+    } else {
+        (None, video_area)
+    };
+    let picture_area = video_area;
+    // Comparison View: the reference frame on the left, the current frame on the right.
+    let compare = which == Which::Program && show_picture && display == DisplayMode::Comparison;
+    let (ref_area, video_area) = if compare {
+        let mid = video_area.center().x;
+        let bar_h = 22.0;
+        (
+            Some(Rect::from_min_max(video_area.min, pos2(mid - 2.0, video_area.max.y - bar_h))),
+            Rect::from_min_max(pos2(mid + 2.0, video_area.min.y), pos2(video_area.max.x, video_area.max.y - bar_h)),
+        )
+    } else {
+        (None, video_area)
+    };
+    // ---- picture
+    let ppp = ctx.pixels_per_point();
+    let pic = if compare {
+        fit(video_area, frame_size.0 as f32, frame_size.1 as f32)
+    } else if show_picture {
+        monitor_view::picture_rect(video_area, frame_size.0 as f32, frame_size.1 as f32, &mv, ppp)
+    } else {
+        video_area
+    };
+    let saved_clip = ui.clip_rect();
+    ui.set_clip_rect(saved_clip.intersect(if mv.zoom.is_some() && !compare { video_area } else { picture_area.expand(12.0) }));
+    if show_picture {
+        ui.painter().rect_filled(pic, 0.0, t.monitor_bg);
+        let playing = which == Which::Program && app.playback.playing;
+        let res = mv.effective_res(playing);
         let screen_scale = (pic.width() * ppp / frame_size.0 as f32).min(1.0);
         let scale = quantize_scale(res.scale().min(screen_scale.max(1.0 / 32.0)));
         let frame = rate.frame_at(time);
@@ -93,14 +147,15 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, which: Which)
             _ => app.session.revision,
         };
         let size_key = (scale * 1000.0) as u32;
-        let use_gpu = which == Which::Program && app.gpu.is_some();
+        let channel = display.is_channel();
+        let use_gpu = which == Which::Program && app.gpu.is_some() && !channel;
+        let cpu_target = target;
         let target = match (use_gpu, target) {
             (true, Target::Sequence(s)) => Target::SequencePlan(s),
             (_, t) => t,
         };
         let key = FrameKey { target, frame, size: size_key, revision: rev };
         let project = app.session.project.clone();
-        let playing = which == Which::Program && app.playback.playing;
         if playing {
             let preroll = app.playback.preroll.is_some();
             app.frames.schedule_playback(key, rate, scale, &project, app.playback.speed, preroll);
@@ -110,7 +165,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, which: Which)
         } else {
             app.frames.request(key, rate.tick_of(frame), scale, &project, 0);
         }
-        let tex_name = format!("monitor-{prefix}");
+        let tex_name = if channel { format!("monitor-{prefix}-{display:?}") } else { format!("monitor-{prefix}") };
         let (shown, exact) = if use_gpu {
             let exact = app.frames.get_plan(&key).map(|p| (key, p));
             let is_exact = exact.is_some();
@@ -119,14 +174,8 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, which: Which)
                 None => app.gpu.as_ref().and_then(|g| g.texture),
             };
             (tex, is_exact)
-        } else if let Some(img) = app.frames.get(&key) {
-            (Some(app.texture_for(&ctx, &tex_name, key, &img)), true)
         } else {
-            let tex = match app.frames.nearest(target, frame, size_key, rev, 6) {
-                Some(img) => Some(app.texture_for(&ctx, &tex_name, FrameKey { frame: frame - 1, ..key }, &img)),
-                None => app.texture_existing(&tex_name).map(|(id, _)| id),
-            };
-            (tex, false)
+            cpu_texture(app, &ctx, &tex_name, key, display)
         };
         if playing {
             if std::mem::take(&mut app.playback.hidden) {
@@ -138,7 +187,20 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, which: Which)
         if let Some(tex) = shown {
             ui.painter().image(tex, pic, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
         }
-        let mv = if which == Which::Program { &app.ui.program } else { &app.ui.source };
+        if let Some(ra) = ref_area {
+            // the reference frame (CPU path)
+            let rf = rate.frame_at(Tick(mv.compare_ref.unwrap_or(time.0)));
+            let rkey = FrameKey { target: cpu_target, frame: rf, size: size_key, revision: rev };
+            app.frames.request(rkey, rate.tick_of(rf), scale, &project, 1);
+            let rpic = fit(ra, frame_size.0 as f32, frame_size.1 as f32);
+            ui.painter().rect_filled(rpic, 0.0, t.monitor_bg);
+            if let (Some(tex), _) = cpu_texture(app, &ctx, &format!("monitor-{prefix}-ref"), rkey, DisplayMode::Composite) {
+                ui.painter().image(tex, rpic, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
+            }
+            app.auto.add("program.compare.reference", rpic, "reference frame");
+            let bar = Rect::from_min_max(pos2(ra.min.x, ra.max.y + 2.0), pos2(video_area.max.x, ra.max.y + 22.0));
+            monitor_view::compare_bar(app, ui, bar, rate, drop_frame);
+        }
         if mv.safe_margins {
             for (f, c) in [(0.9, Color32::from_white_alpha(120)), (0.8, Color32::from_white_alpha(90))] {
                 let r = Rect::from_center_size(pic.center(), pic.size() * f);
@@ -148,21 +210,32 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, which: Which)
             ui.painter().line_segment([c - vec2(8.0, 0.0), c + vec2(8.0, 0.0)], Stroke::new(1.0, Color32::from_white_alpha(120)));
             ui.painter().line_segment([c - vec2(0.0, 8.0), c + vec2(0.0, 8.0)], Stroke::new(1.0, Color32::from_white_alpha(120)));
         }
-    } else if which == Which::Source {
-        // audio-only source: draw a waveform placeholder
-        ui.painter().text(pic.center(), Align2::CENTER_CENTER, format!("♪  {name}"), Tokens::ui(14.0), t.text_dim);
+        if display != DisplayMode::Composite && !compare {
+            let label = format!("{display:?}");
+            ui.painter().text(pos2(video_area.max.x - 8.0, video_area.min.y + 6.0), Align2::RIGHT_TOP, label, Tokens::ui(10.0), t.text_dim);
+        }
     }
     // Dropped-frame indicator (Program only)
     if which == Which::Program && app.playback.playing {
         let c = if app.playback.meter.counts().1 > 0 { t.render_yellow } else { t.render_green };
         ui.painter().circle_filled(pos2(video_area.min.x + 10.0, video_area.min.y + 10.0), 4.0, c);
     }
-    // Click/drag in the picture: the Hand tool pans, otherwise focus.
+    // Click/drag in the picture: the Hand tool pans a magnified picture, otherwise focus.
     let pic_resp = ui.interact(pic, egui::Id::new((prefix, "pic")), Sense::click());
-    app.auto.add(&format!("{prefix}.picture"), pic, "picture");
-    if which == Which::Program && has_video {
+    app.auto.add(&format!("{prefix}.picture"), pic.intersect(video_area), "picture");
+    if show_picture {
+        monitor_view::pan_input(app, ui, which, video_area, pic);
+    }
+    if which == Which::Program && show_picture {
         crate::panels::graphics::monitor_overlay(app, ui, pic, frame_size);
         crate::panels::masks::monitor_overlay(app, ui, pic, frame_size);
+    }
+    if show_picture {
+        monitor_view::guides(app, ui, which, video_area, pic, frame_size);
+    }
+    ui.set_clip_rect(saved_clip);
+    if let Some((top, left)) = ruler_rects {
+        monitor_view::rulers(app, ui, which, top, left, video_area, pic, frame_size);
     }
     if pic_resp.double_clicked() && which == Which::Source {
         // (Premiere opens the clip's settings; we show info)
@@ -170,7 +243,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, which: Which)
     }
 
     // ---- controls row: timecode | zoom | res | wrench | duration
-    let row1 = Rect::from_min_size(pos2(rect.min.x + 14.0, video_area.max.y + 2.0), vec2(rect.width() - 28.0, 26.0));
+    let row1 = Rect::from_min_size(pos2(rect.min.x + 14.0, rect.max.y - controls_h + 2.0), vec2(rect.width() - 28.0, 26.0));
     let tc = format_time(time, rate, drop_frame, TimeDisplay::Timecode, 48000);
     ui.painter().text(pos2(row1.min.x, row1.center().y), Align2::LEFT_CENTER, &tc, Tokens::semibold(15.0), t.hot_text);
     app.auto.add(&format!("{prefix}.timecode"), Rect::from_min_size(row1.min, vec2(110.0, row1.height())), &tc);
@@ -184,22 +257,21 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, which: Which)
     ui.painter().text(pos2(row1.max.x, row1.center().y), Align2::RIGHT_CENTER, &dur_tc, Tokens::semibold(15.0), t.text_dim);
     // zoom + resolution dropdowns centred-ish
     let zr = Rect::from_min_size(pos2(row1.min.x + 116.0, row1.min.y), vec2(70.0, 24.0));
-    let zoom_label = match if which == Which::Program { app.ui.program.zoom } else { app.ui.source.zoom } {
+    let zoom_label = match mv.zoom {
         None => "Fit".to_string(),
-        Some(z) => format!("{}%", (z * 100.0) as i32),
+        Some(z) => format!("{}%", (z * 100.0).round() as i32),
     };
-    crate::widgets::dropdown_text(ui, zr, &zoom_label, &t, egui::Id::new((prefix, "zoom")));
+    let zresp = crate::widgets::dropdown_text(ui, zr, &zoom_label, &t, egui::Id::new((prefix, "zoom")));
+    app.auto.add(&format!("{prefix}.zoom"), zr, "Select Zoom Level");
+    monitor_view::zoom_menu(app, &zresp, which);
+    let res = mv.res;
     let rr = Rect::from_min_size(pos2(row1.max.x - 196.0, row1.min.y), vec2(62.0, 24.0));
     let rresp = crate::widgets::dropdown_text(ui, rr, res.label(), &t, egui::Id::new((prefix, "res")));
     app.auto.add(&format!("{prefix}.resolution"), rr, "Select Playback Resolution");
     egui::Popup::menu(&rresp).show(|ui| {
         for r in PlaybackRes::ALL {
             if ui.selectable_label(r == res, r.label()).clicked() {
-                if which == Which::Program {
-                    app.ui.program.res = r;
-                } else {
-                    app.ui.source.res = r;
-                }
+                monitor_view::view_mut(app, which).res = r;
             }
         }
     });
@@ -208,13 +280,14 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, which: Which)
     icons::paint(ui.painter(), wr.shrink(4.0), Icon::Wrench, if wresp.hovered() { t.tab_text_active } else { t.icon });
     app.auto.add(&format!("{prefix}.settings"), wr, "Settings");
     egui::Popup::menu(&wresp).show(|ui| {
-        let mv = if which == Which::Program { &mut app.ui.program } else { &mut app.ui.source };
+        ui.set_min_width(240.0);
+        monitor_view::wrench_items(app, ui, which);
+        let mv = monitor_view::view_mut(app, which);
         ui.checkbox(&mut mv.safe_margins, "Safe Margins");
         ui.checkbox(&mut mv.show_transport, "Show Transport Controls");
         if which == Which::Program {
             ui.separator();
             ui.checkbox(&mut app.ui.show_scopes, "Lumetri Scopes");
-            ui.checkbox(&mut app.ui.program.multicam, "Multi-Camera");
             ui.checkbox(&mut app.playback.looping, "Loop");
             ui.separator();
             let mut follows = app.session.state.multicam_audio_follows_video;
@@ -224,7 +297,6 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, which: Which)
             ui.checkbox(&mut app.ui.multicam_record, "Multi-Camera Record");
         }
     });
-
     // ---- mini timeline / scrub bar
     let bar = Rect::from_min_size(pos2(rect.min.x + 14.0, row1.max.y + 2.0), vec2(rect.width() - 28.0, 22.0));
     mini_timeline(app, ui, bar, which, time, duration, rate, mark_in, mark_out);
@@ -232,6 +304,22 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, which: Which)
     // ---- transport buttons
     let row3 = Rect::from_min_size(pos2(rect.min.x, bar.max.y + 4.0), vec2(rect.width(), 32.0));
     transport(app, ui, row3, which);
+}
+
+/// A monitor texture from the CPU frame path: the exact frame, else the nearest cached one, with
+/// the display mode's channel mapping. Returns (texture, exact).
+fn cpu_texture(app: &mut FilmcraftApp, ctx: &egui::Context, name: &str, key: FrameKey, mode: DisplayMode) -> (Option<egui::TextureId>, bool) {
+    let upload = |app: &mut FilmcraftApp, k: FrameKey, img: &crate::frames::Rgba| {
+        if mode.is_channel() { app.texture_for_mapped(ctx, name, k, img, |i| monitor_view::channel_view(i, mode)) } else { app.texture_for(ctx, name, k, img) }
+    };
+    if let Some(img) = app.frames.get(&key) {
+        return (Some(upload(app, key, &img)), true);
+    }
+    let tex = match app.frames.nearest(key.target, key.frame, key.size, key.revision, 6) {
+        Some(img) => Some(upload(app, FrameKey { frame: key.frame - 1, ..key }, &img)),
+        None => app.texture_existing(name).map(|(id, _)| id),
+    };
+    (tex, false)
 }
 
 pub fn quantize_scale(s: f32) -> f32 {
