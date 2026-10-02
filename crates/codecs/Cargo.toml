@@ -27,6 +27,8 @@ filmcraft-aac = { workspace = true }
 filmcraft-opus = { workspace = true }
 thiserror = { workspace = true }
 log = { workspace = true }
+# Decode timing counters (`gop_stats`); std's Instant panics on wasm32.
+web-time = "1"
 image = { version = "0.25", default-features = false, features = ["jpeg"] }
 # Bootstrap audio decoding (MPL-2.0, used unmodified); replaced by own decoders over time.
 symphonia = { version = "0.5.5", default-features = false, features = ["aac", "mp3", "flac", "alac", "pcm", "wav", "ogg", "vorbis", "isomp4"] }

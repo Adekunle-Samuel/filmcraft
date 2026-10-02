@@ -21,6 +21,7 @@ pub mod masks;
 pub mod media_pool;
 pub mod mixer;
 pub mod multicam;
+pub mod perf;
 pub mod presets;
 pub mod previews;
 pub mod project_manager;

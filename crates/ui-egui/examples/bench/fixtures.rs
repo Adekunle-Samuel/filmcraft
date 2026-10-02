@@ -41,7 +41,8 @@ const SPECS: &[Spec] = &[
     Spec { name: "c1080.mp4", src: "smptehdbars=s=1920x1080:r=24000/1001:d=20,noise=alls=10:allf=t+u", secs: 20, audio: false, codec: X264 },
     Spec { name: "a2160.mp4", src: "testsrc2=s=3840x2160:r=24000/1001:d=10,noise=alls=6:allf=t", secs: 10, audio: false, codec: X264 },
     Spec { name: "hevc2160.mp4", src: "testsrc2=s=3840x2160:r=24000/1001:d=10,noise=alls=6:allf=t", secs: 10, audio: false, codec: X265 },
-    // Decode-speed matrix: 1080p (5 s) and 2160p (3 s) per codec, same picture content.
+    // Decode-speed matrix: 1080p (5 s) and 2160p (3 s) per codec, same picture content (ProRes
+    // 2 s / 1 s: intra-only, every frame costs the same, and the files are large).
     Spec { name: "dec_h264_1080.mp4", src: "testsrc2=s=1920x1080:r=24000/1001:d=5,noise=alls=6:allf=t", secs: 5, audio: false, codec: X264 },
     Spec { name: "dec_h264_2160.mp4", src: "testsrc2=s=3840x2160:r=24000/1001:d=3,noise=alls=6:allf=t", secs: 3, audio: false, codec: X264 },
     Spec { name: "dec_hevc_1080.mp4", src: "testsrc2=s=1920x1080:r=24000/1001:d=5,noise=alls=6:allf=t", secs: 5, audio: false, codec: X265 },
@@ -50,8 +51,8 @@ const SPECS: &[Spec] = &[
     Spec { name: "dec_vp9_2160.webm", src: "testsrc2=s=3840x2160:r=24000/1001:d=3,noise=alls=6:allf=t", secs: 3, audio: false, codec: VP9 },
     Spec { name: "dec_av1_1080.mp4", src: "testsrc2=s=1920x1080:r=24000/1001:d=5,noise=alls=6:allf=t", secs: 5, audio: false, codec: AV1 },
     Spec { name: "dec_av1_2160.mp4", src: "testsrc2=s=3840x2160:r=24000/1001:d=3,noise=alls=6:allf=t", secs: 3, audio: false, codec: AV1 },
-    Spec { name: "dec_prores_1080.mov", src: "testsrc2=s=1920x1080:r=24000/1001:d=5,noise=alls=6:allf=t", secs: 5, audio: false, codec: PRORES },
-    Spec { name: "dec_prores_2160.mov", src: "testsrc2=s=3840x2160:r=24000/1001:d=3,noise=alls=6:allf=t", secs: 3, audio: false, codec: PRORES },
+    Spec { name: "dec_prores_1080.mov", src: "testsrc2=s=1920x1080:r=24000/1001:d=2,noise=alls=6:allf=t", secs: 2, audio: false, codec: PRORES },
+    Spec { name: "dec_prores_2160.mov", src: "testsrc2=s=3840x2160:r=24000/1001:d=1,noise=alls=6:allf=t", secs: 1, audio: false, codec: PRORES },
     // Small clip media for the 1000-clip timeline / project benchmarks (video + audio).
     Spec { name: "clip360.mp4", src: "testsrc2=s=640x360:r=24000/1001:d=20", secs: 20, audio: true, codec: X264 },
 ];

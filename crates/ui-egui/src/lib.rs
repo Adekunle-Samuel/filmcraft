@@ -14,6 +14,7 @@ pub mod icons;
 pub mod links;
 pub mod menus;
 pub mod panels;
+pub mod perf;
 pub mod state;
 pub mod theme;
 pub mod widgets;

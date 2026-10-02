@@ -194,6 +194,18 @@ engine behaviour without a window.
 | Encoder speed / PSNR / bitrate | `cargo run --release -p filmcraft-h264enc --example h264enc_synth -- …` |
 | Decode a real file through the media stack | `cargo run --release -p filmcraft-cli -- bench-decode file.mp4 --frames 120` |
 | Coding-tool coverage of the fixtures | `cargo test --release -p filmcraft-h264 --test conformance coverage_report -- --ignored --nocapture` (same for `hevc`) |
+| **Whole-app suite**: decode fps per codec, playback, scrubbing, timeline UI, export, project save/open, peak RSS | `cargo xtask bench` ([performance.md](performance.md)) |
+
+`cargo xtask bench` (the example `crates/ui-egui/examples/bench/`) runs six sections, each in its
+own process under `/usr/bin/time` so peak RSS is per section: `decode` (every frame of 1080p and
+2160p H.264, HEVC, VP9, AV1 and ProRes through the media stack), `playback` (the scenarios below),
+`scrub` (random seeks and playhead drags: time until the exact frame is on screen), `timeline`
+(the real app under `egui_kittest` with a 1000-clip / 20-track sequence: update, tessellation and
+wgpu render ms per frame), `export` (H.264 + AAC and ProRes) and `project` (save / open 5000 clips).
+Options: `--sections decode,scrub`, `--only <substring>` (fixture or scenario), `--repeat N`,
+`--quick`, `--cpu`, `--label NAME` (output `target/bench/bench-<label>.{json,md}`),
+`--section NAME --json FILE` (one section in-process, e.g. under a profiler). Fixtures are made
+with ffmpeg in `target/fixtures/playback/` (or `$FILMCRAFT_FIXTURES/playback`).
 
 The perf tests check bit-exactness before they time anything. Results go in the crate README's
 performance table, with machine and thread count. Headline numbers go in

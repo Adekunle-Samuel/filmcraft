@@ -99,6 +99,7 @@ pub fn handle(app: &mut FilmcraftApp, ctx: &egui::Context, req: &ControlRequest)
         },
         "ui.menu.list" => ok(serde_json::to_value(crate::menus::menu_items(app)).unwrap_or_default()),
         "ui.inspect" => ok(inspect(app, ctx)),
+        "perf.stats" => ok(crate::perf::stats(app)),
         "ui.elements" => {
             let prefix = s("prefix").unwrap_or("");
             ok(serde_json::to_value(app.auto.query(prefix)).unwrap_or_default())

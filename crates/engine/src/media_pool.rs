@@ -100,6 +100,11 @@ impl MediaPool {
         self.sources.read().unwrap_or_else(|e| e.into_inner()).get(&item).map(|(_, s)| s.clone())
     }
 
+    /// Sources opened so far (originals and proxies; `perf.stats`).
+    pub fn open_sources(&self) -> usize {
+        self.sources.read().unwrap_or_else(|e| e.into_inner()).len() + self.proxies.read().unwrap_or_else(|e| e.into_inner()).len()
+    }
+
     pub fn use_proxies(&self) -> bool {
         self.use_proxies.load(Ordering::Relaxed)
     }

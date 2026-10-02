@@ -24,7 +24,7 @@ use std::process::Command;
 
 use serde_json::{Value, json};
 
-pub const SECTIONS: &[&str] = &["decode", "playback", "scrub", "timeline", "export", "project"];
+pub const SECTIONS: &[&str] = &["decode", "seek", "playback", "scrub", "timeline", "export", "project"];
 
 #[derive(Clone)]
 pub struct Opts {
@@ -77,6 +77,7 @@ fn run_section(name: &str, o: &Opts) -> Value {
     let load0 = playback::load_avg();
     let rows = match name {
         "decode" => sections::decode(o),
+        "seek" => sections::seek(o),
         "playback" => sections::playback(o),
         "scrub" => sections::scrub(o),
         "timeline" => sections::timeline(o),
@@ -155,7 +156,7 @@ fn time_wrapper() -> Command {
 /// The child's own output: everything before the `time` report (macOS `-l`: a "… real … user …"
 /// line; GNU `-v`: "Command being timed").
 fn child_lines(stderr: &str) -> Vec<&str> {
-    stderr.lines().take_while(|l| !(l.contains(" real ") && l.contains(" user ")) && !l.trim_start().starts_with("Command being timed")).collect()
+    stderr.lines().take_while(|l| !(l.trim_start().starts_with("Command being timed") || (l.contains(" real ") && l.contains(" user ")))).collect()
 }
 
 /// Peak RSS in bytes from `/usr/bin/time -l` (macOS: bytes) or `-v` (GNU: kbytes).
@@ -256,6 +257,21 @@ pub fn section_markdown(v: &Value) -> String {
                 ("decode_ms", "decode ms/job"),
                 ("ui_p95_ms", "UI p95 ms"),
                 ("seeks", "seeks"),
+                ("skipped", "skipped"),
+                ("load", "load"),
+            ],
+            1,
+        ),
+        "seek" => (
+            &[
+                ("fixture", "fixture"),
+                ("mode", "mode"),
+                ("seeks", "seeks"),
+                ("p50_ms", "p50 ms"),
+                ("p95_ms", "p95 ms"),
+                ("cpu_ms_mean", "CPU ms/seek"),
+                ("decoded_per_seek", "decoded/seek"),
+                ("skipped_per_seek", "skipped/seek"),
                 ("load", "load"),
             ],
             1,

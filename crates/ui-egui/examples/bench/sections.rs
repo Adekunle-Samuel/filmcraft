@@ -94,6 +94,56 @@ pub fn decode(o: &Opts) -> Vec<Value> {
     rows
 }
 
+// ------------------------------------------------------------------------------------ seek
+
+/// Cold seeks through the media stack, the three catch-up modes interleaved per target so they
+/// see the same machine load: `full` (decode every picture from the keyframe), `keep 2 s` (what a
+/// scrub request does: skip non-reference pictures more than 2 s before the target) and `late`
+/// (playback catching up: skip every non-reference picture before the target). A fresh source per
+/// seek (cold GOP cache). CPU time and samples decoded do not depend on load; wall time does.
+pub fn seek(o: &Opts) -> Vec<Value> {
+    let seeks = if o.quick { 4 } else { 12 };
+    let modes: [(&str, Option<Tick>); 3] = [("full", None), ("keep 2 s", Some(Tick::from_seconds_f64(2.0))), ("late", Some(Tick::ZERO))];
+    let mut rows = Vec::new();
+    for name in ["a1080.mp4", "a2160.mp4", "hevc2160.mp4"].into_iter().filter(|n| o.wants(n)) {
+        let Some(path) = fixture(name) else {
+            eprintln!("seek {name}: skipped (fixture unavailable)");
+            continue;
+        };
+        let bytes: Arc<[u8]> = std::fs::read(&path).expect("read fixture").into();
+        let mut rng = 0x2545_f491_4f6c_dd1du64;
+        let (mut wall, mut cpu, mut dec, mut skip) = ([vec![], vec![], vec![]], [vec![], vec![], vec![]], [0u64; 3], [0u64; 3]);
+        for _ in 0..seeks {
+            rng ^= rng << 13;
+            rng ^= rng >> 7;
+            rng ^= rng << 17;
+            for (m, (_, margin)) in modes.iter().enumerate() {
+                let src = filmcraft_codecs::open_bytes(name, bytes.clone()).expect("open");
+                let rate = src.info().frame_rate();
+                let n = rate.frame_at(src.info().duration).max(1);
+                let t = rate.tick_of((rng % n as u64) as i64);
+                let (g0, t0, c0) = (filmcraft_codecs::gop_stats(), Instant::now(), cpu_now());
+                filmcraft_media::cancel::with_catch_up(*margin, || src.video_frame(filmcraft_media::FrameRequest::full(t))).expect("frame");
+                wall[m].push(ms(t0.elapsed()));
+                cpu[m].push(ms(cpu_now() - c0));
+                let g = filmcraft_codecs::gop_stats() - g0;
+                dec[m] += g.decoded;
+                skip[m] += g.skipped;
+            }
+        }
+        for (m, (mode, _)) in modes.iter().enumerate() {
+            let row = json!({
+                "fixture": name, "mode": mode, "seeks": seeks,
+                "p50_ms": pct(&wall[m], 0.5), "p95_ms": pct(&wall[m], 0.95), "cpu_ms_mean": cpu[m].iter().sum::<f64>() / seeks as f64,
+                "decoded_per_seek": dec[m] as f64 / seeks as f64, "skipped_per_seek": skip[m] as f64 / seeks as f64, "load": load_avg(),
+            });
+            eprintln!("seek {name} {mode}: p50 {:.0} ms, CPU {:.0} ms", pct(&wall[m], 0.5), cpu[m].iter().sum::<f64>() / seeks as f64);
+            rows.push(row);
+        }
+    }
+    rows
+}
+
 // ------------------------------------------------------------------------------------ playback
 
 fn new_bench(s: &Session, seconds: f64) -> Bench {
@@ -133,6 +183,7 @@ pub fn playback(o: &Opts) -> Vec<Value> {
             v["decode_ms"] = json!(r.src_wall.iter().sum::<f64>() / r.jobs.max(1) as f64);
             v["ui_p95_ms"] = json!(pct(&r.present, 0.95));
             v["seeks"] = json!(r.gop.seeks);
+            v["skipped"] = json!(r.gop.skipped);
             v["load"] = json!(r.load);
             v["cores_needed"] = json!(r.process_cpu / frames * fps / 1000.0);
             eprintln!("playback {scenario} {res}: {}/{} shown/dropped (load {})", r.shown, r.dropped, r.load);
@@ -164,7 +215,7 @@ pub fn scrub(o: &Opts) -> Vec<Value> {
                 "seek_p50_ms": pct(&r.seek_ms, 0.5), "seek_p95_ms": pct(&r.seek_ms, 0.95), "seek_max_ms": pct(&r.seek_ms, 1.0),
                 "settle_p50_ms": pct(&r.settle_ms, 0.5), "settle_p95_ms": pct(&r.settle_ms, 0.95),
                 "drag_shown_pct": 100.0 * r.drag_shown as f64 / r.drag_steps.max(1) as f64,
-                "timeouts": r.timeouts, "gop_seeks": r.gop.seeks, "decoded": r.gop.decoded,
+                "timeouts": r.timeouts, "gop_seeks": r.gop.seeks, "decoded": r.gop.decoded, "skipped": r.gop.skipped,
                 "decoded_per_seek": r.gop.decoded as f64 / positions, "process_cpu_ms": r.process_cpu_ms, "load": r.load,
             });
             eprintln!("scrub {scenario}: seek p50 {:.0} ms p95 {:.0} ms (load {})", pct(&r.seek_ms, 0.5), pct(&r.seek_ms, 0.95), r.load);
@@ -358,7 +409,7 @@ pub fn export(o: &Opts) -> Vec<Value> {
     let dir = std::env::temp_dir().join(format!("filmcraft-bench-export-{}", std::process::id()));
     std::fs::create_dir_all(&dir).expect("tmp dir");
     let mut rows = Vec::new();
-    for (format, label, ext) in [("h264", "H.264 + AAC (MP4)", "mp4"), ("prores", "ProRes 422 (MOV)", "mov")] {
+    for (format, label, ext) in [("h264", "H.264 + AAC (MP4)", "mp4"), ("prores", "ProRes 422 (MOV)", "mov")].into_iter().filter(|f| o.wants(f.0)) {
         let mut runs = Vec::new();
         let mut cpu = Vec::new();
         let mut bytes = 0u64;

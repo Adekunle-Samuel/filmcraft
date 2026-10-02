@@ -569,7 +569,7 @@ pub fn to_json(r: &PlayReport, scenario: &str, res: &str, path: &str) -> Value {
         "present_ms": {"p50": pct(&r.present, 0.5), "p95": pct(&r.present, 0.95), "max": pct(&r.present, 1.0)},
         "ui_cpu_ms": r.ui_cpu, "process_cpu_ms": r.process_cpu, "cpu_ms_per_frame": r.process_cpu / frames,
         "jobs": r.jobs, "wasted_jobs": r.wasted_jobs, "cancelled_jobs": r.cancelled_jobs, "preview_jobs": r.preview_jobs, "uploaded_mb": r.uploaded_mb,
-        "gop": {"hits": r.gop.hits, "misses": r.gop.misses, "seeks": r.gop.seeks, "decoded": r.gop.decoded, "evicted": r.gop.evicted},
+        "gop": {"hits": r.gop.hits, "misses": r.gop.misses, "seeks": r.gop.seeks, "decoded": r.gop.decoded, "evicted": r.gop.evicted, "skipped": r.gop.skipped, "decode_ms": r.gop.decode_ns as f64 / 1e6},
         "loadavg": r.load, "preroll_ms": r.preroll_ms,
     })
 }
