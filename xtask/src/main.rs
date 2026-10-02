@@ -430,6 +430,11 @@ fn bench_playback() -> Result<(), String> {
     run(Command::new(env!("CARGO")).args(["run", "--release", "-p", "filmcraft-ui-egui", "--example", "bench_playback", "--"]).args(&extra))
 }
 
+/// The workspace root (the parent of `xtask/`).
+fn root() -> std::path::PathBuf {
+    std::path::Path::new(env!("CARGO_MANIFEST_DIR")).parent().expect("xtask lives in the workspace").to_path_buf()
+}
+
 fn main() -> ExitCode {
     let task = std::env::args().nth(1).unwrap_or_default();
     let r = match task.as_str() {
@@ -440,11 +445,18 @@ fn main() -> ExitCode {
         "ci" => ci(),
         "bench-playback" => bench_playback(),
         "web" => web(&std::env::args().skip(2).collect::<Vec<_>>()),
+        "version" => {
+            let rest: Vec<String> = std::env::args().skip(2).collect();
+            version::run(&root(), &rest.iter().map(String::as_str).collect::<Vec<_>>())
+        }
         "ico" => {
             let rest: Vec<String> = std::env::args().skip(2).collect();
             ico::run(&rest.iter().map(String::as_str).collect::<Vec<_>>())
         }
-        _ => Err("usage: cargo xtask <layers|assets|wasm|web [--dev] [--serve PORT]|fixtures [crate…]|ico OUT IN…|ci|bench-playback [args]>".into()),
+        _ => {
+            Err("usage: cargo xtask <layers|assets|wasm|web [--dev] [--serve PORT]|fixtures [crate…]|ico OUT IN…|version [set X.Y.Z]|ci|bench-playback [args]>"
+                .into())
+        }
     };
     match r {
         Ok(()) => ExitCode::SUCCESS,
