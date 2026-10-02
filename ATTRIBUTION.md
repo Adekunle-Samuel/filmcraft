@@ -52,6 +52,12 @@ procedural demo footage (`crates/media/src/generators.rs`); no external media. R
 | `crates/golden/goldens/mask_color.png` | FilmCraft contributors | Original work: golden reference rendered by FilmCraft (crates/golden/tests/golden.rs, scene `mask_color`) from procedurally generated media | MIT OR Apache-2.0 |
 | `crates/golden/goldens/mask_inverted.png` | FilmCraft contributors | Original work: golden reference rendered by FilmCraft (crates/golden/tests/golden.rs, scene `mask_inverted`) from procedurally generated media | MIT OR Apache-2.0 |
 | `crates/golden/goldens/mask_opacity.png` | FilmCraft contributors | Original work: golden reference rendered by FilmCraft (crates/golden/tests/golden.rs, scene `mask_opacity`) from procedurally generated media | MIT OR Apache-2.0 |
+| `crates/golden/goldens/vfx_distort.png` | FilmCraft contributors | Original work: golden reference rendered by FilmCraft (crates/golden/tests/golden.rs, scene `vfx_distort`) from procedurally generated media | MIT OR Apache-2.0 |
+| `crates/golden/goldens/vfx_ultra_key.png` | FilmCraft contributors | Original work: golden reference rendered by FilmCraft (crates/golden/tests/golden.rs, scene `vfx_ultra_key`) from procedurally generated media | MIT OR Apache-2.0 |
+| `crates/golden/goldens/vfx_glows.png` | FilmCraft contributors | Original work: golden reference rendered by FilmCraft (crates/golden/tests/golden.rs, scene `vfx_glows`) from procedurally generated media | MIT OR Apache-2.0 |
+| `crates/golden/goldens/vfx_spacer_stroke_shadow.png` | FilmCraft contributors | Original work: golden reference rendered by FilmCraft (crates/golden/tests/golden.rs, scene `vfx_spacer_stroke_shadow`) from procedurally generated media | MIT OR Apache-2.0 |
+| `crates/golden/goldens/vfx_vr_rotate.png` | FilmCraft contributors | Original work: golden reference rendered by FilmCraft (crates/golden/tests/golden.rs, scene `vfx_vr_rotate`) from procedurally generated media | MIT OR Apache-2.0 |
+| `crates/golden/goldens/vfx_stylize.png` | FilmCraft contributors | Original work: golden reference rendered by FilmCraft (crates/golden/tests/golden.rs, scene `vfx_stylize`) from procedurally generated media | MIT OR Apache-2.0 |
 
 ## Third-party media shown in screenshots
 

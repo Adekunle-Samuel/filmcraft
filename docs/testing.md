@@ -101,7 +101,11 @@ Each codec README has the full fixture matrix and the measured results.
   with `crates/golden/goldens/<scene>.png` by `filmcraft_testkit::golden`:
   **PSNR ≥ 45 dB, max abs ≤ 12, 99th-percentile per-pixel max channel difference ≤ 2** (8-bit
   sRGB levels; `Tolerance::RENDER`). On failure the actual frame and a ×8 difference image go to
-  `<workspace>/target/golden-failures/`. `scenes_are_distinct` guards against blank or duplicate
+  `<workspace>/target/golden-failures/`. Six `vfx_*` scenes cover the M5.11 effects (Corner Pin over Turbulent
+  Displace, Ultra Key, Wonder Glow + Glint, Spacer + Stroke + Long Shadow over Gradient, VR Rotate Sphere,
+  Channel Mix + Color Emboss + Rounded Crop); per-effect unit tests live in `crates/render/src/vfx/tests.rs`
+  (identity at neutral parameters, determinism, range, a known value each, temporal/track effects through
+  the compositor). `scenes_are_distinct` guards against blank or duplicate
   scenes.
 - **Blessing:** `FILMCRAFT_BLESS=1 cargo test -p filmcraft-golden` rewrites the references (and
   writes a `.attribution` sidecar for any new one; it prints the `ATTRIBUTION.md` row to add).

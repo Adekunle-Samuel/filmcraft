@@ -460,6 +460,87 @@ fn mask_opacity() -> Scene {
     b.at(12)
 }
 
+/// M5.11 Distort: Corner Pin (a demo picture pinned into a quad) over Turbulent-Displaced bars.
+fn vfx_distort() -> Scene {
+    let mut b = Builder::new(2);
+    let bars = b.media(Generator::BarsAndTone);
+    let fg = b.demo(DemoScene::Dunes);
+    let c = b.place(0, bars, 0, 48);
+    b.effect(c, "turbulent_displace", &[("amount", fl(40.0)), ("size", fl(80.0)), ("complexity", fl(2.0))]);
+    let top = b.place(1, fg, 0, 48);
+    b.effect(
+        top,
+        "corner_pin",
+        &[("upper_left", pt(120.0, 60.0)), ("upper_right", pt(560.0, 20.0)), ("lower_left", pt(60.0, 330.0)), ("lower_right", pt(520.0, 300.0))],
+    );
+    b.at(12)
+}
+
+/// M5.11 Keying: Ultra Key removing the bars' green over a demo background, with spill suppression.
+fn vfx_ultra_key() -> Scene {
+    let mut b = Builder::new(2);
+    let bg = b.demo(DemoScene::OceanSunset);
+    let bars = b.media(Generator::BarsAndTone);
+    b.place(0, bg, 0, 48);
+    let top = b.place(1, bars, 0, 48);
+    b.effect(top, "ultra_key", &[("key_color", ParamValue::Color([0.0, 0.75, 0.0, 1.0]))]);
+    b.at(12)
+}
+
+/// M5.11 Lights & Glows: Wonder Glow and Glint on a night city.
+fn vfx_glows() -> Scene {
+    let mut b = Builder::new(1);
+    let city = b.demo(DemoScene::CityNight);
+    let c = b.place(0, city, 0, 48);
+    b.effect(c, "wonder_glow", &[("threshold", fl(55.0)), ("radius", fl(20.0))]);
+    b.effect(c, "glint", &[("threshold", fl(80.0)), ("length", fl(40.0))]);
+    b.at(12)
+}
+
+/// M5.11 Utility / Perspective: Spacer inset with rounded corners, an inside Stroke and a fading
+/// Long Shadow, over a Gradient generator.
+fn vfx_spacer_stroke_shadow() -> Scene {
+    let mut b = Builder::new(2);
+    let bg = b.media(Generator::BlackVideo);
+    let fg = b.demo(DemoScene::Forest);
+    let back = b.place(0, bg, 0, 48);
+    b.effect(
+        back,
+        "gradient",
+        &[
+            ("start", pt(0.0, 0.0)),
+            ("end", pt(640.0, 360.0)),
+            ("start_color", ParamValue::Color([0.15, 0.2, 0.45, 1.0])),
+            ("end_color", ParamValue::Color([0.9, 0.6, 0.3, 1.0])),
+        ],
+    );
+    let top = b.place(1, fg, 0, 48);
+    b.effect(top, "spacer", &[("left", fl(90.0)), ("radius", fl(30.0))]);
+    b.effect(top, "stroke", &[("width", fl(6.0)), ("position", ParamValue::Choice(2))]);
+    b.effect(top, "long_shadow", &[("length", fl(80.0)), ("opacity", fl(70.0))]);
+    b.at(12)
+}
+
+/// M5.11 Immersive Video: VR Rotate Sphere (pan and tilt) on equirectangular-treated aurora.
+fn vfx_vr_rotate() -> Scene {
+    let mut b = Builder::new(1);
+    let aur = b.demo(DemoScene::Aurora);
+    let c = b.place(0, aur, 0, 48);
+    b.effect(c, "vr_rotate_sphere", &[("pan", fl(90.0)), ("tilt", fl(25.0)), ("roll", fl(10.0))]);
+    b.at(12)
+}
+
+/// M5.11 Stylize / Image Control: Rounded Crop, Color Emboss and Channel Mix on plasma.
+fn vfx_stylize() -> Scene {
+    let mut b = Builder::new(1);
+    let pl = b.demo(DemoScene::Plasma);
+    let c = b.place(0, pl, 0, 48);
+    b.effect(c, "channel_mix", &[("rr", fl(0.0)), ("rb", fl(100.0)), ("bb", fl(0.0)), ("br", fl(100.0))]);
+    b.effect(c, "color_emboss", &[("relief", fl(3.0)), ("contrast", fl(150.0))]);
+    b.effect(c, "rounded_crop", &[("left", fl(8.0)), ("right", fl(8.0)), ("top", fl(8.0)), ("bottom", fl(8.0)), ("radius", fl(50.0)), ("border", fl(4.0))]);
+    b.at(12)
+}
+
 /// (name, title, scene).
 fn scenes() -> Vec<(&'static str, &'static str, fn() -> Scene)> {
     vec![
@@ -480,6 +561,12 @@ fn scenes() -> Vec<(&'static str, &'static str, fn() -> Scene)> {
         ("mask_color", "Masks: Black & White inside an expanded polygon minus a feathered Bezier mask", mask_color),
         ("mask_inverted", "Masks: Mosaic outside an inverted ellipse mask at 80% opacity", mask_inverted),
         ("mask_opacity", "Masks: feathered ellipse opacity mask on a rotated top layer", mask_opacity),
+        ("vfx_distort", "Corner Pin over Turbulent Displace", vfx_distort),
+        ("vfx_ultra_key", "Ultra Key on colour bars over footage", vfx_ultra_key),
+        ("vfx_glows", "Wonder Glow and Glint", vfx_glows),
+        ("vfx_spacer_stroke_shadow", "Spacer, Stroke and Long Shadow over a Gradient", vfx_spacer_stroke_shadow),
+        ("vfx_vr_rotate", "VR Rotate Sphere", vfx_vr_rotate),
+        ("vfx_stylize", "Channel Mix, Color Emboss and Rounded Crop", vfx_stylize),
     ]
 }
 
@@ -538,7 +625,13 @@ goldens!(
     mask_blur,
     mask_color,
     mask_inverted,
-    mask_opacity
+    mask_opacity,
+    vfx_distort,
+    vfx_ultra_key,
+    vfx_glows,
+    vfx_spacer_stroke_shadow,
+    vfx_vr_rotate,
+    vfx_stylize
 );
 
 /// Sanity: the scenes are not trivially empty or identical to each other.
