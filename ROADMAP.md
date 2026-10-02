@@ -2,7 +2,7 @@
 
 Progress toward feature parity with Adobe Premiere Pro, with estimates. Updated as milestones land.
 
-**Last updated:** 2026-10-02 · **Overall parity:** ~72% (measured scorecard below) · **Code:** 34 crates, 1270 tests
+**Last updated:** 2026-10-02 · **Overall parity:** ~74% (measured scorecard below) · **Code:** 34 crates, 1297 tests
 
 ## Parity scorecard
 
@@ -16,14 +16,14 @@ matched against `filmcraft-cli commands` and the UI command table. Effects: the 
 | Menus / commands | (cross-check) | ~325 of 344 in-scope menu items | ~95% |
 | Effects and transitions | 12% | video effects 93/93 (+Legacy, Obsolete), audio effects 53/53, video transitions 84/84 (+21 Legacy), audio transitions 3/3; some approximations (Warp Stabilizer 2-D, Morph Cut, Auto Reframe) | ~92% |
 | Media I/O and codecs | 12% | H.264, HEVC, VP9, AV1, ProRes, DNx, MJPEG, Opus, AAC, MP4/MOV/MKV/WebM; no MXF, image sequences, HW decode | ~70% |
-| Panels and UI fidelity | 12% | all main panels, audio effect editor windows; Metadata, Media Browser, scopes (parade/histogram), Timecode, Events panels thin or missing | ~65% |
+| Panels and UI fidelity | 12% | all main panels incl. Metadata, Timecode, Events, Progress, Reference Monitor, full Lumetri Scopes, audio effect editors; Media Browser and Libraries-style panels thin | ~75% |
 | Audio | 10% | mixer, automation, Essential Sound, meters, all 53 effects; no 5.1 buses, voice-over record | ~70% |
-| Colour | 8% | Lumetri complete, LUTs, colour management, HDR | ~80% |
+| Colour | 8% | Lumetri complete, LUTs, colour management, HDR, all Lumetri Scopes (+ `scopes.read` for agents) | ~88% |
 | Graphics and captions | 8% | text engine, shapes, captions, transcripts; no MOGRT, rolls/crawls, responsive design | ~60% |
 | Export | 8% | own H.264/AAC, ProRes, DNxHR, PNG/GIF/WAV; no preset library/queue UI, AAF/OMF, MXF | ~60% |
 | Preferences and project management | 5% | Settings dialog with 16 categories (most settings wired), project settings, scratch disks, search bins, templates | ~80% |
 | Performance | 5% | 1080p real-time, 3×1080p; HEVC 2.5× cheaper, catch-up decoding halves 4K CPU/frame, `cargo xtask bench` + `perf.stats`; 4K/8K and AV1 not yet real-time on a loaded machine | ~55% |
-| **Weighted total** | | | **~72%** |
+| **Weighted total** | | | **~74%** |
 
 ## Estimate to parity
 
