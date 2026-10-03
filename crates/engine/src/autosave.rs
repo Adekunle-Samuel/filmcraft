@@ -78,6 +78,10 @@ pub struct PlaybackPrefs {
     pub pause_encoder_queue: bool,
     pub enable_transmit: bool,
     pub disable_video_in_background: bool,
+    /// Draft decoding while playing at 1/2 resolution or lower: H.264 non-reference pictures
+    /// skip deblocking (faster; those frames are approximate). Never used for exports, renders or
+    /// a paused frame. Off by default.
+    pub draft_decode: bool,
 }
 
 impl Default for PlaybackPrefs {
@@ -89,6 +93,7 @@ impl Default for PlaybackPrefs {
             pause_encoder_queue: true,
             enable_transmit: false,
             disable_video_in_background: true,
+            draft_decode: false,
         }
     }
 }

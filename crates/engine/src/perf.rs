@@ -17,6 +17,8 @@ pub fn decode_json() -> Value {
         "seeks": g.seeks,
         "samplesDecoded": g.decoded,
         "samplesSkipped": g.skipped,
+        "draftFrames": g.draft,
+        "h264Threads": filmcraft_codecs::video::h264_threads(),
         "evicted": g.evicted,
         "decodeMs": g.decode_ns as f64 / 1e6,
         "decodeMsPerSample": g.decode_ms_per_sample(),
@@ -46,7 +48,7 @@ mod tests {
         s.execute("file.openDemoProject", json!({})).unwrap();
         let undo = s.history.undo.len();
         let v = s.execute("perf.stats", json!({})).unwrap();
-        for k in ["requests", "cacheHitRate", "seeks", "samplesDecoded", "samplesSkipped", "decodeMs", "decodeMsPerSample"] {
+        for k in ["requests", "cacheHitRate", "seeks", "samplesDecoded", "samplesSkipped", "draftFrames", "h264Threads", "decodeMs", "decodeMsPerSample"] {
             assert!(v["decode"][k].is_number(), "decode.{k} in {v}");
         }
         assert!(v["media"]["openSources"].is_number());

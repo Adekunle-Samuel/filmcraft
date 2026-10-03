@@ -187,6 +187,15 @@ fn push_item(
         // log / HDR / wide-gamut media is converted on the CPU (below), and so are blended
         // in-between frames (Frame Blending / Optical Flow on speed-changed clips)
         if !crate::colorman::needs_management(&seq.settings.color, cs, &frame) && crate::interpolation_blend(item, t, src.info().frame_rate()).is_none() {
+            // Draft playback at reduced resolution: hand over planes box-filtered to the size
+            // drawn instead of the full picture (a quarter at 1/2, a sixteenth at 1/4 of the
+            // upload and sampling). The mean is taken over Y'CbCr codes, not linear light as
+            // the shader's supersampling does, so this stays limited to the opt-in draft mode.
+            let n = if filmcraft_media::cancel::draft() { crate::decimation(frame.width as f32, size.0 as f32 * want) } else { 1 };
+            let frame = match frame.box_decimated(n) {
+                Some(small) => Arc::new(small),
+                None => frame,
+            };
             let px_scale = frame.width as f64 / size.0.max(1) as f64;
             let m = Affine::scale(opts.scale as f64, opts.scale as f64).then_apply(&motion).then_apply(&Affine::scale(1.0 / px_scale, 1.0 / px_scale));
             out.push(PlanLayer { frame, matrix: m, opacity: op * extra_opacity });

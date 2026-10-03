@@ -9,6 +9,10 @@
 //! The same way, [`with_catch_up`] tells sources which frames before the requested one are late
 //! (playback has passed them): a decoder that has to decode forward to the frame may skip
 //! pictures that only produce late frames and that nothing else references.
+//!
+//! [`with_draft`] marks reduced-resolution playback (opt-in): decoders may take spec-safe
+//! shortcuts that only change pictures nothing references (H.264: no deblocking of non-reference
+//! pictures). Never set for exports, renders or a frame shown while paused.
 
 use std::cell::{Cell, RefCell};
 use std::sync::Arc;
@@ -19,6 +23,22 @@ use filmcraft_time::Tick;
 thread_local! {
     static CURRENT: RefCell<Option<Arc<AtomicBool>>> = const { RefCell::new(None) };
     static CATCH_UP: Cell<Option<Tick>> = const { Cell::new(None) };
+    static DRAFT: Cell<bool> = const { Cell::new(false) };
+}
+
+/// Run `f` with the draft-decoding hint `on` (restoring the previous one after). Frames decoded
+/// in draft mode are only handed to requests made in draft mode.
+pub fn with_draft<R>(on: bool, f: impl FnOnce() -> R) -> R {
+    let prev = DRAFT.with(|c| c.replace(on));
+    let r = f();
+    DRAFT.with(|c| c.set(prev));
+    r
+}
+
+/// Whether the work running on this thread accepts draft-quality decoding (off unless inside
+/// [`with_draft`]`(true, …)`).
+pub fn draft() -> bool {
+    DRAFT.with(Cell::get)
 }
 
 /// Run `f` with the catch-up hint `margin` (restoring the previous one after): frames shown more
@@ -64,6 +84,17 @@ mod tests {
             assert!(cancelled());
         });
         assert!(!cancelled());
+    }
+
+    #[test]
+    fn draft_is_off_by_default_and_scoped() {
+        assert!(!draft());
+        with_draft(true, || {
+            assert!(draft());
+            with_draft(false, || assert!(!draft()));
+            assert!(draft());
+        });
+        assert!(!draft());
     }
 
     #[test]

@@ -48,7 +48,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
             ui.painter().rect_filled(pic, 0.0, t.monitor_bg);
             let ppp = ctx.pixels_per_point();
             let scale = crate::panels::monitor::quantize_scale((pic.width() * ppp / w).clamp(1.0 / 32.0, 1.0));
-            let key = FrameKey { target: Target::Sequence(seq_id), frame, size: (scale * 1000.0) as u32, revision: app.session.revision };
+            let key = FrameKey { target: Target::Sequence(seq_id), frame, size: (scale * 1000.0) as u32, revision: app.session.revision, draft: false };
             let project = app.session.project.clone();
             app.frames.request(key, rate.tick_of(frame), scale, &project, 3);
             let tex = match app.frames.get(&key) {

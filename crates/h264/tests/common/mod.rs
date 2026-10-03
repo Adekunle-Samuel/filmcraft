@@ -422,8 +422,15 @@ pub fn decode_file(path: &Path) -> Result<Vec<Picture>, DecodeFailure> {
 
 /// Decode with `threads` worker threads (0 = decoder default).
 pub fn decode_file_threads(path: &Path, threads: usize) -> Result<Vec<Picture>, DecodeFailure> {
+    decode_file_opts(path, threads, false)
+}
+
+/// [`decode_file_threads`] with draft mode ([`Decoder::set_draft`]) on or off.
+pub fn decode_file_opts(path: &Path, threads: usize, draft: bool) -> Result<Vec<Picture>, DecodeFailure> {
     let data = std::fs::read(path).unwrap();
     let mut dec = if threads == 0 { Decoder::new() } else { Decoder::with_threads(threads) };
+    assert!(!dec.draft(), "draft mode is off by default");
+    dec.set_draft(draft);
     let mut out = Vec::new();
     for (i, au) in split_access_units(&data).into_iter().enumerate() {
         match dec.decode(au, i as i64) {
@@ -494,8 +501,9 @@ pub fn check_fixture(name: &str) -> Result<bool, String> {
     let f = fixture(name);
     let Some((h264, yuv)) = ensure(f) else { return Ok(false) };
     let reference = std::fs::read(&yuv).unwrap();
-    // single-threaded and frame-threaded decoding must both be bit-exact
-    for threads in [1, 0] {
+    // single-threaded and frame-threaded decoding (an odd thread count and every core) must all
+    // be bit-exact
+    for threads in [1, 3, 0] {
         let pics = match decode_file_threads(&h264, threads) {
             Ok(p) => p,
             Err((au, e, partial)) => {
@@ -505,6 +513,9 @@ pub fn check_fixture(name: &str) -> Result<bool, String> {
             }
         };
         compare(&pics, &reference, f.width as usize, f.height as usize).map_err(|e| format!("{name} (threads {threads}): {e}"))?;
+        if pics.iter().any(|p| p.draft) {
+            return Err(format!("{name} (threads {threads}): draft picture without draft mode"));
+        }
         check_pts(&pics).map_err(|e| format!("{name} (threads {threads}): {e}"))?;
     }
     Ok(true)

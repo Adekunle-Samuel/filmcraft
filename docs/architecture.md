@@ -245,8 +245,14 @@ file ──► codecs (MP4/MOV, MKV, audio)        demux + decode, GOP-aware see
   playhead's distance, two seconds for a scrubbed-to frame), and the GOP cache skips
   non-reference pictures of late frames on the way (`VideoDecoder::is_disposable`, H.264
   `nal_ref_idc` 0 and HEVC sub-layer non-reference pictures; the wanted frame decodes exactly as
-  before). `perf.stats` reports the counters. GPU plans carry their texels already
-  converted for upload (`filmcraft_gpu::prepare`), so the UI thread only copies them.
+  before). With Settings ▸ Playback ▸ Draft decoding (off by default), frames played at 1/2
+  resolution or lower are requested as draft frames (`FrameKey::draft`,
+  `filmcraft_media::cancel::with_draft`): the H.264 decoder skips deblocking of non-reference
+  pictures (`VideoDecoder::set_draft`), the GOP cache serves those draft frames to draft
+  requests only (a paused frame, render or export decodes them again exactly), and draft plans
+  hand the GPU box-decimated Y'CbCr planes at the drawn size. `perf.stats` reports the counters.
+  GPU plans carry their texels already converted for upload (`filmcraft_gpu::prepare`), so the UI
+  thread only copies them.
 - **Audio clock.** The desktop app passes a cpal output (`apps/filmcraft/src/audio.rs`) to the UI as
   `AudioOut`. While playing, the samples played by the sound card drive the playhead and video follows.
   Without an audio device, playback falls back to the wall clock. `PlaybackMeter` counts timeline

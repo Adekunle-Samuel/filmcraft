@@ -145,35 +145,34 @@ impl<'a> Cabac<'a> {
 
     #[inline(always)]
     fn renorm(&mut self) {
-        if self.range < 256 {
-            let shift = self.range.leading_zeros() - 23;
-            self.range <<= shift;
-            if self.bits < shift {
-                self.refill();
-            }
-            self.bits -= shift;
+        // codIRange < 512 always, so the shift is 0 when no renormalisation is needed: no branch on
+        // the (unpredictable) range, only on the rare refill.
+        let shift = self.range.leading_zeros() - 23;
+        self.range <<= shift;
+        if self.bits < shift {
+            self.refill();
         }
+        self.bits -= shift;
     }
 
+    /// 9.3.3.2.1, branch-free: the MPS / LPS outcome of a context-coded bin is close to random
+    /// at high bit rates, so it selects values instead of jumping.
     #[inline(always)]
     pub fn decode_decision(&mut self, ctx_idx: usize) -> u32 {
-        let s = self.ctx[ctx_idx] as usize;
+        // Every ctxIdx is < 1024 and every state < 128: the masks only let the compiler drop the
+        // bounds checks from the per-bin path.
+        let ctx_idx = ctx_idx & (NUM_CTX - 1);
+        let s = (self.ctx[ctx_idx] & 127) as usize;
         let q = ((self.range >> 6) & 3) as usize;
         let lps = RANGE_TAB_LPS[s >> 1][q] as u32;
-        self.range -= lps;
-        let scaled = (self.range as u64) << self.bits;
-        let bin;
-        if self.value >= scaled {
-            bin = 1 - (s & 1) as u32;
-            self.value -= scaled;
-            self.range = lps;
-            self.ctx[ctx_idx] = NEXT_STATE[s][1];
-        } else {
-            bin = (s & 1) as u32;
-            self.ctx[ctx_idx] = NEXT_STATE[s][0];
-        }
+        let mps_range = self.range - lps;
+        let scaled = (mps_range as u64) << self.bits;
+        let is_lps = self.value >= scaled;
+        self.value -= scaled & (is_lps as u64).wrapping_neg();
+        self.range = if is_lps { lps } else { mps_range };
+        self.ctx[ctx_idx] = NEXT_STATE[s][is_lps as usize];
         self.renorm();
-        bin
+        (s & 1) as u32 ^ is_lps as u32
     }
 
     #[inline(always)]
@@ -183,12 +182,9 @@ impl<'a> Cabac<'a> {
         }
         self.bits -= 1;
         let scaled = (self.range as u64) << self.bits;
-        if self.value >= scaled {
-            self.value -= scaled;
-            1
-        } else {
-            0
-        }
+        let one = self.value >= scaled;
+        self.value -= scaled & (one as u64).wrapping_neg();
+        one as u32
     }
 
     pub fn decode_terminate(&mut self) -> u32 {

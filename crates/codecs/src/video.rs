@@ -9,6 +9,9 @@ use crate::{CodecError, Result};
 pub struct DecodedFrame {
     pub pts: i64,
     pub frame: VideoFrame,
+    /// Decoded in draft mode ([`VideoDecoder::set_draft`]): approximate, for reduced-resolution
+    /// playback only.
+    pub draft: bool,
 }
 
 /// A stateful video decoder. Samples are fed in decode order; pictures come out in
@@ -37,6 +40,11 @@ pub trait VideoDecoder: Send {
     fn is_disposable(&self, _sample: &[u8]) -> bool {
         false
     }
+    /// Draft decoding for reduced-resolution playback (off by default; see
+    /// [`filmcraft_media::cancel::with_draft`]): samples fed from now on may be decoded with
+    /// shortcuts that only change pictures nothing references, which come out flagged
+    /// [`DecodedFrame::draft`]. Decoders without such a mode ignore it.
+    fn set_draft(&mut self, _on: bool) {}
 }
 
 /// NAL unit headers of a length-prefixed (avcC / hvcC) sample: the first two bytes of each unit.
@@ -132,7 +140,7 @@ impl VideoDecoder for MjpegDecoder {
         let img = image::load_from_memory_with_format(sample, image::ImageFormat::Jpeg).map_err(|e| CodecError::Decode(e.to_string()))?;
         let rgba = img.to_rgba8();
         let (w, h) = rgba.dimensions();
-        Ok(vec![DecodedFrame { pts, frame: VideoFrame::rgba8(w, h, rgba.into_raw()) }])
+        Ok(vec![DecodedFrame { pts, frame: VideoFrame::rgba8(w, h, rgba.into_raw()), draft: false }])
     }
     fn flush(&mut self) -> Vec<DecodedFrame> {
         Vec::new()
@@ -155,20 +163,22 @@ pub struct H264Decoder {
     avcc: Vec<u8>,
     dec: filmcraft_h264::Decoder,
     length_size: usize,
+    draft: bool,
 }
 
 impl H264Decoder {
     pub fn new(avcc: Vec<u8>) -> Result<Self> {
         let dec = filmcraft_h264::Decoder::from_avcc(&avcc).map_err(|e| CodecError::Decode(e.to_string()))?;
         let length_size = avcc.get(4).map_or(4, |b| (b & 3) as usize + 1);
-        Ok(Self { avcc, dec, length_size })
+        Ok(Self { avcc, dec, length_size, draft: false })
     }
     /// A decoder for Annex B byte-stream samples (start codes, in-band parameter sets: MXF, TS).
     pub fn annexb() -> Self {
-        Self { avcc: Vec::new(), dec: filmcraft_h264::Decoder::new(), length_size: 0 }
+        Self { avcc: Vec::new(), dec: filmcraft_h264::Decoder::new(), length_size: 0, draft: false }
     }
     fn convert(p: filmcraft_h264::Picture) -> DecodedFrame {
         use std::sync::Arc;
+        let draft = p.draft;
         let (w, h) = (p.width as usize, p.height as usize);
         let (cw, ch) = (p.chroma_width as usize, p.chroma_height as usize);
         let y = tight_plane(p.y, p.y_stride, w, h);
@@ -193,7 +203,7 @@ impl H264Decoder {
             par,
             pts: filmcraft_time::Tick::ZERO,
         };
-        DecodedFrame { pts: p.pts, frame }
+        DecodedFrame { pts: p.pts, frame, draft }
     }
 }
 
@@ -211,9 +221,14 @@ impl VideoDecoder for H264Decoder {
         } else if let Ok(d) = filmcraft_h264::Decoder::from_avcc(&self.avcc) {
             self.dec = d;
         }
+        self.dec.set_draft(self.draft);
     }
     fn name(&self) -> &str {
         "FilmCraft H.264"
+    }
+    fn set_draft(&mut self, on: bool) {
+        self.draft = on;
+        self.dec.set_draft(on);
     }
     fn is_disposable(&self, sample: &[u8]) -> bool {
         if self.length_size == 0 {
@@ -225,6 +240,11 @@ impl VideoDecoder for H264Decoder {
         // Annex B samples carry their parameter sets: an IDR access unit is a starting point.
         (self.length_size == 0).then(|| filmcraft_bitstream::annexb_nals(sample).iter().any(|n| n.first().is_some_and(|h| h & 0x1f == 5)))
     }
+}
+
+/// Worker threads each H.264 decoder uses (frame threading; 1 on wasm).
+pub fn h264_threads() -> usize {
+    filmcraft_h264::default_threads()
 }
 
 pub fn h264_factory(e: &SampleEntry) -> Option<Result<Box<dyn VideoDecoder>>> {
@@ -291,7 +311,7 @@ impl HevcDecoder {
         }
         let par = if p.sar.0 > 0 && p.sar.1 > 0 { (p.sar.0 as u32, p.sar.1 as u32) } else { (1, 1) };
         let frame = VideoFrame { width: p.width, height: p.height, data, color, par, pts: filmcraft_time::Tick::ZERO };
-        DecodedFrame { pts: p.pts, frame }
+        DecodedFrame { pts: p.pts, frame, draft: false }
     }
 }
 
@@ -400,7 +420,7 @@ impl Vp9Decoder {
             }
             let mut frame = VideoFrame::rgba8(p.width, p.height, rgba);
             frame.color = filmcraft_color::ColorInfo { range: Range::Full, transfer: filmcraft_color::Transfer::Srgb, ..color };
-            return DecodedFrame { pts, frame };
+            return DecodedFrame { pts, frame, draft: false };
         }
         // 4:4:0 has no frame format of its own: chroma rows are repeated to 4:4:4.
         let (chroma, rows_440) = match (p.subsampling_x, p.subsampling_y) {
@@ -437,7 +457,7 @@ impl Vp9Decoder {
         // render_size (the intended display size) is not applied: the container's display
         // dimensions / pixel aspect describe the presentation.
         let par = (1, 1);
-        DecodedFrame { pts, frame: VideoFrame { width: p.width, height: p.height, data, color, par, pts: filmcraft_time::Tick::ZERO } }
+        DecodedFrame { pts, frame: VideoFrame { width: p.width, height: p.height, data, color, par, pts: filmcraft_time::Tick::ZERO }, draft: false }
     }
 }
 
@@ -521,7 +541,7 @@ impl Av1Decoder {
         } else {
             filmcraft_frame::PixelData::Yuv16 { planes: [Arc::new(y), Arc::new(u), Arc::new(v)], chroma, bits: p.bit_depth as u32, alpha: None }
         };
-        DecodedFrame { pts, frame: VideoFrame { width: p.width, height: p.height, data, color, par: (1, 1), pts: filmcraft_time::Tick::ZERO } }
+        DecodedFrame { pts, frame: VideoFrame { width: p.width, height: p.height, data, color, par: (1, 1), pts: filmcraft_time::Tick::ZERO }, draft: false }
     }
 }
 
@@ -603,7 +623,7 @@ impl VideoDecoder for ProResDecoder {
             par: (1, 1),
             pts: filmcraft_time::Tick::ZERO,
         };
-        Ok(vec![DecodedFrame { pts, frame }])
+        Ok(vec![DecodedFrame { pts, frame, draft: false }])
     }
     fn flush(&mut self) -> Vec<DecodedFrame> {
         Vec::new()
@@ -675,7 +695,7 @@ pub fn dnx_to_video_frame(f: filmcraft_dnx::Frame) -> VideoFrame {
 impl VideoDecoder for DnxDecoder {
     fn decode(&mut self, sample: &[u8], pts: i64) -> Result<Vec<DecodedFrame>> {
         let f = filmcraft_dnx::decode_frame(sample).map_err(|e| CodecError::Decode(e.to_string()))?;
-        Ok(vec![DecodedFrame { pts, frame: dnx_to_video_frame(f) }])
+        Ok(vec![DecodedFrame { pts, frame: dnx_to_video_frame(f), draft: false }])
     }
     fn flush(&mut self) -> Vec<DecodedFrame> {
         Vec::new()

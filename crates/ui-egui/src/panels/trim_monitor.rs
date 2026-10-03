@@ -126,7 +126,7 @@ fn picture(app: &mut FilmcraftApp, ui: &mut egui::Ui, area: Rect, side: &Value, 
     let scale = scale.min(app.ui.program.res.scale());
     let size_key = (scale * 1000.0) as u32;
     let rev = app.item_revision(item);
-    let key = FrameKey { target: Target::Item(item), frame, size: size_key, revision: rev };
+    let key = FrameKey { target: Target::Item(item), frame, size: size_key, revision: rev, draft: false };
     let project = app.session.project.clone();
     app.frames.request(key, rate.tick_of(frame), scale, &project, 0);
     let ctx = ui.ctx().clone();

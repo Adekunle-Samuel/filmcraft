@@ -154,7 +154,9 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, which: Which)
             (true, Target::Sequence(s)) => Target::SequencePlan(s),
             (_, t) => t,
         };
-        let key = FrameKey { target, frame, size: size_key, revision: rev };
+        // Draft decoding (opt-in): only while playing at 1/2 resolution or lower.
+        let draft = crate::frames::draft_playback(playing, scale, app.session.prefs.playback.draft_decode);
+        let key = FrameKey { target, frame, size: size_key, revision: rev, draft };
         let project = app.session.project.clone();
         if playing {
             let preroll = app.playback.preroll.is_some();
@@ -190,7 +192,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, which: Which)
         if let Some(ra) = ref_area {
             // the reference frame (CPU path)
             let rf = rate.frame_at(Tick(mv.compare_ref.unwrap_or(time.0)));
-            let rkey = FrameKey { target: cpu_target, frame: rf, size: size_key, revision: rev };
+            let rkey = FrameKey { target: cpu_target, frame: rf, size: size_key, revision: rev, draft: false };
             app.frames.request(rkey, rate.tick_of(rf), scale, &project, 1);
             let rpic = fit(ra, frame_size.0 as f32, frame_size.1 as f32);
             ui.painter().rect_filled(rpic, 0.0, t.monitor_bg);
