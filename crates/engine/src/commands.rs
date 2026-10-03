@@ -552,9 +552,10 @@ fn build() -> Vec<CommandSpec> {
                 Ok(json!({"sequence": id.0}))
             }
         ),
-        cmd!("file.newBin", "Bin", ["File", "New"], Some("Cmd+B"), r#"{"name":str}"#, always, |s, p| {
+        cmd!("file.newBin", "Bin", ["File", "New"], Some("Cmd+B"), r#"{"name":str,"parent":binId?}"#, always, |s, p| {
             let n = str_p(p, "name").unwrap_or("New Bin").to_string();
-            let id = s.edit("New Bin", |pr, _| Ok(pr.add_bin(&n, None)))?;
+            let parent = u64_p(p, "parent").map(filmcraft_project::BinId);
+            let id = s.edit("New Bin", |pr, _| Ok(pr.add_bin(&n, parent)))?;
             Ok(json!({"bin": id.0}))
         }),
         cmd!("file.newAdjustmentLayer", "Adjustment Layer…", ["File", "New"], None, r#"{"seconds":f64=5}"#, always, |s, p| {
@@ -2179,6 +2180,8 @@ fn build() -> Vec<CommandSpec> {
     v.extend(crate::remix::commands());
     v.extend(crate::voiceover::commands());
     v.extend(crate::keyboard::commands());
+    v.extend(crate::project_panel::commands());
+    v.extend(crate::media_browser::commands());
     // Edit ▸ Label ▸ <colour>, Paste Attributes, subclips, Video / Audio Options, Replace With Clip…
     // and their menu order
     crate::clip_ops::apply_layout(&mut v);

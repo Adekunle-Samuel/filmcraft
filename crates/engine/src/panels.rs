@@ -237,7 +237,7 @@ pub fn metadata_fields(p: &Project, id: ItemId) -> Vec<Field> {
     }
     // other stored fields (from imports, Edit Offline, agents…)
     for (k, v) in &it.metadata {
-        if !LOG_FIELDS.contains(&k.as_str()) {
+        if !LOG_FIELDS.contains(&k.as_str()) && !crate::project_panel::is_freeform_key(k) {
             add("Clip", k, v.clone(), true);
         }
     }

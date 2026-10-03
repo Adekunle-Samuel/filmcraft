@@ -100,6 +100,20 @@ pub enum Icon {
     TrackMaskBackFrame,
     TrackMaskFwdFrame,
     TrackMaskFwd,
+    /// Project panel footer: Sort Icons (lines of decreasing length).
+    SortIcons,
+    /// Project panel footer: Automate to Sequence (three clips in a row).
+    Automate,
+    /// Media Browser: a favourite (five-pointed star).
+    Star,
+    /// Media Browser: back / forward / up one level.
+    ChevronLeft,
+    ArrowUp,
+    /// Media Browser: a local drive and a network location.
+    Drive,
+    Network,
+    /// Media Browser: recent directories (a clock face).
+    Clock,
 }
 
 pub struct Pen16<'a> {
@@ -573,6 +587,48 @@ pub fn paint(painter: &Painter, rect: Rect, icon: Icon, color: Color32) {
         TrackMaskFwd => {
             pen.fill(&[(2.0, 3.5), (8.0, 8.0), (2.0, 12.5)]);
             pen.fill(&[(8.0, 3.5), (14.0, 8.0), (8.0, 12.5)]);
+        }
+        SortIcons => {
+            for (i, w) in [12.0, 9.5, 7.0, 4.5].iter().enumerate() {
+                let y = 3.5 + i as f32 * 3.0;
+                pen.line(&[(2.0, y), (2.0 + w, y)]);
+            }
+        }
+        Automate => {
+            pen.rect_fill(1.5, 5.0, 4.5, 11.0);
+            pen.rect_fill(5.5, 5.0, 8.5, 11.0);
+            pen.rect_fill(9.5, 5.0, 12.0, 11.0);
+            pen.line(&[(13.5, 5.0), (13.5, 11.0)]);
+        }
+        Star => {
+            let pts: Vec<(f32, f32)> = (0..10)
+                .map(|i| {
+                    let a = (-90.0 + i as f32 * 36.0f32).to_radians();
+                    let r = if i % 2 == 0 { 6.5 } else { 2.7 };
+                    (8.0 + r * a.cos(), 8.5 + r * a.sin())
+                })
+                .collect();
+            pen.closed(&pts);
+        }
+        ChevronLeft => pen.line(&[(10.0, 4.0), (6.0, 8.0), (10.0, 12.0)]),
+        ArrowUp => {
+            pen.line(&[(8.0, 13.5), (8.0, 3.0)]);
+            pen.line(&[(4.0, 7.0), (8.0, 3.0), (12.0, 7.0)]);
+        }
+        Drive => {
+            pen.rect(1.5, 5.0, 14.5, 11.5);
+            pen.dot(12.0, 8.25, 0.8);
+            pen.line(&[(3.5, 8.25), (8.0, 8.25)]);
+        }
+        Network => {
+            pen.circle(8.0, 8.0, 6.0);
+            pen.line(&[(2.0, 8.0), (14.0, 8.0)]);
+            pen.arc(8.0, 8.0, 6.0, -90.0, 90.0);
+            pen.line(&[(8.0, 2.0), (8.0, 14.0)]);
+        }
+        Clock => {
+            pen.circle(8.0, 8.0, 6.0);
+            pen.line(&[(8.0, 4.5), (8.0, 8.0), (10.5, 9.5)]);
         }
     }
 }

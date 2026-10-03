@@ -18,6 +18,7 @@ pub mod interchange_export;
 pub mod keyboard;
 pub mod lumetri;
 pub mod masks;
+pub mod media_browser;
 pub mod media_dialogs;
 pub mod menu_dialogs;
 pub mod metadata;
@@ -30,6 +31,8 @@ pub mod multicam;
 pub mod panel_state;
 pub mod presets;
 pub mod project;
+pub mod project_dialogs;
+pub mod project_views;
 pub mod reference;
 pub mod remix;
 pub mod scopes;
@@ -69,7 +72,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, p: PanelKind, rect: Rect)
         PanelKind::History => misc::history(app, ui, rect),
         PanelKind::Markers => misc::markers(app, ui, rect),
         PanelKind::Info => misc::info(app, ui, rect),
-        PanelKind::MediaBrowser => misc::media_browser(app, ui, rect),
+        PanelKind::MediaBrowser => media_browser::show(app, ui, rect),
         PanelKind::AudioTrackMixer => mixer::track_mixer(app, ui, rect),
         PanelKind::AudioClipMixer => mixer::clip_mixer(app, ui, rect),
         PanelKind::LumetriScopes => scopes::show(app, ui, rect),
@@ -173,6 +176,8 @@ pub fn drag_ghost(app: &FilmcraftApp, ui: &egui::Ui) {
 /// The panel "≡" menu.
 pub fn panel_menu_popup(app: &mut FilmcraftApp, ui: &mut egui::Ui) {
     drag_ghost(app, ui);
+    // bins opened in new windows (Project panel)
+    project::floating(app, ui.ctx());
     let id = egui::Id::new("panel-menu");
     let Some((p, pos)) = ui.ctx().data(|d| d.get_temp::<(PanelKind, egui::Pos2)>(id)) else { return };
     let mut close = false;
@@ -196,6 +201,14 @@ pub fn panel_menu_popup(app: &mut FilmcraftApp, ui: &mut egui::Ui) {
                 ui.separator();
                 ui.checkbox(&mut app.ui.timeline.show_thumbnails, "Video Thumbnails");
                 ui.checkbox(&mut app.ui.timeline.show_waveforms, "Audio Waveforms");
+            }
+            if p == PanelKind::Project {
+                ui.separator();
+                close |= project::panel_menu(app, ui);
+            }
+            if p == PanelKind::MediaBrowser {
+                ui.separator();
+                close |= media_browser::panel_menu(app, ui);
             }
         });
     });

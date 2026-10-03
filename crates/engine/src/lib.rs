@@ -22,6 +22,7 @@ pub mod graphics;
 pub mod interchange;
 pub mod keyboard;
 pub mod masks;
+pub mod media_browser;
 pub mod media_pool;
 pub mod mixer;
 pub mod multicam;
@@ -30,6 +31,7 @@ pub mod perf;
 pub mod presets;
 pub mod previews;
 pub mod project_manager;
+pub mod project_panel;
 pub mod project_tools;
 pub mod proxies;
 pub mod relink;
@@ -117,6 +119,19 @@ pub trait Services: Send + Sync {
     fn export_in_memory(&self) -> bool {
         false
     }
+    /// Entries of a directory with their kind, size and date (the Media Browser). The default
+    /// derives them from [`Services::list_dir`] (every name a file).
+    fn list_entries(&self, dir: &str) -> Option<std::io::Result<Vec<media_browser::DirEntry>>> {
+        self.list_dir(dir).map(|r| r.map(|names| names.into_iter().map(|name| media_browser::DirEntry { name, ..Default::default() }).collect()))
+    }
+    /// Drives and network locations (Media Browser ▸ Local Drives / Network).
+    fn volumes(&self) -> Vec<media_browser::Volume> {
+        Vec::new()
+    }
+    /// The user's home directory (where the Media Browser starts).
+    fn home_dir(&self) -> Option<String> {
+        None
+    }
 }
 
 /// Native filesystem services.
@@ -139,6 +154,15 @@ impl Services for FsServices {
     }
     fn file_loader(&self) -> Option<filmcraft_media::sequence::FrameLoader> {
         Some(std::sync::Arc::new(|p: &str| std::fs::read(p)))
+    }
+    fn list_entries(&self, dir: &str) -> Option<std::io::Result<Vec<media_browser::DirEntry>>> {
+        Some(media_browser::std_list_entries(dir))
+    }
+    fn volumes(&self) -> Vec<media_browser::Volume> {
+        media_browser::std_volumes()
+    }
+    fn home_dir(&self) -> Option<String> {
+        media_browser::std_home_dir()
     }
     fn read_range(&self, path: &str, offset: u64, len: usize) -> std::io::Result<Vec<u8>> {
         use std::io::{Read, Seek, SeekFrom};
@@ -315,6 +339,8 @@ pub struct Session {
     pub transcriber: Option<Arc<dyn filmcraft_speech::Transcriber>>,
     /// The Events panel log: failed commands, job results, auto-save errors, messages.
     pub log: panels::EventLog,
+    /// Media Browser navigation (directory, back / forward history, selected files).
+    pub browser: media_browser::BrowserState,
     /// Nesting depth of [`Session::execute`] (commands that run other commands).
     exec_depth: u32,
 }
@@ -400,6 +426,7 @@ impl Session {
             stepped: Vec::new(),
             transcriber: None,
             log: Default::default(),
+            browser: Default::default(),
             exec_depth: 0,
         }
     }
@@ -834,6 +861,8 @@ mod keyboard_tests;
 #[cfg(test)]
 mod masks_tests;
 #[cfg(test)]
+mod media_browser_tests;
+#[cfg(test)]
 mod media_test_util;
 #[cfg(test)]
 mod mixer_tests;
@@ -847,6 +876,8 @@ mod presets_tests;
 mod previews_tests;
 #[cfg(test)]
 mod project_manager_tests;
+#[cfg(test)]
+mod project_panel_tests;
 #[cfg(test)]
 mod proxies_tests;
 #[cfg(test)]

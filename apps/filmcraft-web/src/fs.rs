@@ -369,6 +369,43 @@ impl Services for WebServices {
     fn export_in_memory(&self) -> bool {
         true
     }
+
+    /// The Media Browser lists the virtual file table: picked and dropped files under `/files`.
+    fn list_entries(&self, dir: &str) -> Option<io::Result<Vec<filmcraft_engine::media_browser::DirEntry>>> {
+        use filmcraft_engine::media_browser::DirEntry;
+        let prefix = if dir.ends_with('/') { dir.to_string() } else { format!("{dir}/") };
+        let out = FS.with(|fs| {
+            let fs = fs.borrow();
+            let mut dirs: Vec<String> = Vec::new();
+            let mut files = Vec::new();
+            for (path, e) in &fs.entries {
+                let Some(rest) = path.strip_prefix(&prefix) else { continue };
+                match rest.split_once('/') {
+                    Some((d, _)) if !d.is_empty() => {
+                        if !dirs.iter().any(|x| x == d) {
+                            dirs.push(d.to_string());
+                        }
+                    }
+                    Some(_) => {}
+                    None => {
+                        let size = match e {
+                            Entry::Blob { size, .. } => *size,
+                            Entry::Mem(b) => b.len() as u64,
+                        };
+                        files.push(DirEntry { name: rest.to_string(), is_dir: false, size: Some(size), modified: None });
+                    }
+                }
+            }
+            let mut v: Vec<DirEntry> = dirs.into_iter().map(|name| DirEntry { name, is_dir: true, ..Default::default() }).collect();
+            v.extend(files);
+            v
+        });
+        Some(Ok(out))
+    }
+
+    fn home_dir(&self) -> Option<String> {
+        Some("/files".into())
+    }
 }
 
 /// Offer bytes as a browser download named `name`.
