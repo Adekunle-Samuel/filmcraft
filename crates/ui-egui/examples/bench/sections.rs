@@ -167,6 +167,13 @@ pub fn playback(o: &Opts) -> Vec<Value> {
         ("h264-2160", "quarter draft", 0.25, true),
         ("hevc-2160", "full", 1.0, false),
         ("hevc-2160", "half", 0.5, false),
+        ("hevc-2160", "half draft", 0.5, true),
+        ("vp9-2160", "full", 1.0, false),
+        ("vp9-2160", "half", 0.5, false),
+        ("vp9-2160", "half draft", 0.5, true),
+        ("av1-2160", "full", 1.0, false),
+        ("av1-2160", "half", 0.5, false),
+        ("av1-2160", "half draft", 0.5, true),
     ];
     let mut rows = Vec::new();
     for &(scenario, res, scale, draft) in cases.iter().filter(|c| o.wants(&format!("{} {}", c.0, c.1))) {

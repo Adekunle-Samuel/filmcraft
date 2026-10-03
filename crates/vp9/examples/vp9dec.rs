@@ -9,6 +9,8 @@ fn main() {
     let mut out = args.get(2).map(|p| std::io::BufWriter::new(std::fs::File::create(p).expect("create output")));
     let threads = std::env::var("VP9_THREADS").ok().and_then(|s| s.parse().ok()).unwrap_or(0);
     let mut dec = if threads > 0 { filmcraft_vp9::Decoder::with_threads(threads) } else { filmcraft_vp9::Decoder::new() };
+    // VP9_DRAFT=1: draft mode (non-reference frames skip the loop filter).
+    dec.set_draft(std::env::var_os("VP9_DRAFT").is_some());
     // VP9_LOOPS=n decodes the file n times (for profiling; the stream starts with a key frame).
     let loops = std::env::var("VP9_LOOPS").ok().and_then(|s| s.parse().ok()).unwrap_or(1usize);
     let hl = u16::from_le_bytes([data[6], data[7]]) as usize;
@@ -24,7 +26,7 @@ fn main() {
             p += sz;
             match dec.decode(frame, i) {
                 Ok(pics) => {
-                    for pic in pics {
+                    for pic in pics.into_iter().chain(if p >= data.len() { dec.flush() } else { Vec::new() }) {
                         n += 1;
                         if let Some(o) = out.as_mut() {
                             for pl in [&pic.y, &pic.u, &pic.v] {

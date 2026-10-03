@@ -1,15 +1,17 @@
 //! Top-level decoder: superframes, frame header handling, tile scheduling (tile columns in
-//! parallel), frame assembly, loop filter (superblock wavefront in parallel), probability
-//! adaptation and reference frame management.
+//! parallel), probability adaptation, reference frame management, and the per-frame "post" stage
+//! (band assembly, loop filter, publication, output picture) that runs behind the next frame
+//! (frame threading).
 
 use crate::error::{Error, Result, ensure};
-use crate::frame::{Frame, MiGrid, MiInfo, Plane as FPlane, Pools, plane_geometry};
+use crate::frame::{BAND_PAD, Band, Frame, FrameInfo, MiGrid, MiInfo, Pools};
 use crate::header::{FrameHeader, HeaderState, KEY_FRAME, RefInfo, parse_compressed, parse_uncompressed, split_superframe};
 use crate::loopfilter::{LfFrame, PlaneView, filter_superblock};
 use crate::probs::{Counts, adapt_coef_probs, adapt_noncoef_probs};
 use crate::tables::*;
 use crate::tile::{FrameShared, RefUse, Strip, TileDecoder};
 use crate::{ColorInfo, Picture, Plane};
+use std::collections::VecDeque;
 use std::sync::Arc;
 
 /// Counters describing what the decoder has seen (useful to check test coverage).
@@ -40,6 +42,18 @@ pub struct DecodeStats {
     pub compound_frames: u64,
     pub bit_depths: [u64; 3],
     pub profiles: [u64; 4],
+    /// Frames decoded in draft mode without the loop filter ([`Decoder::set_draft`]).
+    pub draft_frames: u64,
+}
+
+/// A picture on its way out, in output order.
+enum Pending {
+    Ready(Picture),
+    /// Produced by a post job running on another thread.
+    #[cfg(all(feature = "threads", not(target_arch = "wasm32")))]
+    Job(std::sync::mpsc::Receiver<Picture>),
+    /// show_existing_frame: converted once the frame is complete.
+    Existing(Arc<Frame>, i64, bool),
 }
 
 /// VP9 decoder.
@@ -52,7 +66,11 @@ pub struct Decoder {
     last_show_frame: bool,
     stats: DecodeStats,
     threads: usize,
-    bufs: Pools,
+    bufs: Arc<Pools>,
+    draft: bool,
+    pending: VecDeque<Pending>,
+    #[cfg(all(feature = "threads", not(target_arch = "wasm32")))]
+    jobs: VecDeque<std::thread::JoinHandle<()>>,
     #[cfg(feature = "threads")]
     pool: Option<rayon::ThreadPool>,
 }
@@ -86,7 +104,8 @@ impl Decoder {
         Self::with_threads(default_threads())
     }
 
-    /// A decoder using up to `threads` worker threads (1 = decode on the calling thread).
+    /// A decoder using up to `threads` worker threads (1 = decode on the calling thread, and
+    /// every picture is returned by the `decode` call that completes it).
     pub fn with_threads(threads: usize) -> Self {
         #[cfg(feature = "threads")]
         let pool = if threads > 1 && cfg!(not(target_arch = "wasm32")) {
@@ -103,7 +122,11 @@ impl Decoder {
             last_show_frame: false,
             stats: DecodeStats::default(),
             threads: threads.max(1),
-            bufs: Pools::default(),
+            bufs: Arc::default(),
+            draft: false,
+            pending: VecDeque::new(),
+            #[cfg(all(feature = "threads", not(target_arch = "wasm32")))]
+            jobs: VecDeque::new(),
             #[cfg(feature = "threads")]
             pool,
         }
@@ -114,32 +137,49 @@ impl Decoder {
         self.stats.clone()
     }
 
+    /// Worker threads in use (1: everything runs on the calling thread).
+    pub fn threads(&self) -> usize {
+        if self.frame_threads() { self.threads } else { 1 }
+    }
+
+    /// Draft mode for reduced-resolution playback (off by default): frames that no other frame
+    /// can reference (`refresh_frame_flags` 0) skip the loop filter and come out flagged
+    /// [`Picture::draft`]. Every other picture is unchanged: the loop filter changes neither the
+    /// mode info, segmentation map nor probabilities that later frames read.
+    pub fn set_draft(&mut self, on: bool) {
+        self.draft = on;
+    }
+
     /// Decode one chunk (a frame or a superframe, as stored in one IVF / WebM / MP4 sample).
-    /// Returns the frames to show, in order; each carries `pts`.
+    /// Returns the pictures finished so far, in order; each carries the `pts` of the chunk that
+    /// showed it. With frame threads a picture may come out of a later call or [`Self::flush`].
     pub fn decode(&mut self, data: &[u8], pts: i64) -> Result<Vec<Picture>> {
         let frames = split_superframe(data);
         if frames.len() > 1 {
             self.stats.superframes += 1;
         }
-        let mut out = Vec::new();
         for f in frames {
             if f.is_empty() {
                 continue;
             }
-            if let Some(frame) = self.decode_frame(f)? {
-                out.push(make_picture(&frame, pts, self.par()));
-            }
+            self.decode_frame(f, pts)?;
         }
-        Ok(out)
+        Ok(self.drain(false))
     }
 
-    /// End of stream. VP9 has no reordering delay, so this always returns no pictures.
+    /// End of stream: every picture still in flight.
     pub fn flush(&mut self) -> Vec<Picture> {
-        Vec::new()
+        let out = self.drain(true);
+        #[cfg(all(feature = "threads", not(target_arch = "wasm32")))]
+        for j in self.jobs.drain(..) {
+            let _ = j.join();
+        }
+        out
     }
 
-    /// Forget all decoding state (references, probability contexts, segmentation), e.g. before
-    /// decoding from another key frame after a seek. The thread pool and statistics are kept.
+    /// Forget all decoding state (references, probability contexts, segmentation) and pictures
+    /// in flight, e.g. before decoding from another key frame after a seek. The thread pool and
+    /// statistics are kept.
     pub fn reset(&mut self) {
         self.st = HeaderState::default();
         self.slots = Default::default();
@@ -147,10 +187,63 @@ impl Decoder {
         self.prev_seg_ids = Vec::new();
         self.last_size = None;
         self.last_show_frame = false;
+        self.pending.clear();
     }
 
-    fn decode_frame(&mut self, data: &[u8]) -> Result<Option<Arc<Frame>>> {
-        let refs: [Option<RefInfo>; 8] = std::array::from_fn(|i| self.slots[i].as_ref().map(|f| RefInfo { width: f.width, height: f.height }));
+    fn frame_threads(&self) -> bool {
+        #[cfg(all(feature = "threads", not(target_arch = "wasm32")))]
+        {
+            self.pool.is_some()
+        }
+        #[cfg(not(all(feature = "threads", not(target_arch = "wasm32"))))]
+        {
+            false
+        }
+    }
+
+    /// Pictures at the front of the queue that are finished (`all`: wait for every one). The
+    /// queue is kept short: beyond a few pictures in flight the oldest is waited for.
+    fn drain(&mut self, all: bool) -> Vec<Picture> {
+        let max_lag = (self.threads / 2).clamp(2, 6);
+        let mut out = Vec::new();
+        loop {
+            let must = all || self.pending.len() > max_lag;
+            let Some(front) = self.pending.front_mut() else { break };
+            let pic = match front {
+                Pending::Ready(_) => match self.pending.pop_front() {
+                    Some(Pending::Ready(p)) => Some(p),
+                    _ => None,
+                },
+                #[cfg(all(feature = "threads", not(target_arch = "wasm32")))]
+                Pending::Job(rx) => {
+                    let p = if must {
+                        rx.recv().ok()
+                    } else {
+                        match rx.try_recv() {
+                            Ok(p) => Some(p),
+                            Err(std::sync::mpsc::TryRecvError::Empty) => break,
+                            Err(std::sync::mpsc::TryRecvError::Disconnected) => None,
+                        }
+                    };
+                    self.pending.pop_front();
+                    p
+                }
+                Pending::Existing(f, pts, draft) => {
+                    if !must && !f.is_complete() {
+                        break;
+                    }
+                    let p = picture_of(f, *pts, *draft);
+                    self.pending.pop_front();
+                    Some(p)
+                }
+            };
+            out.extend(pic);
+        }
+        out
+    }
+
+    fn decode_frame(&mut self, data: &[u8], pts: i64) -> Result<()> {
+        let refs: [Option<RefInfo>; 8] = std::array::from_fn(|i| self.slots[i].as_ref().map(|f| RefInfo { width: f.info.width, height: f.info.height }));
         let mut h = parse_uncompressed(data, &mut self.st, &refs)?;
         if h.show_existing_frame {
             self.stats.show_existing += 1;
@@ -158,7 +251,8 @@ impl Decoder {
                 .clone()
                 .ok_or_else(|| Error::MissingReference(format!("show_existing_frame of empty slot {}", h.frame_to_show_map_idx)))?;
             self.stats.shown += 1;
-            return Ok(Some(f));
+            self.pending.push_back(Pending::Existing(f, pts, false));
+            return Ok(());
         }
         ensure!(h.width <= 16384 && h.height <= 16384, "frame size {}x{} too large", h.width, h.height);
         let (mi_rows, mi_cols) = (h.mi_rows as usize, h.mi_cols as usize);
@@ -196,11 +290,12 @@ impl Decoder {
                 let Some(rf) = &ref_frames[i] else {
                     return Err(Error::MissingReference(format!("reference slot {} is empty", h.ref_frame_idx[i])));
                 };
+                let ri = &rf.info;
                 ensure!(
-                    rf.bit_depth == h.color.bit_depth && rf.ss_x == h.color.subsampling_x && rf.ss_y == h.color.subsampling_y,
+                    ri.bit_depth == h.color.bit_depth && ri.ss_x == h.color.subsampling_x && ri.ss_y == h.color.subsampling_y,
                     "reference frame format differs from the current frame"
                 );
-                let (rw, rh) = (rf.width as i64, rf.height as i64);
+                let (rw, rh) = (ri.width as i64, ri.height as i64);
                 let (w, hh) = (h.width as i64, h.height as i64);
                 if 2 * w >= rw && 2 * hh >= rh && w <= 16 * rw && hh <= 16 * rh {
                     let x_scale = ((rw << 14) / w) as i32;
@@ -272,9 +367,10 @@ impl Decoder {
         let results: Vec<(Strip, Option<Error>)> = self.run_parallel(tile_cols, &decode_col);
         let mut counts = Counts::default();
         let mut strips = Vec::with_capacity(results.len());
+        let mut error = None;
         for (s, e) in results {
             if let Some(e) = e {
-                return Err(e);
+                error.get_or_insert(e);
             }
             if counting {
                 counts.add(&s.counts);
@@ -285,32 +381,39 @@ impl Decoder {
             self.stats.inter_blocks += s.inter_blocks;
             strips.push(s);
         }
+        if let Some(e) = error {
+            recycle_strips(strips, &self.bufs);
+            return Err(e);
+        }
         // Release the references before the slots are refreshed, so that evicted frames can be
         // recycled.
         drop(ref_frames);
         drop(prev_mi);
-        // Assemble the frame and mode info.
-        let geo = plane_geometry(h.width, h.height, h.color.subsampling_x, h.color.subsampling_y);
-        let (planes, mi, seg_ids) = assemble(strips, &geo, mi_rows, mi_cols, &self.bufs, self.par());
-        let mut frame = Frame {
-            planes,
-            width: h.width,
-            height: h.height,
-            ss_x: h.color.subsampling_x,
-            ss_y: h.color.subsampling_y,
-            bit_depth: h.color.bit_depth,
-            color_space: h.color.color_space,
-            color_range: h.color.color_range,
-            render_width: h.render_width,
-            render_height: h.render_height,
-            key: h.frame_type == KEY_FRAME,
-            intra_only: h.intra_only,
-        };
-        // Loop filter (8.8).
-        if self.st.lf.level > 0 {
-            let lf = LfFrame::new(&self.st.lf, &seg, mi_rows, mi_cols, h.color.subsampling_x, h.color.subsampling_y, h.color.bit_depth);
-            self.loop_filter(&mut frame, &mi, &lf);
-        }
+        let (mi, seg_ids) = assemble_mi(&mut strips, mi_rows, mi_cols, &self.bufs);
+        let mi = Arc::new(mi);
+        let frame = Arc::new(Frame::new(
+            FrameInfo {
+                width: h.width,
+                height: h.height,
+                ss_x: h.color.subsampling_x,
+                ss_y: h.color.subsampling_y,
+                bit_depth: h.color.bit_depth,
+                color_space: h.color.color_space,
+                color_range: h.color.color_range,
+                render_width: h.render_width,
+                render_height: h.render_height,
+                key: h.frame_type == KEY_FRAME,
+                intra_only: h.intra_only,
+            },
+            self.bufs.clone(),
+        ));
+        // Loop filter (8.8), skipped in draft mode for frames nothing can reference.
+        let draft = self.draft && h.refresh_frame_flags == 0 && h.show_frame && self.st.lf.level > 0;
+        self.stats.draft_frames += draft as u64;
+        let lf = (self.st.lf.level > 0 && !draft)
+            .then(|| LfFrame::new(&self.st.lf, &seg, mi_rows, mi_cols, h.color.subsampling_x, h.color.subsampling_y, h.color.bit_depth));
+        let job = PostJob { frame: frame.clone(), strips, mi: mi.clone(), lf, out: h.show_frame.then_some((pts, draft)), pools: self.bufs.clone() };
+        self.run_post(job);
         // refresh_probs (6.1.2).
         if counting {
             let saved = &self.st.contexts[h.frame_context_idx as usize];
@@ -331,32 +434,61 @@ impl Decoder {
         if seg.enabled && seg.update_map {
             self.prev_seg_ids = seg_ids;
         }
-        let frame = Arc::new(frame);
-        let mut evicted = Vec::new();
         for i in 0..8 {
             if (h.refresh_frame_flags >> i) & 1 == 1 {
-                evicted.extend(self.slots[i].replace(frame.clone()));
+                self.slots[i] = Some(frame.clone());
             }
         }
-        // Recycle the planes of frames no longer referenced anywhere.
-        for f in evicted {
-            if let Ok(f) = Arc::try_unwrap(f) {
-                for p in f.planes {
-                    self.bufs.samples.put(p.data);
-                }
-            }
-        }
-        if let Some(old) = self.prev_mi.replace(Arc::new(mi))
+        if let Some(old) = self.prev_mi.replace(mi)
             && let Ok(old) = Arc::try_unwrap(old)
         {
             self.bufs.mi.put(old.mi);
         }
         if h.show_frame {
             self.stats.shown += 1;
-            Ok(Some(frame))
         } else {
             self.stats.hidden += 1;
-            Ok(None)
+        }
+        Ok(())
+    }
+
+    /// Run the post stage of a frame: on its own thread with frame threads (later frames wait
+    /// per band for the samples they read), else right here.
+    fn run_post(&mut self, job: PostJob) {
+        #[cfg(all(feature = "threads", not(target_arch = "wasm32")))]
+        if self.frame_threads() {
+            // Bound the post stages in flight (each is one thread).
+            while self.jobs.front().is_some_and(|j| j.is_finished()) {
+                let _ = self.jobs.pop_front().map(|j| j.join());
+            }
+            let max_jobs = (self.threads / 3).clamp(2, 6);
+            while self.jobs.len() >= max_jobs {
+                let _ = self.jobs.pop_front().map(|j| j.join());
+            }
+            let shown = job.out.is_some();
+            let (tx, rx) = std::sync::mpsc::channel();
+            let spawned = std::thread::Builder::new().name("vp9-post".into()).spawn(move || {
+                if let Some(p) = job.run() {
+                    let _ = tx.send(p);
+                }
+            });
+            match spawned {
+                Ok(handle) => {
+                    self.jobs.push_back(handle);
+                    if shown {
+                        self.pending.push_back(Pending::Job(rx));
+                    }
+                    return;
+                }
+                Err(e) => {
+                    // No thread available: the job (moved into the failed closure) is gone,
+                    // which cannot happen in practice; report as a decoding failure.
+                    panic!("cannot spawn VP9 post-processing thread: {e}");
+                }
+            }
+        }
+        if let Some(p) = job.run() {
+            self.pending.push_back(Pending::Ready(p));
         }
     }
 
@@ -384,17 +516,6 @@ impl Decoder {
         s.profiles[h.profile as usize] += 1;
     }
 
-    fn par(&self) -> Par<'_> {
-        #[cfg(feature = "threads")]
-        {
-            Par(self.pool.as_ref())
-        }
-        #[cfg(not(feature = "threads"))]
-        {
-            Par(std::marker::PhantomData)
-        }
-    }
-
     /// Run `f(0..n)`, in parallel when a pool is available.
     fn run_parallel<T: Send>(&self, n: usize, f: &(dyn Fn(usize) -> T + Sync)) -> Vec<T> {
         #[cfg(feature = "threads")]
@@ -406,253 +527,212 @@ impl Decoder {
         }
         (0..n).map(f).collect()
     }
+}
 
-    fn loop_filter(&self, frame: &mut Frame, mi: &MiGrid, lf: &LfFrame) {
-        let sb_rows = lf.mi_rows.div_ceil(8);
-        let sb_cols = lf.mi_cols.div_ceil(8);
-        #[cfg(feature = "threads")]
-        if let Some(pool) = &self.pool
-            && sb_rows > 1
-        {
-            lf_parallel(pool, self.threads, frame, mi, lf, sb_rows, sb_cols);
-            return;
-        }
-        let _ = self.threads;
-        let [p0, p1, p2] = &mut frame.planes;
-        let mut views = [
-            PlaneView { stride: p0.stride, data: &mut p0.data, ox: 0, oy: 0 },
-            PlaneView { stride: p1.stride, data: &mut p1.data, ox: 0, oy: 0 },
-            PlaneView { stride: p2.stride, data: &mut p2.data, ox: 0, oy: 0 },
-        ];
-        for r in 0..sb_rows {
-            for c in 0..sb_cols {
-                filter_superblock(&mut views, mi, lf, r * 8, c * 8);
-            }
+impl Drop for Decoder {
+    fn drop(&mut self) {
+        // Post jobs own everything they use; let them finish rather than leaving threads behind.
+        #[cfg(all(feature = "threads", not(target_arch = "wasm32")))]
+        for j in self.jobs.drain(..) {
+            let _ = j.join();
         }
     }
 }
 
-/// Loop filter with a superblock wavefront: superblock (r, c) runs once (r - 1, c + 1) is done.
-/// The planes are split into superblock-row bands, each behind its own lock. Each superblock
-/// copies the samples it may touch (its area plus 8 samples above / left, i.e. the bottom rows
-/// of band r - 1 and its own band) out, filters them locally and writes them back; the locks are
-/// only held while copying, and only neighbouring rows ever contend.
-#[cfg(feature = "threads")]
-fn lf_parallel(pool: &rayon::ThreadPool, threads: usize, frame: &mut Frame, mi: &MiGrid, lf: &LfFrame, sb_rows: usize, sb_cols: usize) {
-    use rayon::prelude::*;
-    use std::sync::atomic::{AtomicUsize, Ordering};
-    use std::sync::{Condvar, Mutex};
-    let strides = [frame.planes[0].stride, frame.planes[1].stride, frame.planes[2].stride];
-    let sub = [(0usize, 0usize), (lf.ss_x, lf.ss_y), (lf.ss_x, lf.ss_y)];
-    let band_h = [64usize, 64 >> lf.ss_y, 64 >> lf.ss_y];
-    // bands[r][p]: rows [r * band_h[p], (r + 1) * band_h[p]) of plane p.
-    let bands: Vec<Mutex<[&mut [u16]; 3]>> = {
-        let [a, b, c] = &mut frame.planes;
-        let mut ia = a.data.chunks_mut(band_h[0] * strides[0]);
-        let mut ib = b.data.chunks_mut(band_h[1] * strides[1]);
-        let mut ic = c.data.chunks_mut(band_h[2] * strides[2]);
-        (0..sb_rows).map(|_| Mutex::new([ia.next().unwrap_or_default(), ib.next().unwrap_or_default(), ic.next().unwrap_or_default()])).collect()
-    };
-    let progress = Mutex::new(vec![0usize; sb_rows]);
-    let cv = Condvar::new();
-    let next = AtomicUsize::new(0);
-    // Copy rows [ry, ry + rh) x [rx, rx + rw) of plane p between the bands and `buf` (row-major,
-    // stride rw); `to_buf` selects the direction.
-    let xfer = |r: usize, p: usize, rx: usize, ry: usize, rw: usize, rh: usize, buf: &mut [u16], to_buf: bool| {
-        let bh = band_h[p];
-        let mut yy = 0;
-        while yy < rh {
-            let y = ry + yy;
-            let br = y / bh;
-            let n = ((br + 1) * bh - y).min(rh - yy);
-            debug_assert!(br + 1 >= r && br <= r);
-            let mut g = bands[br].lock().expect("lf band");
-            let band = &mut g[p];
-            for k in 0..n {
-                let s = (y + k - br * bh) * strides[p] + rx;
-                let b = (yy + k) * rw;
-                if to_buf {
-                    buf[b..b + rw].copy_from_slice(&band[s..s + rw]);
-                } else {
-                    band[s..s + rw].copy_from_slice(&buf[b..b + rw]);
-                }
-            }
-            yy += n;
-        }
-    };
-    pool.install(|| {
-        (0..threads.min(sb_rows)).into_par_iter().for_each(|_| {
-            let mut bufs: [Vec<u16>; 3] = [vec![0; 72 * 72], vec![0; 72 * 72], vec![0; 72 * 72]];
-            loop {
-                let r = next.fetch_add(1, Ordering::Relaxed);
-                if r >= sb_rows {
-                    break;
-                }
-                for c in 0..sb_cols {
-                    if r > 0 {
-                        let need = (c + 2).min(sb_cols);
-                        let mut p = progress.lock().expect("lf progress");
-                        while p[r - 1] < need {
-                            p = cv.wait(p).expect("lf progress");
-                        }
-                    }
-                    // Region of each plane: [x0 - 8, x0 + size) x [y0 - 8, y0 + size).
-                    let mut regions = [(0usize, 0usize, 0usize, 0usize); 3];
-                    for p in 0..3 {
-                        let (sx, sy) = sub[p];
-                        let (x0, y0) = ((c * 64) >> sx, (r * 64) >> sy);
-                        let (rx, ry) = (x0.saturating_sub(8), y0.saturating_sub(8));
-                        let rw = (x0 + (64 >> sx)).min(strides[p]) - rx;
-                        let rh = (y0 + band_h[p]) - ry;
-                        regions[p] = (rx, ry, rw, rh);
-                        xfer(r, p, rx, ry, rw, rh, &mut bufs[p], true);
-                    }
-                    {
-                        let [b0, b1, b2] = &mut bufs;
-                        let mut views = [
-                            PlaneView { data: b0, stride: regions[0].2, ox: regions[0].0, oy: regions[0].1 },
-                            PlaneView { data: b1, stride: regions[1].2, ox: regions[1].0, oy: regions[1].1 },
-                            PlaneView { data: b2, stride: regions[2].2, ox: regions[2].0, oy: regions[2].1 },
-                        ];
-                        filter_superblock(&mut views, mi, lf, r * 8, c * 8);
-                    }
-                    for p in 0..3 {
-                        let (rx, ry, rw, rh) = regions[p];
-                        xfer(r, p, rx, ry, rw, rh, &mut bufs[p], false);
-                    }
-                    let mut p = progress.lock().expect("lf progress");
-                    p[r] = c + 1;
-                    cv.notify_all();
-                }
-            }
-        });
-    });
-}
-
-/// Optional thread pool for data-parallel copies.
-#[derive(Clone, Copy)]
-struct Par<'a>(#[cfg(feature = "threads")] Option<&'a rayon::ThreadPool>, #[cfg(not(feature = "threads"))] std::marker::PhantomData<&'a ()>);
-
-impl Par<'_> {
-    /// `f(i, chunk)` for the consecutive `chunk_len`-element chunks of `data`.
-    fn chunks<T: Send>(self, data: &mut [T], chunk_len: usize, f: impl Fn(usize, &mut [T]) + Sync) {
-        let chunk_len = chunk_len.max(1);
-        #[cfg(feature = "threads")]
-        if let Some(pool) = self.0
-            && data.len() > chunk_len
-        {
-            use rayon::prelude::*;
-            pool.install(|| data.par_chunks_mut(chunk_len).enumerate().for_each(|(i, c)| f(i, c)));
-            return;
-        }
-        for (i, c) in data.chunks_mut(chunk_len).enumerate() {
-            f(i, c);
-        }
-    }
-}
-
-/// Rows per chunk of the parallel frame copies.
-const COPY_ROWS: usize = 64;
-
-/// Build full-frame planes, mode info and segment ids from the tile column strips.
-fn assemble(
-    mut strips: Vec<Strip>,
-    geo: &[(usize, usize, usize, usize); 3],
-    mi_rows: usize,
-    mi_cols: usize,
-    pools: &Pools,
-    par: Par,
-) -> ([FPlane; 3], MiGrid, Vec<u8>) {
-    if strips.len() == 1 {
-        let s = strips.pop().expect("one strip");
-        let [a, b, c] = s.planes;
-        let mk = |d: Vec<u16>, g: (usize, usize, usize, usize)| FPlane { data: d, stride: g.0, width: g.2, height: g.3 };
-        return ([mk(a, geo[0]), mk(b, geo[1]), mk(c, geo[2])], MiGrid { cols: mi_cols, rows: mi_rows, mi: s.mi }, s.seg_ids);
-    }
-    let mk = |g: (usize, usize, usize, usize)| FPlane { data: pools.samples.take(g.0 * g.1, 0), stride: g.0, width: g.2, height: g.3 };
-    let mut planes = [mk(geo[0]), mk(geo[1]), mk(geo[2])];
-    let mut mi = pools.mi.take(mi_rows * mi_cols, MiInfo::default());
-    let mut seg = vec![0u8; mi_rows * mi_cols];
-    for (p, plane) in planes.iter_mut().enumerate() {
-        let fs = plane.stride;
-        // Each chunk of destination rows gathers its part of every strip.
-        par.chunks(&mut plane.data, COPY_ROWS * fs, |ci, dst| {
-            let y0 = ci * COPY_ROWS;
-            for s in &strips {
-                let ss = s.strides[p];
-                let x0 = s.x_off[p];
-                let w = ss.min(fs - x0);
-                for (k, row) in dst.chunks_mut(fs).enumerate() {
-                    let y = y0 + k;
-                    if let Some(src) = s.planes[p].get(y * ss..y * ss + w) {
-                        row[x0..x0 + w].copy_from_slice(src);
-                    }
-                }
-            }
-        });
-    }
-    for s in &strips {
-        let mw = s.mi_col_end - s.mi_col_start;
-        for r in 0..mi_rows {
-            mi[r * mi_cols + s.mi_col_start..r * mi_cols + s.mi_col_end].copy_from_slice(&s.mi[r * mw..r * mw + mw]);
-            seg[r * mi_cols + s.mi_col_start..r * mi_cols + s.mi_col_end].copy_from_slice(&s.seg_ids[r * mw..r * mw + mw]);
-        }
-    }
+fn recycle_strips(strips: Vec<Strip>, pools: &Pools) {
     for s in strips {
         for p in s.planes {
             pools.samples.put(p);
         }
         pools.mi.put(s.mi);
     }
-    (planes, MiGrid { cols: mi_cols, rows: mi_rows, mi }, seg)
 }
 
-fn make_picture(f: &Frame, pts: i64, par: Par) -> Picture {
-    // Crop (and narrow 8-bit samples), in parallel chunks of rows.
-    let conv = |p: &FPlane| -> Plane {
-        let w = p.width;
-        if w == 0 || p.height == 0 {
-            return if f.bit_depth == 8 { Plane::U8(Vec::new()) } else { Plane::U16(Vec::new()) };
+/// The post stage of one frame: build each band from the tile column strips, loop filter it
+/// (superblocks in raster order, so the result is the specification's), publish it once the
+/// next band's filtering can no longer change it, and copy it into the output picture.
+struct PostJob {
+    frame: Arc<Frame>,
+    strips: Vec<Strip>,
+    mi: Arc<MiGrid>,
+    lf: Option<LfFrame>,
+    /// (pts, draft) when the frame is shown.
+    out: Option<(i64, bool)>,
+    pools: Arc<Pools>,
+}
+
+/// Publishes placeholder bands if a post job dies, so that waiting frames cannot hang.
+struct PublishGuard<'a>(&'a Frame);
+
+impl Drop for PublishGuard<'_> {
+    fn drop(&mut self) {
+        for r in 0..self.0.sb_rows() {
+            if !self.0.is_published(r) {
+                self.0.publish(r, self.0.new_band());
+            }
         }
-        if f.bit_depth == 8 {
-            let mut out = vec![0u8; w * p.height];
-            par.chunks(&mut out, COPY_ROWS * w, |ci, dst| {
-                for (k, row) in dst.chunks_mut(w).enumerate() {
-                    for (d, &s) in row.iter_mut().zip(&p.row(ci * COPY_ROWS + k)[..w]) {
-                        *d = s as u8;
+    }
+}
+
+impl PostJob {
+    fn run(self) -> Option<Picture> {
+        let f = &*self.frame;
+        let _guard = PublishGuard(f);
+        let mut pic = self.out.map(|(pts, draft)| PictureBuilder::new(f, pts, draft));
+        let sb_rows = f.sb_rows();
+        let mut held: Option<Band> = None;
+        for r in 0..sb_rows {
+            let mut band = f.new_band();
+            for p in 0..3 {
+                let (fs, bh) = (f.strides[p], f.band_h[p]);
+                let dst = &mut band.planes[p];
+                for s in &self.strips {
+                    let ss = s.strides[p];
+                    let x0 = s.x_off[p];
+                    let w = ss.min(fs - x0);
+                    for k in 0..bh {
+                        let y = r * bh + k;
+                        let d = (BAND_PAD + k) * fs + x0;
+                        dst[d..d + w].copy_from_slice(&s.planes[p][y * ss..y * ss + w]);
                     }
                 }
-            });
-            Plane::U8(out)
-        } else {
-            let mut out = vec![0u16; w * p.height];
-            par.chunks(&mut out, COPY_ROWS * w, |ci, dst| {
-                for (k, row) in dst.chunks_mut(w).enumerate() {
-                    row.copy_from_slice(&p.row(ci * COPY_ROWS + k)[..w]);
+            }
+            if let Some(lf) = &self.lf {
+                if let Some(prev) = &held {
+                    // The bottom rows of the previous band, which this row's filter may change.
+                    for p in 0..3 {
+                        let (fs, bh) = (f.strides[p], f.band_h[p]);
+                        band.planes[p][..BAND_PAD * fs].copy_from_slice(&prev.planes[p][bh * fs..(bh + BAND_PAD) * fs]);
+                    }
                 }
-            });
-            Plane::U16(out)
+                let [a, b, c] = &mut band.planes;
+                let mut views = [band_view(f, a, 0, r), band_view(f, b, 1, r), band_view(f, c, 2, r)];
+                for c in 0..lf.mi_cols.div_ceil(8) {
+                    filter_superblock(&mut views, &self.mi, lf, r * 8, c * 8);
+                }
+                if let Some(prev) = &mut held {
+                    for p in 0..3 {
+                        let (fs, bh) = (f.strides[p], f.band_h[p]);
+                        prev.planes[p][bh * fs..(bh + BAND_PAD) * fs].copy_from_slice(&band.planes[p][..BAND_PAD * fs]);
+                    }
+                }
+            }
+            if let Some(prev) = held.take() {
+                if let Some(pic) = &mut pic {
+                    pic.add(f, r - 1, &prev);
+                }
+                f.publish(r - 1, prev);
+            }
+            held = Some(band);
         }
-    };
-    let [y, u, v] = &f.planes;
-    Picture {
-        width: f.width,
-        height: f.height,
-        chroma_width: u.width as u32,
-        chroma_height: u.height as u32,
-        bit_depth: f.bit_depth as u32,
-        subsampling_x: f.ss_x,
-        subsampling_y: f.ss_y,
-        y: conv(y),
-        u: conv(u),
-        v: conv(v),
-        y_stride: y.width,
-        uv_stride: u.width,
-        pts,
-        key: f.key,
-        intra_only: f.intra_only,
-        color: ColorInfo { color_space: f.color_space, full_range: f.color_range },
-        render_width: f.render_width,
-        render_height: f.render_height,
+        if let Some(last) = held {
+            if let Some(pic) = &mut pic {
+                pic.add(f, sb_rows - 1, &last);
+            }
+            f.publish(sb_rows - 1, last);
+        }
+        for s in self.strips {
+            for p in s.planes {
+                self.pools.samples.put(p);
+            }
+        }
+        pic.map(PictureBuilder::finish)
     }
+}
+
+/// The loop filter's view of band `r` of plane `p`: the band's rows plus (below row 0) the
+/// scratch rows holding the bottom of band r - 1.
+fn band_view<'a>(f: &Frame, d: &'a mut [u16], p: usize, r: usize) -> PlaneView<'a> {
+    let (fs, bh) = (f.strides[p], f.band_h[p]);
+    if r == 0 { PlaneView { data: &mut d[BAND_PAD * fs..], stride: fs, ox: 0, oy: 0 } } else { PlaneView { data: d, stride: fs, ox: 0, oy: r * bh - BAND_PAD } }
+}
+
+/// Mode info and segment ids of the whole frame from the tile column strips (whose mode info
+/// buffers go back to the pool).
+fn assemble_mi(strips: &mut [Strip], mi_rows: usize, mi_cols: usize, pools: &Pools) -> (MiGrid, Vec<u8>) {
+    if strips.len() == 1 {
+        let s = &mut strips[0];
+        return (MiGrid { cols: mi_cols, rows: mi_rows, mi: std::mem::take(&mut s.mi) }, std::mem::take(&mut s.seg_ids));
+    }
+    let mut mi = pools.mi.take(mi_rows * mi_cols, MiInfo::default());
+    let mut seg = vec![0u8; mi_rows * mi_cols];
+    for s in strips.iter_mut() {
+        let mw = s.mi_col_end - s.mi_col_start;
+        for r in 0..mi_rows {
+            mi[r * mi_cols + s.mi_col_start..r * mi_cols + s.mi_col_end].copy_from_slice(&s.mi[r * mw..r * mw + mw]);
+            seg[r * mi_cols + s.mi_col_start..r * mi_cols + s.mi_col_end].copy_from_slice(&s.seg_ids[r * mw..r * mw + mw]);
+        }
+        pools.mi.put(std::mem::take(&mut s.mi));
+    }
+    (MiGrid { cols: mi_cols, rows: mi_rows, mi }, seg)
+}
+
+/// Builds the cropped output picture band by band (narrowing 8-bit samples).
+struct PictureBuilder {
+    planes: [Plane; 3],
+    info: FrameInfo,
+    vis: [(usize, usize); 3],
+    pts: i64,
+    draft: bool,
+}
+
+impl PictureBuilder {
+    fn new(f: &Frame, pts: i64, draft: bool) -> Self {
+        let planes = f.vis.map(|(w, h)| if f.info.bit_depth == 8 { Plane::U8(vec![0; w * h]) } else { Plane::U16(vec![0; w * h]) });
+        PictureBuilder { planes, info: f.info, vis: f.vis, pts, draft }
+    }
+
+    fn add(&mut self, f: &Frame, r: usize, band: &Band) {
+        for p in 0..3 {
+            let (w, h) = f.vis[p];
+            let (fs, bh) = (f.strides[p], f.band_h[p]);
+            let y0 = r * bh;
+            for y in y0..(y0 + bh).min(h) {
+                let src = &band.planes[p][(y - y0 + BAND_PAD) * fs..][..w];
+                match &mut self.planes[p] {
+                    Plane::U8(d) => {
+                        for (d, &s) in d[y * w..y * w + w].iter_mut().zip(src) {
+                            *d = s as u8;
+                        }
+                    }
+                    Plane::U16(d) => d[y * w..y * w + w].copy_from_slice(src),
+                }
+            }
+        }
+    }
+
+    fn finish(self) -> Picture {
+        let i = self.info;
+        let [y, u, v] = self.planes;
+        Picture {
+            width: i.width,
+            height: i.height,
+            chroma_width: self.vis[1].0 as u32,
+            chroma_height: self.vis[1].1 as u32,
+            bit_depth: i.bit_depth as u32,
+            subsampling_x: i.ss_x,
+            subsampling_y: i.ss_y,
+            y,
+            u,
+            v,
+            y_stride: self.vis[0].0,
+            uv_stride: self.vis[1].0,
+            pts: self.pts,
+            key: i.key,
+            intra_only: i.intra_only,
+            color: ColorInfo { color_space: i.color_space, full_range: i.color_range },
+            render_width: i.render_width,
+            render_height: i.render_height,
+            draft: self.draft,
+        }
+    }
+}
+
+/// The output picture of a complete (or completing) frame (show_existing_frame).
+fn picture_of(f: &Frame, pts: i64, draft: bool) -> Picture {
+    let mut b = PictureBuilder::new(f, pts, draft);
+    for r in 0..f.sb_rows() {
+        b.add(f, r, f.band(r));
+    }
+    b.finish()
 }

@@ -163,4 +163,7 @@ pub struct Picture {
     /// Intended display size (render_size); has no effect on decoding.
     pub render_width: u32,
     pub render_height: u32,
+    /// Decoded in draft mode without the loop filter ([`Decoder::set_draft`]): approximate, for
+    /// reduced-resolution playback only. Never set without draft mode.
+    pub draft: bool,
 }

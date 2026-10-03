@@ -61,7 +61,45 @@ fixture_tests!(
     sharpness,
     fade_intra_heavy,
     hd_1080p,
+    temporal_layers,
 );
+
+/// Draft mode: frames no other frame references skip the loop filter and are flagged; every
+/// other picture stays bit-exact, single-threaded and with frame threads.
+#[test]
+fn draft_mode_changes_only_flagged_non_reference_frames() {
+    let f = common::fixture("temporal_layers");
+    let Some((ivf, yuv)) = common::ensure(f) else { return };
+    let reference = std::fs::read(&yuv).unwrap();
+    let data = std::fs::read(&ivf).unwrap();
+    let fsize = common::raw_size(f.width as usize, f.height as usize, f.pix_fmt);
+    for threads in [1, 3] {
+        let mut dec = filmcraft_vp9::Decoder::with_threads(threads);
+        dec.set_draft(true);
+        let mut pics = Vec::new();
+        for (i, c) in common::ivf_frames(&data).into_iter().enumerate() {
+            pics.extend(dec.decode(c, i as i64).unwrap());
+        }
+        pics.extend(dec.flush());
+        assert_eq!(pics.len(), f.frames as usize, "threads {threads}");
+        let (mut flagged, mut changed) = (0, 0);
+        for (i, p) in pics.iter().enumerate() {
+            let mut bytes = Vec::new();
+            for pl in [&p.y, &p.u, &p.v] {
+                bytes.extend(pl.to_le_bytes());
+            }
+            let same = bytes == reference[i * fsize..(i + 1) * fsize];
+            if p.draft {
+                flagged += 1;
+                changed += !same as usize;
+            } else {
+                assert!(same, "threads {threads}: unflagged frame {i} differs");
+            }
+        }
+        assert!(flagged >= f.frames as usize / 3, "threads {threads}: only {flagged} draft frames");
+        assert!(changed > 0, "threads {threads}: draft frames identical to the filtered ones");
+    }
+}
 
 /// Two streams of different sizes concatenated into one IVF (key frame at the size change).
 #[test]

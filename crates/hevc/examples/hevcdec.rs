@@ -11,9 +11,15 @@ fn main() {
     }
     let data = std::fs::read(&args[1]).expect("read input");
     let t0 = std::time::Instant::now();
-    let mut dec = Decoder::new();
-    let mut pics = dec.decode(&data, 0).expect("decode");
-    pics.extend(dec.flush());
+    // HEVC_THREADS=n sets the thread count, HEVC_LOOPS=k decodes the file k times (benchmarking).
+    let threads = std::env::var("HEVC_THREADS").ok().and_then(|s| s.parse().ok()).unwrap_or(0usize);
+    let loops = std::env::var("HEVC_LOOPS").ok().and_then(|s| s.parse().ok()).unwrap_or(1usize);
+    let mut pics = Vec::new();
+    for _ in 0..loops {
+        let mut dec = if threads > 0 { Decoder::with_threads(threads) } else { Decoder::new() };
+        pics = dec.decode(&data, 0).expect("decode");
+        pics.extend(dec.flush());
+    }
     let secs = t0.elapsed().as_secs_f64();
     eprintln!("{} pictures in {:.3}s ({:.1} fps)", pics.len(), secs, pics.len() as f64 / secs);
     if let Some(out) = args.get(2) {

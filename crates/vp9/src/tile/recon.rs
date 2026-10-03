@@ -309,13 +309,8 @@ impl<'a> TileDecoder<'a> {
                 (((base_x << 4) + dx) as i32, ((base_y << 4) + dy) as i32, rf.x_step, rf.y_step)
             };
             let f = rf.frame;
-            let p = &f.planes[plane];
-            let rp = RefPlane {
-                data: &p.data,
-                stride: p.stride,
-                last_x: ((f.width as i32 + sx as i32) >> sx) - 1,
-                last_y: ((f.height as i32 + sy as i32) >> sy) - 1,
-            };
+            let rp =
+                RefPlane { frame: f, plane, last_x: ((f.info.width as i32 + sx as i32) >> sx) - 1, last_y: ((f.info.height as i32 + sy as i32) >> sy) - 1 };
             let out = if rl == 0 { &mut self.pred } else { &mut self.pred2 };
             inter::predict(&rp, start_x, start_y, step_x, step_y, w, h, b.interp_filter, self.bit_depth, out, &mut self.mc_tmp, &mut self.mc_win);
         }

@@ -41,6 +41,8 @@ const SPECS: &[Spec] = &[
     Spec { name: "c1080.mp4", src: "smptehdbars=s=1920x1080:r=24000/1001:d=20,noise=alls=10:allf=t+u", secs: 20, audio: false, codec: X264 },
     Spec { name: "a2160.mp4", src: "testsrc2=s=3840x2160:r=24000/1001:d=10,noise=alls=6:allf=t", secs: 10, audio: false, codec: X264 },
     Spec { name: "hevc2160.mp4", src: "testsrc2=s=3840x2160:r=24000/1001:d=10,noise=alls=6:allf=t", secs: 10, audio: false, codec: X265 },
+    Spec { name: "vp92160.webm", src: "testsrc2=s=3840x2160:r=24000/1001:d=10,noise=alls=6:allf=t", secs: 10, audio: false, codec: VP9 },
+    Spec { name: "av12160.mp4", src: "testsrc2=s=3840x2160:r=24000/1001:d=10,noise=alls=6:allf=t", secs: 10, audio: false, codec: AV1 },
     // Decode-speed matrix: 1080p (5 s) and 2160p (3 s) per codec, same picture content (ProRes
     // 2 s / 1 s: intra-only, every frame costs the same, and the files are large).
     Spec { name: "dec_h264_1080.mp4", src: "testsrc2=s=1920x1080:r=24000/1001:d=5,noise=alls=6:allf=t", secs: 5, audio: false, codec: X264 },

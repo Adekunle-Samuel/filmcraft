@@ -112,6 +112,26 @@ pub const FIXTURES: &[Fixture] = &[
     fx!("sharpness", "testsrc2", 352, 288, 8, NOISE, P420, ["-b:v", "400k", "-sharpness", "5", "-frame-parallel", "0"]),
     fx!("fade_intra_heavy", "testsrc2", 352, 288, 20, "fade=in:0:15", P420, ["-b:v", "400k", "-g", "8", "-frame-parallel", "0"]),
     fx!("hd_1080p", "testsrc2", 1920, 1080, 3, NOISE, P420, ["-b:v", "4M", "-speed", "5", "-deadline", "realtime"]),
+    // Two temporal layers: every other frame refreshes no reference slot (draft mode test).
+    fx!(
+        "temporal_layers",
+        "testsrc2",
+        352,
+        288,
+        20,
+        NOISE,
+        P420,
+        [
+            "-b:v",
+            "800k",
+            "-speed",
+            "8",
+            "-deadline",
+            "realtime",
+            "-ts-parameters",
+            "ts_number_layers=2:ts_target_bitrate=400,800:ts_rate_decimator=2,1:ts_periodicity=2:ts_layer_id=0,1:ts_layering_mode=2"
+        ]
+    ),
     fx!(
         "bench_1080p",
         "testsrc2",
@@ -383,7 +403,8 @@ pub fn check_fixture(name: &str) -> Result<bool, String> {
 }
 
 pub fn check_files(name: &str, ivf: &Path, reference: &[u8], pix_fmt: &str) -> Result<(), String> {
-    for threads in [1, 0] {
+    // Single-threaded, frame threads with a small pool, and every core.
+    for threads in [1, 3, 0] {
         let pics = match decode_file_threads(ivf, threads) {
             Ok(p) => p,
             Err((fr, e, partial)) => {
@@ -392,6 +413,9 @@ pub fn check_files(name: &str, ivf: &Path, reference: &[u8], pix_fmt: &str) -> R
             }
         };
         compare(&pics, reference, pix_fmt).map_err(|e| format!("{name} (threads {threads}): {e}"))?;
+        if pics.iter().any(|p| p.draft) {
+            return Err(format!("{name} (threads {threads}): picture flagged draft without draft mode"));
+        }
     }
     Ok(())
 }

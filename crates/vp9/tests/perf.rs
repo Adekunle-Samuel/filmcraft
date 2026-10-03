@@ -16,6 +16,7 @@ fn bench(frames: &[&[u8]], threads: usize, iters: usize) -> (usize, f64) {
         for f in frames {
             n += dec.decode(f, 0).expect("decode").len();
         }
+        n += dec.flush().len();
         best = best.min(t0.elapsed().as_secs_f64());
     }
     (n, best)

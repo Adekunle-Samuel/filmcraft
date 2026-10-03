@@ -63,27 +63,20 @@ impl MiGrid {
     }
 }
 
-/// One plane of samples. The allocation covers whole 64x64 superblocks; `width` x `height` is the
-/// visible (cropped) area.
-#[derive(Clone, Debug, Default)]
-pub struct Plane {
-    pub data: Vec<u16>,
-    pub stride: usize,
-    pub width: usize,
-    pub height: usize,
+/// Scratch rows above the samples of every band: the loop filter of superblock row r reads 8
+/// and modifies up to 7 rows of row r - 1 (the 16-wide filter of the horizontal edges on top of
+/// row r), so those rows are copied there while row r is filtered (see `decoder::post`).
+pub const BAND_PAD: usize = 8;
+
+/// One superblock row (64 luma rows) of a frame: per plane `BAND_PAD` scratch rows followed by
+/// the band's rows, all `Frame::strides[p]` samples wide.
+pub struct Band {
+    pub planes: [Vec<u16>; 3],
 }
 
-impl Plane {
-    #[inline]
-    pub fn row(&self, y: usize) -> &[u16] {
-        &self.data[y * self.stride..(y + 1) * self.stride]
-    }
-}
-
-/// A decoded frame (also used as reference).
-#[derive(Clone, Debug)]
-pub struct Frame {
-    pub planes: [Plane; 3],
+/// Frame metadata from the frame header.
+#[derive(Clone, Copy, Debug)]
+pub struct FrameInfo {
     pub width: u32,
     pub height: u32,
     pub ss_x: bool,
@@ -95,6 +88,126 @@ pub struct Frame {
     pub render_height: u32,
     pub key: bool,
     pub intra_only: bool,
+}
+
+/// A decoded frame (also used as reference). Its samples are published one superblock row
+/// ("band") at a time, once loop filtered, so that later frames can predict from the finished
+/// top of a frame while its bottom is still being filtered (frame threading).
+pub struct Frame {
+    pub info: FrameInfo,
+    /// Allocated plane widths (whole superblocks) = row strides.
+    pub strides: [usize; 3],
+    /// Rows per band of each plane.
+    pub band_h: [usize; 3],
+    /// Visible (cropped) plane sizes.
+    pub vis: [(usize, usize); 3],
+    bands: Box<[std::sync::OnceLock<Band>]>,
+    pools: std::sync::Arc<Pools>,
+}
+
+impl Frame {
+    pub fn new(info: FrameInfo, pools: std::sync::Arc<Pools>) -> Frame {
+        let geo = plane_geometry(info.width, info.height, info.ss_x, info.ss_y);
+        let sb_rows = (info.height as usize).div_ceil(64);
+        Frame {
+            info,
+            strides: geo.map(|g| g.0),
+            band_h: [64, 64 >> info.ss_y as usize, 64 >> info.ss_y as usize],
+            vis: geo.map(|g| (g.2, g.3)),
+            bands: (0..sb_rows).map(|_| std::sync::OnceLock::new()).collect(),
+            pools,
+        }
+    }
+
+    pub fn sb_rows(&self) -> usize {
+        self.bands.len()
+    }
+
+    /// A band buffer for this frame's geometry (recycled memory, contents unspecified).
+    pub fn new_band(&self) -> Band {
+        Band { planes: std::array::from_fn(|p| self.pools.bands.take_any((self.band_h[p] + BAND_PAD) * self.strides[p], 0)) }
+    }
+
+    /// Publish band `r` (ignored if already published).
+    pub fn publish(&self, r: usize, band: Band) {
+        if let Err(b) = self.bands[r].set(band) {
+            for p in b.planes {
+                self.pools.bands.put(p);
+            }
+        }
+    }
+
+    pub fn is_published(&self, r: usize) -> bool {
+        self.bands[r].get().is_some()
+    }
+
+    pub fn is_complete(&self) -> bool {
+        self.bands.iter().all(|b| b.get().is_some())
+    }
+
+    /// Band `r`, waiting until it has been published.
+    #[inline]
+    pub fn band(&self, r: usize) -> &Band {
+        #[cfg(feature = "threads")]
+        {
+            self.bands[r].wait()
+        }
+        #[cfg(not(feature = "threads"))]
+        {
+            self.bands[r].get().expect("reference band decoded before use")
+        }
+    }
+
+    /// Row `y` of plane `p` (all `strides[p]` samples), waiting until it is final.
+    #[inline]
+    pub fn row(&self, p: usize, y: usize) -> &[u16] {
+        let bh = self.band_h[p];
+        let s = self.strides[p];
+        let o = (y % bh + BAND_PAD) * s;
+        &self.band(y / bh).planes[p][o..o + s]
+    }
+
+    /// Rows `y0..y1` of plane `p` as one slice with stride `strides[p]` when they lie in one band:
+    /// (band samples, offset of row y0).
+    #[inline]
+    pub fn span(&self, p: usize, y0: usize, y1: usize) -> Option<(&[u16], usize)> {
+        let bh = self.band_h[p];
+        let r = y0 / bh;
+        if (y1 - 1) / bh != r {
+            return None;
+        }
+        Some((&self.band(r).planes[p], (y0 % bh + BAND_PAD) * self.strides[p]))
+    }
+
+    /// A complete frame from full planes (tests).
+    #[cfg(test)]
+    pub fn from_planes(info: FrameInfo, planes: [&[u16]; 3]) -> Frame {
+        let f = Frame::new(info, Default::default());
+        for r in 0..f.sb_rows() {
+            let mut b = f.new_band();
+            for p in 0..3 {
+                let (s, bh) = (f.strides[p], f.band_h[p]);
+                for k in 0..bh {
+                    let y = r * bh + k;
+                    if let Some(src) = planes[p].get(y * s..y * s + s) {
+                        b.planes[p][(k + BAND_PAD) * s..(k + BAND_PAD + 1) * s].copy_from_slice(src);
+                    }
+                }
+            }
+            f.publish(r, b);
+        }
+        f
+    }
+}
+
+impl Drop for Frame {
+    fn drop(&mut self) {
+        for b in std::mem::take(&mut self.bands).into_vec().into_iter().filter_map(|b| b.into_inner()) {
+            for p in b.planes {
+                self.pools.bands.put(p);
+            }
+        }
+    }
 }
 
 /// Geometry of the frame planes: allocation sizes for (MiCols, MiRows) rounded to superblocks.
@@ -112,16 +225,38 @@ pub fn plane_geometry(width: u32, height: u32, ss_x: bool, ss_y: bool) -> [(usiz
 /// allocate (and page-fault) megabytes per frame.
 pub struct Pool<T> {
     bufs: std::sync::Mutex<Vec<Vec<T>>>,
+    max: usize,
 }
 
 impl<T> Default for Pool<T> {
     fn default() -> Self {
-        Pool { bufs: Default::default() }
+        Pool::with_max(32)
+    }
+}
+
+impl<T> Pool<T> {
+    /// A pool keeping at most `max` buffers.
+    pub fn with_max(max: usize) -> Self {
+        Pool { bufs: Default::default(), max }
     }
 }
 
 impl<T: Clone> Pool<T> {
-    const MAX: usize = 32;
+    /// A buffer of `len` elements with unspecified contents (recycled memory when available;
+    /// `fill` only initialises fresh memory).
+    pub fn take_any(&self, len: usize, fill: T) -> Vec<T> {
+        let found = {
+            let mut b = self.bufs.lock().expect("buffer pool");
+            b.iter().position(|v| v.len() >= len).map(|i| b.swap_remove(i))
+        };
+        match found {
+            Some(mut v) => {
+                v.truncate(len);
+                v
+            }
+            None => vec![fill; len],
+        }
+    }
 
     /// A buffer of `len` copies of `fill` (recycled memory when available).
     pub fn take(&self, len: usize, fill: T) -> Vec<T> {
@@ -131,6 +266,7 @@ impl<T: Clone> Pool<T> {
         };
         match found {
             Some(mut v) => {
+                v.clear();
                 v.resize(len, fill);
                 v
             }
@@ -138,21 +274,27 @@ impl<T: Clone> Pool<T> {
         }
     }
 
-    pub fn put(&self, mut v: Vec<T>) {
+    pub fn put(&self, v: Vec<T>) {
         if v.capacity() == 0 {
             return;
         }
-        v.clear();
         let mut b = self.bufs.lock().expect("buffer pool");
-        if b.len() < Self::MAX {
+        if b.len() < self.max {
             b.push(v);
         }
     }
 }
 
 /// The decoder's buffer pools.
-#[derive(Default)]
 pub struct Pools {
     pub samples: Pool<u16>,
+    /// Frame bands (many small buffers per frame).
+    pub bands: Pool<u16>,
     pub mi: Pool<MiInfo>,
+}
+
+impl Default for Pools {
+    fn default() -> Self {
+        Pools { samples: Pool::default(), bands: Pool::with_max(1024), mi: Pool::default() }
+    }
 }

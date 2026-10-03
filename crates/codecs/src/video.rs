@@ -398,7 +398,7 @@ impl Vp9Decoder {
         if p.color.full_range {
             color.range = Range::Full;
         }
-        let pts = p.pts;
+        let (pts, draft) = (p.pts, p.draft);
         if p.color.color_space == 7 {
             // RGB (profiles 1 / 3, 4:4:4): the planes carry G, B, R.
             let shift = p.bit_depth - 8;
@@ -408,7 +408,7 @@ impl Vp9Decoder {
             }
             let mut frame = VideoFrame::rgba8(p.width, p.height, rgba);
             frame.color = filmcraft_color::ColorInfo { range: Range::Full, transfer: filmcraft_color::Transfer::Srgb, ..color };
-            return DecodedFrame { pts, frame, draft: false };
+            return DecodedFrame { pts, frame, draft };
         }
         // 4:4:0 has no frame format of its own: chroma rows are repeated to 4:4:4.
         let (chroma, rows_440) = match (p.subsampling_x, p.subsampling_y) {
@@ -445,7 +445,7 @@ impl Vp9Decoder {
         // render_size (the intended display size) is not applied: the container's display
         // dimensions / pixel aspect describe the presentation.
         let par = (1, 1);
-        DecodedFrame { pts, frame: VideoFrame { width: p.width, height: p.height, data, color, par, pts: filmcraft_time::Tick::ZERO }, draft: false }
+        DecodedFrame { pts, frame: VideoFrame { width: p.width, height: p.height, data, color, par, pts: filmcraft_time::Tick::ZERO }, draft }
     }
 }
 
@@ -462,6 +462,9 @@ impl VideoDecoder for Vp9Decoder {
     }
     fn name(&self) -> &str {
         "FilmCraft VP9"
+    }
+    fn set_draft(&mut self, on: bool) {
+        self.dec.set_draft(on);
     }
     fn is_random_access(&self, sample: &[u8]) -> Option<bool> {
         Some(filmcraft_vp9::is_keyframe(sample))

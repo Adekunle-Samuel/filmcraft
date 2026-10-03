@@ -1,6 +1,7 @@
 //! Block inter prediction process (8.5.2.4): separable 8-tap sub-sample interpolation with edge
 //! clamping, for unscaled (step 16) and scaled references.
 
+use crate::frame::Frame;
 use crate::tables::SUBPEL_FILTERS;
 
 /// Filter taps of `filter` (0..3) at sub-sample position `frac` (0..15).
@@ -10,12 +11,20 @@ fn taps(filter: u8, frac: usize) -> &'static [i16] {
     &SUBPEL_FILTERS[o..o + 8]
 }
 
-/// A reference plane: samples addressed `data[y * stride + x]`, valid for x <= last_x, y <= last_y.
+/// Plane `plane` of a reference frame, valid for x <= last_x, y <= last_y. Rows are read through
+/// [`Frame::row`] / [`Frame::span`], which wait until the reference has published them.
 pub struct RefPlane<'a> {
-    pub data: &'a [u16],
-    pub stride: usize,
+    pub frame: &'a Frame,
+    pub plane: usize,
     pub last_x: i32,
     pub last_y: i32,
+}
+
+impl RefPlane<'_> {
+    #[inline]
+    fn row(&self, y: usize) -> &[u16] {
+        self.frame.row(self.plane, y)
+    }
 }
 
 /// Predict a `w` x `h` block whose top-left sample is at (`x`, `y`) in 1/16 sample units of the
@@ -49,7 +58,7 @@ fn fetch_window(r: &RefPlane, x0: i32, y0: i32, w: usize, h: usize, win: &mut [u
     let ws = w + 7;
     for row in 0..h + 7 {
         let yy = (y0 - 3 + row as i32).clamp(0, r.last_y) as usize;
-        let src = &r.data[yy * r.stride..];
+        let src = r.row(yy);
         let dst = &mut win[row * ws..row * ws + ws];
         let xs = x0 - 3;
         if xs >= 0 && xs + ws as i32 - 1 <= r.last_x {
@@ -69,12 +78,15 @@ fn predict_unscaled(r: &RefPlane, x: i32, y: i32, w: usize, h: usize, filter: u8
     let (fx, fy) = ((x & 15) as usize, (y & 15) as usize);
     let max = (1i32 << bit_depth) - 1;
     let inside = x0 - 3 >= 0 && y0 - 3 >= 0 && x0 + w as i32 + 4 <= r.last_x && y0 + h as i32 + 4 <= r.last_y;
-    // Source view with origin at (x0 - 3, y0 - 3).
-    let (src, ss, so): (&[u16], usize, usize) = if inside {
-        (r.data, r.stride, (y0 - 3) as usize * r.stride + (x0 - 3) as usize)
-    } else {
-        let ws = fetch_window(r, x0, y0, w, h, win);
-        (&win[..], ws, 0)
+    // Source view with origin at (x0 - 3, y0 - 3): the reference band itself when the window
+    // lies inside the picture and inside one band.
+    let span = if inside { r.frame.span(r.plane, (y0 - 3) as usize, (y0 + h as i32 + 5) as usize) } else { None };
+    let (src, ss, so): (&[u16], usize, usize) = match span {
+        Some((data, o)) => (data, r.frame.strides[r.plane], o + (x0 - 3) as usize),
+        None => {
+            let ws = fetch_window(r, x0, y0, w, h, win);
+            (&win[..], ws, 0)
+        }
     };
     match (fx, fy) {
         (0, 0) => {
@@ -184,7 +196,7 @@ fn predict_scaled(r: &RefPlane, x: i32, y: i32, step_x: i32, step_y: i32, w: usi
     let ih = ((((h as i32 - 1) * step_y + 15) >> 4) + 8) as usize;
     for row in 0..ih {
         let yy = ((y >> 4) + row as i32 - 3).clamp(0, r.last_y) as usize;
-        let src = &r.data[yy * r.stride..];
+        let src = r.row(yy);
         for c in 0..w {
             let p = x + step_x * c as i32;
             let f = taps(filter, (p & 15) as usize);
@@ -217,7 +229,27 @@ mod tests {
     fn scaled_path_with_unit_step_matches_unscaled() {
         let (w, h) = (40usize, 30usize);
         let data: Vec<u16> = (0..w * h).map(|i| ((i * 37 + (i / w) * 11) % 256) as u16).collect();
-        let r = RefPlane { data: &data, stride: w, last_x: w as i32 - 1, last_y: h as i32 - 1 };
+        let info = crate::frame::FrameInfo {
+            width: w as u32,
+            height: h as u32,
+            ss_x: true,
+            ss_y: true,
+            bit_depth: 8,
+            color_space: 0,
+            color_range: false,
+            render_width: w as u32,
+            render_height: h as u32,
+            key: true,
+            intra_only: false,
+        };
+        // Planes are allocated in whole superblocks: copy the test picture into a 64x64 plane.
+        let mut full = vec![0u16; 64 * 64];
+        for y in 0..h {
+            full[y * 64..y * 64 + w].copy_from_slice(&data[y * w..y * w + w]);
+        }
+        let chroma = vec![0u16; 32 * 32];
+        let frame = Frame::from_planes(info, [&full, &chroma, &chroma]);
+        let r = RefPlane { frame: &frame, plane: 0, last_x: w as i32 - 1, last_y: h as i32 - 1 };
         let mut tmp = vec![0u16; 80 * 80];
         for filter in 0..4u8 {
             for &(x, y) in &[(0, 0), (5, 3), (16 * 7 + 5, 16 * 9 + 11), (-40, -3), (16 * 36 + 1, 16 * 25 + 15), (16 * 10, 16 * 10 + 8)] {
