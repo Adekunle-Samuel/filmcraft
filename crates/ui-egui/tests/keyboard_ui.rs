@@ -160,15 +160,18 @@ fn new_keys_work_in_the_app() {
 
     // Project panel: Down moves the selection; Shift+\ toggles the view
     d.focus("Project");
+    // the Icon view shows a bin's clips (sub-bins are folder cards): open the first bin in place
+    let bin = d.app().session.project.root.children.iter().find_map(|e| if let filmcraft_project::BinEntry::Bin(b) = e { Some(b.id.0) } else { None }).unwrap();
+    d.ok("ui.menu.invoke", json!({"id": "projectPanel.openBin", "params": {"bin": bin, "how": "inPlace"}}));
     d.exec("project.select", json!({"items": []}));
     d.key("Down");
     assert_eq!(d.app().session.state.project_selection.len(), 1);
     let first = d.app().session.state.project_selection[0];
     d.key("Down");
     assert_ne!(d.app().session.state.project_selection[0], first);
-    let view0 = d.app().ui.project_view;
+    let view0 = d.app().session.prefs.project_panel.view.mode;
     d.key("Shift+\\");
-    assert_ne!(d.app().ui.project_view, view0);
+    assert_ne!(d.app().session.prefs.project_panel.view.mode, view0);
 
     // Cmd+Shift+1 zooms the Program monitor to 100%
     d.key("Cmd+Shift+1");

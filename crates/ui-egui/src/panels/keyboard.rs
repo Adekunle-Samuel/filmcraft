@@ -28,7 +28,7 @@ use serde_json::{Value, json};
 use crate::FilmcraftApp;
 use crate::dock::PanelKind;
 use crate::menus::UiCommand;
-use crate::state::ProjectView;
+use filmcraft_engine::project_panel::ViewMode;
 
 /// Keyboard-only view state.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -36,8 +36,6 @@ use crate::state::ProjectView;
 pub struct KeysState {
     /// The maximized frame (Maximize or Restore Frame); None = the normal layout.
     pub maximized: Option<PanelKind>,
-    /// Project panel ▸ Hover Scrub (icon view thumbnails follow the pointer).
-    pub hover_scrub: bool,
     /// Track heights before Expand / Minimize All Tracks (pressing again restores them).
     pub saved_heights: Option<[f32; 2]>,
     /// Icon view columns in the last frame (Move Selection Up / Down step).
@@ -46,7 +44,7 @@ pub struct KeysState {
 
 impl Default for KeysState {
     fn default() -> Self {
-        Self { maximized: None, hover_scrub: true, saved_heights: None, icon_columns: 1 }
+        Self { maximized: None, saved_heights: None, icon_columns: 1 }
     }
 }
 
@@ -101,6 +99,19 @@ pub const COMMANDS: &[UiCommand] = &[
     uic!("projectPanel.extendDown", "Extend Selection Down", [], None),
     uic!("projectPanel.extendLeft", "Extend Selection Left", [], None),
     uic!("projectPanel.extendRight", "Extend Selection Right", [], None),
+    uic!("projectPanel.markIn", "Mark In (Hover Scrub)", [], None),
+    uic!("projectPanel.markOut", "Mark Out (Hover Scrub)", [], None),
+    uic!("projectPanel.rename", "Rename", [], None),
+    uic!("projectPanel.openBin", "Open Bin", [], None),
+    uic!("projectPanel.up", "Up One Level", [], None),
+    uic!("projectPanel.closeBinTab", "Close Bin", [], None),
+    uic!("projectPanel.metadataDisplay", "Metadata Display…", [], None),
+    uic!("projectPanel.saveViewPresetAs", "Save As New View Preset", [], None),
+    uic!("projectPanel.manageViewPresets", "Manage Saved View Presets", [], None),
+    uic!("projectPanel.freeformOptions", "Freeform View Options…", [], None),
+    uic!("projectPanel.saveArrangement", "Save Arrangement…", [], None),
+    uic!("projectPanel.revealProject", "Reveal Project in Finder…", [], None),
+    uic!("projectPanel.newPanel", "New Project Panel", ["Window"], None),
     uic!("textPanel.prevWord", "Navigate to Previous Word", [], None),
     uic!("textPanel.nextWord", "Navigate to Next Word", [], None),
     uic!("textPanel.selectPrevWord", "Select to Previous Word", [], None),
@@ -116,7 +127,6 @@ pub const COMMANDS: &[UiCommand] = &[
     uic!("textPanel.delete", "Delete", [], None),
     uic!("textPanel.rippleDelete", "Ripple Delete", [], None),
     uic!("textPanel.showProgramTranscript", "Show Program Transcript", [], None),
-    uic!("mediaBrowser.openInSource", "Open In Source Monitor", [], None),
     uic!("graphics.beginTextEditing", "Begin Text Editing for a Graphic Layer", [], Some("Cmd+Alt+'")),
     uic!("help.filmcraftHelp", "FilmCraft Help…", ["Help"], Some("F1")),
     uic!("app.quit", "Quit FilmCraft", [], Some("Cmd+Q")),
@@ -187,7 +197,6 @@ pub fn route(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, params: &Val
             Ok(json!({"scroll": tv.target_scroll}))
         }
         "graphics.beginTextEditing" => begin_text_editing(app),
-        "mediaBrowser.openInSource" => open_browser_file(app),
         "help.filmcraftHelp" => {
             crate::links::open(ctx, HELP_URL);
             Ok(json!({"url": HELP_URL}))
@@ -196,7 +205,10 @@ pub fn route(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, params: &Val
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
             Ok(Value::Null)
         }
-        _ if id.starts_with("projectPanel.") => project_panel(app, &id["projectPanel.".len()..]),
+        _ if id.starts_with("projectPanel.") => match crate::panels::project::route(app, ctx, &id["projectPanel.".len()..], params) {
+            Some(r) => r,
+            None => project_panel(app, &id["projectPanel.".len()..]),
+        },
         _ if id.starts_with("textPanel.") => text_panel(app, &id["textPanel.".len()..]),
         _ => return None,
     };
@@ -327,77 +339,48 @@ fn begin_text_editing(app: &mut FilmcraftApp) -> Result<Value, String> {
     Ok(json!({"clip": clip, "layer": layer}))
 }
 
-/// Media Browser ▸ Open In Source Monitor: the selected file (imported first: the Source monitor
-/// shows project items).
-fn open_browser_file(app: &mut FilmcraftApp) -> Result<Value, String> {
-    let path = app.ui.extras.media_browser_selection.first().cloned().ok_or("select a file in the Media Browser")?;
-    let existing = app
-        .session
-        .project
-        .items
-        .values()
-        .find(|i| i.as_media().is_some_and(|m| matches!(&m.media, filmcraft_project::MediaRef::File { path: p } if *p == path)))
-        .map(|i| i.id);
-    let item = match existing {
-        Some(i) => i,
-        None => {
-            let r = app.session.execute("file.import", json!({"paths": [path]})).map_err(|e| e.to_string())?;
-            let id =
-                r["items"].as_array().and_then(|a| a.first()).and_then(Value::as_u64).or_else(|| r["item"].as_u64()).ok_or("the file could not be imported")?;
-            filmcraft_project::ItemId(id)
-        }
-    };
-    app.session.execute("source.open", json!({"item": item.0})).map_err(|e| e.to_string())?;
-    app.show_panel(PanelKind::Source);
-    Ok(json!({"item": item.0}))
-}
-
 // ------------------------------------------------------------------ Project panel
 
-/// Items as the Project panel lists them (expanded bins only in list view).
+/// Items as the Project panel lists them (its shown tab, in display order).
 fn panel_items(app: &FilmcraftApp) -> Vec<filmcraft_project::ItemId> {
-    fn walk(app: &FilmcraftApp, bin: &filmcraft_project::Bin, list: bool, out: &mut Vec<filmcraft_project::ItemId>) {
-        for e in &bin.children {
-            match e {
-                filmcraft_project::BinEntry::Item(i) => out.push(*i),
-                filmcraft_project::BinEntry::Bin(b) => {
-                    if !list || app.ui.expanded_bins.contains(&b.id.0) || !app.ui.project_search.is_empty() {
-                        walk(app, b, list, out);
-                    }
-                }
-            }
-        }
-    }
-    let mut v = Vec::new();
-    walk(app, &app.session.project.root, app.ui.project_view == ProjectView::List, &mut v);
-    let filter = app.ui.project_search.to_ascii_lowercase();
-    v.retain(|i| {
-        app.session.project.item(*i).is_some_and(|it| {
-            !matches!(it.kind, filmcraft_project::ItemKind::Graphic { .. }) && (filter.is_empty() || it.name.to_ascii_lowercase().contains(&filter))
-        })
-    });
-    v
+    crate::panels::project::visible_items(app, crate::panels::project::shown_inst(app))
 }
 
 fn project_panel(app: &mut FilmcraftApp, op: &str) -> Result<Value, String> {
     match op {
         "viewList" | "viewIcon" | "toggleView" => {
-            app.ui.project_view = match op {
-                "viewList" => ProjectView::List,
-                "viewIcon" => ProjectView::Icon,
-                _ if app.ui.project_view == ProjectView::List => ProjectView::Icon,
-                _ => ProjectView::List,
+            let inst = crate::panels::project::shown_inst(app);
+            let cur = crate::panels::project::view_of(app, inst).mode;
+            let mode = match op {
+                "viewList" => ViewMode::List,
+                "viewIcon" => ViewMode::Icon,
+                _ if cur == ViewMode::List => ViewMode::Icon,
+                _ => ViewMode::List,
             };
-            return Ok(json!({"view": app.ui.project_view}));
+            let mut acts = Vec::new();
+            crate::panels::project::set_mode(app, inst, mode, &mut acts);
+            for (c, p) in acts {
+                app.session.execute(&c, p).map_err(|e| e.to_string())?;
+            }
+            return Ok(json!({"view": mode}));
         }
         "hoverScrub" => {
-            app.ui.keys.hover_scrub = !app.ui.keys.hover_scrub;
-            return Ok(json!({"hoverScrub": app.ui.keys.hover_scrub}));
+            let on = !app.session.prefs.project_panel.hover_scrub;
+            app.session.execute("project.view.set", json!({"hoverScrub": on})).map_err(|e| e.to_string())?;
+            return Ok(json!({"hoverScrub": on}));
         }
         "thumbnailLarger" | "thumbnailSmaller" => {
             let f = if op == "thumbnailLarger" { 1.25 } else { 0.8 };
-            app.ui.icon_size = (app.ui.icon_size * f).clamp(64.0, 400.0);
-            return Ok(json!({"iconSize": app.ui.icon_size}));
+            let inst = crate::panels::project::shown_inst(app);
+            let v = crate::panels::project::view_of(app, inst);
+            let size = (v.icon_size * f).clamp(48.0, 400.0);
+            match inst {
+                crate::panels::project::Inst::Main => {
+                    app.session.execute("project.view.set", json!({"iconSize": size})).map_err(|e| e.to_string())?;
+                }
+                crate::panels::project::Inst::Tab(k) => app.ui.project_panel.tabs[k].icon_size = size,
+            }
+            return Ok(json!({"iconSize": size}));
         }
         _ => {}
     }
@@ -407,7 +390,7 @@ fn project_panel(app: &mut FilmcraftApp, op: &str) -> Result<Value, String> {
     }
     let sel = app.session.state.project_selection.clone();
     let last = sel.last().and_then(|s| items.iter().position(|i| i == s));
-    let icon = app.ui.project_view != ProjectView::List;
+    let icon = crate::panels::project::view_of(app, crate::panels::project::shown_inst(app)).mode != ViewMode::List;
     let cols = if icon { app.ui.keys.icon_columns.max(1) as i64 } else { 1 };
     let page = 10i64;
     let n = items.len() as i64;

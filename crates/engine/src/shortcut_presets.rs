@@ -311,6 +311,8 @@ pub const PREMIERE_PANEL: &[Entry] = &[
     ("projectPanel.viewIcon", "Cmd+PageDown", "Project"),
     ("projectPanel.toggleView", "Shift+\\", "Project"),
     ("projectPanel.hoverScrub", "Shift+H", "Project"),
+    ("projectPanel.markIn", "I", "Project"),
+    ("projectPanel.markOut", "O", "Project"),
     ("projectPanel.thumbnailLarger", "Shift+]", "Project"),
     ("projectPanel.thumbnailLarger", "=", "Project"),
     ("projectPanel.thumbnailSmaller", "Shift+[", "Project"),

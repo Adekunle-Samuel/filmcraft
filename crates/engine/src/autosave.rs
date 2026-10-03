@@ -153,6 +153,10 @@ pub struct Preferences {
     pub guides: GuidePrefs,
     /// Voice-Over Record Settings (timeline track header ▸ right-click the microphone).
     pub voice_over: crate::voiceover::VoiceOverPrefs,
+    /// Project panel: view, List view columns and sort, view presets, Freeform options.
+    pub project_panel: crate::project_panel::ProjectPanelPrefs,
+    /// Media Browser: Favorites, recent directories, file types, view, columns.
+    pub media_browser: crate::media_browser::MediaBrowserPrefs,
 }
 
 impl Default for Preferences {
@@ -178,6 +182,8 @@ impl Default for Preferences {
             essential_sound: Default::default(),
             guides: Default::default(),
             voice_over: Default::default(),
+            project_panel: Default::default(),
+            media_browser: Default::default(),
         }
     }
 }

@@ -330,14 +330,6 @@ pub enum GuideDialog {
     },
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub enum ProjectView {
-    #[default]
-    List,
-    Icon,
-    Freeform,
-}
-
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct UiState {
     pub tool: Tool,
@@ -349,10 +341,8 @@ pub struct UiState {
     pub timeline: TimelineView,
     pub program: MonitorView,
     pub source: MonitorView,
-    pub project_view: ProjectView,
     pub project_search: String,
     pub effects_search: String,
-    pub icon_size: f32,
     /// Expanded bins in the project list view.
     pub expanded_bins: Vec<u64>,
     /// Expanded folders in the Effects panel.
@@ -460,6 +450,13 @@ pub struct UiState {
     /// `panels::keyboard`.
     #[serde(default)]
     pub keys: crate::panels::keyboard::KeysState,
+    /// Project panel: bin shown in place, bin tabs / windows, inline rename, dialogs, hover scrub
+    /// (view settings and columns are engine preferences). See `panels::project`.
+    #[serde(default)]
+    pub project_panel: crate::panels::project::ProjectPanelUi,
+    /// Media Browser view state (tree, path field, Edit Columns…). See `panels::media_browser`.
+    #[serde(default)]
+    pub media_browser: crate::panels::media_browser::MediaBrowserUi,
 }
 
 /// An open Edit / Clip / File menu dialog: the engine command it runs on OK and the parameters
@@ -701,10 +698,8 @@ impl Default for UiState {
             timeline: TimelineView::default(),
             program: MonitorView::default(),
             source: MonitorView::default(),
-            project_view: ProjectView::Icon,
             project_search: String::new(),
             effects_search: String::new(),
-            icon_size: 110.0,
             expanded_bins: vec![],
             expanded_fx: vec!["Video Transitions".into(), "Video Transitions/Dissolve".into()],
             collapsed_fx: vec![],
@@ -742,6 +737,8 @@ impl Default for UiState {
             extras: Default::default(),
             panels: Default::default(),
             keys: Default::default(),
+            project_panel: Default::default(),
+            media_browser: Default::default(),
         }
     }
 }

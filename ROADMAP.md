@@ -16,7 +16,7 @@ matched against `filmcraft-cli commands` and the UI command table. Effects: the 
 | Menus / commands | (cross-check) | ~325 of 344 in-scope menu items | ~95% |
 | Effects and transitions | 12% | video effects 93/93 (+Legacy, Obsolete), audio effects 53/53, video transitions 84/84 (+21 Legacy), audio transitions 3/3; some approximations (Warp Stabilizer 2-D, Morph Cut, Auto Reframe) | ~92% |
 | Media I/O and codecs | 12% | H.264, HEVC, VP9, AV1, ProRes, DNx, MJPEG, Opus, AAC; MP4/MOV/MKV/WebM, MXF (OP1a/OP-Atom), Ogg Opus, image sequences, BWF timecode; no MPEG-2, camera raw, HW decode | ~80% |
-| Panels and UI fidelity | 12% | all main panels incl. Metadata, Timecode, Events, Progress, Reference Monitor, full Lumetri Scopes, audio effect editors; Media Browser and Libraries-style panels thin | ~75% |
+| Panels and UI fidelity | 12% | all main panels incl. Metadata, Timecode, Events, Progress, Reference Monitor, full Lumetri Scopes, audio effect editors; Project panel (List / Icon / Freeform, Metadata Display, view presets, bin tabs and windows) and Media Browser (tree, Favorites, history, thumbnails, Edit Columns) at parity; Libraries-style panels thin | ~75% |
 | Audio | 10% | mixer, automation (track + clip), Essential Sound, meters, all 53 effects, 5.1 tracks/buses/panner/export, voice-over record, Remix | ~88% |
 | Colour | 8% | Lumetri complete, LUTs, colour management, HDR, all Lumetri Scopes (+ `scopes.read` for agents) | ~88% |
 | Graphics and captions | 8% | text engine, shapes, captions, transcripts; no MOGRT, rolls/crawls, responsive design | ~60% |

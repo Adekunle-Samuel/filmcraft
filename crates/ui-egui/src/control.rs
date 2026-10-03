@@ -208,6 +208,21 @@ pub fn handle(app: &mut FilmcraftApp, ctx: &egui::Context, req: &ControlRequest)
                     Err(e) => return err(format!("`panels`: {e}")),
                 }
             }
+            // Project panel / Media Browser view state (`panels::project`, `panels::media_browser`), merged
+            for (k, which) in [("projectPanel", 0), ("mediaBrowser", 1)] {
+                let Some(patch) = p.get(k) else { continue };
+                let mut cur =
+                    if which == 0 { serde_json::to_value(&app.ui.project_panel) } else { serde_json::to_value(&app.ui.media_browser) }.unwrap_or_default();
+                merge(&mut cur, patch);
+                let r = if which == 0 {
+                    serde_json::from_value(cur).map(|v| app.ui.project_panel = v)
+                } else {
+                    serde_json::from_value(cur).map(|v| app.ui.media_browser = v)
+                };
+                if let Err(e) = r {
+                    return err(format!("`{k}`: {e}"));
+                }
+            }
             // fields of the open Edit / Clip / File dialog (`panels::clip_dialogs`)
             if let Some(m) = p.get("clipDialog").and_then(Value::as_object) {
                 let Some(d) = app.ui.clip_dialog.as_mut() else { return err("no clip dialog is open") };
