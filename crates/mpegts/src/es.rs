@@ -161,6 +161,83 @@ pub(crate) fn mpa_header(b: &[u8]) -> Option<(usize, u32, u32)> {
     (bytes >= 4).then_some((bytes, rate, samples))
 }
 
+/// What an audio frame header says.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct FrameInfo {
+    pub sample_rate: u32,
+    pub channels: u32,
+    /// Samples per channel in the frame.
+    pub samples: u32,
+    /// MPEG audio layer (1-3); AC-3 bsid; ADTS object type (profile + 1).
+    pub variant: u8,
+}
+
+const ADTS_RATES: [u32; 13] = [96_000, 88_200, 64_000, 48_000, 44_100, 32_000, 24_000, 22_050, 16_000, 12_000, 11_025, 8_000, 7_350];
+
+/// Parse the frame header at the start of `b` (MPEG audio, ADTS, AC-3, E-AC-3).
+pub fn frame_info(codec: &Codec, b: &[u8]) -> Option<FrameInfo> {
+    match codec {
+        Codec::MpegAudio => {
+            let (_, sample_rate, samples) = mpa_header(b)?;
+            let layer = 4 - ((b[1] >> 1) & 3);
+            Some(FrameInfo { sample_rate, channels: if b[3] >> 6 == 3 { 1 } else { 2 }, samples, variant: layer })
+        }
+        Codec::AacAdts => {
+            frame_len(AudioSync::Adts, b)?;
+            let sf = ((b[2] >> 2) & 15) as usize;
+            let ch = (((b[2] & 1) << 2) | (b[3] >> 6)) as u32;
+            Some(FrameInfo {
+                sample_rate: *ADTS_RATES.get(sf)?,
+                channels: if ch == 0 {
+                    2
+                } else if ch == 7 {
+                    8
+                } else {
+                    ch
+                },
+                samples: 1024 * ((b[6] & 3) as u32 + 1),
+                variant: (b[2] >> 6) + 1,
+            })
+        }
+        Codec::Ac3 | Codec::Eac3 => {
+            frame_len(AudioSync::Ac3, b)?;
+            let bsid = b[5] >> 3;
+            if bsid > 10 {
+                // E-AC-3: fscod(2) numblkscod(2) acmod(3) lfeon(1)
+                let fscod = b[4] >> 6;
+                let (rate, blocks) = if fscod == 3 {
+                    ([24_000, 22_050, 16_000, 0][((b[4] >> 4) & 3) as usize], 6)
+                } else {
+                    ([48_000, 44_100, 32_000][fscod as usize], [1, 2, 3, 6][((b[4] >> 4) & 3) as usize])
+                };
+                let acmod = (b[4] >> 1) & 7;
+                return Some(FrameInfo { sample_rate: rate, channels: AC3_CHANNELS[acmod as usize] + (b[4] & 1) as u32, samples: 256 * blocks, variant: bsid });
+            }
+            let fscod = b[4] >> 6;
+            let rate = *[48_000u32, 44_100, 32_000].get(fscod as usize)?;
+            // bsi: bsid(5) bsmod(3) acmod(3) [cmixlev(2)] [surmixlev(2)] [dsurmod(2)] lfeon(1)
+            let acmod = b[6] >> 5;
+            let mut bit = 3; // bits of byte 6 consumed
+            if acmod & 1 != 0 && acmod != 1 {
+                bit += 2;
+            }
+            if acmod & 4 != 0 {
+                bit += 2;
+            }
+            if acmod == 2 {
+                bit += 2;
+            }
+            let word = u16::from_be_bytes([b[6], *b.get(7)?]);
+            let lfe = (word >> (15 - bit)) & 1;
+            Some(FrameInfo { sample_rate: rate, channels: AC3_CHANNELS[acmod as usize] + lfe as u32, samples: 1536, variant: bsid })
+        }
+        _ => None,
+    }
+}
+
+/// Full-bandwidth channels per AC-3 audio coding mode (A/52 Table 5.8).
+const AC3_CHANNELS: [u32; 8] = [2, 1, 2, 3, 3, 4, 4, 5];
+
 /// Frame length at the start of `b` for the given sync type (`None`: no valid header; `Some(0)`
 /// is never returned).
 fn frame_len(sync: AudioSync, b: &[u8]) -> Option<usize> {

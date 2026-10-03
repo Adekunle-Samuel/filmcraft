@@ -250,6 +250,10 @@ impl HevcDecoder {
         let highest_tid = hvcc.get(21).map(|b| (b >> 3) & 7).filter(|&n| n > 0).map(|n| n - 1);
         Ok(Self { hvcc, dec, length_size, highest_tid })
     }
+    /// A decoder for Annex B byte-stream samples (start codes, in-band parameter sets: TS).
+    pub fn annexb() -> Self {
+        Self { hvcc: Vec::new(), dec: filmcraft_hevc::Decoder::new(), length_size: 0, highest_tid: None }
+    }
     fn convert(p: filmcraft_hevc::Picture) -> DecodedFrame {
         use filmcraft_hevc::Plane;
         use std::sync::Arc;
@@ -300,7 +304,9 @@ impl VideoDecoder for HevcDecoder {
         self.dec.flush().into_iter().map(Self::convert).collect()
     }
     fn reset(&mut self) {
-        if let Ok(d) = filmcraft_hevc::Decoder::from_hvcc(&self.hvcc) {
+        if self.hvcc.is_empty() {
+            self.dec = filmcraft_hevc::Decoder::new();
+        } else if let Ok(d) = filmcraft_hevc::Decoder::from_hvcc(&self.hvcc) {
             self.dec = d;
         }
     }
@@ -309,6 +315,12 @@ impl VideoDecoder for HevcDecoder {
     }
     fn is_disposable(&self, sample: &[u8]) -> bool {
         hevc_disposable(sample, self.length_size, self.highest_tid)
+    }
+    fn is_random_access(&self, sample: &[u8]) -> Option<bool> {
+        // Annex B samples carry their parameter sets: an IDR / CRA / BLA access unit is a
+        // starting point.
+        (self.length_size == 0)
+            .then(|| filmcraft_bitstream::annexb_nals(sample).iter().any(|n| n.first().is_some_and(|h| (16..=21).contains(&((h >> 1) & 0x3F)))))
     }
 }
 
@@ -679,6 +691,172 @@ impl VideoDecoder for DnxDecoder {
 
 pub fn dnx_factory(e: &SampleEntry) -> Option<Result<Box<dyn VideoDecoder>>> {
     matches!(e.codec, CodecConfig::Dnx { .. }).then(|| Ok(Box::new(DnxDecoder) as Box<dyn VideoDecoder>))
+}
+
+/// Our MPEG-1 / MPEG-2 video decoder (Main / 4:2:2 profile, field and frame pictures).
+pub struct Mpeg2Decoder {
+    dec: filmcraft_mpeg2v::Decoder,
+    /// Sequence header (and extensions) fed after a reset, so a random-access point without its
+    /// own sequence header decodes (MKV `CodecPrivate`, or the stream's first header).
+    header: Vec<u8>,
+}
+
+impl Mpeg2Decoder {
+    pub fn new(header: Vec<u8>) -> Self {
+        let mut d = Self { dec: filmcraft_mpeg2v::Decoder::new(), header };
+        d.prime();
+        d
+    }
+    fn prime(&mut self) {
+        if !self.header.is_empty() {
+            let _ = self.dec.decode(&self.header, 0);
+        }
+    }
+}
+
+/// The sequence header with its extensions at the start of an MPEG video sample (up to the first
+/// GOP or picture start code).
+pub fn mpeg2_sequence_header(sample: &[u8]) -> Option<Vec<u8>> {
+    let codes = filmcraft_mpeg2v::start_codes(sample);
+    let (start, _) = *codes.iter().find(|c| c.1 == 0xB3)?;
+    let end = codes.iter().find(|c| c.0 > start && matches!(c.1, 0x00 | 0xB8 | 0x01..=0xAF)).map_or(sample.len(), |c| c.0);
+    Some(sample[start..end].to_vec())
+}
+
+/// Convert a decoded MPEG-1/2 picture. Colour comes from the sequence display extension
+/// (defaults: BT.601 for SD, BT.709 for HD); the pixel aspect from the aspect ratio code.
+pub fn mpeg2_to_video_frame(p: filmcraft_mpeg2v::Picture) -> VideoFrame {
+    use std::sync::Arc;
+    let info = &p.info;
+    let mut color = filmcraft_color::ColorInfo { matrix: filmcraft_frame::default_matrix(p.width, p.height), ..filmcraft_color::ColorInfo::REC709 };
+    if info.width <= 1024 && info.height <= 576 {
+        color.primaries = if info.height == 576 || info.height == 608 { filmcraft_color::Primaries::Bt601_625 } else { filmcraft_color::Primaries::Bt601_525 };
+    }
+    if let Some((prim, transfer, matrix)) = info.colour {
+        if let Some(m) = filmcraft_color::Matrix::from_code(matrix) {
+            color.matrix = m;
+        }
+        if let Some(t) = filmcraft_color::Transfer::from_code(transfer) {
+            color.transfer = t;
+        }
+        if let Some(pr) = primaries_from_code(prim) {
+            color.primaries = pr;
+        }
+    }
+    let chroma = match p.chroma {
+        filmcraft_mpeg2v::ChromaFormat::Yuv420 => filmcraft_frame::Chroma::C420,
+        filmcraft_mpeg2v::ChromaFormat::Yuv422 => filmcraft_frame::Chroma::C422,
+        filmcraft_mpeg2v::ChromaFormat::Yuv444 => filmcraft_frame::Chroma::C444,
+    };
+    let par = info.sar;
+    VideoFrame {
+        width: p.width,
+        height: p.height,
+        data: filmcraft_frame::PixelData::Yuv8 { planes: [Arc::new(p.y), Arc::new(p.cb), Arc::new(p.cr)], chroma, alpha: None },
+        color,
+        par: if par.0 > 0 && par.1 > 0 { par } else { (1, 1) },
+        pts: filmcraft_time::Tick::ZERO,
+    }
+}
+
+/// "YUV 4:2:2 8-bit, interlaced (upper field first)" for the media info.
+pub fn mpeg2_pixel_format(info: &filmcraft_mpeg2v::SequenceInfo, field_order: Option<filmcraft_mpeg2v::FieldOrder>) -> String {
+    let sub = match info.chroma {
+        filmcraft_mpeg2v::ChromaFormat::Yuv420 => "4:2:0",
+        filmcraft_mpeg2v::ChromaFormat::Yuv422 => "4:2:2",
+        filmcraft_mpeg2v::ChromaFormat::Yuv444 => "4:4:4",
+    };
+    let scan = match field_order {
+        Some(filmcraft_mpeg2v::FieldOrder::TopFirst) => ", interlaced (upper field first)",
+        Some(filmcraft_mpeg2v::FieldOrder::BottomFirst) => ", interlaced (lower field first)",
+        None => ", progressive",
+    };
+    format!("YUV {sub} 8-bit{scan}")
+}
+
+impl VideoDecoder for Mpeg2Decoder {
+    fn decode(&mut self, sample: &[u8], pts: i64) -> Result<Vec<DecodedFrame>> {
+        let pics = self.dec.decode(sample, pts).map_err(|e| CodecError::Decode(e.to_string()))?;
+        Ok(pics.into_iter().map(|p| DecodedFrame { pts: p.pts, frame: mpeg2_to_video_frame(p) }).collect())
+    }
+    fn flush(&mut self) -> Vec<DecodedFrame> {
+        self.dec.flush().into_iter().map(|p| DecodedFrame { pts: p.pts, frame: mpeg2_to_video_frame(p) }).collect()
+    }
+    fn reset(&mut self) {
+        self.dec.reset();
+        self.prime();
+    }
+    fn name(&self) -> &str {
+        "FilmCraft MPEG-2"
+    }
+    fn is_random_access(&self, sample: &[u8]) -> Option<bool> {
+        Some(filmcraft_mpeg2v::scan_access_unit(sample).is_intra())
+    }
+    fn is_disposable(&self, sample: &[u8]) -> bool {
+        filmcraft_mpeg2v::scan_access_unit(sample).is_disposable()
+    }
+}
+
+/// QuickTime / MP4 sample entries carrying MPEG-1/2 video: XDCAM (EX/HD/HD422), IMX, HDV,
+/// generic `mp2v`/`mpg2`, and `mp4v` whose `esds` object type is MPEG-1/2 video (0x60-0x65, 0x6A).
+fn is_mpeg2_entry(fourcc: &[u8; 4], raw: &[u8]) -> bool {
+    match fourcc {
+        b"mp2v" | b"mpg2" | b"m2v1" | b"mpg1" | b"m1v " | b"m1v1" | b"mx3n" | b"mx4n" | b"mx5n" | b"mx3p" | b"mx4p" | b"mx5p" | b"xdhd" | b"xdh2" => true,
+        [b'x', b'd', b'v' | b'5', _] | [b'h', b'd', b'v', _] => true,
+        b"mp4v" => esds_object_type(raw).is_some_and(|t| (0x60..=0x65).contains(&t) || t == 0x6A),
+        _ => false,
+    }
+}
+
+/// objectTypeIndication of the DecoderConfigDescriptor inside an `esds` box in `raw`.
+fn esds_object_type(raw: &[u8]) -> Option<u8> {
+    let at = raw.windows(4).position(|w| w == b"esds")? + 8;
+    let mut p = at;
+    let size = |p: &mut usize| -> Option<usize> {
+        let mut n = 0usize;
+        for _ in 0..4 {
+            let b = *raw.get(*p)?;
+            *p += 1;
+            n = (n << 7) | (b & 0x7F) as usize;
+            if b & 0x80 == 0 {
+                break;
+            }
+        }
+        Some(n)
+    };
+    if *raw.get(p)? != 0x03 {
+        return None;
+    }
+    p += 1;
+    size(&mut p)?;
+    let flags = *raw.get(p + 2)?;
+    p += 3;
+    if flags & 0x80 != 0 {
+        p += 2;
+    }
+    if flags & 0x40 != 0 {
+        p += 1 + *raw.get(p)? as usize;
+    }
+    if flags & 0x20 != 0 {
+        p += 2;
+    }
+    if *raw.get(p)? != 0x04 {
+        return None;
+    }
+    p += 1;
+    size(&mut p)?;
+    raw.get(p).copied()
+}
+
+pub fn mpeg2_factory(e: &SampleEntry) -> Option<Result<Box<dyn VideoDecoder>>> {
+    match &e.codec {
+        CodecConfig::Unknown { fourcc, raw } if is_mpeg2_entry(&fourcc.0, raw) => {
+            // MKV puts the sequence header in CodecPrivate (passed as `raw` for `mp2v`)
+            let header = if fourcc.0 == *b"mp2v" { mpeg2_sequence_header(raw).unwrap_or_default() } else { Vec::new() };
+            Some(Ok(Box::new(Mpeg2Decoder::new(header)) as Box<dyn VideoDecoder>))
+        }
+        _ => None,
+    }
 }
 
 #[cfg(test)]

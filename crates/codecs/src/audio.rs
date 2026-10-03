@@ -17,6 +17,8 @@ use crate::{CodecError, Result};
 enum Inner {
     /// Our own AAC-LC decoder.
     Aac { dec: Box<filmcraft_aac::Decoder>, asc: Vec<u8> },
+    /// AAC whose configuration arrives with the first frame (ADTS / LATM).
+    AacPending,
     /// Our own Opus decoder (always 48 kHz output; pre-skip is left to container timestamps).
     /// `order` maps output channel → decoded channel (Vorbis → WAV/SMPTE order for surround).
     Opus { dec: Box<filmcraft_opus::Decoder>, order: Option<&'static [usize]> },
@@ -94,6 +96,34 @@ impl PacketDecoder {
         let order = if dec.head().mapping_family == 1 { vorbis_to_wav_order(channels) } else { None };
         Ok(Self { inner: Inner::Opus { dec: Box::new(dec), order }, channels })
     }
+    /// MPEG-1/2 audio layer I, II or III (symphonia).
+    pub fn mpeg_audio(layer: u8, sample_rate: u32) -> Result<Self> {
+        let codec = match layer {
+            1 => symphonia::core::codecs::CODEC_TYPE_MP1,
+            2 => symphonia::core::codecs::CODEC_TYPE_MP2,
+            _ => CODEC_TYPE_MP3,
+        };
+        Self::new(codec, sample_rate, None)
+    }
+    /// AAC configured by [`Self::ensure_aac`] from in-band headers (ADTS, LATM).
+    pub fn lazy_aac() -> Self {
+        Self { inner: Inner::AacPending, channels: 0 }
+    }
+    /// (Re)configure for the AudioSpecificConfig `asc` unless it is the current one.
+    pub fn ensure_aac(&mut self, asc: &[u8]) -> Result<()> {
+        if let Inner::Aac { asc: cur, .. } = &self.inner
+            && cur == asc
+        {
+            return Ok(());
+        }
+        let dec = filmcraft_aac::Decoder::new(asc).map_err(|e| CodecError::Unsupported(format!("AAC: {e}")))?;
+        self.inner = Inner::Aac { dec: Box::new(dec), asc: asc.to_vec() };
+        Ok(())
+    }
+    /// AC-3 (ATSC A/52).
+    pub fn ac3() -> Result<Self> {
+        Err(CodecError::Unsupported("AC-3 audio".into()))
+    }
     /// Whether this decodes Opus (which needs [`OPUS_PRE_ROLL`] of pre-roll after a seek).
     pub fn is_opus(&self) -> bool {
         matches!(self.inner, Inner::Opus { .. })
@@ -130,6 +160,7 @@ impl PacketDecoder {
                 return Ok(out);
             }
             Inner::Symphonia(d) => d,
+            Inner::AacPending => return Err(CodecError::Decode("AAC: no configuration yet".into())),
         };
         let pkt = Packet::new_from_slice(0, ts, 0, data);
         let buf = dec.decode(&pkt).map_err(|e| CodecError::Decode(e.to_string()))?;
@@ -157,8 +188,251 @@ impl PacketDecoder {
             }
             Inner::Opus { dec, .. } => dec.reset(),
             Inner::Symphonia(d) => d.reset(),
+            Inner::AacPending => {}
         }
     }
+}
+
+/// Whether AC-3 audio decodes (our ATSC A/52 decoder).
+pub const AC3_DECODER: bool = false;
+
+/// An AudioSpecificConfig for AAC with these parameters (ISO/IEC 14496-3 §1.6.2.1, GA specific
+/// config with no extension flags).
+fn asc_bytes(object_type: u8, sf_index: u8, channel_config: u8) -> Vec<u8> {
+    let v = ((object_type as u16) << 11) | ((sf_index as u16 & 15) << 7) | ((channel_config as u16 & 15) << 3);
+    v.to_be_bytes().to_vec()
+}
+
+/// An ADTS frame (ISO/IEC 13818-7 §6.2): the equivalent AudioSpecificConfig and the raw data
+/// block. Frames with several raw data blocks are not split (`None`).
+pub fn adts_split(frame: &[u8]) -> Option<(Vec<u8>, &[u8])> {
+    if frame.len() < 7 || frame[0] != 0xFF || frame[1] & 0xF6 != 0xF0 {
+        return None;
+    }
+    let protection_absent = frame[1] & 1 != 0;
+    let profile = frame[2] >> 6;
+    let sf = (frame[2] >> 2) & 15;
+    let ch = ((frame[2] & 1) << 2) | (frame[3] >> 6);
+    let len = (((frame[3] & 3) as usize) << 11) | (frame[4] as usize) << 3 | (frame[5] as usize) >> 5;
+    if frame[6] & 3 != 0 {
+        return None;
+    }
+    let hdr = if protection_absent { 7 } else { 9 };
+    let end = len.min(frame.len());
+    (end > hdr).then(|| (asc_bytes(profile + 1, sf, ch), &frame[hdr..end]))
+}
+
+/// The parts of a LATM StreamMuxConfig (ISO/IEC 14496-3 §1.7.3) we decode: one program, one
+/// layer, AAC-LC, variable frame length (type 0).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LatmConfig {
+    pub asc: Vec<u8>,
+    pub sample_rate: u32,
+    pub channels: u32,
+}
+
+const AAC_RATES: [u32; 13] = [96_000, 88_200, 64_000, 48_000, 44_100, 32_000, 24_000, 22_050, 16_000, 12_000, 11_025, 8_000, 7_350];
+
+fn latm_value(r: &mut filmcraft_bitstream::BitReader) -> Option<u32> {
+    let n = r.read_bits(2).ok()? + 1;
+    r.read_bits(8 * n).ok()
+}
+
+/// StreamMuxConfig after `audioMuxVersion`, leaving the reader after it.
+fn stream_mux_config(r: &mut filmcraft_bitstream::BitReader) -> Option<LatmConfig> {
+    let version = r.read_bits(1).ok()?;
+    let version_a = if version == 1 { r.read_bits(1).ok()? } else { 0 };
+    if version_a != 0 {
+        return None;
+    }
+    if version == 1 {
+        latm_value(r)?; // taraBufferFullness
+    }
+    let _all_same_framing = r.read_bits(1).ok()?;
+    let sub_frames = r.read_bits(6).ok()?;
+    let programs = r.read_bits(4).ok()?;
+    let layers = r.read_bits(3).ok()?;
+    if sub_frames != 0 || programs != 0 || layers != 0 {
+        return None;
+    }
+    if version == 1 {
+        latm_value(r)?; // ascLen
+    }
+    // AudioSpecificConfig
+    let aot = r.read_bits(5).ok()?;
+    let sf = r.read_bits(4).ok()?;
+    if aot != 2 || sf == 15 {
+        return None;
+    }
+    let ch = r.read_bits(4).ok()?;
+    let frame_length_flag = r.read_bits(1).ok()?;
+    let depends_on_core = r.read_bits(1).ok()?;
+    let _extension = r.read_bits(1).ok()?;
+    if frame_length_flag != 0 || depends_on_core != 0 {
+        return None;
+    }
+    let frame_length_type = r.read_bits(3).ok()?;
+    if frame_length_type != 0 {
+        return None;
+    }
+    r.read_bits(8).ok()?; // latmBufferFullness
+    if r.read_bits(1).ok()? == 1 {
+        // otherData
+        if version == 1 {
+            latm_value(r)?;
+        } else {
+            loop {
+                let esc = r.read_bits(1).ok()?;
+                r.read_bits(8).ok()?;
+                if esc == 0 {
+                    break;
+                }
+            }
+        }
+    }
+    if r.read_bits(1).ok()? == 1 {
+        r.read_bits(8).ok()?; // crcCheckSum
+    }
+    Some(LatmConfig { asc: asc_bytes(2, sf as u8, ch as u8), sample_rate: *AAC_RATES.get(sf as usize)?, channels: if ch == 0 { 2 } else { ch } })
+}
+
+/// The configuration carried in a LOAS frame (`None` if it reuses an earlier one or is not
+/// supported).
+pub fn latm_config(frame: &[u8]) -> Option<LatmConfig> {
+    if frame.len() < 4 || frame[0] != 0x56 || frame[1] & 0xE0 != 0xE0 {
+        return None;
+    }
+    let mut r = filmcraft_bitstream::BitReader::new(&frame[3..]);
+    if r.read_bits(1).ok()? == 1 {
+        return None; // useSameStreamMux
+    }
+    stream_mux_config(&mut r)
+}
+
+/// A LOAS/LATM frame: its AudioSpecificConfig and the AAC payload of the single sub-frame.
+/// `last` is the configuration of earlier frames (used by frames that set useSameStreamMux,
+/// updated by frames that carry one).
+pub fn latm_split(frame: &[u8], last: &mut Option<LatmConfig>) -> Option<(Vec<u8>, Vec<u8>)> {
+    if frame.len() < 4 || frame[0] != 0x56 || frame[1] & 0xE0 != 0xE0 {
+        return None;
+    }
+    let mut r = filmcraft_bitstream::BitReader::new(&frame[3..]);
+    let same = r.read_bits(1).ok()? == 1;
+    let cfg = if same {
+        last.clone()?
+    } else {
+        let c = stream_mux_config(&mut r)?;
+        *last = Some(c.clone());
+        c
+    };
+    // PayloadLengthInfo (frameLengthType 0) then PayloadMux, bit-aligned
+    let mut len = 0usize;
+    loop {
+        let b = r.read_bits(8).ok()? as usize;
+        len += b;
+        if b != 255 {
+            break;
+        }
+    }
+    let mut payload = Vec::with_capacity(len);
+    for _ in 0..len {
+        payload.push(r.read_bits(8).ok()? as u8);
+    }
+    Some((cfg.asc, payload))
+}
+
+/// Blu-ray / AVCHD LPCM packet header (4 bytes before the samples).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct BlurayLpcm {
+    pub sample_rate: u32,
+    pub channels: usize,
+    pub bits: u32,
+}
+
+/// Channels of each channel_assignment code (mono, stereo, 3/0, 2/1, 3/1, 2/2, 3/2, 3/2+LFE,
+/// 3/4, 3/4+LFE).
+const BD_LPCM_CHANNELS: [usize; 12] = [0, 1, 0, 2, 3, 3, 4, 4, 5, 6, 7, 8];
+
+pub fn bluray_lpcm_header(p: &[u8]) -> Option<BlurayLpcm> {
+    if p.len() < 4 {
+        return None;
+    }
+    let channels = *BD_LPCM_CHANNELS.get((p[2] >> 4) as usize).filter(|&&c| c > 0)?;
+    let sample_rate = match p[2] & 15 {
+        1 => 48_000,
+        4 => 96_000,
+        5 => 192_000,
+        _ => return None,
+    };
+    let bits = match p[3] >> 6 {
+        1 => 16,
+        2 => 20,
+        3 => 24,
+        _ => return None,
+    };
+    Some(BlurayLpcm { sample_rate, channels, bits })
+}
+
+/// Decode one Blu-ray LPCM packet (big-endian; channels padded to an even count; 20-bit
+/// samples are stored in 24 bits).
+pub fn decode_bluray_lpcm(p: &[u8]) -> Option<Vec<Vec<f32>>> {
+    let h = bluray_lpcm_header(p)?;
+    let coded = (h.channels + 1) & !1;
+    let bps = if h.bits == 16 { 2 } else { 3 };
+    let data = &p[4..];
+    let n = data.len() / (coded * bps);
+    let mut out = vec![Vec::with_capacity(n); h.channels];
+    for k in 0..n {
+        for (c, o) in out.iter_mut().enumerate() {
+            let at = (k * coded + c) * bps;
+            let v = if bps == 2 {
+                i16::from_be_bytes([data[at], data[at + 1]]) as f32 / 32768.0
+            } else {
+                (i32::from_be_bytes([data[at], data[at + 1], data[at + 2], 0]) >> 8) as f32 / 8_388_608.0
+            };
+            o.push(v);
+        }
+    }
+    Some(out)
+}
+
+/// Bytes per two sample frames of DVD LPCM.
+pub fn dvd_lpcm_group_bytes(channels: usize, bits: u32) -> usize {
+    match bits {
+        16 => 4 * channels,
+        20 => 5 * channels,
+        _ => 6 * channels,
+    }
+}
+
+/// Decode DVD-Video LPCM (big-endian). 16-bit samples are interleaved; 20- and 24-bit samples
+/// come in groups of two frames: the upper 16 bits of all the group's samples, then their low
+/// 4 / 8 bits.
+pub fn decode_dvd_lpcm(data: &[u8], channels: usize, bits: u32) -> Vec<Vec<f32>> {
+    let ch = channels.max(1);
+    let group = dvd_lpcm_group_bytes(ch, bits);
+    let groups = data.len() / group;
+    let mut out = vec![Vec::with_capacity(groups * 2); ch];
+    for g in 0..groups {
+        let b = &data[g * group..(g + 1) * group];
+        for f in 0..2 {
+            for (c, o) in out.iter_mut().enumerate() {
+                let k = f * ch + c;
+                let hi = i16::from_be_bytes([b[2 * k], b[2 * k + 1]]) as i32;
+                let v = match bits {
+                    16 => hi as f32 / 32768.0,
+                    20 => {
+                        let nib = b[4 * ch + k / 2];
+                        let lo = if k.is_multiple_of(2) { nib >> 4 } else { nib & 15 } as i32;
+                        ((hi << 4) | lo) as f32 / 524_288.0
+                    }
+                    _ => ((hi << 8) | b[4 * ch + k] as i32) as f32 / 8_388_608.0,
+                };
+                o.push(v);
+            }
+        }
+    }
+    out
 }
 
 /// Decode interleaved PCM bytes into planar f32.

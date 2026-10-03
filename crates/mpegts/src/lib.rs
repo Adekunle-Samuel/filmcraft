@@ -19,6 +19,7 @@
 //! The crate does no decoding; `filmcraft-codecs` pairs the streams with decoders.
 
 mod es;
+pub use es::{FrameInfo, frame_info};
 mod pes;
 mod ps;
 mod ts;

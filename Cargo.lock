@@ -1768,6 +1768,8 @@ dependencies = [
  "filmcraft-isobmff",
  "filmcraft-matroska",
  "filmcraft-media",
+ "filmcraft-mpeg2v",
+ "filmcraft-mpegts",
  "filmcraft-mxf",
  "filmcraft-ogg",
  "filmcraft-opus",

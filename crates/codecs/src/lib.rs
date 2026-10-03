@@ -17,6 +17,7 @@ pub mod audio;
 pub mod gop;
 pub mod mkv;
 pub mod mp4;
+pub mod mpeg;
 pub mod mxf;
 pub mod ogg;
 pub mod video;
@@ -27,6 +28,7 @@ pub use audio::AudioFileSource;
 pub use gop::{GopStats, gop_stats};
 pub use mkv::MkvSource;
 pub use mp4::Mp4Source;
+pub use mpeg::MpegSource;
 pub use mxf::MxfSource;
 pub use ogg::OggSource;
 pub use video::{DecodedFrame, VideoDecoder, VideoDecoderFactory};
@@ -67,6 +69,7 @@ fn factories() -> &'static RwLock<Vec<VideoDecoderFactory>> {
             video::prores_factory,
             video::dnx_factory,
             video::mjpeg_factory,
+            video::mpeg2_factory,
         ])
     })
 }
@@ -90,14 +93,15 @@ pub fn make_video_decoder(entry: &filmcraft_isobmff::SampleEntry) -> Result<Box<
     Err(CodecError::Unsupported(format!("no decoder for {} video", entry.codec.name())))
 }
 
-/// Openers for the engine's media pool (MP4/MOV, Matroska/WebM, MXF, Ogg Opus/Vorbis, standalone audio).
+/// Openers for the engine's media pool (MP4/MOV, Matroska/WebM, MXF, Ogg Opus/Vorbis, MPEG TS/PS and
+/// MPEG-1/2 video elementary streams, standalone audio).
 pub fn openers() -> Vec<filmcraft_media::Opener> {
-    vec![mp4::opener, mkv::opener, mxf::opener, ogg::opener, audio::opener]
+    vec![mp4::opener, mkv::opener, mxf::opener, ogg::opener, mpeg::opener, audio::opener]
 }
 
 fn reader_registry() -> &'static RwLock<Vec<filmcraft_media::ReaderOpener>> {
     static R: std::sync::OnceLock<RwLock<Vec<filmcraft_media::ReaderOpener>>> = std::sync::OnceLock::new();
-    R.get_or_init(|| RwLock::new(vec![mp4::reader_opener, mkv::reader_opener, mxf::reader_opener, ogg::reader_opener]))
+    R.get_or_init(|| RwLock::new(vec![mp4::reader_opener, mkv::reader_opener, mxf::reader_opener, ogg::reader_opener, mpeg::reader_opener]))
 }
 
 /// Openers that read containers through a [`filmcraft_media::ByteReader`] (index now, samples on

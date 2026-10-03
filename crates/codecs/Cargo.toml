@@ -17,6 +17,8 @@ filmcraft-media = { workspace = true }
 filmcraft-isobmff = { workspace = true }
 filmcraft-matroska = { workspace = true }
 filmcraft-mxf = { workspace = true }
+filmcraft-mpegts = { workspace = true }
+filmcraft-mpeg2v = { workspace = true }
 filmcraft-ogg = { workspace = true }
 filmcraft-bitstream = { workspace = true }
 filmcraft-h264 = { workspace = true }
@@ -33,7 +35,7 @@ log = { workspace = true }
 web-time = "1"
 image = { version = "0.25", default-features = false, features = ["jpeg"] }
 # Bootstrap audio decoding (MPL-2.0, used unmodified); replaced by own decoders over time.
-symphonia = { version = "0.5.5", default-features = false, features = ["aac", "mp3", "flac", "alac", "pcm", "wav", "ogg", "vorbis", "isomp4"] }
+symphonia = { version = "0.5.5", default-features = false, features = ["aac", "mp1", "mp2", "mp3", "flac", "alac", "pcm", "wav", "ogg", "vorbis", "isomp4"] }
 
 [dev-dependencies]
 filmcraft-testkit = { workspace = true }
