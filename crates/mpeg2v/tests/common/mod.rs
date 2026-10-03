@@ -21,6 +21,15 @@ pub struct Spec {
     pub pix_fmt: &'static str,
 }
 
+/// 1080i 4:2:0 (decode benchmark; Main@High).
+pub const HD1080I: Spec = Spec {
+    name: "m2v_1080i",
+    lavfi: "testsrc2=size=1920x1080:rate=50,tinterlace=mode=interleave_top,setfield=tff",
+    frames: 25,
+    enc: &["-c:v", "mpeg2video", "-flags", "+ilme+ildct", "-bf", "2", "-g", "12", "-b:v", "25M", "-maxrate", "25M", "-bufsize", "9M"],
+    pix_fmt: "yuv420p",
+};
+
 pub fn path(spec: &Spec) -> PathBuf {
     fixture_dir().join(format!("{}.{}", spec.name, if spec.enc.contains(&"mpeg1video") { "m1v" } else { "m2v" }))
 }
