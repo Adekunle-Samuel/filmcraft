@@ -5,7 +5,12 @@
 //!   drop-frame timecode ([`edl`]);
 //! - **Final Cut Pro 7 XML** (`xmeml` v4/v5, the dialect Premiere Pro reads and writes) ([`fcp7`]);
 //! - **FCPXML** 1.9–1.11 ([`fcpxml`]);
-//! - **OpenTimelineIO** JSON (`.otio`) ([`otio`]).
+//! - **OpenTimelineIO** JSON (`.otio`) ([`otio`]);
+//! - **AAF** (`.aaf`, Edit Protocol, structured storage) ([`aaf`]);
+//! - **OMF Interchange 2.0** (`.omf`, Bento) for audio post ([`omf`]).
+//!
+//! AAF and OMF can embed or consolidate audio: [`essence::audio_needs`] lists what the caller
+//! (the engine) has to render, and [`essence::MediaOptions`] passes the result back in.
 //!
 //! Every importer returns a standalone [`Project`] fragment ([`Imported`]) that the caller merges into
 //! the open project with [`merge_into`], plus a [`Report`] of everything that could not be represented
@@ -18,13 +23,18 @@
 //! This crate is L2: it does no file I/O. Media references are strings (absolute paths, or paths
 //! resolved against the `base_dir` passed to the importer); the engine probes/relinks them.
 
+pub mod aaf;
 pub mod ale;
 pub mod edl;
+pub mod essence;
 pub mod fcp7;
 pub mod fcpxml;
+pub mod omf;
 pub mod otio;
 
 mod common;
+mod comp;
+pub mod wav;
 mod xml;
 
 use std::collections::{BTreeMap, HashMap};
@@ -34,6 +44,7 @@ use filmcraft_time::{FrameRate, Tick};
 use serde::{Deserialize, Serialize};
 
 pub use common::{file_url_to_path, path_to_file_url, resolve_path};
+pub use comp::ExtractedMedia;
 
 /// An interchange format.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -46,10 +57,14 @@ pub enum Format {
     Fcpxml,
     /// OpenTimelineIO JSON.
     Otio,
+    /// Advanced Authoring Format (AAF Edit Protocol, structured storage).
+    Aaf,
+    /// OMF Interchange 2.0 (Bento container).
+    Omf,
 }
 
 impl Format {
-    pub const ALL: [Format; 4] = [Format::Edl, Format::Fcp7Xml, Format::Fcpxml, Format::Otio];
+    pub const ALL: [Format; 6] = [Format::Edl, Format::Fcp7Xml, Format::Fcpxml, Format::Otio, Format::Aaf, Format::Omf];
 
     pub fn name(self) -> &'static str {
         match self {
@@ -57,6 +72,8 @@ impl Format {
             Format::Fcp7Xml => "Final Cut Pro XML",
             Format::Fcpxml => "FCPXML",
             Format::Otio => "OpenTimelineIO",
+            Format::Aaf => "AAF",
+            Format::Omf => "OMF",
         }
     }
 
@@ -67,6 +84,8 @@ impl Format {
             Format::Fcp7Xml => "xml",
             Format::Fcpxml => "fcpxml",
             Format::Otio => "otio",
+            Format::Aaf => "aaf",
+            Format::Omf => "omf",
         }
     }
 
@@ -78,6 +97,8 @@ impl Format {
             "xml" => Some(Format::Fcp7Xml),
             "fcpxml" | "fcpxmld" => Some(Format::Fcpxml),
             "otio" => Some(Format::Otio),
+            "aaf" => Some(Format::Aaf),
+            "omf" | "omfi" => Some(Format::Omf),
             _ => None,
         }
     }
@@ -85,6 +106,12 @@ impl Format {
 
 /// Sniff the format of a document from its bytes, using the file extension as a hint.
 pub fn detect(bytes: &[u8], extension: Option<&str>) -> Option<Format> {
+    if aaf::sniff(bytes) {
+        return Some(Format::Aaf);
+    }
+    if omf::sniff(bytes) && extension.is_none_or(|e| matches!(Format::from_extension(e), None | Some(Format::Omf))) {
+        return Some(Format::Omf);
+    }
     let head = String::from_utf8_lossy(&bytes[..bytes.len().min(4096)]);
     let head = head.trim_start_matches('\u{feff}').trim_start();
     if head.starts_with('<') {
@@ -227,7 +254,16 @@ pub fn import(bytes: &[u8], format: Format, base_dir: Option<&str>) -> Result<(I
 }
 
 /// Import a document with explicit options.
+///
+/// AAF and OMF documents may embed audio: [`aaf::import`] / [`omf::import`] also return it.
 pub fn import_with(bytes: &[u8], format: Format, opts: &ImportOptions) -> Result<(Imported, Report)> {
+    if matches!(format, Format::Aaf | Format::Omf) {
+        let (imported, extracted, mut report) = if format == Format::Aaf { aaf::import(bytes, opts)? } else { omf::import(bytes, opts)? };
+        if !extracted.is_empty() {
+            report.warn(format!("{} embedded audio file(s) were not extracted", extracted.len()));
+        }
+        return Ok((imported, report));
+    }
     let text = decode_text(bytes);
     let mut report = Report::default();
     let imported = match format {
@@ -235,6 +271,7 @@ pub fn import_with(bytes: &[u8], format: Format, opts: &ImportOptions) -> Result
         Format::Fcp7Xml => fcp7::import(&text, opts, &mut report)?,
         Format::Fcpxml => fcpxml::import(&text, opts, &mut report)?,
         Format::Otio => otio::import(&text, opts, &mut report)?,
+        Format::Aaf | Format::Omf => unreachable!("handled above"),
     };
     Ok((imported, report))
 }
@@ -339,12 +376,19 @@ pub fn export(project: &Project, sequence: ItemId, format: Format, opts: &Export
     if project.sequence(sequence).is_none() {
         return Err(Error::NoSequence(sequence));
     }
+    if format == Format::Aaf {
+        return aaf::export(project, sequence, &aaf::AafOptions { name: opts.name.clone(), ..Default::default() });
+    }
+    if format == Format::Omf {
+        return omf::export(project, sequence, &omf::OmfOptions { name: opts.name.clone(), ..Default::default() });
+    }
     let mut report = Report::default();
     let text = match format {
         Format::Edl => edl::export(project, sequence, opts, &mut report)?,
         Format::Fcp7Xml => fcp7::export(project, sequence, opts, &mut report)?,
         Format::Fcpxml => fcpxml::export(project, sequence, opts, &mut report)?,
         Format::Otio => otio::export(project, sequence, opts, &mut report)?,
+        Format::Aaf | Format::Omf => unreachable!("handled above"),
     };
     Ok((text.into_bytes(), report))
 }

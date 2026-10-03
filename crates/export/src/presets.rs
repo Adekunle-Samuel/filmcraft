@@ -5,7 +5,7 @@
 use filmcraft_time::FrameRate;
 use serde::{Deserialize, Serialize};
 
-use crate::settings::{AudioCodec, AudioSettings, BitrateMode, Scaling};
+use crate::settings::{AudioCodec, AudioSettings, BitrateMode, MxfVideoCodec, Scaling};
 use crate::{ExportSettings, Format};
 
 /// A named set of export settings (`path` and `range` are left empty).
@@ -64,6 +64,20 @@ fn mov(format: Format, profile: &str) -> ExportSettings {
     s
 }
 
+fn mxf(format: Format, codec: MxfVideoCodec, profile: &str) -> ExportSettings {
+    let mut s = ExportSettings { mxf_video_codec: codec, ..mov(format, profile) };
+    match codec {
+        MxfVideoCodec::ProRes => s.prores_profile = profile.into(),
+        MxfVideoCodec::Dnxhr => s.dnx_profile = profile.into(),
+        MxfVideoCodec::H264 => {
+            s.bitrate_kbps = 50_000;
+            s.adaptive_bitrate = Some(0.3);
+            s.bitrate_mode = BitrateMode::Vbr1Pass;
+        }
+    }
+    s
+}
+
 fn audio_only(format: Format, bits: u16) -> ExportSettings {
     ExportSettings {
         format,
@@ -110,6 +124,15 @@ pub fn builtin_presets() -> Vec<ExportPreset> {
         p("Avid DNxHR HQ", bc, "QuickTime, DNxHR HQ (8-bit 4:2:2), 24-bit 48 kHz PCM", mov(Format::DnxHr, "hq")),
         p("Avid DNxHR SQ", bc, "QuickTime, DNxHR SQ (8-bit 4:2:2), 24-bit 48 kHz PCM", mov(Format::DnxHr, "sq")),
         p("Avid DNxHR LB", bc, "QuickTime, DNxHR LB (8-bit 4:2:2), 24-bit 48 kHz PCM", mov(Format::DnxHr, "lb")),
+        p("MXF OP1a DNxHR HQ", bc, "MXF OP1a, DNxHR HQ (8-bit 4:2:2), 24-bit 48 kHz PCM, start timecode", mxf(Format::MxfOp1a, MxfVideoCodec::Dnxhr, "hq")),
+        p("MXF OP1a ProRes 422 HQ", bc, "MXF OP1a, ProRes 422 HQ, 24-bit 48 kHz PCM, start timecode", mxf(Format::MxfOp1a, MxfVideoCodec::ProRes, "hq")),
+        p("MXF OP1a H.264", bc, "MXF OP1a, H.264 High long GOP (0.3 bits per pixel), 24-bit 48 kHz PCM", mxf(Format::MxfOp1a, MxfVideoCodec::H264, "")),
+        p(
+            "MXF OP-Atom DNxHR (Avid)",
+            bc,
+            "Avid-style OP-Atom: DNxHR HQ picture file plus one 24-bit 48 kHz PCM file per channel (_A1, _A2…)",
+            mxf(Format::MxfOpAtom, MxfVideoCodec::Dnxhr, "hq"),
+        ),
         p(
             "PNG Sequence",
             "Image Sequence",

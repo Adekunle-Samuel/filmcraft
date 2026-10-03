@@ -1,4 +1,4 @@
-//! Interchange documents (CMX 3600 EDL, FCP7 XML, FCPXML, OTIO) ↔ the session's project.
+//! Interchange documents (CMX 3600 EDL, FCP7 XML, FCPXML, OTIO, AAF, OMF) ↔ the session's project.
 
 use serde_json::{Value, json};
 
@@ -10,7 +10,7 @@ use crate::{EngineError, Result, Session};
 /// The interchange format of a file, if it is one (by content, with the extension as a hint).
 pub fn detect(path: &str, bytes: &[u8]) -> Option<Format> {
     let ext = std::path::Path::new(path).extension().and_then(|e| e.to_str()).map(str::to_ascii_lowercase);
-    if !matches!(ext.as_deref(), Some("edl" | "xml" | "fcpxml" | "otio")) {
+    if !matches!(ext.as_deref(), Some("edl" | "xml" | "fcpxml" | "otio" | "aaf" | "omf" | "omfi")) {
         return None;
     }
     filmcraft_interchange::detect(bytes, ext.as_deref())
@@ -29,7 +29,21 @@ pub fn import(s: &mut Session, path: &str, bytes: &[u8], format: Format) -> Resu
         name: p.file_stem().map(|n| n.to_string_lossy().to_string()),
         ..Default::default()
     };
-    let (fragment, report) = filmcraft_interchange::import_with(bytes, format, &opts).map_err(|e| EngineError::Other(format!("{path}: {e}")))?;
+    let (fragment, report) = match format {
+        // AAF / OMF may embed audio: write it next to the document (the media items point there)
+        Format::Aaf | Format::Omf => {
+            let r = if format == Format::Aaf { filmcraft_interchange::aaf::import(bytes, &opts) } else { filmcraft_interchange::omf::import(bytes, &opts) };
+            let (fragment, extracted, report) = r.map_err(|e| EngineError::Other(format!("{path}: {e}")))?;
+            for m in extracted {
+                if let Some(dir) = std::path::Path::new(&m.path).parent().filter(|_| !s.services.export_in_memory()) {
+                    let _ = std::fs::create_dir_all(dir);
+                }
+                s.services.write_file(&m.path, &m.wav).map_err(|e| EngineError::Other(format!("{}: {e}", m.path)))?;
+            }
+            (fragment, report)
+        }
+        _ => filmcraft_interchange::import_with(bytes, format, &opts).map_err(|e| EngineError::Other(format!("{path}: {e}")))?,
+    };
     let before: std::collections::HashSet<ItemId> = s.project.items.keys().copied().collect();
     let name = opts.name.clone().unwrap_or_else(|| format.name().to_string());
     let seqs = s.edit(&format!("Import {name}"), |proj, _| Ok(filmcraft_interchange::merge_into(proj, fragment, None)))?;
@@ -100,6 +114,8 @@ pub fn export(s: &mut Session, p: &Value) -> Result<Value> {
         "edl" => Format::Edl,
         "fcpxml" => Format::Fcpxml,
         "otio" => Format::Otio,
+        "aaf" => Format::Aaf,
+        "omf" => Format::Omf,
         _ => Format::Fcp7Xml,
     };
     let path = p.get("path").and_then(Value::as_str).ok_or_else(|| EngineError::Other("need `path`".into()))?.to_string();

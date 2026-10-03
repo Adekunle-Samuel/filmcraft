@@ -40,4 +40,5 @@ rustix = { version = "1", default-features = false, features = ["std", "time"] }
 [dev-dependencies]
 pollster = "0.4"
 filmcraft-codecs = { workspace = true }
+filmcraft-interchange = { workspace = true }
 egui_kittest = { workspace = true, features = ["eframe", "wgpu"] }

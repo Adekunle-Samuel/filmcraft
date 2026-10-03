@@ -1,6 +1,6 @@
 # filmcraft-mxf
 
-A clean-room MXF demuxer. Layer L0: no dependencies beyond `std`, no `unsafe`, builds for
+A clean-room MXF demuxer and writer. Layer L0: no dependencies beyond `std`, no `unsafe`, builds for
 `wasm32-unknown-unknown`. No GPL/LGPL code (FFmpeg, libMXF, bmx, MXFLib) was consulted; FFmpeg is
 used only as an external fixture generator and test oracle.
 
@@ -22,7 +22,8 @@ Implemented from the SMPTE documents (editions used):
 | SMPTE ST 386 | 2004 | D-10 (IMX) mapping: container label, sound element type |
 | SMPTE ST 2019-4 | 2009 | VC-3 (DNxHD / DNxHR) mapping |
 | SMPTE RDD 44 | 2017 | Apple ProRes mapping |
-| SMPTE RP 224 / RP 210 | registers | labels: data definitions, picture coding, essence containers, operational patterns |
+| SMPTE RP 224 / RP 210 | registers | labels: data definitions, picture coding, essence containers, operational patterns; property labels of the primer pack (writer) |
+| SMPTE ST 330 | 2011 | basic UMIDs of the written packages |
 
 ## Reading a file
 
@@ -72,6 +73,57 @@ Not supported: OP1b/OP2x+ edit lists beyond the first source clip, external esse
 material packages whose other tracks live in other files are opened track by track), partial or
 encrypted essence (ST 429-6), and descriptive metadata (parsed sets are ignored).
 
+## Writing a file
+
+```rust
+use filmcraft_mxf::*;
+let ids = PackageIds::from_seed("unique seed (path + time)", "Clip name"); // material + file UMIDs
+let mut cfg = WriterConfig::new(Pattern::Op1a, Rational::new(25, 1), ids);
+cfg.picture = Some(PictureDesc::new(PictureCoding::Vc3 { cid: 1272 }, 1920, 1080));
+cfg.sound = vec![SoundDesc { sample_rate: 48_000, channels: 2, bits: 24 }];
+cfg.timecode = Some(StartTimecode { frames: 90_000, rate: Rational::new(25, 1), drop_frame: false });
+let mut w = MxfWriter::new(std::io::BufWriter::new(std::fs::File::create("out.mxf")?), cfg)?;
+w.push_picture(&frame_bytes, FrameInfo::intra())?;   // stored order; AVC: key / P / B + display position
+w.push_sound(0, &interleaved_le_pcm)?;              // any chunking: content packages are cut per edit unit
+w.finish()?;
+```
+
+- **Streaming.** Any `Write + Seek` sink. `new` writes the header partition (open, incomplete,
+  durations unknown) and a body partition; essence follows as it is pushed; `finish` writes the
+  footer partition (closed, complete header metadata with the final durations and the index table
+  segments), the random index pack, then rewrites the header partition pack and header metadata in
+  place (the metadata's size does not depend on the durations; a reserved fill item absorbs any
+  difference) and the body partition pack's footer offset. Only the index entries (11 bytes per
+  edit unit, plus 4 per sound slice) are kept in memory.
+- **OP1a** (ST 378): one content package per edit unit, frame wrapping (ST 379-1): the picture
+  element then one element per sound track. Sound is buffered and cut into edit units exactly
+  (`floor((n+1)·rate·den/num) − floor(n·rate·den/num)` samples: 1601/1602 at 29.97). Pictures
+  without their sound yet wait; `finish` pads the last units' sound with silence. A multiple
+  descriptor with one sub-descriptor per track (linked track ids), the "multiple wrappings"
+  container label.
+- **OP-Atom** (ST 390, Avid style): exactly one essence track per file, clip-wrapped (one element
+  with a 9-byte BER length patched by `finish`). Several atom files of one clip can share the
+  material package UMID with distinct track ids (`WriterConfig::first_track_id`). Sound files may
+  use the sample rate as the edit rate (a constant-bytes index) or the frame rate (VBR entries).
+- **Index tables** (ST 377-1 §11): VBR entries per edit unit — stream offset (from the first
+  essence byte; clip-wrapped: from the element value), key-frame offset, flags (`0x80` random
+  access, `0xC0` AVC IDR with its parameter sets, `0x22` P, `0x33` B) and temporal offsets from the
+  display positions (`TO[d] = stored(d) − d`); a delta entry and a slice per sound element. Split
+  into segments of at most ~60 KB (the entry array is a 2-byte-length local set item).
+- **Metadata.** Preface, identification (company / product / version / modification date),
+  content storage, essence container data (BodySID 1, IndexSID 2), material and file packages
+  (`PackageIds`: UMIDs and names) with a timecode track (start, rounded base, drop frame) and one
+  timeline track per essence (source clip → file package track; track numbers = element keys),
+  CDCI picture descriptors (size, aspect ratio, depth, subsampling, black / white / range, BT.709 /
+  BT.2020 PQ / HLG colour labels, coding label) and wave audio descriptors.
+- **Mappings.** VC-3 (ST 2019-4: coding label `…71 cc` from the compression id, container `02 11`,
+  element types 0x0C / 0x0D), ProRes (RDD 44: coding label profile byte, container `02 1C`),
+  AVC byte stream (ST 381-3: container `02 10 60`, coding label from `profile_idc`; Annex B access
+  units with in-band SPS / PPS — the AVC sub-descriptor is not written), Broadcast Wave PCM
+  (ST 382: container `02 06 01/02`, element types 0x01 / 0x02).
+- `write_opatom_pcm(&OpAtomPcm, &[i32])` builds a complete in-memory OP-Atom PCM file (AAF media
+  consolidation); `encode_pcm` interleaves planar f32 as little-endian PCM.
+
 ## Tests
 
 - `src/tests.rs`: a small OP1a writer builds synthetic files (temporal offsets, key flags, PCM,
@@ -82,3 +134,13 @@ encrypted essence (ST 429-6), and descriptive metadata (parsed sets are ignored)
   timecode, DNxHR LB (±2), ProRes 422 (±1), MPEG-2 long GOP, XDCAM HD422 and D-10 (±4),
   OP-Atom VC-3 (clip-wrapped) and PCM, D-10 AES3 audio; PCM sample-exact in every file;
   truncated and corrupted files. `cargo xtask fixtures codecs` pre-generates them.
+- `src/write/tests.rs`: writer output read back by `open`: OP1a with two sound tracks pushed in
+  uneven chunks (durations, codec label, aspect, PCM exact, index slices, closed partitions),
+  29.97 sound per edit unit (1601/1602), a long-GOP AVC index (presentation order, key and B
+  flags), OP-Atom picture (clip wrapping) and PCM files at both edit rates, multi-segment index
+  of 12 000 units, UMIDs; truncation and random mutation of written files never panic.
+- `crates/export/src/mxf_tests.rs` (ffprobe / ffmpeg as external oracles): OP1a exports with
+  DNxHR, ProRes and H.264 — ffprobe reports the OP1a label, codec, 24 frames, frame rate, duration
+  and `01:00:00:00` timecode; ffmpeg decodes the MXF picture exactly as it decodes the same
+  essence exported as MOV, and its PCM equals our demuxer's sample for sample; OP-Atom exports —
+  picture file and one mono file per channel, each channel equal to the WAV export's.

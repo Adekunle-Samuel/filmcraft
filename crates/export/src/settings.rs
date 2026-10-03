@@ -94,6 +94,38 @@ pub enum Multiplexer {
     Mov,
 }
 
+/// Video codec of an MXF export.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum MxfVideoCodec {
+    /// Avid DNxHR (VC-3, SMPTE ST 2019-4 mapping).
+    #[default]
+    Dnxhr,
+    /// Apple ProRes (RDD 44 mapping).
+    ProRes,
+    /// H.264 long GOP (ST 381-3 byte-stream mapping).
+    H264,
+}
+
+impl MxfVideoCodec {
+    pub const ALL: [MxfVideoCodec; 3] = [MxfVideoCodec::Dnxhr, MxfVideoCodec::ProRes, MxfVideoCodec::H264];
+    pub fn label(self) -> &'static str {
+        match self {
+            MxfVideoCodec::Dnxhr => "Avid DNxHR",
+            MxfVideoCodec::ProRes => "Apple ProRes",
+            MxfVideoCodec::H264 => "H.264",
+        }
+    }
+    /// The export format whose encoder this codec uses.
+    pub fn encoder_format(self) -> Format {
+        match self {
+            MxfVideoCodec::Dnxhr => Format::DnxHr,
+            MxfVideoCodec::ProRes => Format::ProRes,
+            MxfVideoCodec::H264 => Format::H264,
+        }
+    }
+}
+
 /// Audio codec. `Auto` = AAC in MP4, PCM in QuickTime / WAV / AIFF.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -307,6 +339,11 @@ pub struct Resolved {
 }
 
 impl ExportSettings {
+    /// The format whose video encoder runs: the MXF video codec for MXF exports, else the format.
+    pub fn video_format(&self) -> Format {
+        if self.format.is_mxf() { self.mxf_video_codec.encoder_format() } else { self.format }
+    }
+
     /// Whether the output is a numbered image sequence.
     pub fn is_image_sequence(&self) -> bool {
         matches!(self.format, Format::PngSequence | Format::TiffSequence | Format::BmpSequence)
@@ -354,7 +391,7 @@ impl ExportSettings {
     /// The audio codec actually used.
     pub fn audio_codec(&self) -> AudioCodec {
         match (self.format, self.audio.codec) {
-            (Format::Wav | Format::Aiff, _) => AudioCodec::Pcm,
+            (Format::Wav | Format::Aiff | Format::MxfOp1a | Format::MxfOpAtom, _) => AudioCodec::Pcm,
             (Format::H264, _) if self.multiplexer == Multiplexer::Mp4 => AudioCodec::Aac,
             (_, AudioCodec::Auto) if self.format == Format::H264 => AudioCodec::Aac,
             (_, AudioCodec::Auto) => AudioCodec::Pcm,
@@ -383,7 +420,7 @@ impl ExportSettings {
         let secs = duration.seconds().max(0.0);
         let fps = r.rate.num as f64 / r.rate.den as f64;
         let px = r.width as f64 * r.height as f64;
-        let video_bps = match self.format {
+        let video_bps = match self.video_format() {
             Format::H264 => r.target_kbps as f64 * 1000.0,
             Format::ProRes => crate::prores_profile(&self.prores_profile).nominal_mbps_1080p30() * 1e6 * px / (1920.0 * 1080.0) * fps / 29.97,
             Format::DnxHr => {
@@ -400,7 +437,7 @@ impl ExportSettings {
             Format::PngSequence => px * 4.0 * 0.45 * 8.0 * fps,
             Format::TiffSequence | Format::BmpSequence => px * if self.format == Format::BmpSequence { 3.0 } else { 4.0 } * 8.0 * fps,
             Format::Gif => px * 0.6 * 8.0 * fps,
-            Format::Wav | Format::Aiff => 0.0,
+            Format::Wav | Format::Aiff | Format::MxfOp1a | Format::MxfOpAtom => 0.0,
         };
         let audio_bps = if self.has_audio() || matches!(self.format, Format::Wav | Format::Aiff) {
             match self.audio_codec() {
@@ -434,7 +471,7 @@ impl ExportSettings {
         } else {
             let par = self.pixel_aspect.map(|(n, d)| format!("{:.2}", n.max(1) as f64 / d.max(1) as f64)).unwrap_or_else(|| "1.0".into());
             let mut v = format!("{}x{} ({par}), {} fps, {}", r.width, r.height, r.rate.label(), self.field_order.label());
-            match self.format {
+            match self.video_format() {
                 Format::H264 => {
                     v += &format!(
                         ", {} {}, {}",
@@ -480,6 +517,7 @@ impl ExportSettings {
             Format::H264 if self.multiplexer == Multiplexer::Mov => "QuickTime",
             Format::H264 => "MP4",
             Format::ProRes | Format::DnxHr | Format::Mjpeg => "QuickTime",
+            Format::MxfOp1a | Format::MxfOpAtom => self.mxf_video_codec.label(),
             Format::PngSequence | Format::TiffSequence | Format::BmpSequence => "Image sequence",
             _ => "",
         };

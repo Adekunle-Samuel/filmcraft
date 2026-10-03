@@ -286,6 +286,11 @@ pub fn invoke(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, params: Val
             crate::panels::shortcuts_dialog::open(app);
             return Ok(Value::Null);
         }
+        // File ▸ Export ▸ AAF… / OMF… open their settings dialogs; with a path they export directly.
+        "file.exportAaf" | "file.exportOmf" if params.get("path").is_none() => {
+            filmcraft_engine::find_command(id).map_or(Ok(()), |c| (c.enabled)(&app.session))?;
+            return crate::panels::interchange_export::open(app, ctx, id);
+        }
         // Audio Gain from the menu or G opens the dialog; with params it applies directly.
         "clip.audioGain" if params.as_object().is_none_or(|m| m.is_empty()) => {
             filmcraft_engine::find_command("clip.audioGain").map_or(Ok(()), |c| (c.enabled)(&app.session))?;
