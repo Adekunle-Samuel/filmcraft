@@ -456,9 +456,25 @@ frame (Y'CbCr/RGB + metadata) ─► source colour space: Interpret Footage over
   and every layer of an HDR/wide-gamut sequence, are converted on the CPU (the GPU path draws them
   as pre-rendered images, like layers with effects).
 - **Outputs.** `RenderOptions::working_output` returns working-space pixels (HDR exports,
-  scopes); otherwise the top-level render is converted for an SDR monitor. Lumetri and the other
-  colour effects work on display-encoded values clamped to 0..1, so in an HDR sequence they clip
-  highlights above reference white (HDR-aware grading is future work).
+  scopes); otherwise the top-level render is converted for an SDR monitor. The other colour
+  effects work on display-encoded values clamped to 0..1 (they clip HDR highlights above
+  reference white).
+- **HDR grading (Lumetri).** `FxCtx::working` carries the sequence's working space. In a PQ or HLG
+  sequence Lumetri grades the working space's own signal normalised to **HDR White** (cd/m²,
+  Basic Correction; the curves, wheels, looks and HSL Secondary use the Curves section's **HDR
+  Range**): `filmcraft_color::GradeSpace` (PQ: `PQ⁻¹(nits/10000) / PQ⁻¹(white/10000)`; HLG: the
+  BT.2100 inverse OOTF of a display with that peak, then the OETF). So the sliders and curves span
+  0 … HDR White like black … white in SDR, exposure is stops of light, and highlights above HDR
+  White pass through (contrast leaves them alone; **HDR Specular** scales them). Rec. 709
+  sequences grade exactly as before. HSL Secondary ▸ Refine: **Denoise** (median of the key,
+  radius 1–3 px) and **Blur** (Gaussian of the key, σ ≤ 20 px), both scaled with the playback
+  resolution.
+- **HDR metadata.** `VideoStreamInfo::hdr` (`HdrMetadata`: ST 2086 mastering luminance, MaxCLL,
+  MaxFALL) is read from `mdcv` / `clli` (MP4 / MOV) and Matroska `MasteringMetadata` / `MaxCLL` /
+  `MaxFALL`. PQ media tone mapped into an SDR working space uses it as the BT.2390 source peak
+  (MaxCLL, else the mastering peak; 1000 cd/m² without metadata), so a 4000-nit master keeps its
+  highlight detail instead of clipping at 1000. `media.colorInfo` reports it (`hdrMetadata`,
+  `toneMapPeakNits`). The field is optional and serde-defaulted (no schema change).
 - **HDR export.** H.264 and ProRes exports of a PQ/HLG sequence encode BT.2020 PQ/HLG (ProRes
   10-bit; our H.264 encoder is 8-bit, so H.264 HDR is 8-bit) and signal it in the VUI / ProRes
   frame header, `colr`, and for PQ `mdcv` (BT.2020 / D65, 1000 / 0.0001 cd/m²) and `clli`
@@ -502,9 +518,19 @@ multi-camera clip = nested source + TrackItem::multicam {enabled, angle}
 - **Render.** `render::item_layer` renders a multi-camera clip's angle track only
   (`render_seq_tracks`); `render::audio` mixes the nested source with only the audible tracks
   (`Sequence::with_angle_audio`). Nested audio now plays at all (it was skipped when the nest had
-  no media source) and is limited to the clip's range. `render::multicam::render_grid` renders the
-  shown angles at the cell scale in parallel (rayon) and tiles them: the Multi-Camera view is one
-  frame job (`frames::Target::MulticamGrid`), prefetched while playing like the program.
+  no media source) and is limited to the clip's range. `render::multicam::render_grid_page` renders
+  one page of the shown angles at the cell scale in parallel (rayon) and tiles them: the
+  Multi-Camera view is one frame job (`frames::Target::MulticamGrid(source, layout, page)`),
+  prefetched while playing like the program. Only the page's angles are decoded.
+- **Multi-Camera view settings** (`EditorState::multicam_view`, Program ▸ wrench menu): grid
+  layout (automatic = smallest square up to 4×4, or fixed 2×2 / 3×3 / 4×4) with pages when the
+  angles don't fit (`render::multicam::page_layout`; `multicam.gridLayout`, `multicam.page`,
+  page arrows; keys 1–9 pick cameras on the shown page, `multicam.cut {camera}` stays absolute);
+  Multi-Camera Selection Top Down (stacked multi-camera clips: topmost instead of lowest);
+  Show Multi-Camera Preview Monitor (off: the grid fills the monitor); Auto-Adjust Multi-Camera
+  Playback Quality (`grid_cell_scale`: ½ / ¼ of the cell scale while playing); Transmit
+  Multi-Camera View (stored; there is no transmit device yet). `multicam.grid` returns the page.
+  Edit Cameras… shows a thumbnail per angle (`frames::Target::MulticamAngle`).
 - **Editing** (`edit::multicam`, `engine::multicam`). `multicam.switchAngle` (click an angle,
   Ctrl/⌘-click for video only), `multicam.selectCamera1…9` (keys 1–9) and `cutToCamera1…9`
   (Ctrl+1–9), Enable/Flatten, Edit Cameras, Audio Follows Video (`EditorState`). Live switching:

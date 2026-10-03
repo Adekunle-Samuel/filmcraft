@@ -23,6 +23,7 @@ pub fn media_info(name: &str, video: bool, audio: bool, rate: FrameRate, secs: i
             color: Default::default(),
             has_alpha: false,
             bitrate: None,
+            hdr: None,
         }),
         audio: audio.then(|| filmcraft_media::AudioStreamInfo { sample_rate: 48_000, channels: 2, codec: "aac".into(), bits_per_sample: None }),
         container: "mp4".into(),

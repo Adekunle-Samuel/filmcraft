@@ -457,6 +457,23 @@ fn hdr_tone_map() -> Scene {
     b.at(12)
 }
 
+/// HDR grading: Rec. 2100 PQ footage in a PQ sequence, graded by Lumetri in the PQ signal
+/// (exposure, contrast over HDR White, HDR Specular pulling the speculars in), shown tone mapped.
+fn lumetri_hdr_pq() -> Scene {
+    let mut b = Builder::new(1);
+    b.p.sequence_mut(b.seq).unwrap().settings.color =
+        filmcraft_color::ColorPipeline { working: filmcraft_color::WorkingSpace::Rec2100Pq, ..filmcraft_color::ColorPipeline::REC709 };
+    let pq = ColorInfo { transfer: Transfer::Pq, primaries: Primaries::Bt2020, ..ColorInfo::SRGB_FULL };
+    let src = b.encoded(DemoScene::CityNight, ColorSpace::Rec2100Pq, 6.0, Some(pq), None);
+    let c = b.place(0, src, 0, 48);
+    b.effect(
+        c,
+        "lumetri",
+        &[("exposure", fl(0.4)), ("contrast", fl(30.0)), ("hdr_white", fl(1000.0)), ("hdr_specular", fl(-60.0)), ("temperature", fl(-15.0))],
+    );
+    b.at(12)
+}
+
 /// Gaussian Blur limited to a feathered ellipse mask (media is 640×360 clip pixels).
 fn mask_blur() -> Scene {
     let mut b = Builder::new(1);
@@ -608,6 +625,7 @@ fn scenes() -> Vec<(&'static str, &'static str, fn() -> Scene)> {
         ("graphic_rich_text", "Per-character text styles and a box pinned around the text", graphic_rich_text),
         ("log_to_rec709", "Colour management: S-Log3/S-Gamut3.Cine footage to Rec. 709 (tone mapped)", log_to_rec709),
         ("hdr_tone_map", "Colour management: Rec. 2100 PQ footage tone mapped into a Rec. 709 sequence", hdr_tone_map),
+        ("lumetri_hdr_pq", "Lumetri grading in a Rec. 2100 PQ sequence (HDR White, HDR Specular), tone mapped", lumetri_hdr_pq),
         ("mask_blur", "Masks: Gaussian Blur inside a feathered ellipse mask", mask_blur),
         ("mask_color", "Masks: Black & White inside an expanded polygon minus a feathered Bezier mask", mask_color),
         ("mask_inverted", "Masks: Mosaic outside an inverted ellipse mask at 80% opacity", mask_inverted),
@@ -675,6 +693,7 @@ goldens!(
     graphic_rich_text,
     log_to_rec709,
     hdr_tone_map,
+    lumetri_hdr_pq,
     mask_blur,
     mask_color,
     mask_inverted,
@@ -686,6 +705,18 @@ goldens!(
     vfx_vr_rotate,
     vfx_stylize
 );
+
+/// Effects panel ▸ Lumetri Presets thumbnail grid: every built-in preset graded by our Lumetri on
+/// the procedural preview picture (`filmcraft_render::lumetri_presets`).
+#[test]
+fn lumetri_presets_grid() {
+    use filmcraft_render::lumetri_presets as lp;
+    let img = lp::grid(&lp::presets(), 6, 96, 54);
+    let rgba = Rgba8::new(img.w as u32, img.h as u32, img.over_black_rgba8());
+    let name = "lumetri_presets_grid";
+    let d = assert_golden(&golden_path(name), &rgba, Tolerance::RENDER, "Lumetri Presets thumbnail grid", &format!("crates/golden/tests/golden.rs ({name})"));
+    eprintln!("{name}: {d}");
+}
 
 /// Sanity: the scenes are not trivially empty or identical to each other.
 #[test]

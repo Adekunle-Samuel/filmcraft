@@ -231,3 +231,96 @@ fn apply_match_from_the_color_wheels_section() {
     let ui = d.ok("ui.inspect", json!({}));
     assert!(ui.to_string().contains("reference frame is inside"), "{ui}");
 }
+
+impl Driver {
+    fn app(&mut self) -> &mut FilmcraftApp {
+        self.harness.state_mut()
+    }
+}
+
+#[test]
+fn hdr_lumetri_controls_hsl_refine_and_comparison_view() {
+    let mut d = Driver::demo();
+    d.ok("ui.set", json!({"workspace": "Color"}));
+    d.frames(3);
+    let clip = select_first_clip(&mut d);
+    d.exec("effects.apply", json!({"clips": [clip], "effect": "lumetri"}));
+    d.frames(3);
+    // SDR sequence: no HDR controls
+    assert!(d.ids("lumetri.param.hdr_white").is_empty());
+    // a Rec. 2100 PQ sequence: Basic Correction ▸ HDR White / HDR Specular, Curves ▸ HDR Range
+    d.exec("sequence.colorSettings", json!({"workingSpace": "rec2100-pq"}));
+    d.frames(3);
+    for id in ["lumetri.param.hdr_white", "lumetri.param.hdr_specular"] {
+        assert!(!d.ids(id).is_empty(), "{id} missing: {:?}", d.ids("lumetri."));
+    }
+    d.click("lumetri.section.Curves");
+    assert!(!d.ids("lumetri.param.curves_hdr_range").is_empty());
+    d.snapshot("color-lumetri-hdr", None);
+    // clicking on the HDR White slider sets it (an undoable engine edit)
+    let r = d.element("lumetri.param.hdr_white").unwrap();
+    d.ok("ui.click", json!({"x": r[0] + 112.0 + 4.0, "y": r[1] + r[3] / 2.0}));
+    d.frames(3);
+    let e = lumetri(&mut d, clip);
+    assert_ne!(e["params"]["hdr_white"]["value"], json!("Float(1000.0)"), "{e}");
+    // HSL Secondary ▸ Refine (fold Basic Correction and Curves so the section is on screen)
+    d.click("lumetri.section.Curves");
+    d.click("lumetri.section.Basic Correction");
+    d.click("lumetri.section.HSL Secondary");
+    for id in ["lumetri.param.hsl_denoise", "lumetri.param.hsl_blur"] {
+        assert!(!d.ids(id).is_empty(), "{id} missing");
+    }
+    d.snapshot("color-lumetri-hsl-refine", None);
+    // Color Match ▸ Comparison View toggles the Program monitor's Comparison View; Apply Match
+    // then uses its reference frame
+    d.click("lumetri.section.Color Wheels & Match");
+    d.click("lumetri.match.comparisonView");
+    assert_eq!(d.app().ui.program.display_mode(), Some(filmcraft_ui_egui::state::DisplayMode::Comparison));
+    assert!(!d.ids("program.compare.reference").is_empty());
+    let seq = d.exec("sequence.inspect", json!({}));
+    let last = seq["video"][0]["items"].as_array().unwrap().last().unwrap().clone();
+    let frame = last["startFrame"].as_i64().unwrap() + last["durationFrames"].as_i64().unwrap() / 2;
+    let rate = d.app().session.sequence_rate();
+    d.app().ui.program.compare_ref = Some(rate.tick_of(frame).0);
+    d.frames(3);
+    d.snapshot("color-comparison-view", None);
+    d.click("lumetri.match.apply");
+    let e = lumetri(&mut d, clip);
+    assert!(e["params"]["wheel_highlights"]["value"].as_str().unwrap() != "Vec2(Vec2 { x: 0.0, y: 0.0 })", "matched to the comparison reference: {e}");
+    d.click("lumetri.match.comparisonView");
+    assert_ne!(d.app().ui.program.display_mode(), Some(filmcraft_ui_egui::state::DisplayMode::Comparison));
+}
+
+#[test]
+fn lumetri_presets_in_the_effects_panel() {
+    let mut d = Driver::demo();
+    d.ok("ui.panel.show", json!({"panel": "Effects"}));
+    d.frames(3);
+    let clip = select_first_clip(&mut d);
+    d.click("effects.folder.Lumetri Presets");
+    d.click("effects.folder.Lumetri Presets/Monochrome");
+    let rows = d.ids("effects.lumetriPreset.");
+    assert!(rows.iter().any(|r| r == "effects.lumetriPreset.Neutral Mono"), "{rows:?}");
+    // double-click a preset row: Lumetri Color configured as the preset on the selected clip
+    d.ok("ui.click", json!({"id": "effects.lumetriPreset.Neutral Mono", "button": "right"}));
+    d.frames(3);
+    d.click("effects.presetMenu.apply");
+    let e = lumetri(&mut d, clip);
+    assert_eq!(e["params"]["saturation"]["value"], json!("Float(0.0)"), "{e}");
+    d.exec("edit.undo", json!({}));
+    // maximized (wide) panel: the folder's thumbnail grid next to the tree
+    d.app().ui.keys.maximized = Some(filmcraft_ui_egui::dock::PanelKind::Effects);
+    d.frames(4);
+    assert!(!d.ids("effects.presetGrid").is_empty(), "no grid: {:?}", d.ids("effects."));
+    let cells = d.ids("effects.presetGrid.");
+    assert!(cells.iter().any(|c| c == "effects.presetGrid.Sepia Tone"), "{cells:?}");
+    d.click("effects.folder.Lumetri Presets/Cinematic");
+    let cells = d.ids("effects.presetGrid.");
+    assert!(cells.iter().any(|c| c == "effects.presetGrid.Golden Dusk"), "{cells:?}");
+    d.snapshot("color-lumetri-presets-grid", None);
+    d.ok("ui.click", json!({"id": "effects.presetGrid.Golden Dusk", "button": "right"}));
+    d.frames(3);
+    d.click("effects.presetMenu.apply");
+    let e = lumetri(&mut d, clip);
+    assert_eq!(e["params"]["temperature"]["value"], json!("Float(35.0)"), "{e}");
+}

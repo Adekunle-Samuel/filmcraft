@@ -411,6 +411,9 @@ fn build_effects() -> Vec<EffectDef> {
                 grp(f("whites", "Whites", 0.0, -100.0, 100.0, ""), "Basic Correction"),
                 grp(f("blacks", "Blacks", 0.0, -100.0, 100.0, ""), "Basic Correction"),
                 grp(fs("saturation", "Saturation", 100.0, (0.0, 200.0), (0.0, 200.0), "", 1), "Basic Correction"),
+                // HDR mode (PQ / HLG sequences): the grading range in cd/m² and the speculars above it
+                grp(fs("hdr_white", "HDR White", 1000.0, (100.0, 10_000.0), (100.0, 10_000.0), "nits", 0), "Basic Correction"),
+                grp(f("hdr_specular", "HDR Specular", 0.0, -100.0, 100.0, ""), "Basic Correction"),
                 grp(b("creative_on", "Creative", true), "Creative"),
                 grp(
                     ch(
@@ -439,6 +442,7 @@ fn build_effects() -> Vec<EffectDef> {
                 grp(curve("hue_vs_luma", "Hue vs Luma", true), "Curves"),
                 grp(curve("luma_vs_sat", "Luma vs Sat", true), "Curves"),
                 grp(curve("sat_vs_sat", "Sat vs Sat", true), "Curves"),
+                grp(fs("curves_hdr_range", "HDR Range", 1000.0, (100.0, 10_000.0), (100.0, 10_000.0), "nits", 0), "Curves"),
                 grp(b("wheels_on", "Color Wheels & Match", true), "Color Wheels & Match"),
                 grp(wheel("wheel_shadows", "Shadows"), "Color Wheels & Match"),
                 grp(f("wheel_shadows_l", "Shadows Lightness", 0.0, -100.0, 100.0, ""), "Color Wheels & Match"),
@@ -454,6 +458,8 @@ fn build_effects() -> Vec<EffectDef> {
                 grp(fs("hsl_luma_max", "Luma Max", 95.0, (0.0, 100.0), (0.0, 100.0), "", 0), "HSL Secondary"),
                 grp(f("hsl_soft", "Soften", 20.0, 0.0, 100.0, ""), "HSL Secondary"),
                 grp(ch("hsl_show_mask", "Show Mask", &["Off", "Color/Gray", "Color/Black", "White/Black"], 0), "HSL Secondary"),
+                grp(f("hsl_denoise", "Denoise", 0.0, 0.0, 100.0, ""), "HSL Secondary"),
+                grp(f("hsl_blur", "Blur", 0.0, 0.0, 100.0, ""), "HSL Secondary"),
                 grp(f("hsl_temp", "Temperature", 0.0, -100.0, 100.0, ""), "HSL Secondary"),
                 grp(f("hsl_tint", "Tint", 0.0, -100.0, 100.0, ""), "HSL Secondary"),
                 grp(fs("hsl_sat", "Saturation", 100.0, (0.0, 200.0), (0.0, 200.0), "", 1), "HSL Secondary"),

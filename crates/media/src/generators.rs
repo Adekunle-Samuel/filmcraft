@@ -99,6 +99,7 @@ impl GeneratorSource {
             color: ColorInfo::SRGB_FULL,
             has_alpha: matches!(generator, Generator::TransparentVideo),
             bitrate: None,
+            hdr: None,
         });
         let audio =
             generator.has_audio().then(|| AudioStreamInfo { sample_rate: 48_000, channels: 2, codec: "PCM (synthetic)".into(), bits_per_sample: Some(32) });

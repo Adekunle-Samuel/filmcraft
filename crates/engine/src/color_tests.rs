@@ -194,3 +194,63 @@ fn interpret_footage_and_sequence_colour_settings() {
     assert_eq!(spaces["colorSpaces"].as_array().unwrap().len(), filmcraft_color::ColorSpace::ALL.len());
     assert!(s.execute("sequence.colorSettings", json!({"workingSpace": "xyz"})).is_err());
 }
+
+#[test]
+fn lumetri_presets_list_apply_and_thumbnails() {
+    let mut s = demo();
+    let clip = pick_clip(&mut s);
+    let r = s.execute("lumetri.presets", json!({})).unwrap();
+    assert_eq!(r["folders"], json!(["Cinematic", "Film Emulation", "Monochrome", "Technical"]));
+    let mono = s.execute("lumetri.presets", json!({"folder": "monochrome"})).unwrap();
+    assert!(mono["presets"].as_array().unwrap().iter().all(|p| p["folder"] == "Monochrome"));
+    // apply: one undo step adding a configured Lumetri Color before the intrinsic effects
+    let before = s.active_sequence().unwrap().find_item(clip).unwrap().1.effects.len();
+    let r = s.execute("lumetri.applyPreset", json!({"name": "Neutral Mono"})).unwrap();
+    assert_eq!(r["clips"], 1);
+    let it = s.active_sequence().unwrap().find_item(clip).unwrap().1.clone();
+    assert_eq!(it.effects.len(), before + 1);
+    let k = it.effects.iter().position(|e| e.effect == "lumetri").unwrap();
+    assert!(it.effects[k + 1..].iter().all(|e| e.def().is_some_and(|d| d.intrinsic)) || k + 1 == it.effects.len());
+    assert_eq!(it.effects[k].param("saturation").unwrap().value, ParamValue::Float(0.0));
+    let img = s.render_program(0.25).unwrap();
+    let grey = img.px.chunks_exact(4).filter(|p| p[3] > 0.5).all(|p| (p[0] - p[1]).abs() < 0.01 && (p[1] - p[2]).abs() < 0.01);
+    assert!(grey, "the program is black and white");
+    s.execute("edit.undo", json!({})).unwrap();
+    assert_eq!(s.active_sequence().unwrap().find_item(clip).unwrap().1.effects.len(), before);
+    assert!(s.execute("lumetri.applyPreset", json!({"name": "No Such Look"})).is_err());
+    // thumbnails of a folder, written as a PNG
+    let path = tmp("lumetri-presets.png");
+    let r = s.execute("lumetri.presetThumbnails", json!({"folder": "Technical", "width": 64, "columns": 3, "path": path})).unwrap();
+    let n = r["presets"].as_array().unwrap().len();
+    assert_eq!((r["width"].as_u64(), r["height"].as_u64()), (Some(3 * 68 + 4), Some((n.div_ceil(3) * 40 + 4) as u64)));
+    assert!(std::fs::read(&path).unwrap().starts_with(b"\x89PNG"));
+}
+
+#[test]
+fn hdr_lumetri_and_mastering_metadata_through_commands() {
+    let mut s = demo();
+    let clip = pick_clip(&mut s);
+    s.execute("sequence.colorSettings", json!({"workingSpace": "rec2100-pq"})).unwrap();
+    s.execute("effects.apply", json!({"clips": [clip.0], "effect": "lumetri"})).unwrap();
+    let idx = s.active_sequence().unwrap().find_item(clip).unwrap().1.effects.iter().position(|e| e.effect == "lumetri").unwrap();
+    // +1 stop doubles the light of the (SDR) clip in the PQ working space: no clipping at
+    // 203 cd/m², the HDR working output keeps the values above reference white
+    let base = s.render_program_working(0.25).unwrap();
+    s.execute("effects.setParam", json!({"clip": clip.0, "effect": idx, "param": "exposure", "value": 1.0})).unwrap();
+    let up = s.render_program_working(0.25).unwrap();
+    let (m0, m1) = (mean(&base), mean(&up));
+    for k in 0..3 {
+        assert!((m1[k] / m0[k] - 2.0).abs() < 0.08, "channel {k}: {m0:?} → {m1:?}");
+    }
+    assert!(up.px.chunks_exact(4).any(|p| p[1] > 1.2), "values above reference white survive");
+    // HDR White / HDR Specular / HDR Range are ordinary Lumetri parameters
+    s.execute("effects.setParam", json!({"clip": clip.0, "effect": idx, "param": "hdr_white", "value": 2000.0})).unwrap();
+    s.execute("effects.setParam", json!({"clip": clip.0, "effect": idx, "param": "hdr_specular", "value": -50.0})).unwrap();
+    s.execute("effects.setParam", json!({"clip": clip.0, "effect": idx, "param": "curves_hdr_range", "value": 4000.0})).unwrap();
+    let it = s.active_sequence().unwrap().find_item(clip).unwrap().1.clone();
+    assert_eq!(it.effects[idx].param("hdr_white").unwrap().value, ParamValue::Float(2000.0));
+    // media.colorInfo reports the HDR metadata (none for the demo's generated media)
+    let item = it.item;
+    let r = s.execute("media.colorInfo", json!({"item": item.0})).unwrap();
+    assert!(r["hdrMetadata"].is_null() && r["toneMapPeakNits"].is_null(), "{r}");
+}

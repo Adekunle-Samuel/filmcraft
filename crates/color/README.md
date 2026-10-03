@@ -41,7 +41,8 @@ for limited- and full-range files.
 
 The encoders are the exact inverses given in the same documents. DJI **D-Log M** is not
 implemented: DJI has not published its formula (only conversion LUTs), and we do not derive curves
-from third-party LUTs.
+from third-party LUTs. (Checked again in October 2026: DJI's published white papers cover D-Log /
+D-Gamut only; D-Log M remains unsupported, so D-Log M footage should be interpreted with a LUT.)
 
 Gamut primaries (all D65 white, x/y):
 
@@ -83,6 +84,27 @@ Source peak: the content's mastering peak for PQ when known (default 1000 cd/m²
 HLG, and for log media the curve's own peak capped at 4000 cd/m² (so the knee starts above mid
 grey). Target peak: 203 cd/m² = SDR white. HDR reference white then lands at ≈ 0.79 linear (≈ 90 %
 on the sRGB curve).
+
+## Grading signal (`grade`)
+
+Lumetri's controls work on a 0…1 signal. `GradeSpace` picks it from the working space:
+
+| Working space | Signal of working-linear `c` (1.0 = 203 cd/m² in HDR) | 1.0 means |
+|---|---|---|
+| Rec. 709 | sRGB curve, clamped back to 0…1 | SDR white |
+| Rec. 2100 PQ | `PQ⁻¹(c·203/10000) / PQ⁻¹(W/10000)` (SMPTE ST 2084) | HDR White `W` cd/m² |
+| Rec. 2100 HLG | `F = c·203/W`, `Y = BT.2020 luma(F)`, `E = F·Y^((1−γ)/γ)`, signal = HLG OETF(E), γ = 1.2 + 0.42·log10(W/1000) (BT.2100 inverse OOTF, note 5f) | display peak `W` |
+
+`W` is Lumetri's HDR White (Basic Correction) or HDR Range (Curves), default 1000 cd/m². HDR
+values above `W` are signals above 1 and are kept (PQ to 10 000 cd/m², HLG to signal 1.5). Checked
+values: PQ 100 / 203 / 1000 cd/m² = 0.508 / 0.581 / 0.752 of the plain PQ signal (BT.2408); HLG on
+a 1000 cd/m² display: 203 cd/m² = 0.75, 26 cd/m² (18 % grey) ≈ 0.38 (BT.2408).
+
+## HDR static metadata
+
+`HdrMetadata` (mastering display max / min luminance, MaxCLL, MaxFALL; 0 = unknown) gives the
+tone-mapping source peak of PQ media: MaxCLL when known (the brightest pixel of the content),
+else the mastering peak, clamped to 203…10 000 cd/m²; without metadata 1000 cd/m² is assumed.
 
 ## Gamut mapping
 

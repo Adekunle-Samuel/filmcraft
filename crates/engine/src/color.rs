@@ -4,6 +4,10 @@
 //!
 //! Lumetri commands address a clip by `clip` (default: the first selected video clip with
 //! Lumetri Color, else the first selected video clip — Lumetri is added if missing).
+//!
+//! Lumetri Presets (Effects panel): `lumetri.presets` lists them, `lumetri.applyPreset` adds a
+//! Lumetri Color configured as the preset to clips (one undo step), `lumetri.presetThumbnails`
+//! renders a folder's thumbnail grid (our Lumetri on the procedural preview picture) to a PNG.
 
 use filmcraft_color::{ColorSpace, Lut, LutFormat, WorkingSpace};
 use filmcraft_project::{ClipId, ItemId, ItemKind, ParamValue, ProjectLut, TrackKind};
@@ -41,6 +45,14 @@ pub(crate) fn commands() -> Vec<CommandSpec> {
             interpret,
         ),
         query("color.spaces", "List Colour Spaces", "{}", spaces),
+        query("lumetri.presets", "List Lumetri Presets", r#"{"folder":str?}"#, list_presets),
+        spec("lumetri.applyPreset", "Apply Lumetri Preset", &[], r#"{"name":str,"clips":[id]?}"#, has_seq, apply_preset),
+        query(
+            "lumetri.presetThumbnails",
+            "Lumetri Preset Thumbnails",
+            r#"{"folder":str?,"names":[str]?,"width":n=160,"columns":n=4,"path":str?}"#,
+            preset_thumbnails,
+        ),
         query("media.colorInfo", "Media Colour Info", r#"{"item":id}"#, color_info),
         spec("lut.import", "Import LUT…", &[], r#"{"path":str,"name":str?}"#, always, import),
         query("lut.list", "List LUTs", "{}", list),
@@ -323,7 +335,72 @@ fn color_info(s: &mut Session, p: &Value) -> Result<Value> {
         "effective": effective.map(|c| c.id()),
         "effectiveLabel": effective.map(|c| c.label()),
         "hdr": effective.is_some_and(|c| c.is_hdr()),
+        // mastering display / content light level and the peak tone mapping uses
+        "hdrMetadata": m.info.video.as_ref().and_then(|v| v.hdr),
+        "toneMapPeakNits": m.info.video.as_ref().and_then(|v| v.hdr.and_then(|h| h.peak_nits())),
     }))
+}
+
+fn presets_of(p: &Value) -> Vec<filmcraft_render::lumetri_presets::LumetriPreset> {
+    let all = filmcraft_render::lumetri_presets::presets();
+    let names: Option<Vec<String>> = p.get("names").and_then(Value::as_array).map(|a| a.iter().filter_map(|v| v.as_str().map(str::to_lowercase)).collect());
+    let folder = str_p(p, "folder");
+    all.into_iter()
+        .filter(|x| folder.is_none_or(|f| x.folder.eq_ignore_ascii_case(f)))
+        .filter(|x| names.as_ref().is_none_or(|n| n.contains(&x.name.to_lowercase())))
+        .collect()
+}
+
+fn list_presets(_: &mut Session, p: &Value) -> Result<Value> {
+    let v: Vec<Value> = presets_of(p).iter().map(|x| json!({"folder": x.folder, "name": x.name, "description": x.description})).collect();
+    Ok(json!({"folders": filmcraft_render::lumetri_presets::FOLDERS, "presets": v}))
+}
+
+/// Lumetri Presets ▸ apply: a new Lumetri Color configured as the preset on each video clip
+/// (standard effects go before the intrinsic ones, like `effects.apply`).
+fn apply_preset(s: &mut Session, p: &Value) -> Result<Value> {
+    let cmd = "lumetri.applyPreset";
+    let name = str_p(p, "name").ok_or_else(|| bad(cmd, "need `name`"))?;
+    let preset = filmcraft_render::lumetri_presets::find(name).ok_or_else(|| bad(cmd, format!("no Lumetri preset `{name}`")))?;
+    let clips = crate::commands::clips_p(s, p);
+    if clips.is_empty() {
+        return Err(bad(cmd, "select clips first"));
+    }
+    let inst = preset.instance();
+    let n = s.edit_sequence(&format!("Apply {}", preset.name), |q, _, _| {
+        let mut n = 0;
+        for t in q.video_tracks.iter_mut() {
+            for it in t.items.iter_mut().filter(|i| clips.contains(&i.id)) {
+                let pos = it.effects.iter().position(|e| e.def().is_some_and(|d| d.intrinsic)).unwrap_or(it.effects.len());
+                it.effects.insert(pos, inst.clone());
+                n += 1;
+            }
+        }
+        Ok(n)
+    })?;
+    if n == 0 {
+        return Err(bad(cmd, "no video clips among the clips"));
+    }
+    Ok(json!({"preset": preset.name, "clips": n}))
+}
+
+fn preset_thumbnails(_: &mut Session, p: &Value) -> Result<Value> {
+    let cmd = "lumetri.presetThumbnails";
+    let presets = presets_of(p);
+    if presets.is_empty() {
+        return Err(bad(cmd, "no presets match"));
+    }
+    let w = p.get("width").and_then(Value::as_u64).unwrap_or(160).clamp(16, 1920) as usize;
+    let h = (w * 9 / 16).max(9);
+    let cols = p.get("columns").and_then(Value::as_u64).unwrap_or(4).clamp(1, 32) as usize;
+    let img = filmcraft_render::lumetri_presets::grid(&presets, cols, w, h);
+    let mut out = json!({"presets": presets.iter().map(|x| x.name).collect::<Vec<_>>(), "width": img.w, "height": img.h, "cell": [w, h], "columns": cols});
+    if let Some(path) = str_p(p, "path") {
+        let png = filmcraft_export::encode_png(img.over_black_rgba8(), img.w as u32, img.h as u32).map_err(|e| bad(cmd, e.to_string()))?;
+        std::fs::write(path, png).map_err(|e| bad(cmd, format!("{path}: {e}")))?;
+        out["path"] = json!(path);
+    }
+    Ok(out)
 }
 
 /// Lumetri ▸ Color Wheels & Match ▸ Apply Match (see `filmcraft_render::color_match`): match the

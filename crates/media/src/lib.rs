@@ -70,6 +70,9 @@ pub struct VideoStreamInfo {
     pub has_alpha: bool,
     /// Bitrate in bits/s when known.
     pub bitrate: Option<u64>,
+    /// HDR static metadata (mastering display, content light level) when the file carries it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hdr: Option<filmcraft_color::HdrMetadata>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

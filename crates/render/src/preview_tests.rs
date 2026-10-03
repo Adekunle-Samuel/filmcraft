@@ -226,7 +226,16 @@ fn effect_costs() {
     for d in filmcraft_project::effect_defs().iter().filter(|d| d.kind == filmcraft_project::EffectKind::Video && !d.intrinsic) {
         let mut img = crate::Image::filled(1920, 1080, [0.4, 0.5, 0.6, 1.0]);
         let e = d.instance();
-        let cx = FxCtx { t: Tick::ZERO, px_scale: 1.0, seconds: 0.0, timecode: "00:00:00:00", clip_name: "x", project: None, env: None };
+        let cx = FxCtx {
+            t: Tick::ZERO,
+            px_scale: 1.0,
+            seconds: 0.0,
+            timecode: "00:00:00:00",
+            clip_name: "x",
+            project: None,
+            env: None,
+            working: filmcraft_color::WorkingSpace::Rec709,
+        };
         apply(&mut img, &e, &cx);
         let t0 = std::time::Instant::now();
         for _ in 0..3 {

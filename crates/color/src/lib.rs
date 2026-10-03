@@ -8,11 +8,13 @@
 use serde::{Deserialize, Serialize};
 use std::sync::OnceLock;
 
+pub mod grade;
 pub mod log;
 pub mod lut;
 pub mod spaces;
 pub mod transform;
 
+pub use grade::GradeSpace;
 pub use log::LogCurve;
 pub use lut::{Lut, Lut1d, Lut3d, LutFormat};
 pub use spaces::{ColorPipeline, ColorSpace, Curve, Gamut, WorkingSpace};
@@ -99,6 +101,33 @@ pub struct ColorInfo {
     pub transfer: Transfer,
     pub primaries: Primaries,
     pub range: Range,
+}
+
+/// HDR static metadata of a stream: SMPTE ST 2086 mastering display luminance and the CTA-861.3
+/// content light levels (MaxCLL / MaxFALL), in cd/m². Read from `mdcv` / `clli` (MP4 / MOV) and
+/// Matroska `MasteringMetadata` / `MaxCLL` / `MaxFALL`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HdrMetadata {
+    pub mastering_max_nits: Option<f32>,
+    pub mastering_min_nits: Option<f32>,
+    pub max_cll: Option<f32>,
+    pub max_fall: Option<f32>,
+}
+
+impl HdrMetadata {
+    /// The content's peak for tone mapping: MaxCLL when signalled (the brightest pixel actually
+    /// in the content), else the mastering display's peak; `None` when neither is (0 means
+    /// unknown in both). Never below HDR reference white.
+    pub fn peak_nits(&self) -> Option<f32> {
+        let known = |v: Option<f32>| v.filter(|n| *n > 0.0);
+        let p = match (known(self.max_cll), known(self.mastering_max_nits)) {
+            (Some(c), Some(m)) => c.min(m),
+            (Some(c), None) => c,
+            (None, m) => m?,
+        };
+        Some(p.clamp(transform::REFERENCE_WHITE_NITS as f32, 10_000.0))
+    }
 }
 
 impl ColorInfo {

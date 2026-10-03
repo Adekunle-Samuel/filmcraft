@@ -222,6 +222,12 @@ fn hdr_exports_signal_pq_and_hlg() {
         assert_eq!(v.color.transfer, transfer, "{path}");
         assert_eq!(v.color.primaries, filmcraft_color::Primaries::Bt2020, "{path}");
         assert_eq!(v.color.matrix, filmcraft_color::Matrix::Bt2020Ncl, "{path}");
+        // PQ exports carry mastering metadata (1000 cd/m² peak; MaxCLL 0 = unknown), which sets
+        // the tone-mapping peak when the file is used again
+        if transfer == Transfer::Pq {
+            let hdr = v.hdr.unwrap_or_else(|| panic!("{path}: no HDR metadata"));
+            assert_eq!((hdr.mastering_max_nits, hdr.max_cll, hdr.peak_nits()), (Some(1000.0), None, Some(1000.0)), "{path}");
+        }
         // 709 red matte → BT.2020 HDR → decoded back into Rec. 709 (tone mapped) stays red
         let f = src.video_frame(FrameRequest::full(Tick::ZERO)).unwrap();
         let back = filmcraft_render::colorman::decode(&Project::new("x"), ItemId(0), &f, 1, &ColorPipeline::REC709);

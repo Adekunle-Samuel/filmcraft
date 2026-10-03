@@ -46,6 +46,20 @@ pub fn sniff(b: &[u8]) -> bool {
     b.len() >= 12 && matches!(&b[4..8], b"ftyp" | b"moov" | b"mdat" | b"wide" | b"free" | b"skip")
 }
 
+/// HDR static metadata from the sample entry's `mdcv` / `clli` boxes (0 = unknown).
+fn hdr_metadata(md: Option<&filmcraft_isobmff::MasteringDisplay>, cll: Option<(u16, u16)>) -> Option<filmcraft_color::HdrMetadata> {
+    if md.is_none() && cll.is_none() {
+        return None;
+    }
+    let nz = |v: f32| (v > 0.0).then_some(v);
+    Some(filmcraft_color::HdrMetadata {
+        mastering_max_nits: md.and_then(|m| nz(m.max_nits() as f32)),
+        mastering_min_nits: md.map(|m| m.min_luminance as f32 / 10_000.0),
+        max_cll: cll.and_then(|c| nz(c.0 as f32)),
+        max_fall: cll.and_then(|c| nz(c.1 as f32)),
+    })
+}
+
 fn color_from(entry: &filmcraft_isobmff::SampleEntry, w: u32, h: u32) -> ColorInfo {
     let mut c = ColorInfo { matrix: filmcraft_frame::default_matrix(w, h), transfer: Transfer::Bt709, primaries: Primaries::Bt709, range: Range::Limited };
     // VP9 carries its colour description in vpcC (used when there is no colr box).
@@ -129,6 +143,7 @@ impl Mp4Source {
                 color,
                 has_alpha: matches!(&entry.codec, CodecConfig::ProRes { fourcc } if fourcc.0 == *b"ap4h" || fourcc.0 == *b"ap4x"),
                 bitrate,
+                hdr: entry.video.as_ref().and_then(|v| hdr_metadata(v.mastering_display.as_ref(), v.content_light)),
             };
             if matches!(entry.codec, CodecConfig::Dnx { .. }) {
                 // the sample entry doesn't say which VC-3 compression ID it is: read the first frame header
