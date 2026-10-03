@@ -684,14 +684,18 @@ impl FilmcraftApp {
                 self.session.execute("graphics.newFromFile", json!({"path": path})).map_err(|e| e.to_string())
             }
             "captions.import" => {
-                let paths = self.hooks.pick_files.as_mut().map(|f| f(&["srt", "vtt", "scc"])).unwrap_or_default();
+                let paths = self.hooks.pick_files.as_mut().map(|f| f(&["srt", "vtt", "scc", "mcc", "stl", "ttml", "dfxp", "xml"])).unwrap_or_default();
                 let Some(path) = paths.into_iter().next() else { return Ok(Value::Null) };
                 self.session.execute("captions.import", json!({"path": path})).map_err(|e| e.to_string())
             }
             "captions.export" => {
                 let name = self.session.state.active_sequence.and_then(|s| self.session.project.item(s)).map(|i| i.name.clone()).unwrap_or_default();
                 let suggested = format!("{}.srt", name.replace(' ', "_"));
-                let Some(path) = self.hooks.pick_save_as.as_mut().and_then(|f| f("Captions (SRT, WebVTT, SCC)", &["srt", "vtt", "scc"], &suggested)) else {
+                let Some(path) =
+                    self.hooks.pick_save_as.as_mut().and_then(|f| {
+                        f("Captions (SRT, WebVTT, SCC, MCC, EBU STL, TTML, DFXP)", &["srt", "vtt", "scc", "mcc", "stl", "ttml", "dfxp"], &suggested)
+                    })
+                else {
                     return Ok(Value::Null);
                 };
                 let mut p = params.clone();

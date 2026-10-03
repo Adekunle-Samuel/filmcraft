@@ -739,10 +739,33 @@ struct Ctx<'a> {
     t: Tokens,
     actions: Vec<(String, Value)>,
     autos: Vec<(String, Rect, String)>,
+    /// Characters selected with the Type tool in this layer: character properties apply to them.
+    range: Option<(usize, usize)>,
+}
+
+/// Character properties a Type-tool selection can carry, with their `graphics.setCharStyle` names.
+fn char_style_key(id: &str) -> Option<&'static str> {
+    Some(match id {
+        "font" => "font",
+        "font_style" => "fontStyle",
+        "size" => "size",
+        "fill_color" => "color",
+        "faux_bold" => "bold",
+        "faux_italic" => "italic",
+        "underline" => "underline",
+        "tracking" => "tracking",
+        "baseline_shift" => "baselineShift",
+        "caps" => "caps",
+        _ => return None,
+    })
 }
 
 impl Ctx<'_> {
     fn set(&mut self, id: &str, v: Value) {
+        if let (Some((a, b)), Some(k)) = (self.range, char_style_key(id)) {
+            self.actions.push(("graphics.setCharStyle".into(), json!({"clip": self.clip.0, "layer": self.layer, "start": a, "end": b, "style": {k: v}})));
+            return;
+        }
         self.actions.push(("graphics.set".into(), json!({"clip": self.clip.0, "layer": self.layer, "props": {id: v}})));
     }
     fn auto(&mut self, id: &str, r: Rect, label: &str) {
@@ -1051,13 +1074,32 @@ pub fn properties(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                 }
             }
         }
+        // ---- template properties (a graphic made from a graphics template)
+        if it.graphic.as_ref().is_some_and(|m| m.template.is_some()) && section(ui, app, "Template Properties", &t) {
+            crate::panels::graphics_templates::template_controls(app, ui, clip, &it, mt, &mut autos, &mut actions);
+        }
         let Some(l) = sel else {
+            if section(ui, app, "Responsive Design - Time", &t) {
+                crate::panels::graphics_templates::responsive_time(app, ui, clip, &it, &mut autos, &mut actions);
+            }
             ui.add_space(12.0);
             ui.label(egui::RichText::new("Select a layer to edit its properties.").color(t.text_faint));
             return;
         };
         let e = &it.effects[idx[l]];
-        let mut cx = Ctx { clip, layer: l, e, mt, t, actions: Vec::new(), autos: Vec::new() };
+        // a Type-tool selection in this layer: character properties apply to the selected characters
+        let range = app.ui.gfx_edit.as_ref().filter(|ed| ed.clip == clip.0 && ed.layer == l && ed.caret != ed.anchor).and_then(|ed| {
+            let text = match pv(e, "text", mt) {
+                ParamValue::Text(s) => s,
+                _ => return None,
+            };
+            let ch = |b: usize| text.get(..b.min(text.len())).map_or(0, |s| s.chars().count());
+            Some((ch(ed.caret.min(ed.anchor)), ch(ed.caret.max(ed.anchor))))
+        });
+        let mut cx = Ctx { clip, layer: l, e, mt, t, actions: Vec::new(), autos: Vec::new(), range };
+        if section(ui, app, "Responsive Design - Position", &t) {
+            crate::panels::graphics_templates::responsive_position(app, ui, clip, &it, l, &mut cx.autos, &mut cx.actions);
+        }
         // ---- align and transform
         if section(ui, app, "Align and Transform", &t) {
             ui.horizontal(|ui| {

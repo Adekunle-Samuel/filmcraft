@@ -180,6 +180,22 @@ engine at runtime.
 
 User templates live in `<data dir>/Graphics Templates/`.
 
+**Essential Graphics panel.** *Browse* lists the built-in and user templates as cards with
+engine-rendered thumbnails, a search field and a category filter; click selects, double-click or
+Apply places the template at the playhead, dragging a card onto a video track places it there,
+Install… picks a `.fcgt`, Remove deletes a user template. *Edit* is the graphic editor; for a graphic
+made from a template it starts with **Template Properties** (one editor per control). With no layer
+selected it shows **Responsive Design – Time** (intro / outro, Roll with its options); with a layer
+selected, **Responsive Design – Position** (Pin To and the pinned edges). With characters selected
+by the Type tool, the Text section's controls style just those characters. Export As Motion
+Graphics Template… opens a dialog (name, category, description and a checklist of properties to
+expose); Replace Fonts in Projects… lists the fonts in use (missing ones flagged) and replaces one.
+Automation ids: `essentialGraphics.tab.browse|edit`, `gfxTemplates.search`, `gfxTemplates.category`,
+`gfxTemplates.item.<id>`, `gfxTemplates.apply|install|remove`, `gfxTemplates.control.<control id>`,
+`graphics.roll.*`, `graphics.time.intro|outro`, `graphics.pin.to|left|top|right|bottom`,
+`exportTemplate.*`, `replaceFonts.*`; `ui.set {"gfxTemplates": {...}, "gfxEdit": {...}}` sets the
+panel state and the Type-tool selection.
+
 ## Captions, source graphics and fonts
 
 | Command | Menu | Params |
