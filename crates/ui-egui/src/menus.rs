@@ -29,7 +29,7 @@ pub const UI_COMMANDS: &[UiCommand] = &[
     uic!("playback.slowForward", "Shuttle Slow Right", [], None),
     uic!("playback.slowReverse", "Shuttle Slow Left", [], None),
     uic!("playback.playAround", "Play Around", [], None),
-    uic!("playback.inToOut", "Play In to Out", [], Some("Shift+Space")),
+    uic!("playback.inToOut", "Play In to Out", [], Some("Alt+K")),
     uic!("playback.loop", "Loop", [], None),
     uic!("view.zoomIn", "Zoom In", ["View"], Some("=")),
     uic!("view.zoomOut", "Zoom Out", ["View"], Some("-")),
@@ -167,6 +167,9 @@ pub fn invoke(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, params: Val
         app.ui.tool = tool;
         return Ok(json!({"tool": tool}));
     }
+    if let Some(r) = crate::panels::keyboard::route(app, ctx, id, &params) {
+        return r;
+    }
     if let Some(r) = crate::panels::trim_monitor::route_transport(app, ctx, id) {
         return r;
     }
@@ -227,10 +230,13 @@ pub fn invoke(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, params: Val
             return Ok(Value::Null);
         }
         "playback.inToOut" => {
-            if let Some(i) = app.session.active_sequence().and_then(|q| q.mark_in) {
+            let seq = app.session.active_sequence();
+            let out = seq.and_then(|q| q.mark_out.map(|o| o + q.settings.frame_rate.frame_duration()));
+            if let Some(i) = seq.and_then(|q| q.mark_in) {
                 app.session.set_playhead(i);
             }
             app.play(1.0);
+            app.playback.stop_at = out;
             return Ok(Value::Null);
         }
         "playback.loop" => {
@@ -393,7 +399,7 @@ pub fn menu_items_for(session: &filmcraft_engine::Session) -> Vec<MenuItem> {
             checked: None,
         });
     }
-    for c in UI_COMMANDS {
+    for c in UI_COMMANDS.iter().chain(crate::panels::keyboard::COMMANDS) {
         if c.menu.is_empty() {
             continue;
         }
@@ -490,7 +496,8 @@ fn shifted_key(k: egui::Key) -> Option<egui::Key> {
 /// rebound and resolved alongside engine commands (the `shortcuts.` commands).
 pub fn external_commands() -> Vec<filmcraft_engine::shortcuts::CommandInfo> {
     use filmcraft_engine::shortcuts::CommandInfo;
-    let mut v: Vec<CommandInfo> = UI_COMMANDS.iter().map(|c| CommandInfo::new(c.id, c.label, c.menu, c.shortcut)).collect();
+    let mut v: Vec<CommandInfo> =
+        UI_COMMANDS.iter().chain(crate::panels::keyboard::COMMANDS).map(|c| CommandInfo::new(c.id, c.label, c.menu, c.shortcut)).collect();
     for p in PanelKind::ALL {
         v.push(CommandInfo::new(&panel_command_id(p), p.title(), &["Window"], p.window_shortcut()));
     }

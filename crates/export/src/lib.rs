@@ -956,8 +956,8 @@ impl Write for SharedBuf {
     }
 }
 
-/// Encode one still of an image sequence.
-fn encode_still(format: Format, rgba: Vec<u8>, w: u32, h: u32) -> Result<Vec<u8>> {
+/// Encode one still of an image sequence (also Export Frame).
+pub fn encode_still(format: Format, rgba: Vec<u8>, w: u32, h: u32) -> Result<Vec<u8>> {
     let enc = |e: image::ImageError| ExportError::Encode(e.to_string());
     let mut out = std::io::Cursor::new(Vec::new());
     match format {

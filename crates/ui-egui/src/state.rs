@@ -456,6 +456,10 @@ pub struct UiState {
     /// `panels::panel_state`.
     #[serde(default)]
     pub panels: crate::panels::panel_state::PanelsState,
+    /// Keyboard-only view state (maximized frame, Project panel hover scrub). See
+    /// `panels::keyboard`.
+    #[serde(default)]
+    pub keys: crate::panels::keyboard::KeysState,
 }
 
 /// An open Edit / Clip / File menu dialog: the engine command it runs on OK and the parameters
@@ -737,6 +741,7 @@ impl Default for UiState {
             clip_dialog: None,
             extras: Default::default(),
             panels: Default::default(),
+            keys: Default::default(),
         }
     }
 }

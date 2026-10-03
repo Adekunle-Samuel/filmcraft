@@ -122,6 +122,8 @@ pub struct Playback {
     pub preroll_ready: bool,
     /// The window was hidden (occluded/minimized) since the monitor last refreshed.
     pub hidden: bool,
+    /// Forward playback stops here (Play In to Out, Play from Playhead to Out Point).
+    pub stop_at: Option<Tick>,
 }
 
 /// How long `ui.screenshot` waits for the window to present the frame.
@@ -423,6 +425,7 @@ impl FilmcraftApp {
 
     pub fn stop(&mut self) {
         self.playback.playing = false;
+        self.playback.stop_at = None;
         self.playback.preroll = None;
         self.playback.meter.finish();
         self.frames.stop_prefetch();
@@ -544,7 +547,10 @@ impl FilmcraftApp {
         } else {
             (Tick::ZERO, dur)
         };
-        if t >= hi && self.playback.speed > 0.0 {
+        if let Some(end) = self.playback.stop_at.filter(|e| t >= *e && self.playback.speed > 0.0 && !self.playback.looping) {
+            self.session.set_playhead(end);
+            self.stop();
+        } else if t >= hi && self.playback.speed > 0.0 {
             if self.playback.looping {
                 self.session.set_playhead(lo);
                 self.play(self.playback.speed);
@@ -1026,14 +1032,21 @@ impl FilmcraftApp {
 
     fn dock_area(&mut self, ui: &mut egui::Ui, body: egui::Rect) {
         let t = self.tokens;
-        let mut dock = std::mem::replace(&mut self.ui.dock, dock::DockNode::Tabs { panels: vec![], active: 0 });
+        // Maximize or Restore Frame (` / Shift+`): the maximized panel fills the dock area.
+        let maximized = self.ui.keys.maximized.filter(|p| self.ui.dock.contains(*p));
+        let mut dock = match maximized {
+            Some(p) => dock::DockNode::Tabs { panels: vec![p], active: 0 },
+            None => std::mem::replace(&mut self.ui.dock, dock::DockNode::Tabs { panels: vec![], active: 0 }),
+        };
         let mut groups = Vec::new();
         dock::layout(ui, &mut dock, body, &t, "", &mut groups, &mut self.auto);
         let mut actions = Vec::new();
         for g in &groups {
             actions.extend(dock::draw_group_chrome(ui, g, self.ui.focused, &t, &mut self.auto));
         }
-        self.ui.dock = dock;
+        if maximized.is_none() {
+            self.ui.dock = dock;
+        }
         for g in &groups {
             let Some(p) = g.panels.get(g.active).copied() else { continue };
             self.auto.add(&format!("panel.{}", p.id()), g.content, p.title());
