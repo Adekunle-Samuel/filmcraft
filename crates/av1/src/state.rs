@@ -215,7 +215,7 @@ impl FrameState {
                 prev_segment_ids: vec![0; mi_cols * mi_rows],
             },
             cur,
-            mi: MiInfo::new(mi_cols, mi_rows),
+            mi: MiInfo::new(mi_cols, mi_rows, fh.allow_screen_content_tools),
             cdef: vec![-1; cdef_cols * cdef_rows],
             lf_tx_size: std::array::from_fn(|_| Grid8::new(0, 0, mi_cols + 32, mi_rows + 32)),
             lr,
@@ -260,7 +260,7 @@ impl FrameState {
         let x1 = if c1 >= mi_cols { usize::MAX } else { c1 * 4 };
         let y1 = if r1 >= mi_rows { usize::MAX } else { r1 * 4 };
         let cur = self.cur.region_like(c0 * 4, r0 * 4, x1, y1);
-        let mi = MiInfo::region(mi_cols, mi_rows, c0, r0, c1 - c0, r1 - r0);
+        let mi = MiInfo::region(mi_cols, mi_rows, c0, r0, c1 - c0, r1 - r0, !self.mi.palette_size[0].is_empty());
         let lf = std::array::from_fn(|p| {
             let (sx, sy) = if p == 0 { (0, 0) } else { (self.ssx, self.ssy) };
             let full = &self.lf_tx_size[p];

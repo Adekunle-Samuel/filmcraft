@@ -89,7 +89,13 @@ pub fn decode_all(path: &Path) -> Result<Vec<Picture>, String> {
 
 /// Decode every frame of an IVF file with a decoder using `threads` threads.
 pub fn decode_all_threads(path: &Path, threads: usize) -> Result<Vec<Picture>, String> {
+    decode_all_opts(path, threads, false)
+}
+
+/// [`decode_all_threads`] with draft mode on or off.
+pub fn decode_all_opts(path: &Path, threads: usize, draft: bool) -> Result<Vec<Picture>, String> {
     let mut dec = Decoder::with_threads(threads);
+    dec.set_draft(draft);
     let mut pics = Vec::new();
     for (i, f) in ivf_frames(path).iter().enumerate() {
         let p = dec.decode_pts(f, i as i64).map_err(|e| format!("frame {i}: {e}"))?;
@@ -174,6 +180,7 @@ pub fn check_file(ff: &Path, name: &str, path: &Path) {
         assert!(a == b, "{name}: frame {i} differs with {threads} threads");
     }
     assert!(!pics.is_empty(), "{name}: no frames");
+    assert!(pics.iter().all(|p| !p.draft), "{name}: picture flagged draft without draft mode");
     let raw = reference(ff, path, pix_fmt_for(&pics[0]));
     let per = picture_samples(&pics[0]);
     assert_eq!(raw.len(), per * pics.len(), "{name}: frame count/size ({} pictures)", pics.len());

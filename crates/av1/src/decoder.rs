@@ -95,6 +95,8 @@ struct FrameJob {
     picture: Option<Arc<Slot<Arc<Picture>>>>,
     pts: i64,
     apply_film_grain: bool,
+    /// Draft mode: the frame refreshes no reference slot, so its in-loop filters are skipped.
+    draft: bool,
 }
 
 /// A shown picture in output order.
@@ -193,6 +195,7 @@ pub struct Decoder {
     seen_frame_header: bool,
     /// Apply film grain synthesis to output frames (default true).
     pub apply_film_grain: bool,
+    draft: bool,
     stats: Arc<Mutex<DecodeStats>>,
     threads: usize,
     pool: Pool,
@@ -255,6 +258,7 @@ impl Decoder {
             pending: None,
             seen_frame_header: false,
             apply_film_grain: true,
+            draft: false,
             stats,
             threads,
             pool,
@@ -268,6 +272,14 @@ impl Decoder {
     }
 
     /// Frame / tile counts and per-stage busy time of the frames finished so far.
+    /// Draft mode for reduced-resolution playback (off by default): shown frames that refresh
+    /// no reference slot (nothing can predict from them, read their motion vectors or CDFs)
+    /// skip deblocking, CDEF and loop restoration and come out flagged [`Picture::draft`];
+    /// every other picture is unchanged.
+    pub fn set_draft(&mut self, on: bool) {
+        self.draft = on;
+    }
+
     pub fn stats(&self) -> DecodeStats {
         self.stats.lock().map(|s| *s).unwrap_or_default()
     }
@@ -503,6 +515,7 @@ impl Decoder {
             return Err(Error::Invalid("primary reference frame missing"));
         }
         let picture = fh.show_frame.then(Slot::new);
+        let draft = self.draft && fh.show_frame && fh.refresh_frame_flags == 0;
         self.pending = Some(Box::new(FrameJob {
             seq,
             fh,
@@ -513,6 +526,7 @@ impl Decoder {
             picture,
             pts: self.pts,
             apply_film_grain: self.apply_film_grain,
+            draft,
         }));
         Ok(None)
     }
@@ -692,7 +706,8 @@ fn decode_frame(job: &FrameJob, pool: &Pool, stats: &mut DecodeStats) -> Result<
     {
         cdfs = s;
     }
-    crate::postfilter::apply(&mut fs, stats, pool);
+    crate::postfilter::apply(&mut fs, stats, pool, job.draft);
+    stats.draft_frames += job.draft as u64;
     let t = Timer::start();
     stats.frames += 1;
     if fh.seg.enabled && !fh.seg.update_map {
@@ -714,8 +729,11 @@ fn decode_frame(job: &FrameJob, pool: &Pool, stats: &mut DecodeStats) -> Result<
         saved_ref_frames: mf_refs,
         saved_mvs: mf_mvs,
     });
-    let pic =
-        fh.show_frame.then(|| output_picture(seq, &rf, fh.upscaled_width as usize, fh.frame_height as usize, &fh.film_grain, job.apply_film_grain, job.pts));
+    let pic = fh.show_frame.then(|| {
+        let mut p = output_picture(seq, &rf, fh.upscaled_width as usize, fh.frame_height as usize, &fh.film_grain, job.apply_film_grain, job.pts);
+        p.draft = job.draft;
+        p
+    });
     stats.add(Stage::Output, t.secs());
     Ok((rf, pic))
 }
@@ -800,6 +818,7 @@ fn output_picture(seq: &SequenceHeader, rf: &RefFrame, w: usize, h: usize, grain
         matrix_coefficients: rf.color.2,
         full_range: rf.color.3,
         pts,
+        draft: false,
     };
     if apply_film_grain && seq.film_grain_params_present && grain.apply_grain {
         crate::grain::apply(&mut pic, grain, seq);

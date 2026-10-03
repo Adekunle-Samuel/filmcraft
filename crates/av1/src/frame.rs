@@ -4,8 +4,32 @@
 //! or [`MiInfo`] may hold a region of the frame (origin `ox`, `oy`), addressed with frame
 //! coordinates throughout.
 
+/// Recycled plane allocations: every frame allocates (and every evicted reference frees)
+/// megabytes of planes, and fresh large allocations cost page faults and kernel calls. Buffers
+/// are zeroed again on reuse, so contents never leak between frames.
+static PLANE_POOL: std::sync::Mutex<Vec<Vec<u16>>> = std::sync::Mutex::new(Vec::new());
+const POOL_MIN_LEN: usize = 1 << 16;
+/// Samples kept at most (96 M samples = 192 MB, a few 4K frames).
+const POOL_MAX_SAMPLES: usize = 96 << 20;
+
+/// A zeroed buffer of `len` samples (recycled memory for large ones).
+fn zeroed(len: usize) -> Vec<u16> {
+    if len >= POOL_MIN_LEN {
+        let found = {
+            let mut pool = PLANE_POOL.lock().unwrap_or_else(|e| e.into_inner());
+            pool.iter().position(|v| v.capacity() >= len && v.capacity() <= 2 * len).map(|i| pool.swap_remove(i))
+        };
+        if let Some(mut v) = found {
+            v.clear();
+            v.resize(len, 0);
+            return v;
+        }
+    }
+    vec![0; len]
+}
+
 /// One plane of samples (u16 at every bit depth), or a rectangular region of one.
-#[derive(Clone, Default)]
+#[derive(Default)]
 pub struct Plane {
     pub data: Vec<u16>,
     pub stride: usize,
@@ -16,13 +40,34 @@ pub struct Plane {
     pub oy: usize,
 }
 
+impl Clone for Plane {
+    fn clone(&self) -> Plane {
+        let mut data = zeroed(self.data.len());
+        data.copy_from_slice(&self.data);
+        Plane { data, stride: self.stride, rows: self.rows, ox: self.ox, oy: self.oy }
+    }
+}
+
+impl Drop for Plane {
+    fn drop(&mut self) {
+        if self.data.capacity() >= POOL_MIN_LEN {
+            let v = std::mem::take(&mut self.data);
+            let mut pool = PLANE_POOL.lock().unwrap_or_else(|e| e.into_inner());
+            let kept: usize = pool.iter().map(|b| b.capacity()).sum();
+            if kept + v.capacity() <= POOL_MAX_SAMPLES {
+                pool.push(v);
+            }
+        }
+    }
+}
+
 impl Plane {
     pub fn new(width: usize, height: usize) -> Plane {
-        Plane { data: vec![0; width * height], stride: width, rows: height, ox: 0, oy: 0 }
+        Plane { data: zeroed(width * height), stride: width, rows: height, ox: 0, oy: 0 }
     }
     /// A `width` x `height` region with its top-left sample at frame position (ox, oy).
     pub fn region(ox: usize, oy: usize, width: usize, height: usize) -> Plane {
-        Plane { data: vec![0; width * height], stride: width, rows: height, ox, oy }
+        Plane { data: zeroed(width * height), stride: width, rows: height, ox, oy }
     }
     #[inline(always)]
     pub fn at(&self, x: usize, y: usize) -> u16 {
@@ -173,13 +218,16 @@ pub struct MiInfo {
 }
 
 impl MiInfo {
-    pub fn new(cols: usize, rows: usize) -> MiInfo {
-        MiInfo::region(cols, rows, 0, 0, cols, rows)
+    /// `palette`: whether palette mode can occur (allow_screen_content_tools); without it the
+    /// palette arrays (40 bytes per unit) stay empty.
+    pub fn new(cols: usize, rows: usize, palette: bool) -> MiInfo {
+        MiInfo::region(cols, rows, 0, 0, cols, rows, palette)
     }
 
     /// Storage for the w x h mode info units at (ox, oy) of a cols x rows frame.
-    pub fn region(cols: usize, rows: usize, ox: usize, oy: usize, w: usize, h: usize) -> MiInfo {
+    pub fn region(cols: usize, rows: usize, ox: usize, oy: usize, w: usize, h: usize, palette: bool) -> MiInfo {
         let n = w * h;
+        let np = if palette { n } else { 0 };
         MiInfo {
             cols,
             rows,
@@ -198,8 +246,8 @@ impl MiInfo {
             inter_tx_size: vec![0; n],
             mi_size: vec![0; n],
             segment_id: vec![0; n],
-            palette_size: [vec![0; n], vec![0; n]],
-            palette_colors: [vec![[0; 8]; n], vec![[0; 8]; n]],
+            palette_size: [vec![0; np], vec![0; np]],
+            palette_colors: [vec![[0; 8]; np], vec![[0; 8]; np]],
             delta_lf: vec![[0; 4]; n],
             comp_group_idx: vec![0; n],
             compound_idx: vec![0; n],
@@ -228,7 +276,7 @@ impl MiInfo {
             )*};
         }
         copy!(y_mode uv_mode ref_frame mv is_inter skip_mode skip tx_size inter_tx_size mi_size segment_id delta_lf comp_group_idx compound_idx interp_filter motion_mode tx_type written);
-        for k in 0..2 {
+        for k in (0..2).filter(|&k| !self.palette_size[k].is_empty()) {
             for y in 0..h {
                 let d = dst.idx(self.oy + y, self.ox);
                 dst.palette_size[k][d..d + w].copy_from_slice(&self.palette_size[k][y * w..(y + 1) * w]);

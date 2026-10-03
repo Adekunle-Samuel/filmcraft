@@ -474,10 +474,12 @@ impl<'a, 'f> TileDecoder<'a, 'f> {
             mi.tx_size[span.clone()].fill(b.tx_size as u8);
             mi.mi_size[span.clone()].fill(b.mi_size as u8);
             mi.segment_id[span.clone()].fill(b.segment_id as u8);
-            mi.palette_size[0][span.clone()].fill(b.palette_size_y as u8);
-            mi.palette_size[1][span.clone()].fill(b.palette_size_uv as u8);
-            mi.palette_colors[0][span.clone()].fill(b.palette_colors_y);
-            mi.palette_colors[1][span.clone()].fill(b.palette_colors_u);
+            if !mi.palette_size[0].is_empty() {
+                mi.palette_size[0][span.clone()].fill(b.palette_size_y as u8);
+                mi.palette_size[1][span.clone()].fill(b.palette_size_uv as u8);
+                mi.palette_colors[0][span.clone()].fill(b.palette_colors_y);
+                mi.palette_colors[1][span.clone()].fill(b.palette_colors_u);
+            }
             mi.delta_lf[span.clone()].fill(dlf);
             mi.motion_mode[span].fill(b.motion_mode);
         }

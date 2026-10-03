@@ -62,6 +62,9 @@ pub struct Picture {
     pub full_range: bool,
     /// Timestamp of the temporal unit that showed the picture ([`Decoder::decode_pts`]).
     pub pts: i64,
+    /// Decoded in draft mode without deblocking / CDEF / loop restoration
+    /// ([`Decoder::set_draft`]): approximate, for reduced-resolution playback only.
+    pub draft: bool,
 }
 
 impl Picture {

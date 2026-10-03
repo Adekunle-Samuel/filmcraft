@@ -18,6 +18,8 @@ fn main() {
     let t0 = std::time::Instant::now();
     let mut n = 0;
     let mut dec = if threads > 0 { filmcraft_av1::Decoder::with_threads(threads) } else { filmcraft_av1::Decoder::new() };
+    // AV1_DRAFT=1: draft mode (non-reference frames skip the in-loop filters).
+    dec.set_draft(std::env::var_os("AV1_DRAFT").is_some());
     let mut write = |pics: Vec<filmcraft_av1::Picture>| {
         for pic in pics {
             n += 1;

@@ -43,6 +43,8 @@ impl Stage {
 pub struct DecodeStats {
     /// Frames decoded (excluding show_existing_frame repeats).
     pub frames: u64,
+    /// Frames decoded in draft mode without in-loop filters.
+    pub draft_frames: u64,
     /// Tiles decoded.
     pub tiles: u64,
     /// Busy seconds per [`Stage`] (index with `stage as usize`).
@@ -60,6 +62,7 @@ impl DecodeStats {
 
     pub(crate) fn merge(&mut self, o: &DecodeStats) {
         self.frames += o.frames;
+        self.draft_frames += o.draft_frames;
         self.tiles += o.tiles;
         for (a, b) in self.stage_secs.iter_mut().zip(o.stage_secs.iter()) {
             *a += b;

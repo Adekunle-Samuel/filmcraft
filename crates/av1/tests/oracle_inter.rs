@@ -40,6 +40,34 @@ fn inter_gops() {
     }
 }
 
+/// Draft mode: frames that refresh no reference slot skip the in-loop filters and are flagged;
+/// every other picture stays bit-exact, with 1 and several threads.
+#[test]
+fn draft_mode_changes_only_flagged_non_reference_frames() {
+    let Some(ff) = ffmpeg() else { return };
+    let s = &specs()[0];
+    let path = make(&ff, s);
+    let first = decode_all_threads(&path, 1).expect("decode");
+    let raw = reference(&ff, &path, pix_fmt_for(&first[0]));
+    let per = picture_samples(&first[0]);
+    for threads in [1, 4] {
+        let pics = decode_all_opts(&path, threads, true).expect("decode");
+        assert_eq!(pics.len(), first.len(), "threads {threads}");
+        let (mut draft, mut changed) = (0, 0);
+        for (i, p) in pics.iter().enumerate() {
+            let (_, count) = compare(p, &raw[i * per..(i + 1) * per]);
+            if p.draft {
+                draft += 1;
+                changed += (count > 0) as usize;
+            } else {
+                assert_eq!(count, 0, "threads {threads}: unflagged frame {i} differs");
+            }
+        }
+        assert!(draft > 0, "threads {threads}: no non-reference frames");
+        assert!(changed > 0, "threads {threads}: draft frames identical to the filtered ones");
+    }
+}
+
 /// Several tiles (decoded in parallel into private buffers, then merged).
 fn specs_tiles() -> Vec<Spec> {
     let p = |preset: &'static str, params: &'static str| -> Vec<&'static str> { vec!["-preset", preset, "-crf", "32", "-svtav1-params", params] };

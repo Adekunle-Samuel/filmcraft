@@ -127,17 +127,12 @@ impl<'a> SymbolDecoder<'a> {
 pub(crate) fn update_cdf(cdf: &mut [u16], n: usize, symbol: usize) {
     let count = cdf[n];
     let rate = 3 + (count > 15) as u32 + (count > 31) as u32 + (31 - (n as u32).leading_zeros()).min(2);
-    let mut tmp = 0u32;
-    for i in 0..n - 1 {
-        if i == symbol {
-            tmp = 1 << 15;
-        }
-        let c = cdf[i] as u32;
-        if tmp < c {
-            cdf[i] = (c - ((c - tmp) >> rate)) as u16;
-        } else {
-            cdf[i] = (c + ((tmp - c) >> rate)) as u16;
-        }
+    // Entries below `symbol` move towards 0, the others towards 1 << 15 (the specification's
+    // comparison with tmp, resolved per entry: c >= 0 and c <= 1 << 15), without branching on
+    // the decoded symbol.
+    for (i, e) in cdf[..n - 1].iter_mut().enumerate() {
+        let c = *e as u32;
+        *e = if i < symbol { c - (c >> rate) } else { c + (((1 << 15) - c) >> rate) } as u16;
     }
     cdf[n] += (count < 32) as u16;
 }

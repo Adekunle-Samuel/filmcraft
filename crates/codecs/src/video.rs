@@ -496,6 +496,7 @@ impl Av1Decoder {
 
     fn convert(p: filmcraft_av1::Picture, pts: i64) -> DecodedFrame {
         use std::sync::Arc;
+        let draft = p.draft;
         let w = p.width as usize;
         let h = p.height as usize;
         let mut color = filmcraft_color::ColorInfo::REC709;
@@ -535,7 +536,7 @@ impl Av1Decoder {
         } else {
             filmcraft_frame::PixelData::Yuv16 { planes: [Arc::new(y), Arc::new(u), Arc::new(v)], chroma, bits: p.bit_depth as u32, alpha: None }
         };
-        DecodedFrame { pts, frame: VideoFrame { width: p.width, height: p.height, data, color, par: (1, 1), pts: filmcraft_time::Tick::ZERO }, draft: false }
+        DecodedFrame { pts, frame: VideoFrame { width: p.width, height: p.height, data, color, par: (1, 1), pts: filmcraft_time::Tick::ZERO }, draft }
     }
 }
 
@@ -573,6 +574,9 @@ impl VideoDecoder for Av1Decoder {
     }
     fn name(&self) -> &str {
         "FilmCraft AV1"
+    }
+    fn set_draft(&mut self, on: bool) {
+        self.dec.set_draft(on);
     }
     fn is_random_access(&self, sample: &[u8]) -> Option<bool> {
         Some(filmcraft_av1::is_key_frame_unit(sample))

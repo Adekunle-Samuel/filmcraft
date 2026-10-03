@@ -665,6 +665,41 @@ impl TileDecoder<'_, '_> {
 
 const IDENTITY_TAPS: [i16; 8] = [0, 0, 0, 128, 0, 0, 0, 0];
 
+/// Horizontal pass of one row for a block `W` wide: taps outer, columns inner, fixed width so
+/// the row stays in registers.
+#[inline(always)]
+fn hpass<const W: usize>(src: &[u16], hf: &[i16; 8], out: &mut [i32], half: i32, sh: u32) {
+    let mut acc = [half; W];
+    for t in 0..8 {
+        let f = hf[t] as i32;
+        let p: &[u16; W] = src[t..t + W].try_into().expect("row");
+        for j in 0..W {
+            acc[j] += f * p[j] as i32;
+        }
+    }
+    let o: &mut [i32; W] = (&mut out[..W]).try_into().expect("row");
+    for j in 0..W {
+        o[j] = acc[j] >> sh;
+    }
+}
+
+/// Vertical pass of one output row from 8 intermediate rows (`rows`, stride `W`).
+#[inline(always)]
+fn vpass<const W: usize>(rows: &[i32], vf: &[i16; 8], out: &mut [i32], half: i32, sh: u32) {
+    let mut acc = [half; W];
+    for t in 0..8 {
+        let f = vf[t] as i32;
+        let p: &[i32; W] = rows[t * W..t * W + W].try_into().expect("row");
+        for j in 0..W {
+            acc[j] += f * p[j];
+        }
+    }
+    let o: &mut [i32; W] = (&mut out[..W]).try_into().expect("row");
+    for j in 0..W {
+        o[j] = acc[j] >> sh;
+    }
+}
+
 /// Block inter prediction without reference scaling: every column / row uses the same filter
 /// phase, so the filters run over whole rows (bit-identical to the per-sample process).
 #[allow(clippy::too_many_arguments)]
@@ -711,16 +746,26 @@ fn mc_unscaled(
                 *o = (v as i32) << (7 - r0);
             }
         } else {
-            let acc = &mut acc[..w];
-            acc.fill(0);
-            for t in 0..8 {
-                let f = hf[t] as i32;
-                for (a, &v) in acc.iter_mut().zip(&src[t..t + w]) {
-                    *a += f * v as i32;
+            match w {
+                2 => hpass::<2>(src, hf, out, half0, r0),
+                4 => hpass::<4>(src, hf, out, half0, r0),
+                8 => hpass::<8>(src, hf, out, half0, r0),
+                16 => hpass::<16>(src, hf, out, half0, r0),
+                32 => hpass::<32>(src, hf, out, half0, r0),
+                64 => hpass::<64>(src, hf, out, half0, r0),
+                _ => {
+                    let acc = &mut acc[..w];
+                    acc.fill(0);
+                    for t in 0..8 {
+                        let f = hf[t] as i32;
+                        for (a, &v) in acc.iter_mut().zip(&src[t..t + w]) {
+                            *a += f * v as i32;
+                        }
+                    }
+                    for (o, &a) in out.iter_mut().zip(acc.iter()) {
+                        *o = (a + half0) >> r0;
+                    }
                 }
-            }
-            for (o, &a) in out.iter_mut().zip(acc.iter()) {
-                *o = (a + half0) >> r0;
             }
         }
     }
@@ -731,16 +776,27 @@ fn mc_unscaled(
                 *o = (128 * v + half1) >> r1;
             }
         } else {
-            let acc = &mut acc[..w];
-            acc.fill(0);
-            for t in 0..8 {
-                let f = vf[t] as i32;
-                for (a, &v) in acc.iter_mut().zip(&tmp[(r + t) * w..(r + t + 1) * w]) {
-                    *a += f * v;
+            let rows = &tmp[r * w..(r + 8) * w];
+            match w {
+                2 => vpass::<2>(rows, vf, out, half1, r1),
+                4 => vpass::<4>(rows, vf, out, half1, r1),
+                8 => vpass::<8>(rows, vf, out, half1, r1),
+                16 => vpass::<16>(rows, vf, out, half1, r1),
+                32 => vpass::<32>(rows, vf, out, half1, r1),
+                64 => vpass::<64>(rows, vf, out, half1, r1),
+                _ => {
+                    let acc = &mut acc[..w];
+                    acc.fill(0);
+                    for t in 0..8 {
+                        let f = vf[t] as i32;
+                        for (a, &v) in acc.iter_mut().zip(&tmp[(r + t) * w..(r + t + 1) * w]) {
+                            *a += f * v;
+                        }
+                    }
+                    for (o, &a) in out.iter_mut().zip(acc.iter()) {
+                        *o = (a + half1) >> r1;
+                    }
                 }
-            }
-            for (o, &a) in out.iter_mut().zip(acc.iter()) {
-                *o = (a + half1) >> r1;
             }
         }
     }
