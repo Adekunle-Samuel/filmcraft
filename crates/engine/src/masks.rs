@@ -618,7 +618,14 @@ fn track(s: &mut Session, p: &Value) -> Result<Value> {
         let r = match &err {
             // stopping keeps what was tracked
             Some(e) if e != "stopped" => Err(e.clone()),
-            _ => Ok(filmcraft_export::Report { path: String::new(), frames: done, seconds: secs, bytes: 0, render_fps: done as f64 / secs.max(1e-6) }),
+            _ => Ok(filmcraft_export::Report {
+                path: String::new(),
+                frames: done,
+                seconds: secs,
+                bytes: 0,
+                render_fps: done as f64 / secs.max(1e-6),
+                extra_files: Vec::new(),
+            }),
         };
         *lock(&prog.status) = match &err {
             Some(e) => format!("{e} ({done} frame(s) tracked)"),

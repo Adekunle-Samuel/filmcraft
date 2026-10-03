@@ -22,6 +22,7 @@ use filmcraft_time::FrameRate;
 use rayon::prelude::*;
 
 use crate::audio_out::AudioOut;
+use crate::mxf_out::{MxfMux, MxfSetup};
 use crate::pipeline::Pipeline;
 use crate::settings::{AudioCodec, BitrateMode, Multiplexer};
 use crate::{
@@ -59,6 +60,10 @@ pub struct Exporter {
     first_pass: bool,
     /// Created after the first batch (encoders may finalise their codec config then).
     mux: Option<Mp4Writer<Out>>,
+    /// MXF exports write through this instead of `mux`.
+    mxf: Option<MxfMux>,
+    seq: ItemId,
+    project: Arc<Project>,
     vt: usize,
     at: Option<usize>,
     t0: web_time::Instant,
@@ -66,7 +71,7 @@ pub struct Exporter {
 
 /// Whether [`Exporter`] handles a format.
 pub fn stepped(format: Format) -> bool {
-    matches!(format, Format::H264 | Format::ProRes | Format::DnxHr | Format::Mjpeg)
+    matches!(format, Format::H264 | Format::ProRes | Format::DnxHr | Format::Mjpeg | Format::MxfOp1a | Format::MxfOpAtom)
 }
 
 fn make_venc(settings: &ExportSettings, w: u32, h: u32, rate: FrameRate) -> Result<Box<dyn VideoEncoder>> {
@@ -74,8 +79,8 @@ fn make_venc(settings: &ExportSettings, w: u32, h: u32, rate: FrameRate) -> Resu
         .read()
         .unwrap_or_else(|e| e.into_inner())
         .iter()
-        .find_map(|fac| fac(settings.format, w, h, rate, settings))
-        .ok_or_else(|| ExportError::Unsupported(format!("{} encoder not available yet", settings.format.label())))?
+        .find_map(|fac| fac(settings.video_format(), w, h, rate, settings))
+        .ok_or_else(|| ExportError::Unsupported(format!("{} encoder not available yet", settings.video_format().label())))?
 }
 
 impl Exporter {
@@ -88,7 +93,7 @@ impl Exporter {
         let q = project.sequence(seq).ok_or(ExportError::NoSequence)?;
         // HDR sequences export HDR (H.264 / ProRes / DNxHR) unless SDR is asked for
         let pipe = q.settings.color;
-        let hdr_out = pipe.working.is_hdr() && !settings.sdr && matches!(settings.format, Format::H264 | Format::ProRes | Format::DnxHr);
+        let hdr_out = pipe.working.is_hdr() && !settings.sdr && matches!(settings.video_format(), Format::H264 | Format::ProRes | Format::DnxHr);
         let mut settings = settings.clone();
         settings.signal = match (hdr_out, pipe.working) {
             (true, filmcraft_color::WorkingSpace::Rec2100Pq) => ColorSignal::PQ,
@@ -101,7 +106,7 @@ impl Exporter {
         settings.max_bitrate_kbps = Some(r.max_kbps);
         settings.keyframe_distance = Some(r.keyint);
         settings.adaptive_bitrate = None;
-        let two_pass = settings.format == Format::H264 && settings.bitrate_mode == BitrateMode::Vbr2Pass;
+        let two_pass = settings.video_format() == Format::H264 && settings.bitrate_mode == BitrateMode::Vbr2Pass;
         settings.h264_pass = if two_pass { H264Pass::First } else { H264Pass::Single };
         let range = export_range(&project, seq, &settings)?;
         let pipe = Pipeline::new(project.clone(), seq, &settings, hdr_out)?;
@@ -136,6 +141,9 @@ impl Exporter {
             measured,
             first_pass: two_pass,
             mux: None,
+            mxf: None,
+            seq,
+            project: project.clone(),
             vt: 0,
             at: None,
             t0: web_time::Instant::now(),
@@ -158,6 +166,12 @@ impl Exporter {
     }
 
     fn write_audio(&mut self, planar: Option<Vec<Vec<f32>>>) -> Result<()> {
+        if let Some(m) = self.mxf.as_mut() {
+            return match planar {
+                Some(buf) => m.write_audio(&buf),
+                None => Ok(()),
+            };
+        }
         let (Some(at), Some(buf)) = (self.at, planar) else { return Ok(()) };
         let n = buf.first().map_or(0, Vec::len);
         if n == 0 {
@@ -192,6 +206,9 @@ impl Exporter {
     }
 
     fn write_video(&mut self, packets: Vec<EncodedPacket>) -> Result<()> {
+        if let Some(m) = self.mxf.as_mut() {
+            return m.write_video(packets);
+        }
         let mux = self.mux.as_mut().expect("mux created");
         for p in packets {
             mux.write_sample(self.vt, WriteSample { data: &p.data, duration: p.duration, composition_offset: p.composition_offset, is_sync: p.key })
@@ -202,6 +219,23 @@ impl Exporter {
 
     /// Create the muxer and its tracks (after the first batch was encoded).
     fn open_mux(&mut self) -> Result<()> {
+        if self.settings.format.is_mxf() {
+            let q = self.project.sequence(self.seq).ok_or(ExportError::NoSequence)?;
+            // start timecode of the first exported frame, at the output rate
+            let seq_rate = q.settings.frame_rate;
+            let start = self.pipe.rate.frame_at(seq_rate.tick_of(q.start_timecode)) + self.f0;
+            let name = self.project.item(self.seq).map(|i| i.name.clone()).unwrap_or_default();
+            self.mxf = Some(MxfMux::new(MxfSetup {
+                settings: &self.settings,
+                name,
+                width: self.pipe.w,
+                height: self.pipe.h,
+                rate: self.pipe.rate,
+                audio: self.audio.as_ref().map(|a| (a.sr, a.channels)),
+                timecode: (start, q.settings.drop_frame),
+            })?);
+            return Ok(());
+        }
         let file = Out::create(&self.settings)?;
         let mut opts = WriterOptions::new(self.brand);
         opts.metadata = self.settings.metadata.udta();
@@ -262,7 +296,7 @@ impl Exporter {
                 return Ok(Step::Progress);
             }
             let mixed = match self.audio.as_ref().map(|a| a.sr) {
-                Some(sr) if self.mux.is_none() || self.at.is_some() => {
+                Some(sr) if (self.mux.is_none() && self.mxf.is_none()) || self.at.is_some() || self.mxf.is_some() => {
                     let until = self.sample_at_frame(end, sr);
                     self.audio.as_mut().and_then(|a| a.pull(until, sources))
                 }
@@ -272,7 +306,7 @@ impl Exporter {
                 return Ok(Step::Pending);
             }
             let packets = self.encode(&frames, f)?;
-            if self.mux.is_none() {
+            if self.mux.is_none() && self.mxf.is_none() {
                 self.open_mux()?;
             }
             self.write_video(packets)?;
@@ -295,7 +329,7 @@ impl Exporter {
         if filmcraft_media::pending::take() {
             return Ok(Step::Pending);
         }
-        if self.mux.is_none() {
+        if self.mux.is_none() && self.mxf.is_none() {
             self.open_mux()?;
         }
         let tail = self.venc.flush()?;
@@ -309,15 +343,27 @@ impl Exporter {
                     .map_err(|e| ExportError::Io(e.to_string()))?;
             }
         }
-        let w = self.mux.take().expect("mux created").finish().map_err(|e| ExportError::Io(e.to_string()))?;
-        let bytes = w.finish(&self.settings)?;
+        let (bytes, extra_files) = match self.mxf.take() {
+            Some(m) => m.finish(&self.settings)?,
+            None => {
+                let w = self.mux.take().expect("mux created").finish().map_err(|e| ExportError::Io(e.to_string()))?;
+                (w.finish(&self.settings)?, Vec::new())
+            }
+        };
         let secs = self.t0.elapsed().as_secs_f64();
         let nframes = self.frames();
         if !self.settings.part_of_batch {
             progress.finished.store(true, Ordering::Relaxed);
             progress.set_status(format!("Done in {secs:.1}s"));
         }
-        Ok(Step::Done(Report { path: self.settings.path.clone(), frames: nframes, seconds: secs, bytes, render_fps: nframes as f64 / secs.max(1e-6) }))
+        Ok(Step::Done(Report {
+            path: self.settings.path.clone(),
+            frames: nframes,
+            seconds: secs,
+            bytes,
+            render_fps: nframes as f64 / secs.max(1e-6),
+            extra_files,
+        }))
     }
 
     fn encode(&mut self, frames: &[(Vec<u8>, Vec<f32>)], f: i64) -> Result<Vec<EncodedPacket>> {
