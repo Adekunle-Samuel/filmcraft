@@ -1972,6 +1972,7 @@ dependencies = [
 name = "filmcraft-interchange"
 version = "0.1.0"
 dependencies = [
+ "filmcraft-cfb",
  "filmcraft-color",
  "filmcraft-geom",
  "filmcraft-media",
