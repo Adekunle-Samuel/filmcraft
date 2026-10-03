@@ -1,8 +1,9 @@
 //! MXF media source (`filmcraft-mxf` demux, GOP-aware video via [`crate::gop`]).
 //!
-//! - Video: H.264 / AVC-Intra (Annex B byte stream, our decoder), VC-3 (DNxHD/DNxHR) and ProRes
-//!   through the decoder factories. MPEG-2 video (D-10/IMX, XDCAM) and other codings are
-//!   identified and reported as unsupported; the file still opens so its audio can be used.
+//! - Video: H.264 / AVC-Intra (Annex B byte stream, our decoder), MPEG-2 (D-10 / IMX, XDCAM HD /
+//!   HD422; our decoder), VC-3 (DNxHD/DNxHR) and ProRes through the decoder factories. Other
+//!   codings (JPEG 2000, DV, MPEG-4 visual…) are identified and reported as unsupported; the file
+//!   still opens so its audio can be used.
 //! - Presentation order: the index table's temporal offsets; for AVC whose index marks B pictures
 //!   but carries no temporal offsets, the picture order counts of the slice headers (8.2.1).
 //! - Audio: every PCM sound track (Broadcast Wave / AES3, ST 382; ST 331 AES3 elements in D-10)
@@ -50,6 +51,8 @@ pub struct MxfSource {
     video: GopCache,
     /// Why the video cannot be decoded (no decoder for the coding).
     unsupported: Option<String>,
+    /// MPEG-2: the first sequence header (primes decoders that start without one).
+    mpeg2_header: Vec<u8>,
     /// Sound tracks combined into one stream: (track, first stored sample frame).
     atracks: Vec<(usize, u64)>,
     /// Presented sample frames.
@@ -219,6 +222,7 @@ impl MxfSource {
         let mut unsupported = None;
         let (mut vpts, mut vorder, mut vfirst, mut vcount) = (Vec::new(), Vec::new(), 0, 0);
         let mut explicit_color = None;
+        let mut mpeg2_header = Vec::new();
         if let Some(vi) = vtrack {
             let t = &file.tracks[vi];
             let p = t.picture.clone().unwrap_or_default();
@@ -246,7 +250,15 @@ impl MxfSource {
             let avail = vorder.len() as i64 - vfirst;
             vcount = t.duration.map_or(avail, |d| d.min(avail)).max(0);
             let rate = if t.edit_rate.is_valid() { FrameRate::new(t.edit_rate.num as i64, t.edit_rate.den as i64) } else { FrameRate::FPS_25 };
-            let (w, h) = (p.frame_width(), p.frame_height());
+            // MPEG-2 (D-10 / IMX, XDCAM): the sequence header of the first picture
+            let mpeg = (t.codec == Codec::Mpeg2)
+                .then(|| file.read_sample(&bytes, vi, 0).ok())
+                .flatten()
+                .and_then(|s| Some((filmcraft_mpeg2v::probe(&s)?, filmcraft_mpeg2v::scan_access_unit(&s), crate::video::mpeg2_sequence_header(&s)?)));
+            let (w, h) = match &mpeg {
+                Some((info, _, _)) => (info.width, info.height),
+                None => (p.frame_width(), p.frame_height()),
+            };
             let par = if p.aspect_ratio.is_valid() && w > 0 && h > 0 {
                 let n = p.aspect_ratio.num as u64 * h as u64;
                 let d = p.aspect_ratio.den as u64 * w as u64;
@@ -264,6 +276,7 @@ impl MxfSource {
                     .unwrap_or_else(|| "DNxHD/DNxHR".into()),
                 Codec::ProRes { profile } => prores_name(profile).into(),
                 c @ Codec::Avc { .. } => c.name().into(),
+                Codec::Mpeg2 if mpeg.is_some() => mpeg.as_ref().map(|m| m.0.codec_name()).unwrap_or_default(),
                 other => {
                     let why = format!("{} video in MXF (FilmCraft has no {} decoder)", other.name(), other.name());
                     unsupported = Some(why);
@@ -276,7 +289,20 @@ impl MxfSource {
                 (1, 1) => "4:4:4",
                 _ => "",
             };
-            let pixel_format = if p.component_depth > 0 && !chroma.is_empty() { format!("YUV {chroma} {}-bit", p.component_depth) } else { String::new() };
+            let mut pixel_format = if p.component_depth > 0 && !chroma.is_empty() { format!("YUV {chroma} {}-bit", p.component_depth) } else { String::new() };
+            if let Some((info, au, header)) = &mpeg {
+                let fo = au.pictures.first().and_then(|(ph, pce)| {
+                    let pce = pce.as_ref()?;
+                    let _ = ph;
+                    (!pce.progressive_frame).then_some(if pce.picture_structure == 2 || (pce.picture_structure == 3 && !pce.top_field_first) {
+                        filmcraft_mpeg2v::FieldOrder::BottomFirst
+                    } else {
+                        filmcraft_mpeg2v::FieldOrder::TopFirst
+                    })
+                });
+                pixel_format = crate::video::mpeg2_pixel_format(info, fo);
+                mpeg2_header = header.clone();
+            }
             let mut color = filmcraft_color::ColorInfo { matrix: filmcraft_frame::default_matrix(w, h), ..filmcraft_color::ColorInfo::REC709 };
             if p.full_range() {
                 color.range = filmcraft_color::Range::Full;
@@ -340,7 +366,21 @@ impl MxfSource {
             file_size: Some(bytes.0.len()),
         };
         info.start_timecode = file.timecode.as_ref().map(|tc| start_frames(tc, info.frame_rate()));
-        Ok(Self { info, bytes, vtrack, vpts, vorder, vfirst, vcount, video: GopCache::new(explicit_color), unsupported, atracks: combined, aframes, file })
+        Ok(Self {
+            info,
+            bytes,
+            vtrack,
+            vpts,
+            vorder,
+            vfirst,
+            vcount,
+            video: GopCache::new(explicit_color),
+            unsupported,
+            mpeg2_header,
+            atracks: combined,
+            aframes,
+            file,
+        })
     }
 
     /// The demuxed file (tracks, partitions, index, timecode).
@@ -367,7 +407,10 @@ impl VideoSamples for MxfVideo<'_> {
         self.src.vpts[i]
     }
     fn sync_before(&self, i: usize) -> usize {
-        self.src.file.tracks[self.track].sync_before(i)
+        let key = self.src.file.tracks[self.track].sync_before(i);
+        // a leading picture of an open GOP (stored after its random-access picture, shown
+        // before it) is predicted from the previous GOP too
+        if key > 0 && i < self.src.vpts.len() && self.src.vpts[i] < self.src.vpts[key] { self.sync_before(key - 1) } else { key }
     }
     fn sample_at(&self, t: i64) -> Option<usize> {
         usize::try_from(t).ok().and_then(|t| self.src.vorder.get(t).copied())
@@ -384,6 +427,7 @@ impl VideoSamples for MxfVideo<'_> {
         let (w, h) = (v.width.min(u16::MAX as u32) as u16, v.height.min(u16::MAX as u32) as u16);
         match t.codec {
             Codec::Avc { .. } => Ok(Box::new(crate::video::H264Decoder::annexb())),
+            Codec::Mpeg2 => Ok(Box::new(crate::video::Mpeg2Decoder::new(self.src.mpeg2_header.clone()))),
             Codec::Vc3 => make_video_decoder(&SampleEntry::dnx(FourCc(*b"AVdh"), w, h)),
             Codec::ProRes { profile } => make_video_decoder(&SampleEntry::prores(prores_fourcc(profile), w, h)),
             other => Err(CodecError::Unsupported(format!("{} video in MXF", other.name()))),

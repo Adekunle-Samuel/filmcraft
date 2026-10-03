@@ -15,7 +15,7 @@ Implemented from the SMPTE documents (editions used):
 | SMPTE ST 378 | 2004 | OP1a |
 | SMPTE ST 390 | 2011 | OP-Atom |
 | SMPTE ST 379-1 / 379-2 | 2009 / 2010 | generic container: content packages, element keys, frame / clip wrapping |
-| SMPTE ST 381-1 | 2005 | MPEG video mapping (MPEG-2 identified, MPEG video descriptor) |
+| SMPTE ST 381-1 | 2005 | MPEG video mapping (MPEG-2 identified, MPEG video descriptor; decoded by `filmcraft-mpeg2v` in `filmcraft-codecs`) |
 | SMPTE ST 381-3 | 2013 | AVC byte-stream mapping and AVC sub-descriptor |
 | SMPTE ST 382 | 2007 | AES3 and Broadcast Wave audio mapping (wave / AES3 descriptors) |
 | SMPTE ST 331 | 2011 | element data of 8-channel AES3 sound (D-10) |
@@ -61,7 +61,7 @@ let pcm = mxf.read_pcm(&file, a, 48_000, 1920)?;       // planar f32, sample-exa
   pictures but has no temporal offsets (FFmpeg-written AVC), `needs_reorder` is set: the caller
   orders by the bitstream (`filmcraft-codecs` uses the AVC picture order counts).
 - **Codecs.** From the picture essence coding label, then the essence container label, then the
-  essence bytes: AVC / AVC-Intra, VC-3, ProRes (profile from the label), MPEG-2 (identified only),
+  essence bytes: AVC / AVC-Intra, VC-3, ProRes (profile from the label), MPEG-2 (decoded in `filmcraft-codecs`),
   MPEG-4 visual, JPEG 2000, DV, uncompressed.
 - **Sound.** PCM chunks (frame- or clip-wrapped) with sample counts; `read_pcm` decodes
   little-endian 8/16/24/32-bit PCM (wave / AES3 descriptors) and ST 331 AES3 elements (D-10).
@@ -131,7 +131,7 @@ w.finish()?;
   600 random mutations never panic and only list fully-present samples.
 - `crates/codecs/tests/mxf_oracle.rs` (FFmpeg-written fixtures, FFmpeg as the decode oracle):
   H.264 long-GOP with B pictures (bit-exact every frame + 25 random seeks), H.264 29.97 DF
-  timecode, DNxHR LB (±2), ProRes 422 (±1), MPEG-2 (reported unsupported, audio exact),
+  timecode, DNxHR LB (±2), ProRes 422 (±1), MPEG-2 long GOP, XDCAM HD422 and D-10 (±4),
   OP-Atom VC-3 (clip-wrapped) and PCM, D-10 AES3 audio; PCM sample-exact in every file;
   truncated and corrupted files. `cargo xtask fixtures codecs` pre-generates them.
 - `src/write/tests.rs`: writer output read back by `open`: OP1a with two sound tracks pushed in

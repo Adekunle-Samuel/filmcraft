@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 
 use common::*;
 use filmcraft_codecs::MxfSource;
-use filmcraft_media::{FrameRequest, MediaError, MediaKind, MediaSource};
+use filmcraft_media::{FrameRequest, MediaKind, MediaSource};
 use filmcraft_time::FrameRate;
 
 const V25: &[&str] = &["-f", "lavfi", "-i", "testsrc2=size=320x240:rate=25"];
@@ -34,6 +34,31 @@ fn spec(name: &str) -> Vec<String> {
         }
         "mxf_prores.mxf" => cat(&[V25, TONE, &["-t", "1", "-c:v", "prores_ks", "-profile:v", "3", "-pix_fmt", "yuv422p10le", "-c:a", "pcm_s16le"]]),
         "mxf_mpeg2.mxf" => cat(&[V25, NOISE, &["-t", "1", "-c:v", "mpeg2video", "-bf", "2", "-c:a", "pcm_s16le"]]),
+        // XDCAM HD422 style: 1080i 4:2:2 long GOP
+        "mxf_xdcam_hd422.mxf" => cat(&[
+            &["-f", "lavfi", "-i", "testsrc2=size=1920x1080:rate=50,tinterlace=mode=interleave_top,setfield=tff"],
+            NOISE,
+            &[
+                "-t",
+                "0.4",
+                "-c:v",
+                "mpeg2video",
+                "-pix_fmt",
+                "yuv422p",
+                "-flags",
+                "+ilme+ildct",
+                "-bf",
+                "2",
+                "-g",
+                "12",
+                "-b:v",
+                "50M",
+                "-c:a",
+                "pcm_s24le",
+                "-ac",
+                "2",
+            ],
+        ]),
         "mxf_atom_dnxhr.mxf" => cat(&[V25, &["-t", "1", "-c:v", "dnxhd", "-profile:v", "dnxhr_lb", "-pix_fmt", "yuv422p", "-f", "mxf_opatom"]]),
         "mxf_atom_pcm.mxf" => cat(&[NOISE, &["-t", "1", "-c:a", "pcm_s24le", "-ac", "1", "-f", "mxf_opatom"]]),
         "mxf_d10.mxf" => cat(&[
@@ -90,6 +115,7 @@ pub const ALL: &[&str] = &[
     "mxf_dnxhr_lb.mxf",
     "mxf_prores.mxf",
     "mxf_mpeg2.mxf",
+    "mxf_xdcam_hd422.mxf",
     "mxf_atom_dnxhr.mxf",
     "mxf_atom_pcm.mxf",
     "mxf_d10.mxf",
@@ -235,20 +261,35 @@ fn prores_op1a_within_one_lsb() {
     check_audio_exact(&ff, &f, &[]);
 }
 
+/// MPEG-2 frames are compared within the IDCT tolerance of `filmcraft-mpeg2v` (an
+/// IEEE 1180-accurate IDCT against ffmpeg's integer one).
+const MPEG2_TOL: u16 = 4;
+
 #[test]
-fn mpeg2_is_reported_unsupported_but_audio_plays() {
+fn mpeg2_long_gop_decodes() {
     let ff = filmcraft_testkit::require_ffmpeg!();
     let f = make(&ff, "mxf_mpeg2.mxf");
     let src = open(&f);
     let v = src.info().video.as_ref().unwrap();
-    assert!(v.codec.contains("MPEG-2") && v.codec.contains("unsupported"), "{}", v.codec);
-    match src.video_frame(FrameRequest::full(filmcraft_time::Tick::ZERO)) {
-        Err(MediaError::Unsupported(why)) => assert!(why.contains("MPEG-2"), "{why}"),
-        other => panic!("expected unsupported, got {:?}", other.map(|_| ())),
-    }
+    assert!(v.codec.starts_with("MPEG-2 Video (Main@"), "{}", v.codec);
+    assert_eq!(v.pixel_format, "YUV 4:2:0 8-bit, progressive");
     // temporal offsets: ffmpeg's MPEG-2 index carries them
     let t = &src.file().tracks[src.file().track_of_kind(filmcraft_mxf::TrackKind::Picture).unwrap()];
     assert!(t.temporal_offsets);
+    check_video(&ff, &f, "yuv420p", (2, 2), 1, MPEG2_TOL, 12);
+    check_audio_exact(&ff, &f, &[]);
+}
+
+#[test]
+fn xdcam_hd422_decodes() {
+    let ff = filmcraft_testkit::require_ffmpeg!();
+    let f = make(&ff, "mxf_xdcam_hd422.mxf");
+    let src = open(&f);
+    let v = src.info().video.as_ref().unwrap();
+    assert_eq!(v.codec, "MPEG-2 Video (4:2:2@High)");
+    assert_eq!(v.pixel_format, "YUV 4:2:2 8-bit, interlaced (upper field first)");
+    assert_eq!((v.width, v.height), (1920, 1080));
+    check_video(&ff, &f, "yuv422p", (2, 1), 1, MPEG2_TOL, 6);
     check_audio_exact(&ff, &f, &[]);
 }
 
@@ -279,9 +320,13 @@ fn d10_aes3_elements_sample_exact() {
     let a = src.info().audio.clone().unwrap();
     assert_eq!(a.codec, "AES3 PCM");
     assert!(a.channels >= 4, "{}", a.channels);
-    assert!(src.info().video.as_ref().unwrap().codec.contains("MPEG-2"));
+    let v = src.info().video.as_ref().unwrap();
+    assert_eq!(v.codec, "MPEG-2 Video (4:2:2@Main)");
+    assert_eq!((v.width, v.height), (720, 608));
     // ffmpeg presents D-10 sound as one multichannel stream too
     check_audio_exact(&ff, &f, &[]);
+    // IMX: intra-only 4:2:2 at 608 lines (with the VBI)
+    check_video(&ff, &f, "yuv422p", (2, 1), 1, MPEG2_TOL, 4);
 }
 
 #[test]

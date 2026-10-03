@@ -25,6 +25,36 @@ fn help_and_usage_errors() {
 }
 
 #[test]
+fn probe_reports_mpeg_transport_and_program_streams() {
+    let Some(ffmpeg) = ["/opt/homebrew/bin/ffmpeg", "/usr/local/bin/ffmpeg", "/usr/bin/ffmpeg"].into_iter().find(|p| std::path::Path::new(p).exists()) else {
+        eprintln!("SKIPPED (probe_reports_mpeg_transport_and_program_streams): ffmpeg not found");
+        return;
+    };
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/cli-tests").join(format!("mpeg-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    for (name, fmt, extra) in [("a.ts", "mpegts", &["-mpegts_m2ts_mode", "0"][..]), ("b.vob", "vob", &[][..])] {
+        let out = dir.join(name);
+        let st = Command::new(ffmpeg)
+            .args(["-v", "error", "-y", "-f", "lavfi", "-i", "testsrc2=size=320x240:rate=25", "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000"])
+            .args(["-t", "0.5", "-c:v", "mpeg2video", "-c:a", "mp2", "-ac", "2", "-f", fmt])
+            .args(extra)
+            .arg(&out)
+            .status()
+            .unwrap();
+        assert!(st.success());
+        let v = json_out(&cli(&["probe", out.to_str().unwrap()]));
+        assert!(v["video"]["codec"].as_str().unwrap().starts_with("MPEG-2 Video"), "{v}");
+        assert_eq!(v["audio"]["codec"], "MPEG Audio");
+        let streams = v["mpeg"]["streams"].as_array().unwrap();
+        assert_eq!(streams.len(), 2, "{v}");
+        assert_eq!(streams[0]["codec"], "MPEG-2 Video");
+        assert!(streams[0]["pictures"]["I"].as_u64().unwrap() >= 1);
+        assert_eq!(v["mpeg"]["format"], if fmt == "mpegts" { "MPEG-2 TS" } else { "MPEG-2 PS" });
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn exec_inspect_and_describe() {
     let seq = json_out(&cli(&["--demo", "inspect", "sequence", "--compact"]));
     assert!(seq["tracks"].is_array() || seq.is_object(), "{seq}");

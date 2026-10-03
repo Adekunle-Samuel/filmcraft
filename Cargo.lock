@@ -1685,6 +1685,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "filmcraft-ac3"
+version = "0.1.0"
+dependencies = [
+ "filmcraft-testkit",
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "filmcraft-audio-dsp"
 version = "0.1.0"
 dependencies = [
@@ -1750,6 +1758,7 @@ dependencies = [
  "filmcraft-codecs",
  "filmcraft-engine",
  "filmcraft-media",
+ "filmcraft-mpegts",
  "filmcraft-mxf",
  "filmcraft-ogg",
  "filmcraft-time",
@@ -1762,6 +1771,7 @@ name = "filmcraft-codecs"
 version = "0.1.0"
 dependencies = [
  "filmcraft-aac",
+ "filmcraft-ac3",
  "filmcraft-av1",
  "filmcraft-bitstream",
  "filmcraft-color",
@@ -1772,6 +1782,8 @@ dependencies = [
  "filmcraft-isobmff",
  "filmcraft-matroska",
  "filmcraft-media",
+ "filmcraft-mpeg2v",
+ "filmcraft-mpegts",
  "filmcraft-mxf",
  "filmcraft-ogg",
  "filmcraft-opus",
@@ -2016,6 +2028,23 @@ dependencies = [
  "image",
  "rayon",
  "serde",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "filmcraft-mpeg2v"
+version = "0.1.0"
+dependencies = [
+ "filmcraft-testkit",
+ "rayon",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "filmcraft-mpegts"
+version = "0.1.0"
+dependencies = [
+ "filmcraft-testkit",
  "thiserror 2.0.21",
 ]
 
