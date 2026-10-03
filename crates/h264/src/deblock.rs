@@ -367,6 +367,11 @@ pub fn deblock_mb(pic: &mut PicState, addr: usize, mb_w: usize) {
             }
             let qpp = if e == 0 { p_qp[dir].map(|p| p.0).unwrap_or(q_qp) } else { q_qp };
             let ep = params(qpp, q_qp, bs[dir][e]);
+            if ep.alpha == 0 || ep.beta == 0 {
+                // filterSamplesFlag needs |p0 - q0| < alpha and |p1 - p0| < beta (8.7.2.2): no
+                // sample of the edge changes (low QPs)
+                continue;
+            }
             if dir == 0 {
                 filter_vertical::<16>(&mut pic.planes.y, width, mx * 16 + e * 4, my * 16, &ep, false);
             } else {
@@ -384,6 +389,9 @@ pub fn deblock_mb(pic: &mut PicState, addr: usize, mb_w: usize) {
                 }
                 let qpp = if e == 0 { p_qp[dir].map(|p| p.1[c]).unwrap_or(q_qpc[c]) } else { q_qpc[c] } as i32;
                 let ep = params(qpp, q_qpc[c] as i32, bs[dir][e]);
+                if ep.alpha == 0 || ep.beta == 0 {
+                    continue;
+                }
                 let plane = if c == 0 { &mut pic.planes.cb } else { &mut pic.planes.cr };
                 if dir == 0 {
                     filter_vertical::<8>(plane, cwidth, mx * 8 + ce * 4, my * 8, &ep, true);
