@@ -143,7 +143,7 @@ fn import_image_sequence_from_the_file_menu_and_media_browser() {
     let kind = d.app().session.project.item(id).unwrap().as_media().unwrap().info.kind;
     assert_eq!(kind, filmcraft_media::MediaKind::ImageSequence);
     // Media Browser ▸ Import as Image Sequence (the selection, from frame 3)
-    d.app().ui.extras.media_browser_selection = vec![paths[2].clone()];
+    d.exec("mediaBrowser.select", json!({"paths": [paths[2]]}));
     let r = d.ok("ui.menu.invoke", json!({"id": "file.importFromMediaBrowser", "params": {"imageSequence": true}}));
     assert_eq!(r["imageSequences"][0]["frames"], 3);
     let _ = std::fs::remove_dir_all(&dir);
@@ -179,7 +179,7 @@ fn find_dialog_and_search_bins() {
     d.click("find.cancel");
 
     // Create Search Bin, shown in the Project panel's list view with its live contents
-    d.app().ui.project_view = filmcraft_ui_egui::state::ProjectView::List;
+    d.exec("project.view.set", json!({"view": "list"}));
     d.ok("ui.panel.show", json!({"panel": "Project"}));
     d.menu("file.newSearchBin");
     assert!(d.has("searchBin.text") && d.has("searchBin.column"));

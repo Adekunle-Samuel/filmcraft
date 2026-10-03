@@ -583,6 +583,19 @@ All of these dispatch the same command ids.
   `ProjectItem::metadata`), Events (`events.list` / `events.clear`), Progress (`jobs.list` /
   `jobs.cancel`). Timecode and Reference Monitor are frontend-only views. Their settings are
   `UiState::panels` (`ui.set {"panels": {...}}`).
+- **Project panel and Media Browser** (M12.7). View settings (List / Icon / Freeform, thumbnail
+  and font size, Preview Area, Hover Scrub), the List view's columns, widths and sort, and ten view
+  presets are preferences (`Preferences::project_panel`; `project.view.*`, `project.columns.*`,
+  `project.sort`, `project.viewPreset.*`). Freeform positions, Clip Size, stacks and saved
+  arrangements are item metadata (`Freeform Position`, `Freeform Stack`,
+  `Freeform Arrangement: <name>`; `project.freeform.*`), so they are undoable and saved with the
+  project without a schema change. The Media Browser lists directories through
+  `Services::list_entries` / `volumes` / `home_dir` (native: `std::fs`; web: the virtual file
+  table; tests: a fake filesystem): `engine::media_browser` keeps navigation history and the
+  selection in `Session::browser`, Favorites / recent directories / file types / columns in
+  `Preferences::media_browser` (`mediaBrowser.*`). Bins opened in a tab or a window, the inline
+  rename, dialogs and the hover-scrubbed card are `UiState::project_panel`; the browser's tree
+  state is `UiState::media_browser` (`ui.set {"projectPanel": …, "mediaBrowser": …}`).
 
 Protocol reference: [control-protocol.md](control-protocol.md). Agent guide: [agents.md](agents.md).
 

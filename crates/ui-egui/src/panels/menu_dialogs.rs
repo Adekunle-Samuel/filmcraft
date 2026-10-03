@@ -33,15 +33,13 @@ pub struct Extras {
     pub dialog: Option<ClipDialogDraft>,
     /// View ▸ Dynamic Audio Waveforms: logarithmic (dB) waveform display; off = linear amplitude.
     pub dynamic_waveforms: bool,
-    /// Files selected in the Media Browser (File ▸ Import from Media Browser).
-    pub media_browser_selection: Vec<String>,
     /// Paths handed to the operating system's opener (Edit Original, Reveal Log Files), newest last.
     pub opened: Vec<String>,
 }
 
 impl Default for Extras {
     fn default() -> Self {
-        Extras { dialog: None, dynamic_waveforms: true, media_browser_selection: Vec::new(), opened: Vec::new() }
+        Extras { dialog: None, dynamic_waveforms: true, opened: Vec::new() }
     }
 }
 
@@ -200,14 +198,6 @@ pub fn route(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, params: &Val
                 }
             }
             return Some(r);
-        }
-        "file.importFromMediaBrowser" if params.get("paths").is_none() => {
-            let paths = app.ui.extras.media_browser_selection.clone();
-            if paths.is_empty() {
-                return Some(Err("select files in the Media Browser".into()));
-            }
-            let seq = params.get("imageSequence").and_then(Value::as_bool).unwrap_or(false);
-            return Some(app.session.execute(id, json!({"paths": paths, "imageSequence": seq})).map_err(|e| e.to_string()));
         }
         "file.exportSelectionProject" | "file.exportAle" if params.get("path").is_none() => {
             if let Err(e) = enabled(app, id) {
@@ -874,7 +864,7 @@ pub fn search_bin_rows(
             crate::theme::Tokens::ui(12.0),
             t.text,
         );
-        app.auto.add(&format!("project.searchBin.{}", sb.id.0), r, &sb.name);
+        app.auto.add(&format!("project.searchBin.{}", sb.id.0), r.intersect(ui.clip_rect()), &sb.name);
         if resp.clicked() {
             if open {
                 app.ui.expanded_bins.retain(|b| *b != sb.id.0);

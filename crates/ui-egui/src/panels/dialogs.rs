@@ -15,6 +15,8 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
     crate::panels::monitor_view::dialogs(app, ctx);
     crate::panels::voiceover::show(app, ctx);
     crate::panels::remix::show(app, ctx);
+    crate::panels::project_dialogs::show(app, ctx);
+    crate::panels::media_browser::dialogs(app, ctx);
     let Some(d) = app.dialog else { return };
     if let Some(still_open) = crate::panels::file_dialogs::show(app, ctx, d) {
         if !still_open && app.dialog == Some(d) {
