@@ -2,7 +2,7 @@
 
 Progress toward feature parity with Adobe Premiere Pro, with estimates. Updated as milestones land.
 
-**Last updated:** 2026-10-02 · **Overall parity:** ~85% (measured scorecard below) · **Code:** 34 crates, 1513 tests
+**Last updated:** 2026-10-02 · **Overall parity:** ~86% (measured scorecard below) · **Code:** 34 crates, 1562 tests
 
 ## Parity scorecard
 
@@ -15,7 +15,7 @@ matched against `filmcraft-cli commands` and the UI command table. Effects: the 
 | Editing, timeline, trimming, multicam | 20% | core edit algebra, trim modes, sync, multicam, menu long tail, Scene Edit Detection, Automate to Sequence, Premiere default keyboard (143 new commands; 39 cloud/absent-panel keys skipped) | ~86% |
 | Menus / commands | (cross-check) | ~325 of 344 in-scope menu items | ~95% |
 | Effects and transitions | 12% | video effects 93/93 (+Legacy, Obsolete), audio effects 53/53, video transitions 84/84 (+21 Legacy), audio transitions 3/3; some approximations (Warp Stabilizer 2-D, Morph Cut, Auto Reframe) | ~92% |
-| Media I/O and codecs | 12% | H.264, HEVC, VP9, AV1, ProRes, DNx, MJPEG, Opus, AAC; MP4/MOV/MKV/WebM, MXF (OP1a/OP-Atom), Ogg Opus, image sequences, BWF timecode; no MPEG-2, camera raw, HW decode | ~80% |
+| Media I/O and codecs | 12% | H.264, HEVC, VP9, AV1, ProRes, DNx, MJPEG, MPEG-2/MPEG-1 (4:2:2 incl. IMX/XDCAM), Opus, AAC, AC-3, MP2; MP4/MOV/MKV/WebM, MXF (incl. MPEG-2), MPEG TS/PS (AVCHD, broadcast, DVD), Ogg, image sequences, BWF; no E-AC-3, camera raw, HW decode | ~90% |
 | Panels and UI fidelity | 12% | all main panels incl. Metadata, Timecode, Events, Progress, Reference Monitor, full Lumetri Scopes, audio effect editors; Project panel List/Icon/Freeform with view presets and hover scrub; Media Browser with Favorites/navigation/ingest | ~85% |
 | Audio | 10% | mixer, automation (track + clip), Essential Sound, meters, all 53 effects, 5.1 tracks/buses/panner/export, voice-over record, Remix | ~88% |
 | Colour | 8% | Lumetri complete, LUTs, colour management, HDR, all Lumetri Scopes (+ `scopes.read` for agents) | ~88% |
@@ -23,7 +23,7 @@ matched against `filmcraft-cli commands` and the UI command table. Effects: the 
 | Export | 8% | own H.264/AAC, ProRes, DNxHR, image sequences, GIF, WAV; preset library + user presets, full Export-mode settings (loudness normalization, overlays, captions), export queue, Quick Export; no AAF/OMF, MXF export | ~80% |
 | Preferences and project management | 5% | Settings dialog with 16 categories (most settings wired), project settings, scratch disks, search bins, templates | ~80% |
 | Performance | 5% | 1080p real-time, 3×1080p; 4K H.264 real-time at load ≤140 (−23% decoder cycles, opt-in draft decoding at 1/2–1/4); HEVC 2.5× cheaper, catch-up decoding, `cargo xtask bench` + `perf.stats`; 8K and AV1 not yet real-time on a loaded machine | ~62% |
-| **Weighted total** | | | **~85%** |
+| **Weighted total** | | | **~86%** |
 
 ## Estimate to parity
 
@@ -76,6 +76,8 @@ Status: ✅ done · 🟡 in progress · ⬜ not started. Estimates are remaining
 - Nothing; next: remaining Premiere menu items (Settings categories, Scene Edit Detection, Normalize Mix Track, OMF/AAF, Find), AV1 single-thread re-measure on an idle machine
 
 ## Log
+
+- **2026-10-04:** MPEG-2 (M9.15): own MPEG-2/MPEG-1 video decoder (4:2:2, interlaced, field pictures; IEEE 1180 IDCT), MPEG TS/PS demux (AVCHD .mts, .m2ts, .ts, .mpg/.vob/.mod), own AC-3 decoder (ATSC A/52), MP2, LATM AAC, Blu-ray/DVD LPCM, MPEG-2 in MXF/MOV/MP4/MKV. 1562 tests.
 
 - **2026-10-03 (evening):** Project panel and Media Browser (M12.7): Freeform view (stacks, arrangements), Icon view hover scrub with In/Out, list columns from all metadata, ten view presets, multiple Project panels; Media Browser with Favorites/drives/recent, back/forward, filters, thumbnails, Edit Columns, ingest, drag to timeline; all as `project.*` / `mediaBrowser.*` commands. 1513 tests.
 

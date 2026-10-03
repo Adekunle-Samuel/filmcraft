@@ -31,6 +31,9 @@ const LAYERS: &[(&str, u8)] = &[
     ("isobmff", 0),
     ("matroska", 0),
     ("mxf", 0),
+    ("mpegts", 0),
+    ("mpeg2v", 0),
+    ("ac3", 0),
     ("ogg", 0),
     ("riff", 0),
     ("h264", 0),
@@ -377,6 +380,9 @@ const FIXTURE_GENERATORS: &[(&str, &str)] = &[
     ("prores", "oracle_decode"),
     ("dnx", "oracle_decode"),
     ("codecs", "mxf_oracle"),
+    ("codecs", "mpeg_oracle"),
+    ("mpeg2v", "oracle"),
+    ("ac3", "oracle"),
     ("codecs", "ogg_oracle"),
 ];
 
