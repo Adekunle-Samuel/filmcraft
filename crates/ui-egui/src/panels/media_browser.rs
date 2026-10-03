@@ -695,7 +695,7 @@ fn draw_preview(app: &mut FilmcraftApp, ui: &egui::Ui, ctx: &egui::Context, e: &
     let frame = rate.frame_at(crate::panels::project::quantize(t));
     let width = (r.width() as u32).clamp(96, 320);
     let rev = if proj.item(id).is_some() && id.0 < PREVIEW_BASE { app.item_revision(id) } else { 0 };
-    let key = FrameKey { target: Target::Item(id), frame, size: width, revision: rev };
+    let key = FrameKey { target: Target::Item(id), frame, size: width, revision: rev, draft: false };
     let name = format!("mbthumb-{}-{}-{}", id.0, frame, width);
     let tex = if let Some(img) = app.frames.get(&key) {
         let tid = app.texture_for(ctx, &name, key, &img);
