@@ -159,7 +159,10 @@ impl<'a> Cabac<'a> {
     /// at high bit rates, so it selects values instead of jumping.
     #[inline(always)]
     pub fn decode_decision(&mut self, ctx_idx: usize) -> u32 {
-        let s = self.ctx[ctx_idx] as usize;
+        // Every ctxIdx is < 1024 and every state < 128: the masks only let the compiler drop the
+        // bounds checks from the per-bin path.
+        let ctx_idx = ctx_idx & (NUM_CTX - 1);
+        let s = (self.ctx[ctx_idx] & 127) as usize;
         let q = ((self.range >> 6) & 3) as usize;
         let lps = RANGE_TAB_LPS[s >> 1][q] as u32;
         let mps_range = self.range - lps;

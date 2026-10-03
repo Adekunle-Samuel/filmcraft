@@ -56,6 +56,48 @@ fixture_tests!(
     vt_high_1080p,
 );
 
+/// Draft mode (reduced-resolution playback) skips deblocking of non-reference pictures only:
+/// every other picture stays bit-exact with ffmpeg, single- and frame-threaded, the skipped ones
+/// are flagged, and they are the only ones that differ.
+#[test]
+fn draft_mode_changes_only_flagged_non_reference_pictures() {
+    let mut checked = 0;
+    for name in ["main_cabac_b", "bpyramid", "cavlc_b", "direct_temporal", "weightb"] {
+        let f = common::fixture(name);
+        let Some((h264, yuv)) = common::ensure(f) else {
+            eprintln!("skipped {name}");
+            continue;
+        };
+        let reference = std::fs::read(&yuv).unwrap();
+        let (w, h) = (f.width as usize, f.height as usize);
+        let fsize = w * h + 2 * w.div_ceil(2) * h.div_ceil(2);
+        for threads in [1, 0] {
+            let pics = common::decode_file_opts(&h264, threads, true).unwrap_or_else(|(au, e, _)| panic!("{name}: error at {au}: {e}"));
+            common::check_pts(&pics).unwrap_or_else(|e| panic!("{name}: {e}"));
+            assert_eq!(pics.len() * fsize, reference.len(), "{name}: picture count");
+            let (mut draft, mut changed) = (0, 0);
+            for (i, p) in pics.iter().enumerate() {
+                let r = &reference[i * fsize..(i + 1) * fsize];
+                let same = p.y == r[..w * h] && [&p.u[..], &p.v[..]].concat() == r[w * h..];
+                if p.draft {
+                    draft += 1;
+                    changed += !same as usize;
+                } else {
+                    assert!(same, "{name} (threads {threads}): picture {i} (not draft) differs from the reference");
+                }
+            }
+            assert!(draft > 0, "{name}: has non-reference pictures");
+            if name != "no_deblock" {
+                assert!(changed > 0, "{name}: skipping deblocking changes some draft picture");
+            }
+            checked += 1;
+        }
+    }
+    if checked == 0 {
+        eprintln!("skipped: no fixtures");
+    }
+}
+
 /// Print which coding tools each fixture exercises (run with `-- --ignored --nocapture`).
 #[test]
 #[ignore]

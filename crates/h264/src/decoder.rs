@@ -63,6 +63,8 @@ pub struct DecodeStats {
     pub frame_num_gaps: u64,
     pub weighted_slices: u64,
     pub temporal_direct_slices: u64,
+    /// Non-reference pictures decoded in draft mode (deblocking skipped).
+    pub draft_pictures: u64,
 }
 
 /// State shared with decoding jobs.
@@ -93,6 +95,9 @@ pub struct Decoder {
     pool: Option<rayon::ThreadPool>,
     in_flight: VecDeque<FrameRef>,
     max_in_flight: usize,
+    threads: usize,
+    /// Draft mode: skip deblocking of non-reference pictures ([`Decoder::set_draft`]).
+    draft: bool,
 }
 
 impl Default for Decoder {
@@ -122,7 +127,9 @@ fn is_new_picture(prev: &SliceHeader, sh: &SliceHeader, sps: &Sps) -> bool {
     false
 }
 
-fn default_threads() -> usize {
+/// The worker threads [`Decoder::new`] uses: the available cores (at most 16) with the `threads`
+/// feature on native targets, 1 otherwise.
+pub fn default_threads() -> usize {
     #[cfg(all(feature = "threads", not(target_arch = "wasm32")))]
     {
         std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1).min(16)
@@ -148,6 +155,10 @@ impl Decoder {
         } else {
             None
         };
+        #[cfg(feature = "threads")]
+        let workers = if pool.is_some() { threads } else { 1 };
+        #[cfg(not(feature = "threads"))]
+        let workers = 1;
         Decoder {
             spss: vec![None; 32],
             ppss: vec![None; 256],
@@ -165,7 +176,28 @@ impl Decoder {
             pool,
             in_flight: VecDeque::new(),
             max_in_flight: threads.max(1) + 2,
+            threads: workers,
+            draft: false,
         }
+    }
+
+    /// Worker threads decoding pictures (1: on the calling thread).
+    pub fn threads(&self) -> usize {
+        self.threads
+    }
+
+    /// Draft mode (off by default) for reduced-resolution playback: pictures submitted from now
+    /// on that are non-reference pictures (`nal_ref_idc` 0) skip the deblocking filter (8.7).
+    /// Nothing predicts from a non-reference picture (and deblocking never changes the motion
+    /// data used for direct prediction), so every other picture stays bit-exact; the draft
+    /// pictures themselves are approximate and flagged [`Picture::draft`]. Never use it for
+    /// export or for a frame shown while paused.
+    pub fn set_draft(&mut self, on: bool) {
+        self.draft = on;
+    }
+
+    pub fn draft(&self) -> bool {
+        self.draft
     }
 
     /// Configure from an `avcC` (AVCDecoderConfigurationRecord) box payload.
@@ -450,19 +482,20 @@ impl Decoder {
     fn submit_pending(&mut self) {
         let Some(p) = self.pending.take() else { return };
         let PendingPic { frame, sps, first, poc, pts, key, slices } = p;
-        self.dispatch(frame.clone(), slices);
+        let draft = self.draft && first.nal_ref_idc == 0;
+        self.dispatch(frame.clone(), slices, draft);
         self.poc_state.update(&first, &poc);
         if first.nal_ref_idc != 0 {
             self.prev_ref_frame_num = if first.has_mmco5() { 0 } else { first.frame_num };
         }
-        let meta = Arc::new(output_meta(&sps, pts, key));
+        let meta = Arc::new(OutputMeta { draft, ..output_meta(&sps, pts, key) });
         let mut outs = Vec::new();
         let fpoc = frame.poc;
         self.dpb.store_picture(&first, frame, fpoc, sps.max_frame_num(), sps.max_num_ref_frames as usize, meta, &mut outs);
         self.emit(outs);
     }
 
-    fn dispatch(&mut self, frame: FrameRef, slices: Vec<SliceJob>) {
+    fn dispatch(&mut self, frame: FrameRef, slices: Vec<SliceJob>, draft: bool) {
         let shared = self.shared.clone();
         #[cfg(feature = "threads")]
         if let Some(pool) = &self.pool {
@@ -473,10 +506,10 @@ impl Decoder {
                 }
             }
             self.in_flight.push_back(frame.clone());
-            pool.spawn_fifo(move || run_job(frame, slices, &shared));
+            pool.spawn_fifo(move || run_job(frame, slices, &shared, draft));
             return;
         }
-        run_job(frame, slices, &shared);
+        run_job(frame, slices, &shared, draft);
     }
 
     fn emit(&mut self, outs: Vec<Output>) {
@@ -485,7 +518,7 @@ impl Decoder {
 }
 
 /// Decode all slices of one picture and publish its rows.
-fn run_job(frame: FrameRef, slices: Vec<SliceJob>, shared: &Shared) {
+fn run_job(frame: FrameRef, slices: Vec<SliceJob>, shared: &Shared, draft: bool) {
     let reuse = shared.pool.lock().ok().and_then(|mut p| p.pop());
     let mut pic = match reuse {
         Some(mut p) if p.mb_w == frame.mb_w && p.mb_h == frame.mb_h() => {
@@ -494,6 +527,7 @@ fn run_job(frame: FrameRef, slices: Vec<SliceJob>, shared: &Shared) {
         }
         _ => PicState::new(frame.clone()),
     };
+    pic.skip_deblock = draft;
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let mut first_err = None;
         for s in &slices {
@@ -521,6 +555,7 @@ fn run_job(frame: FrameRef, slices: Vec<SliceJob>, shared: &Shared) {
     };
     if let Ok(mut s) = shared.stats.lock() {
         s.pictures += 1;
+        s.draft_pictures += draft as u64;
         for st in &pic.mbs {
             match st.kind {
                 MbKind::I4x4 => s.mb_i4x4 += 1,
@@ -570,6 +605,7 @@ fn output_meta(sps: &Sps, pts: i64, key: bool) -> OutputMeta {
         transfer_characteristics: vui.transfer_characteristics,
         matrix_coefficients: vui.matrix_coefficients,
         sar: vui.sar,
+        draft: false,
     }
 }
 
@@ -598,5 +634,6 @@ fn make_picture(o: &Output) -> Picture {
             matrix: o.meta.matrix_coefficients,
         },
         sar: o.meta.sar,
+        draft: o.meta.draft,
     }
 }
