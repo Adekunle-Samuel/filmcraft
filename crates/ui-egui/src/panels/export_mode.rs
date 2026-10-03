@@ -22,7 +22,8 @@
 use egui::{Align2, Color32, Rect, Sense, pos2, vec2};
 use filmcraft_engine::export::presets::{DEFAULT_PRESET, preset_key};
 use filmcraft_engine::export::{
-    AudioCodec, BitrateMode, ExportSettings, FieldOrder, Format, H264Profile, Multiplexer, Placement, Scaling, TextOverlay, builtin_presets, format_bytes,
+    AudioCodec, BitrateMode, ExportSettings, FieldOrder, Format, H264Profile, Multiplexer, MxfVideoCodec, Placement, Scaling, TextOverlay, builtin_presets,
+    format_bytes,
 };
 use filmcraft_engine::time::{FrameRate, Tick};
 use serde::{Deserialize, Serialize};
@@ -458,7 +459,11 @@ fn settings_column(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         if s.has_video() && section(ui, &mut reg, &mut ex.open_sections, "video", "Video", &t) {
             video_section(ui, &mut reg, s, &t, seq_w, seq_h);
         }
-        if (s.has_audio() || !s.has_video() || s.format == Format::H264 || matches!(s.format, Format::ProRes | Format::DnxHr | Format::Mjpeg))
+        if (s.has_audio()
+            || !s.has_video()
+            || s.format == Format::H264
+            || matches!(s.format, Format::ProRes | Format::DnxHr | Format::Mjpeg)
+            || s.format.is_mxf())
             && !s.is_image_sequence()
             && s.format != Format::Gif
             && section(ui, &mut reg, &mut ex.open_sections, "audio", "Audio", &t)
@@ -579,7 +584,15 @@ fn video_section(ui: &mut egui::Ui, reg: &mut Reg, s: &mut ExportSettings, t: &T
             s.pixel_aspect = PARS[i].1;
         }
     });
-    match s.format {
+    if s.format.is_mxf() {
+        row(ui, t, "Video Codec", |ui| {
+            let labels: Vec<(String, bool)> = MxfVideoCodec::ALL.iter().map(|c| (c.label().to_string(), true)).collect();
+            if let Some(i) = combo(ui, reg, "export.video.mxfCodec", s.mxf_video_codec.label(), &labels, 180.0) {
+                s.mxf_video_codec = MxfVideoCodec::ALL[i];
+            }
+        });
+    }
+    match s.video_format() {
         Format::H264 => {
             row(ui, t, "Profile", |ui| {
                 let o = [H264Profile::Baseline, H264Profile::Main, H264Profile::High];
@@ -683,7 +696,7 @@ fn audio_section(ui: &mut egui::Ui, reg: &mut Reg, s: &mut ExportSettings, t: &T
         }
     }
     row(ui, t, "Audio Format", |ui| {
-        let fixed = s.format == Format::H264 && s.multiplexer == Multiplexer::Mp4 || audio_only;
+        let fixed = s.format == Format::H264 && s.multiplexer == Multiplexer::Mp4 || audio_only || s.format.is_mxf();
         let cur = match s.audio_codec() {
             AudioCodec::Aac => "AAC",
             _ => "Uncompressed (PCM)",

@@ -16,12 +16,14 @@ use std::io::Write;
 
 mod audio_out;
 mod job;
+mod mxf_out;
 mod pcm;
 mod pipeline;
 pub mod presets;
 pub mod settings;
 pub use audio_out::LoudnessReport;
 pub use job::{Exporter, Step, stepped};
+pub use mxf_out::opatom_audio_paths;
 pub use pcm::{image_sequence_path, write_aiff, write_wav};
 pub use pipeline::limit_rgba8;
 pub use presets::{ExportPreset, builtin_presets};
@@ -82,6 +84,13 @@ pub enum Format {
     Wav,
     #[serde(rename = "aiff", alias = "Aiff")]
     Aiff,
+    /// MXF OP1a (SMPTE ST 378): frame-wrapped DNxHR, ProRes or H.264 ([`MxfVideoCodec`]) + PCM.
+    #[serde(rename = "mxf-op1a", alias = "MxfOp1a")]
+    MxfOp1a,
+    /// MXF OP-Atom (SMPTE ST 390, Avid style): the picture in one file, one mono PCM file per
+    /// audio channel ([`opatom_audio_paths`]).
+    #[serde(rename = "mxf-opatom", alias = "MxfOpAtom")]
+    MxfOpAtom,
 }
 
 impl Format {
@@ -89,7 +98,9 @@ impl Format {
         Some(match s.to_ascii_lowercase().replace([' ', '-', '_', '.'], "").as_str() {
             "h264" | "mp4" | "avc" | "m4v" => Format::H264,
             "prores" | "mov" | "appleprores" => Format::ProRes,
-            "dnxhr" | "dnxhd" | "dnx" | "avid" | "aviddnxhr" | "aviddnxhd" | "vc3" | "mxf" => Format::DnxHr,
+            "dnxhr" | "dnxhd" | "dnx" | "avid" | "aviddnxhr" | "aviddnxhd" | "vc3" => Format::DnxHr,
+            "mxf" | "mxfop1a" | "op1a" => Format::MxfOp1a,
+            "mxfopatom" | "opatom" | "mxfatom" | "avidmxf" => Format::MxfOpAtom,
             "mjpeg" | "motionjpeg" | "jpeg" => Format::Mjpeg,
             "png" | "pngsequence" => Format::PngSequence,
             "tif" | "tiff" | "tiffsequence" => Format::TiffSequence,
@@ -113,6 +124,8 @@ impl Format {
             Format::Gif => "gif",
             Format::Wav => "wav",
             Format::Aiff => "aiff",
+            Format::MxfOp1a => "mxf-op1a",
+            Format::MxfOpAtom => "mxf-opatom",
         }
     }
     pub fn extension(self) -> &'static str {
@@ -125,6 +138,7 @@ impl Format {
             Format::Gif => "gif",
             Format::Wav => "wav",
             Format::Aiff => "aif",
+            Format::MxfOp1a | Format::MxfOpAtom => "mxf",
         }
     }
     pub fn label(self) -> &'static str {
@@ -139,9 +153,15 @@ impl Format {
             Format::Gif => "Animated GIF",
             Format::Wav => "Waveform Audio",
             Format::Aiff => "AIFF",
+            Format::MxfOp1a => "MXF OP1a",
+            Format::MxfOpAtom => "MXF OP-Atom",
         }
     }
-    pub const ALL: [Format; 10] = [
+    /// An MXF container format.
+    pub fn is_mxf(self) -> bool {
+        matches!(self, Format::MxfOp1a | Format::MxfOpAtom)
+    }
+    pub const ALL: [Format; 12] = [
         Format::H264,
         Format::ProRes,
         Format::DnxHr,
@@ -152,6 +172,8 @@ impl Format {
         Format::Gif,
         Format::Wav,
         Format::Aiff,
+        Format::MxfOp1a,
+        Format::MxfOpAtom,
     ];
 }
 
@@ -192,6 +214,9 @@ pub struct ExportSettings {
     /// DNxHR profile: `lb`, `sq`, `hq` or `hqx` (empty = HQ).
     #[serde(default)]
     pub dnx_profile: String,
+    /// Video codec of the MXF formats (DNxHR unless set; the ProRes / DNxHR profile fields apply).
+    #[serde(default)]
+    pub mxf_video_codec: MxfVideoCodec,
     /// Encode display-referred SDR (Rec. 709, tone mapped) even when the sequence works in
     /// Rec. 2100 PQ/HLG. Otherwise H.264 and ProRes exports of an HDR sequence are encoded in the
     /// sequence's HDR space and signal it (VUI / `colr` / `mdcv` / `clli` / SEI).
@@ -259,21 +284,30 @@ enum Out {
 
 impl Out {
     fn create(settings: &ExportSettings) -> Result<Out> {
+        Out::create_path(settings, &settings.path)
+    }
+
+    /// An output file at `path` (OP-Atom exports write several).
+    fn create_path(settings: &ExportSettings, path: &str) -> Result<Out> {
         if settings.sink.is_some() {
             return Ok(Out::Mem(std::io::Cursor::new(Vec::new())));
         }
-        let f = std::fs::File::create(&settings.path).map_err(|e| ExportError::Io(e.to_string()))?;
+        let f = std::fs::File::create(path).map_err(|e| ExportError::Io(format!("{path}: {e}")))?;
         Ok(Out::File(std::io::BufWriter::new(f)))
     }
 
     /// Flush (and hand in-memory output to the sink); returns the file size.
     fn finish(self, settings: &ExportSettings) -> Result<u64> {
+        self.finish_path(settings, &settings.path)
+    }
+
+    fn finish_path(self, settings: &ExportSettings, path: &str) -> Result<u64> {
         match self {
             Out::File(mut w) => {
                 w.flush().map_err(|e| ExportError::Io(e.to_string()))?;
-                Ok(std::fs::metadata(&settings.path).map(|m| m.len()).unwrap_or(0))
+                Ok(std::fs::metadata(path).map(|m| m.len()).unwrap_or(0))
             }
-            Out::Mem(c) => write_output(settings, &settings.path, c.into_inner()),
+            Out::Mem(c) => write_output(settings, path, c.into_inner()),
         }
     }
 }
@@ -372,6 +406,7 @@ impl Default for ExportSettings {
             part_of_batch: false,
             prores_profile: String::new(),
             dnx_profile: String::new(),
+            mxf_video_codec: MxfVideoCodec::default(),
             sdr: false,
             frame_size: None,
             frame_rate: None,
@@ -441,6 +476,9 @@ pub struct Report {
     pub seconds: f64,
     pub bytes: u64,
     pub render_fps: f64,
+    /// Further files written besides `path` (MXF OP-Atom audio files).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub extra_files: Vec<String>,
 }
 
 /// A packet produced by a video encoder.
@@ -883,8 +921,9 @@ fn h264_factory(format: Format, w: u32, h: u32, rate: FrameRate, s: &ExportSetti
         return None;
     }
     let mut cfg = filmcraft_h264enc::EncoderConfig::new(w, h, rate.num as u32, rate.den as u32);
-    cfg.format = filmcraft_h264enc::PacketFormat::LengthPrefixed;
-    cfg.aud = false;
+    // MXF carries the Annex B byte stream (ST 381-3) with in-band parameter sets
+    cfg.format = if s.format.is_mxf() { filmcraft_h264enc::PacketFormat::AnnexB } else { filmcraft_h264enc::PacketFormat::LengthPrefixed };
+    cfg.aud = s.format.is_mxf();
     cfg.keyint = s.keyframe_distance.filter(|k| *k > 0).unwrap_or_else(|| (rate.num as f64 / rate.den as f64 * 2.0).round().max(1.0) as u32);
     let kbps = s.bitrate_kbps.max(100);
     let max = s.max_bitrate_kbps.filter(|m| *m >= kbps).unwrap_or(kbps * 3 / 2);
@@ -1069,14 +1108,14 @@ pub fn export(project: &Arc<Project>, seq: ItemId, settings: &ExportSettings, so
             }
             (total, count)
         }
-        Format::H264 | Format::ProRes | Format::DnxHr | Format::Mjpeg => unreachable!("stepped export"),
+        Format::H264 | Format::ProRes | Format::DnxHr | Format::Mjpeg | Format::MxfOp1a | Format::MxfOpAtom => unreachable!("stepped export"),
     };
     let secs = t0.elapsed().as_secs_f64();
     if !settings.part_of_batch {
         progress.finished.store(true, Ordering::Relaxed);
         progress.set_status(format!("Done in {secs:.1}s"));
     }
-    Ok(Report { path: settings.path.clone(), frames: nframes, seconds: secs, bytes, render_fps: nframes as f64 / secs.max(1e-6) })
+    Ok(Report { path: settings.path.clone(), frames: nframes, seconds: secs, bytes, render_fps: nframes as f64 / secs.max(1e-6), extra_files: Vec::new() })
 }
 
 #[cfg(test)]
@@ -1087,3 +1126,6 @@ mod settings_tests;
 
 #[cfg(test)]
 mod surround_tests;
+
+#[cfg(test)]
+mod mxf_tests;

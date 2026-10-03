@@ -193,7 +193,14 @@ fn detect(s: &mut Session, p: &Value) -> Result<Value> {
             Some(e) => Err(e),
             None => {
                 *lock(&out) = Some(found);
-                Ok(filmcraft_export::Report { path: String::new(), frames: done, seconds: secs, bytes: 0, render_fps: done as f64 / secs.max(1e-6) })
+                Ok(filmcraft_export::Report {
+                    path: String::new(),
+                    frames: done,
+                    seconds: secs,
+                    bytes: 0,
+                    render_fps: done as f64 / secs.max(1e-6),
+                    extra_files: Vec::new(),
+                })
             }
         };
         *lock(&res) = Some(r);

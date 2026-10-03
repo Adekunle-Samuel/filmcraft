@@ -27,7 +27,7 @@ SUBCOMMANDS
   export <out> [--preset name] [--format f] [--range r] [--start s --end s] [--settings json]
                                 export the active sequence and wait for it to finish: with an
                                 export preset (`export --list-presets`; built-in or the user's), or
-                                a format (h264|prores|dnxhr|mjpeg|png|tiff|bmp|gif|wav|aiff, guessed
+                                a format (h264|prores|dnxhr|mjpeg|mxf-op1a|mxf-opatom|png|tiff|bmp|gif|wav|aiff, guessed
                                 from the extension); --range entire|inOut|workArea, or a custom
                                 range in seconds; --settings is ExportSettings JSON merged over the
                                 preset; --queue adds to the export queue and runs it instead
@@ -136,7 +136,7 @@ fn format_for(path: &str) -> Option<&'static str> {
     Some(match ext.as_str() {
         "mp4" | "m4v" => "h264",
         "mov" => "prores",
-        "mxf" => "dnxhr",
+        "mxf" => "mxf-op1a",
         "png" => "png",
         "gif" => "gif",
         "wav" => "wav",
@@ -364,5 +364,15 @@ async fn main() {
             }
         }
         other => usage(format!("unknown subcommand `{other}`")),
+    }
+}
+
+#[cfg(test)]
+mod format_tests {
+    #[test]
+    fn export_format_from_extension() {
+        assert_eq!(super::format_for("out/clip.MXF"), Some("mxf-op1a"));
+        assert_eq!(super::format_for("a.mov"), Some("prores"));
+        assert_eq!(super::format_for("noext"), None);
     }
 }
