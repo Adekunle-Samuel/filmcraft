@@ -2,7 +2,7 @@
 
 Progress toward feature parity with Adobe Premiere Pro, with estimates. Updated as milestones land.
 
-**Last updated:** 2026-10-02 · **Overall parity:** ~81% (measured scorecard below) · **Code:** 34 crates, 1432 tests
+**Last updated:** 2026-10-02 · **Overall parity:** ~83% (measured scorecard below) · **Code:** 34 crates, 1479 tests
 
 ## Parity scorecard
 
@@ -19,11 +19,11 @@ matched against `filmcraft-cli commands` and the UI command table. Effects: the 
 | Panels and UI fidelity | 12% | all main panels incl. Metadata, Timecode, Events, Progress, Reference Monitor, full Lumetri Scopes, audio effect editors; Media Browser and Libraries-style panels thin | ~75% |
 | Audio | 10% | mixer, automation (track + clip), Essential Sound, meters, all 53 effects, 5.1 tracks/buses/panner/export, voice-over record, Remix | ~88% |
 | Colour | 8% | Lumetri complete, LUTs, colour management, HDR, all Lumetri Scopes (+ `scopes.read` for agents) | ~88% |
-| Graphics and captions | 8% | text engine, shapes, captions, transcripts; no MOGRT, rolls/crawls, responsive design | ~60% |
+| Graphics and captions | 8% | text engine, shapes, per-character styles, our own graphics templates (.fcgt, 8 built-ins, export/install/edit), rolls/crawls, responsive pins + time, captions SRT/VTT/SCC/MCC/STL/TTML/DFXP, transcripts | ~85% |
 | Export | 8% | own H.264/AAC, ProRes, DNxHR, image sequences, GIF, WAV; preset library + user presets, full Export-mode settings (loudness normalization, overlays, captions), export queue, Quick Export; no AAF/OMF, MXF export | ~80% |
 | Preferences and project management | 5% | Settings dialog with 16 categories (most settings wired), project settings, scratch disks, search bins, templates | ~80% |
 | Performance | 5% | 1080p real-time, 3×1080p; HEVC 2.5× cheaper, catch-up decoding halves 4K CPU/frame, `cargo xtask bench` + `perf.stats`; 4K/8K and AV1 not yet real-time on a loaded machine | ~55% |
-| **Weighted total** | | | **~81%** |
+| **Weighted total** | | | **~83%** |
 
 ## Estimate to parity
 
@@ -76,6 +76,8 @@ Status: ✅ done · 🟡 in progress · ⬜ not started. Estimates are remaining
 - Nothing; next: remaining Premiere menu items (Settings categories, Scene Edit Detection, Normalize Mix Track, OMF/AAF, Find), AV1 single-thread re-measure on an idle machine
 
 ## Log
+
+- **2026-10-03 (later):** graphics & captions (M10.7): `.fcgt` graphics templates (export/install/apply/edit, 8 original built-ins; Adobe .mogrt refused), Essential Graphics Browse/Edit, rolls/crawls, responsive design pins and time, per-character styles, Upgrade Caption to Graphic / to Source Graphic, MCC/EBU STL/TTML/DFXP, Replace Fonts; schema v12. 1479 tests.
 
 - **2026-10-03:** keyboard parity (M3.12: 143 new commands on Premiere's default keys, table validated against the registry), audio (M7.8: 5.1 tracks/submixes/Mix, 5.1 panner, BS.775 downmix, 5.1 WAV/MOV/AAC export, voice-over record with punch-in, Remix, Clip Mixer Latch/Touch/Write). 1432 tests.
 
