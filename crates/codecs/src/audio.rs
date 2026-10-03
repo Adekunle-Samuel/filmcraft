@@ -598,7 +598,7 @@ impl MediaSource for AudioFileSource {
 
 pub fn opener(name: &str, bytes: Arc<[u8]>) -> Option<std::result::Result<SharedSource, MediaError>> {
     let ext = name.rsplit('.').next().unwrap_or("").to_ascii_lowercase();
-    if !matches!(ext.as_str(), "mp3" | "flac" | "ogg" | "oga" | "aif" | "aiff" | "aifc") {
+    if !matches!(ext.as_str(), "mp3" | "mp2" | "flac" | "ogg" | "oga" | "aif" | "aiff" | "aifc") {
         return None;
     }
     Some(AudioFileSource::decode(name, bytes).map(|s| Arc::new(s) as SharedSource).map_err(Into::into))

@@ -141,6 +141,7 @@ fn spec(name: &str) -> Vec<String> {
         "mkv_mpeg2.mkv" => {
             cat(&[&["-f", "lavfi", "-i", "testsrc2=size=320x240:rate=25"], NOISE, &["-t", "0.6", "-c:v", "mpeg2video", "-bf", "2", "-g", "6", "-c:a", "mp2"]])
         }
+        "audio.mp2" => cat(&[NOISE, &["-t", "1", "-c:a", "mp2", "-b:a", "224k", "-f", "mp2"]]),
         "es_mpeg2.m2v" => {
             cat(&[&["-f", "lavfi", "-i", "testsrc2=size=352x288:rate=25"], &["-t", "1", "-c:v", "mpeg2video", "-bf", "2", "-g", "9", "-f", "mpeg2video"]])
         }
@@ -162,6 +163,7 @@ pub const ALL: &[&str] = &[
     "mov_xdcam_hd422.mov",
     "mp4_mpeg2.mp4",
     "mkv_mpeg2.mkv",
+    "audio.mp2",
     "es_mpeg2.m2v",
 ];
 
@@ -448,6 +450,20 @@ fn mpeg2_in_quicktime_mp4_and_matroska() {
             assert!(d <= 4, "{name}: frame {i} differs by {d}");
         }
     }
+}
+
+#[test]
+fn standalone_mp2_file() {
+    let ff = filmcraft_testkit::require_ffmpeg!();
+    let f = make(&ff, "audio.mp2");
+    let src = filmcraft_codecs::open_bytes("audio.mp2", bytes(&f)).unwrap();
+    let a = src.info().audio.clone().unwrap();
+    assert_eq!((a.sample_rate, a.channels), (48_000, 2));
+    let want = ffmpeg_audio_f32(&ff, &f, &[]);
+    let n = want.len() / 2;
+    let buf = src.audio(0, n, 48_000).unwrap();
+    let worst = (0..n).map(|i| (buf.channels[0][i] - want[2 * i]).abs().max((buf.channels[1][i] - want[2 * i + 1]).abs())).fold(0f32, f32::max);
+    assert!(worst <= 2e-4, "{worst}");
 }
 
 #[test]
