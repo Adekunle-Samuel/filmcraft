@@ -712,7 +712,7 @@ static CATEGORIES: &[Category] = &[
         title: "Audio",
         rows: &[
             f("audio.automatchTime", "Automatch Time", float(0.0, 30.0, 3, "seconds"), true),
-            f("audio.mixdownType", "5.1 Mixdown Type", Kind::Choice(MIXDOWN), false),
+            f("audio.mixdownType", "5.1 Mixdown Type", Kind::Choice(MIXDOWN), true),
             f("audio.largeVolumeAdjustment", "Large Volume Adjustment", float(0.0, 96.0, 0, "dB"), true),
             b("audio.sumToMonoInSource", "Sum multichannel outputs to mono in Source Monitor", false),
             b("audio.scrubAudio", "Play audio while scrubbing in Source and Program Monitors", false),

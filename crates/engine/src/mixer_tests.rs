@@ -324,3 +324,160 @@ fn default_audio_transition_is_used_by_apply() {
     assert_eq!(tr.len(), 1);
     assert_eq!(tr[0].effect.effect, "exponential_fade");
 }
+
+// ------------------------------------------------------------------------------------- Audio Clip Mixer automation
+
+/// The first clip on A1 and a time range well inside it.
+fn a1_clip(s: &Session) -> (filmcraft_project::ClipId, Tick, Tick) {
+    let c = &a1(s).items[0];
+    let len = c.duration.0;
+    (c.id, Tick(c.start.0 + len / 5), Tick(c.start.0 + len * 4 / 5))
+}
+
+fn clip_level(s: &Session, clip: filmcraft_project::ClipId, t: Tick) -> f64 {
+    let (_, c) = s.active_sequence().unwrap().find_item(clip).unwrap();
+    c.effect("volume").unwrap().f64_at("level", c.source_time_at(t))
+}
+
+fn clip_level_kfs(s: &Session, clip: filmcraft_project::ClipId) -> usize {
+    let (_, c) = s.active_sequence().unwrap().find_item(clip).unwrap();
+    c.effect("volume").unwrap().param("level").unwrap().keyframes.len()
+}
+
+#[test]
+fn clip_mixer_touch_writes_clip_keyframes_and_ramps_back() {
+    let mut s = demo();
+    s.prefs.audio.automatch_time = 0.0;
+    let (clip, t0, t1) = a1_clip(&s);
+    let base = clip_level(&s, clip, t0);
+    let kf0 = clip_level_kfs(&s, clip);
+    let mid = Tick((t0.0 + t1.0) / 2);
+    assert!(s.execute("clipMixer.setMode", json!({"track": "Mix", "mode": "Touch"})).is_err(), "audio tracks only");
+    s.execute("clipMixer.setMode", json!({"track": "A1", "mode": "Touch"})).unwrap();
+    assert_eq!(s.execute("mixer.inspect", json!({})).unwrap()["clipModes"][0]["mode"], "Touch");
+    let undo0 = s.history.undo.len();
+    s.execute("mixer.recordStart", json!({"time": t0.0})).unwrap();
+    // a dense linear fader move from 0 to −12 dB over [t0, mid], then let go
+    let steps = 200;
+    for i in 0..=steps {
+        let t = Tick(t0.0 + (mid.0 - t0.0) * i / steps);
+        let r = s.execute("clipMixer.touch", json!({"track": "A1", "lane": "volume", "value": -12.0 * i as f64 / steps as f64, "time": t.0})).unwrap();
+        assert_eq!(r["recording"], true);
+    }
+    // the held value is heard live on the track
+    let tid = a1(&s).id;
+    assert_eq!(s.previews.live.get(tid, filmcraft_render::audio::CLIP_LANE_VOLUME).map(|o| o.value), Some(-12.0));
+    s.execute("clipMixer.release", json!({"track": "A1", "lane": "volume", "time": mid.0})).unwrap();
+    let r = s.execute("mixer.recordStop", json!({"time": t1.0})).unwrap();
+    assert_eq!(r["lanes"], 1);
+    assert_eq!(s.history.undo.len(), undo0 + 1, "one undo step");
+    // thinned: the 201-point ramp is two keyframes plus the boundary keyframes
+    let n = clip_level_kfs(&s, clip);
+    assert!((2..=6).contains(&n), "{n} keyframes");
+    assert!((clip_level(&s, clip, t0) - 0.0).abs() < 0.06);
+    assert!((clip_level(&s, clip, Tick((t0.0 + mid.0) / 2)) + 6.0).abs() < 0.1, "{}", clip_level(&s, clip, Tick((t0.0 + mid.0) / 2)));
+    assert!((clip_level(&s, clip, Tick(mid.0 - 1)) + 12.0).abs() < 0.1);
+    // outside the gesture the clip keeps its old value; after the release (automatch 0)
+    // it is back to the automation at once
+    let c_start = s.active_sequence().unwrap().find_item(clip).unwrap().1.start;
+    assert!((clip_level(&s, clip, Tick(c_start.0 + 1)) - base).abs() < 1e-9);
+    assert!((clip_level(&s, clip, Tick(t1.0 - 1)) - base).abs() < 1e-9, "{}", clip_level(&s, clip, Tick(t1.0 - 1)));
+    assert!(s.previews.live.get(tid, filmcraft_render::audio::CLIP_LANE_VOLUME).is_none(), "overrides cleared");
+    s.execute("edit.undo", json!({})).unwrap();
+    assert_eq!(clip_level_kfs(&s, clip), kf0);
+}
+
+#[test]
+fn clip_mixer_latch_and_write_hold_until_stop() {
+    let mut s = demo();
+    let (clip, t0, t1) = a1_clip(&s);
+    let mid = Tick((t0.0 + t1.0) / 2);
+    let base = clip_level(&s, clip, t0);
+    // Latch: from the first touch, the last value holds until playback stops
+    s.execute("clipMixer.setMode", json!({"track": "A1", "mode": "Latch"})).unwrap();
+    s.execute("mixer.recordStart", json!({"time": t0.0})).unwrap();
+    s.execute("clipMixer.touch", json!({"track": "A1", "lane": "volume", "value": -6.0, "time": mid.0})).unwrap();
+    s.execute("clipMixer.release", json!({"track": "A1", "lane": "volume", "time": mid.0 + sec(0.1)})).unwrap();
+    s.execute("mixer.recordStop", json!({"time": t1.0})).unwrap();
+    assert!((clip_level(&s, clip, Tick(t0.0 + sec(0.01))) - base).abs() < 1e-9, "untouched before the first touch");
+    assert!((clip_level(&s, clip, Tick(t1.0 - sec(0.01))) + 6.0).abs() < 1e-6, "latched");
+    // Write: records from the start of playback (pan too), even without a touch
+    let mut s = demo();
+    let (clip, t0, t1) = a1_clip(&s);
+    s.execute("clipMixer.setMode", json!({"track": "A1", "mode": "Write"})).unwrap();
+    let r = s.execute("mixer.recordStart", json!({"time": t0.0})).unwrap();
+    assert_eq!(r["writing"], 2, "volume and pan");
+    s.execute("clipMixer.touch", json!({"track": "A1", "lane": "pan", "value": -40.0, "time": t0.0 + sec(0.2)})).unwrap();
+    s.execute("mixer.recordStop", json!({"time": t1.0})).unwrap();
+    let (_, c) = s.active_sequence().unwrap().find_item(clip).unwrap();
+    let bal = c.effect("panner").unwrap().f64_at("balance", c.source_time_at(Tick(t1.0 - sec(0.01))));
+    assert!((bal + 40.0).abs() < 1e-6, "{bal}");
+    // Read mode: touching does not record; without a pass a release commits the value once
+    let mut s = demo();
+    let (clip, t0, _) = a1_clip(&s);
+    let kf0 = clip_level_kfs(&s, clip);
+    let r = s.execute("clipMixer.touch", json!({"track": "A1", "lane": "volume", "value": -3.0, "time": t0.0})).unwrap();
+    assert_eq!(r["recording"], false);
+    s.execute("clipMixer.release", json!({"track": "A1", "lane": "volume", "time": t0.0})).unwrap();
+    assert!((clip_level(&s, clip, t0) + 3.0).abs() < 1e-9);
+    assert_eq!(clip_level_kfs(&s, clip), kf0, "static value, no keyframe");
+}
+
+#[test]
+fn clip_automation_spanning_two_clips_writes_both() {
+    let mut s = demo();
+    let tr = a1(&s).clone();
+    if tr.items.len() < 2 {
+        return;
+    }
+    let (c0, c1) = (&tr.items[0], &tr.items[1]);
+    let (ta, tb) = (Tick(c0.end().0 - sec(0.5)), Tick(c1.start.0 + sec(0.5)));
+    let base1 = clip_level(&s, c1.id, Tick(c1.start.0 + sec(1.0)));
+    s.execute("clipMixer.setMode", json!({"track": "A1", "mode": "Latch"})).unwrap();
+    s.execute("mixer.recordStart", json!({"time": ta.0})).unwrap();
+    s.execute("clipMixer.touch", json!({"track": "A1", "lane": "volume", "value": -9.0, "time": ta.0})).unwrap();
+    s.execute("mixer.recordStop", json!({"time": tb.0})).unwrap();
+    assert!((clip_level(&s, c0.id, Tick(c0.end().0 - sec(0.1))) + 9.0).abs() < 1e-6);
+    assert!((clip_level(&s, c1.id, Tick(c1.start.0 + sec(0.1))) + 9.0).abs() < 1e-6);
+    assert!((clip_level(&s, c1.id, Tick(c1.start.0 + sec(1.0))) - base1).abs() < 1e-9, "after the range: unchanged");
+}
+
+// ------------------------------------------------------------------------------------- 5.1
+
+#[test]
+fn surround_sequence_settings_and_panner_lanes() {
+    let mut s = demo();
+    assert_eq!(s.execute("mixer.inspect", json!({})).unwrap()["strips"][0]["pans51"], false);
+    s.execute("sequence.settings", json!({"mix": "5.1"})).unwrap();
+    assert_eq!(s.active_sequence().unwrap().settings.audio_master, filmcraft_project::AudioChannels::Surround51);
+    let v = s.execute("mixer.inspect", json!({})).unwrap();
+    assert_eq!(v["strips"][0]["pans51"], true);
+    assert_eq!(v["strips"][0]["outputChannels"], "5.1");
+    assert_eq!(v["strips"].as_array().unwrap().last().unwrap()["channels"], "5.1");
+    s.execute("mixer.setValue", json!({"strip": "A1", "lane": "pan51.x", "value": -50.0})).unwrap();
+    s.execute("mixer.setValue", json!({"strip": "A1", "lane": "pan51.center", "value": 250.0})).unwrap();
+    let v = s.execute("mixer.inspect", json!({})).unwrap();
+    assert_eq!(v["strips"][0]["pan51"]["x"], -50.0);
+    assert_eq!(v["strips"][0]["pan51"]["center"], 100.0, "clamped");
+    assert!(s.execute("mixer.setValue", json!({"strip": "Mix", "lane": "pan51.x", "value": 1.0})).is_err());
+    s.execute("edit.undo", json!({})).unwrap();
+    s.execute("edit.undo", json!({})).unwrap();
+    assert_eq!(s.execute("mixer.inspect", json!({})).unwrap()["strips"][0]["pan51"]["x"], 0.0);
+    // the mix is six channels; mix_sequence folds it to stereo
+    let provider = s.media.provider(s.project.clone(), s.services.clone());
+    let q = s.active_sequence().unwrap();
+    assert_eq!(filmcraft_render::mixer::mix_graph(&s.project, q, 0, 480, &provider, None).channels.len(), 6);
+    assert_eq!(filmcraft_render::audio::mix_sequence(&s.project, q, 0, 480, &provider).channels.len(), 2);
+    // a Write pass on a strip feeding 5.1 records the puck, not the stereo pan
+    set_mode(&mut s, "A1", "Write");
+    let r = s.execute("mixer.recordStart", json!({"time": 0})).unwrap();
+    assert_eq!(r["writing"], 4);
+    s.execute("mixer.recordStop", json!({"time": sec(1.0)})).unwrap();
+    // New Sequence with a 5.1 Mix and 5.1 tracks
+    s.execute("file.newSequence", json!({"name": "surround", "mix": "5.1", "trackType": "5.1", "audio": 2})).unwrap();
+    let q = s.active_sequence().unwrap();
+    assert_eq!(q.settings.audio_master, filmcraft_project::AudioChannels::Surround51);
+    assert!(q.audio_tracks.iter().all(|t| t.channels == filmcraft_project::AudioChannels::Surround51));
+    assert!(s.execute("file.newSequence", json!({"mix": "7.1"})).is_err());
+    s.execute("file.newSequence", json!({"trackType": "Standard"})).unwrap();
+}

@@ -110,7 +110,7 @@ pub struct AudioSettings {
     pub codec: AudioCodec,
     /// Output sample rate (None = the sequence's).
     pub sample_rate: Option<u32>,
-    /// 1 (mono) or 2 (stereo).
+    /// 1 (mono), 2 (stereo) or 6 (5.1: L, R, C, LFE, Ls, Rs).
     pub channels: u32,
     /// AAC bitrate.
     pub bitrate_kbps: u32,
@@ -334,7 +334,11 @@ impl ExportSettings {
             _ => self.max_bitrate_kbps.filter(|m| *m >= target).unwrap_or(target * 3 / 2),
         };
         let keyint = self.keyframe_distance.filter(|k| *k > 0).unwrap_or_else(|| (fps * 2.0).round().max(1.0) as u32);
-        let channels = self.audio.channels.clamp(1, 2);
+        let channels = match self.audio.channels {
+            0 | 1 => 1,
+            6.. => 6,
+            _ => 2,
+        };
         Resolved {
             width: w,
             height: h,
@@ -460,7 +464,11 @@ impl ExportSettings {
             v
         };
         let audio = if self.has_audio() || matches!(self.format, Format::Wav | Format::Aiff) {
-            let ch = if r.channels == 1 { "Mono" } else { "Stereo" };
+            let ch = match r.channels {
+                1 => "Mono",
+                6 => "5.1",
+                _ => "Stereo",
+            };
             match self.audio_codec() {
                 AudioCodec::Aac => format!("AAC, {} kbps, {} Hz, {ch}", self.audio.bitrate_kbps, r.sample_rate),
                 _ => format!("Uncompressed {}-bit PCM, {} Hz, {ch}", if self.audio.bits >= 24 { 24 } else { 16 }, r.sample_rate),

@@ -2,7 +2,7 @@
 
 Progress toward feature parity with Adobe Premiere Pro, with estimates. Updated as milestones land.
 
-**Last updated:** 2026-10-02 · **Overall parity:** ~77% (measured scorecard below) · **Code:** 34 crates, 1373 tests
+**Last updated:** 2026-10-02 · **Overall parity:** ~81% (measured scorecard below) · **Code:** 34 crates, 1432 tests
 
 ## Parity scorecard
 
@@ -12,18 +12,18 @@ matched against `filmcraft-cli commands` and the UI command table. Effects: the 
 
 | Area | Weight | Measured | Coverage |
 |---|---|---|---|
-| Editing, timeline, trimming, multicam | 20% | core edit algebra, trim modes, sync, multicam, menu long tail, Scene Edit Detection, Automate to Sequence | ~80% |
+| Editing, timeline, trimming, multicam | 20% | core edit algebra, trim modes, sync, multicam, menu long tail, Scene Edit Detection, Automate to Sequence, Premiere default keyboard (143 new commands; 39 cloud/absent-panel keys skipped) | ~86% |
 | Menus / commands | (cross-check) | ~325 of 344 in-scope menu items | ~95% |
 | Effects and transitions | 12% | video effects 93/93 (+Legacy, Obsolete), audio effects 53/53, video transitions 84/84 (+21 Legacy), audio transitions 3/3; some approximations (Warp Stabilizer 2-D, Morph Cut, Auto Reframe) | ~92% |
 | Media I/O and codecs | 12% | H.264, HEVC, VP9, AV1, ProRes, DNx, MJPEG, Opus, AAC; MP4/MOV/MKV/WebM, MXF (OP1a/OP-Atom), Ogg Opus, image sequences, BWF timecode; no MPEG-2, camera raw, HW decode | ~80% |
 | Panels and UI fidelity | 12% | all main panels incl. Metadata, Timecode, Events, Progress, Reference Monitor, full Lumetri Scopes, audio effect editors; Media Browser and Libraries-style panels thin | ~75% |
-| Audio | 10% | mixer, automation, Essential Sound, meters, all 53 effects; no 5.1 buses, voice-over record | ~70% |
+| Audio | 10% | mixer, automation (track + clip), Essential Sound, meters, all 53 effects, 5.1 tracks/buses/panner/export, voice-over record, Remix | ~88% |
 | Colour | 8% | Lumetri complete, LUTs, colour management, HDR, all Lumetri Scopes (+ `scopes.read` for agents) | ~88% |
 | Graphics and captions | 8% | text engine, shapes, captions, transcripts; no MOGRT, rolls/crawls, responsive design | ~60% |
 | Export | 8% | own H.264/AAC, ProRes, DNxHR, image sequences, GIF, WAV; preset library + user presets, full Export-mode settings (loudness normalization, overlays, captions), export queue, Quick Export; no AAF/OMF, MXF export | ~80% |
 | Preferences and project management | 5% | Settings dialog with 16 categories (most settings wired), project settings, scratch disks, search bins, templates | ~80% |
 | Performance | 5% | 1080p real-time, 3×1080p; HEVC 2.5× cheaper, catch-up decoding halves 4K CPU/frame, `cargo xtask bench` + `perf.stats`; 4K/8K and AV1 not yet real-time on a loaded machine | ~55% |
-| **Weighted total** | | | **~77%** |
+| **Weighted total** | | | **~81%** |
 
 ## Estimate to parity
 
@@ -35,9 +35,9 @@ small, but there are many), so the estimate applies a 1.3–1.5× tail factor.
 
 | | Opus 5.5 agent-hours | Wall-clock (4–5 parallel agents + integrator) |
 |---|---|---|
-| Feature parity by checklist (~23 points left) | ~110–150 | **~25–40 h** |
+| Feature parity by checklist (~19 points left) | ~90–125 | **~20–32 h** |
 | Robust on real-world material (codec edge cases, 4K/8K performance, pro workflows) | +120–200 | **+30–50 h** |
-| **Total to "100% and better"** | **~230–350** | **~55–90 h (≈2.5–4 days, 24/7)** |
+| **Total to "100% and better"** | **~210–325** | **~50–82 h (≈2–3.5 days, 24/7)** |
 
 The 2026-10-02 block moved parity ~62% → ~72% with six agents in ~6 wall-clock hours, despite the
 disk filling twice; the remaining work is mostly panels (scopes, Metadata, Media Browser), export
@@ -60,7 +60,7 @@ Status: ✅ done · 🟡 in progress · ⬜ not started. Estimates are remaining
 | M0 | Skeleton + visual shell | ✅ | Workspace, 20 crates, dock/workspaces, Premiere 26 look, native menus, control channel, MCP, xtask gates (layers, wasm) | — | — |
 | M1 | Media I/O | ✅ | MP4/MOV demux+mux, WAV, stills, MJPEG, symphonia audio (MP3/FLAC/ALAC/Vorbis), GOP seek + frame cache, import | Media Browser polish | 2 |
 | M2 | H.264 decoder | ✅ | Own decoder, bit-exact on 37+ streams, 500–600 fps 1080p | — | — |
-| M3 | Editing core | 🟡 | Edit algebra (insert/overwrite/razor/lift/extract/ripple/roll/slip/slide/rate-stretch/nest/paste), tools, markers, trim mode + Trim Monitor + dynamic J/K/L trimming, Keyboard Shortcuts editor with FilmCraft/Premiere/FCP/Avid presets; Edit/Clip/File menu commands (Label colours and Select Label Group, Paste/Remove Attributes, Select All Matching, Remove Unused, Consolidate Duplicates, Sequence From Clip, Bin From Selection, Offline File, Close Project, Make/Edit Subclip, Modify Audio Channels/Timecode, Frame Hold Options/Add Frame Hold/Insert Frame Hold Segment, Time Interpolation with frame blending, Fit/Fill frame, Breakout to Mono, Extract Audio, Replace With Clip; M3.11: Scene Edit Detection (pure-Rust cut detection, background job), Normalize Mix Track, Simplify Sequence, Transcribe Sequence, Find/Find Next and search bins, Automate to Sequence, Edit Original, Edit Offline, Source Settings, Update Metadata (XMP), Generate Audio Waveform, Project Settings General/Scratch Disks, Get Media File Properties, Save as Template, Selection as FilmCraft Project, Avid Log Exchange export, Flash Cue markers, Dynamic Audio Waveforms, Reveal Log Files, System Compatibility Report); multicam (Create Multi-Camera Source Sequence, Multi-Camera view with live switching on 1–9, angle switching, Enable/Flatten, Edit Cameras) and sync (Synchronize, Merge Clips; In/Out/timecode/marker/audio — GCC-PHAT, sample-accurate) | Multicam paging >16 angles and grid thumbnails, optical flow (renders as frame blending), ~200 Premiere default shortcuts whose commands don't exist yet | 6–10 |
+| M3 | Editing core | 🟡 | Edit algebra (insert/overwrite/razor/lift/extract/ripple/roll/slip/slide/rate-stretch/nest/paste), tools, markers, trim mode + Trim Monitor + dynamic J/K/L trimming, Keyboard Shortcuts editor with FilmCraft/Premiere/FCP/Avid presets; Edit/Clip/File menu commands (Label colours and Select Label Group, Paste/Remove Attributes, Select All Matching, Remove Unused, Consolidate Duplicates, Sequence From Clip, Bin From Selection, Offline File, Close Project, Make/Edit Subclip, Modify Audio Channels/Timecode, Frame Hold Options/Add Frame Hold/Insert Frame Hold Segment, Time Interpolation with frame blending, Fit/Fill frame, Breakout to Mono, Extract Audio, Replace With Clip; M3.11: Scene Edit Detection (pure-Rust cut detection, background job), Normalize Mix Track, Simplify Sequence, Transcribe Sequence, Find/Find Next and search bins, Automate to Sequence, Edit Original, Edit Offline, Source Settings, Update Metadata (XMP), Generate Audio Waveform, Project Settings General/Scratch Disks, Get Media File Properties, Save as Template, Selection as FilmCraft Project, Avid Log Exchange export, Flash Cue markers, Dynamic Audio Waveforms, Reveal Log Files, System Compatibility Report); M3.12 keyboard parity: Premiere's default keyboard (~115 keyboard-only commands: edit-point navigation on targeted/any track, select clip at playhead/next/previous, extend edit to playhead, nudge/slip/slide selection, target and source-patch toggles, clip volume ±1 dB/many, frame maximize/full screen/panel cycling, monitor zoom, track heights, Project and Text panel keyboard navigation, text size/leading/alignment, Export Frame, poster frames; see docs/keyboard.md); multicam (Create Multi-Camera Source Sequence, Multi-Camera view with live switching on 1–9, angle switching, Enable/Flatten, Edit Cameras) and sync (Synchronize, Merge Clips; In/Out/timecode/marker/audio — GCC-PHAT, sample-accurate) | Multicam paging >16 angles and grid thumbnails, optical flow (renders as frame blending), 39 Premiere default shortcuts skipped with reasons in docs/keyboard.md (Productions, AI/cloud tools, work area bar, Production/Search panels) | 6–10 |
 | M4 | Playback | 🟡 | Audio-clock master, prefetch with cancellation, J/K/L, correct dropped-frame stats, playback resolution, render bar + content-hashed render previews, App Nap opt-out; 1080p H.264 and 3 stacked 1080p streams play with 0 dropped frames | 4K under load, 8K, frame-threaded AV1 decode, reduced-resolution decode for multicam grids | 6–10 |
 | M5 | Effects, keyframes, GPU | 🟡 | ~60 CPU effects, 30 transitions, keyframes + value/velocity graphs, wgpu compositor, effect + opacity masks (ellipse/polygon/pen, feather, expansion, modes; CPU/WGSL parity), mask tracking (Lucas–Kanade + RANSAC), adjustment layers, effect presets (built-in + user, JSON import/export) | Full ~150-effect catalogue, WGSL parity for all effects and masks in the live GPU path, Warp Stabilizer, Morph Cut | 20–30 |
 | M6 | Export | ✅ | Own H.264 encoder (High/Main/Baseline, B-frames, VBR/CBR/2-pass) → MP4 or QuickTime + own AAC; ProRes, DNxHR, MJPEG, PNG/TIFF/BMP sequences (Premiere-style numbering), GIF, WAV, AIFF; background jobs; M6.5: Export mode parity (frame size / rate / scaling / pixel aspect, profile / level, CBR / VBR 1- and 2-pass, keyframe distance, audio codec / rate / channels / bitrate / sample size, multiplexer, burn-in or sidecar captions, image / name / timecode overlays, video limiter, loudness normalization with true-peak limiter, metadata, ranges, estimated size, summary), 24 built-in presets + user presets with favourites and import/export (Preset Manager), export queue (reorder, cancel, retry, several sequences / ranges), Quick Export; `export.*` commands and `filmcraft-cli export --preset` | Interlaced encoding, 5.1 audio, smart render, publishing destinations | 6–8 |
@@ -76,6 +76,8 @@ Status: ✅ done · 🟡 in progress · ⬜ not started. Estimates are remaining
 - Nothing; next: remaining Premiere menu items (Settings categories, Scene Edit Detection, Normalize Mix Track, OMF/AAF, Find), AV1 single-thread re-measure on an idle machine
 
 ## Log
+
+- **2026-10-03:** keyboard parity (M3.12: 143 new commands on Premiere's default keys, table validated against the registry), audio (M7.8: 5.1 tracks/submixes/Mix, 5.1 panner, BS.775 downmix, 5.1 WAV/MOV/AAC export, voice-over record with punch-in, Remix, Clip Mixer Latch/Touch/Write). 1432 tests.
 
 - **2026-10-02 (late):** export parity (M6.5): built-in preset library + user presets, full Export-mode settings (loudness normalization, image/name/timecode overlays, captions, range), export queue, Quick Export, Premiere-style image-sequence export, `filmcraft-cli export --preset`; media import (M9.14): MXF OP1a/OP-Atom (new `crates/mxf`, H.264/DNx/ProRes/PCM, timecode), Ogg Opus (new `crates/ogg`), image sequences as clips, BWF timecode. 1373 tests.
 

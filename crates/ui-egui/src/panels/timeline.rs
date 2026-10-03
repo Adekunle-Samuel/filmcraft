@@ -59,16 +59,53 @@ impl TlState {
 #[derive(Clone, Debug)]
 pub enum Drag {
     Scrub,
-    Move { clips: Vec<ClipId>, grab_tick: Tick, start_track: TrackId, offset: Tick, track_delta: i32 },
-    Trim { clip: ClipId, edge: filmcraft_edit::Edge, mode: filmcraft_edit::TrimMode, delta: Tick },
-    Roll { left: ClipId, right: ClipId, delta: Tick },
-    Slip { clip: ClipId, delta: Tick },
-    Slide { clip: ClipId, delta: Tick },
-    Stretch { clip: ClipId, edge: filmcraft_edit::Edge, delta: Tick },
-    Pan { last: Pos2 },
-    Marquee { start: Pos2 },
+    Move {
+        clips: Vec<ClipId>,
+        grab_tick: Tick,
+        start_track: TrackId,
+        offset: Tick,
+        track_delta: i32,
+    },
+    Trim {
+        clip: ClipId,
+        edge: filmcraft_edit::Edge,
+        mode: filmcraft_edit::TrimMode,
+        delta: Tick,
+    },
+    Roll {
+        left: ClipId,
+        right: ClipId,
+        delta: Tick,
+    },
+    Slip {
+        clip: ClipId,
+        delta: Tick,
+    },
+    Slide {
+        clip: ClipId,
+        delta: Tick,
+    },
+    Stretch {
+        clip: ClipId,
+        edge: filmcraft_edit::Edge,
+        delta: Tick,
+    },
+    /// Remix tool: drag a music clip's Out edge; on release `clip.remix` re-plans it to the new duration.
+    Remix {
+        clip: ClipId,
+        delta: Tick,
+    },
+    Pan {
+        last: Pos2,
+    },
+    Marquee {
+        start: Pos2,
+    },
     Divider,
-    ZoomBar { grab: f32, mode: u8 },
+    ZoomBar {
+        grab: f32,
+        mode: u8,
+    },
 }
 
 /// Geometry of one visible track row.
@@ -732,6 +769,7 @@ fn draw_headers(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, rows:
     let hw = app.ui.timeline.header_w;
     let tg = app.session.targeting();
     let mut actions: Vec<(String, Value)> = Vec::new();
+    let mut vo_action = None;
     for r in rows {
         let tr = seq.track(r.track).expect("track");
         let clip_rect = if r.kind == TrackKind::Video { vclip } else { aclip };
@@ -835,7 +873,9 @@ fn draw_headers(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, rows:
                 actions.push(("timeline.setTrack".into(), json!({"track": r.track.0, "solo": !tr.solo})));
             }
             let vr = small(x + 42.0, upper_y);
-            crate::widgets::icon_toggle(ui, vr.intersect(visible), Icon::Mic, true, t, egui::Id::new(("vo", r.track.0)), Some(t.text_dim));
+            if let Some(a) = super::voiceover::header_button(app, ui, r.track, vr, visible, &label, t) {
+                vo_action = Some(a);
+            }
             let kr = small(x + 64.0, upper_y);
             super::timeline_automation::header_button(app, ui, seq, r, kr, visible, &label, t);
         }
@@ -872,6 +912,9 @@ fn draw_headers(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, rows:
         if let Err(e) = app.session.execute(&cmd, params) {
             app.ui.status = e.to_string();
         }
+    }
+    if let Some(a) = vo_action {
+        super::voiceover::run(app, &ui.ctx().clone(), a);
     }
 }
 
@@ -1284,6 +1327,11 @@ fn preview_drag(app: &FilmcraftApp, seq: &Sequence, _layout: &Layout, out: &mut 
                 }
             }
         }
+        Drag::Remix { clip, delta } => {
+            if let Some((_, it)) = seq.find_item(*clip) {
+                out.insert(*clip, (it.start, it.duration + *delta, None));
+            }
+        }
         Drag::Trim { clip, edge, delta, .. } | Drag::Stretch { clip, edge, delta } => {
             let ids = filmcraft_engine::commands::with_links(&app.session, &[*clip]);
             for c in ids {
@@ -1369,6 +1417,7 @@ fn interact(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, layout: &
         let cur = match (tool, &h) {
             (Tool::Selection, Hit::Clip { edge: Some(_), .. }) => CursorIcon::ResizeColumn,
             (Tool::Ripple | Tool::Rolling | Tool::RateStretch, Hit::Clip { edge: Some(_), .. }) => CursorIcon::ResizeColumn,
+            (Tool::Remix, Hit::Clip { edge: Some(filmcraft_edit::Edge::Out), .. }) => CursorIcon::ResizeColumn,
             (Tool::Razor, Hit::Clip { .. }) => CursorIcon::Crosshair,
             (Tool::Slip | Tool::Slide, Hit::Clip { .. }) => CursorIcon::ResizeHorizontal,
             (Tool::Hand, _) => CursorIcon::Grab,
@@ -1472,6 +1521,7 @@ fn interact(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, layout: &
                     Some(Drag::Trim { clip, edge, mode, delta: Tick::ZERO })
                 }
             }
+            (Tool::Remix, Hit::Clip { clip, edge: Some(filmcraft_edit::Edge::Out), .. }) => Some(Drag::Remix { clip, delta: Tick::ZERO }),
             (Tool::Slip, Hit::Clip { clip, .. }) => Some(Drag::Slip { clip, delta: Tick::ZERO }),
             (Tool::Slide, Hit::Clip { clip, .. }) => Some(Drag::Slide { clip, delta: Tick::ZERO }),
             (_, Hit::Clip { clip, track, .. }) => {
@@ -1564,6 +1614,11 @@ fn interact(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, layout: &
                 let delta = target - base;
                 Some(Drag::Trim { clip, edge, mode, delta })
             }
+            Drag::Remix { clip, .. } => {
+                let (_, it) = seq.find_item(clip).expect("clip");
+                let target = rate.snap_nearest(t_here).max(it.start + rate.frame_duration());
+                Some(Drag::Remix { clip, delta: target - it.end() })
+            }
             Drag::Stretch { clip, edge, .. } => {
                 let (_, it) = seq.find_item(clip).expect("clip");
                 let base = if edge == filmcraft_edit::Edge::In { it.start } else { it.end() };
@@ -1623,6 +1678,10 @@ fn interact(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, layout: &
                 json!({"clip": clip.0, "edge": if edge == filmcraft_edit::Edge::In {"in"} else {"out"}, "mode": if mode == filmcraft_edit::TrimMode::Ripple {"ripple"} else {"regular"}, "delta": delta.0}),
             )),
             Drag::Stretch { clip, edge, delta } if delta != Tick::ZERO => Some(app.session.execute("timeline.rateStretch", json!({"clip": clip.0, "edge": if edge == filmcraft_edit::Edge::In {"in"} else {"out"}, "delta": delta.0}))),
+            Drag::Remix { clip, delta } if delta != Tick::ZERO => {
+                let d = seq.find_item(clip).map(|(_, it)| it.duration + delta).unwrap_or(Tick::ZERO);
+                Some(app.session.execute("clip.remix", json!({"clip": clip.0, "duration": d.0})))
+            }
             Drag::Roll { left, right, delta } if delta != Tick::ZERO => Some(app.session.execute("timeline.roll", json!({"left": left.0, "right": right.0, "delta": delta.0}))),
             Drag::Slip { clip, delta } if delta != Tick::ZERO => Some(app.session.execute("timeline.slip", json!({"clip": clip.0, "delta": delta.0}))),
             Drag::Slide { clip, delta } if delta != Tick::ZERO => Some(app.session.execute("timeline.slide", json!({"clip": clip.0, "delta": delta.0}))),

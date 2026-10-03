@@ -557,7 +557,12 @@ impl AudioEncoder for AacEncoder {
         SampleEntry::aac(self.enc.audio_specific_config(), self.channels, self.rate)
     }
     fn encode(&mut self, planar: &[Vec<f32>]) -> Result<Vec<Vec<u8>>> {
-        let refs: Vec<&[f32]> = planar.iter().map(Vec::as_slice).collect();
+        let refs: Vec<&[f32]> = if planar.len() == 6 {
+            // ours: L, R, C, LFE, Ls, Rs → AAC channel configuration 6: C, L, R, Ls, Rs, LFE
+            [2usize, 0, 1, 4, 5, 3].iter().map(|&c| planar[c].as_slice()).collect()
+        } else {
+            planar.iter().map(Vec::as_slice).collect()
+        };
         Ok(self.enc.encode(&refs))
     }
     fn flush(&mut self) -> Result<Vec<Vec<u8>>> {
@@ -956,8 +961,8 @@ pub fn encode_png(rgba: Vec<u8>, w: u32, h: u32) -> Result<Vec<u8>> {
     encode_still(Format::PngSequence, rgba, w, h)
 }
 
-/// Encode one still of an image sequence.
-fn encode_still(format: Format, rgba: Vec<u8>, w: u32, h: u32) -> Result<Vec<u8>> {
+/// Encode one still of an image sequence (also Export Frame).
+pub fn encode_still(format: Format, rgba: Vec<u8>, w: u32, h: u32) -> Result<Vec<u8>> {
     let enc = |e: image::ImageError| ExportError::Encode(e.to_string());
     let mut out = std::io::Cursor::new(Vec::new());
     match format {
@@ -1079,3 +1084,6 @@ mod tests;
 
 #[cfg(test)]
 mod settings_tests;
+
+#[cfg(test)]
+mod surround_tests;

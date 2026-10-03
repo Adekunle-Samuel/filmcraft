@@ -411,6 +411,7 @@ fn icon_view(app: &mut FilmcraftApp, ui: &mut egui::Ui, root: &Bin, filter: &str
     let th_h = size * 9.0 / 16.0;
     let cell = vec2(size + 12.0, th_h + 34.0);
     let per_row = ((ui.available_width() - 8.0) / cell.x).floor().max(1.0) as usize;
+    app.ui.keys.icon_columns = per_row;
     let ctx = ui.ctx().clone();
     for chunk in ids.iter().filter(|i| matches(app, **i, filter)).copied().collect::<Vec<_>>().chunks(per_row) {
         let (row, _) = ui.allocate_exact_size(vec2(ui.available_width(), cell.y), Sense::hover());
@@ -419,14 +420,16 @@ fn icon_view(app: &mut FilmcraftApp, ui: &mut egui::Ui, root: &Bin, filter: &str
             let r = Rect::from_min_size(pos2(row.min.x + 6.0 + k as f32 * cell.x, row.min.y + 4.0), vec2(size, th_h));
             let resp = ui.interact(r.expand(2.0), egui::Id::new(("icon", id.0)), Sense::click_and_drag());
             ui.painter().rect_filled(r, 3.0, Color32::from_rgb(12, 12, 12));
-            let hover_t = if resp.hovered() {
+            let hover_t = if resp.hovered() && app.ui.keys.hover_scrub {
                 // hover scrub: pointer x picks the time
                 ctx.pointer_hover_pos().map(|p| ((p.x - r.min.x) / r.width()).clamp(0.0, 1.0) as f64).unwrap_or(0.3)
             } else {
                 0.3
             };
             let dur = it.duration();
-            let tt = filmcraft_time::Tick((dur.0 as f64 * hover_t) as i64);
+            // Set Poster Frame (Cmd+P) picks the resting thumbnail
+            let poster = filmcraft_engine::keyboard::poster_frame(&it).filter(|_| !(resp.hovered() && app.ui.keys.hover_scrub));
+            let tt = poster.unwrap_or(filmcraft_time::Tick((dur.0 as f64 * hover_t) as i64));
             let q = filmcraft_time::Tick((tt.0 / (filmcraft_time::TICKS_PER_SECOND / 4)) * (filmcraft_time::TICKS_PER_SECOND / 4));
             if let Some((tex, sz)) = app.thumbnail(&ctx, *id, q, (size as u32).clamp(96, 320)) {
                 let fitted = crate::panels::monitor::fit(r, sz.x, sz.y);

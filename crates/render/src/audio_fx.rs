@@ -323,7 +323,7 @@ struct Chain {
     next_out: i64,
 }
 
-type Key = (u64, u64, u32);
+type Key = (u64, u64, u32, usize);
 
 fn cache() -> &'static Mutex<HashMap<Key, Vec<Chain>>> {
     static C: OnceLock<Mutex<HashMap<Key, Vec<Chain>>>> = OnceLock::new();
@@ -342,9 +342,9 @@ fn structure_hash(item: &TrackItem) -> u64 {
 
 const BLOCK: usize = 256;
 
-/// Run `input` (stereo, `input[c].len()` samples starting at timeline sample `in0`) through the
+/// Run `input` (planar, `input[c].len()` samples starting at timeline sample `in0`) through the
 /// chain, setting keyframed parameters per block.
-fn run(chain: &mut Chain, item: &TrackItem, in0: i64, input: &mut [Vec<f32>; 2], sr: u32) {
+fn run(chain: &mut Chain, item: &TrackItem, in0: i64, input: &mut [Vec<f32>], sr: u32) {
     let act = active(item);
     let n = input[0].len();
     let mut i = 0;
@@ -356,8 +356,7 @@ fn run(chain: &mut Chain, item: &TrackItem, in0: i64, input: &mut [Vec<f32>; 2],
         for ((e, m), d) in act.iter().zip(chain.fx.iter_mut()) {
             (m.apply)(d.as_mut(), e, mt);
         }
-        let [l, r] = input;
-        let mut chans: [&mut [f32]; 2] = [&mut l[i..end], &mut r[i..end]];
+        let mut chans: Vec<&mut [f32]> = input.iter_mut().map(|c| &mut c[i..end]).collect();
         for d in chain.fx.iter_mut() {
             d.process(&mut chans);
         }
@@ -366,9 +365,11 @@ fn run(chain: &mut Chain, item: &TrackItem, in0: i64, input: &mut [Vec<f32>; 2],
 }
 
 /// Process the item's audio for timeline samples `[a0, a0 + n)`. `read(x0, len)` returns the clip's
-/// raw stereo audio for timeline samples `[x0, x0 + len)` (silence outside the clip).
-pub fn process(item: &TrackItem, a0: i64, n: usize, sr: u32, read: &dyn Fn(i64, usize) -> [Vec<f32>; 2]) -> [Vec<f32>; 2] {
-    let key = (item.id.0, structure_hash(item), sr);
+/// raw planar audio (2 channels, or 6 on a 5.1 track) for timeline samples `[x0, x0 + len)`
+/// (silence outside the clip).
+pub fn process(item: &TrackItem, a0: i64, n: usize, sr: u32, read: &dyn Fn(i64, usize) -> Vec<Vec<f32>>) -> Vec<Vec<f32>> {
+    let width = read(a0, 0).len().max(1);
+    let key = (item.id.0, structure_hash(item), sr, width);
     let taken = {
         let mut c = cache().lock().unwrap_or_else(|e| e.into_inner());
         c.get_mut(&key).and_then(|v| v.iter().position(|ch| ch.next_out == a0).map(|i| v.swap_remove(i)))
@@ -385,7 +386,7 @@ pub fn process(item: &TrackItem, a0: i64, n: usize, sr: u32, read: &dyn Fn(i64, 
             let pre = (pre_s * sr as f64).ceil() as usize;
             let mut fx: Vec<Box<dyn AudioEffect>> = Vec::new();
             for (_, m) in &act {
-                if let Some(d) = filmcraft_audio_dsp::create_effect(m.dsp, sr as f32, 2) {
+                if let Some(d) = filmcraft_audio_dsp::create_effect(m.dsp, sr as f32, width) {
                     fx.push(d);
                 }
             }
@@ -398,7 +399,7 @@ pub fn process(item: &TrackItem, a0: i64, n: usize, sr: u32, read: &dyn Fn(i64, 
     let in0 = chain.next_out + chain.latency as i64;
     run(&mut chain, item, in0, &mut input, sr);
     chain.next_out = a0 + n as i64;
-    let out = [input[0][skip..].to_vec(), input[1][skip..].to_vec()];
+    let out: Vec<Vec<f32>> = input.iter().map(|c| c[skip..].to_vec()).collect();
     let mut c = cache().lock().unwrap_or_else(|e| e.into_inner());
     let v = c.entry(key).or_default();
     v.push(chain);
