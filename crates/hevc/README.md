@@ -29,6 +29,7 @@ and fixture generators.
 | Scaling (flat and scaling lists), DCT 4..32, DST 4x4, transform skip, sign data hiding | done |
 | Deblocking (bS, slice / tile boundary rules, PCM / bypass exemption), SAO (band / edge, boundary rules) | done |
 | Frame-level multithreading (CTB-row granularity dependencies) | done |
+| Draft mode (non-reference pictures skip deblocking / SAO; reduced-resolution playback only) | done |
 | Tiles / WPP | parsed and decoded sequentially within a picture (parallelism is across pictures) |
 | 4:2:2 / 4:4:4 / monochrome, range-extension tools (RExt), 12-bit+ with extended precision | not yet (`Error::Unsupported`) |
 | SCC, multilayer (SHVC / MV-HEVC), 3D extensions | not supported (layers > 0 are ignored) |
@@ -48,6 +49,7 @@ for (pts, access_unit) in access_units {
 }
 for pic in dec.flush() { /* ... */ }
 if let Some(err) = dec.take_error() { /* error reported by a decoding thread */ }
+// dec.set_draft(true): draft mode (playback at reduced resolution only)
 ```
 
 `decode` expects whole access units (a buffer with several complete access units — e.g. an entire
@@ -64,6 +66,13 @@ once row r+1 is deblocked, and publishes final rows (samples + 16x16 compressed 
 into the shared `Frame` (`OnceLock` per CTB row). Motion compensation of later pictures blocks per
 row on exactly the reference rows it reads. Samples are stored as `u16` internally for all bit
 depths.
+
+Draft mode (`Decoder::set_draft(true)`; FilmCraft enables it with Settings ▸ Playback ▸ Draft
+decoding while the Program monitor plays at 1/2 or 1/4): sub-layer non-reference pictures
+(TRAIL_N, RASL_N, ...) of the highest temporal sub-layer — no later picture predicts from them,
+and TMVP reads only reference pictures — skip deblocking and SAO and are flagged
+`Picture::draft`; every other picture is unchanged. libx265's non-reference B pictures are such
+pictures.
 
 Modules: `params` (VPS/SPS/PPS/tile layout), `slice` (NAL + slice header), `dpb` (POC, RPS, lists,
 bumping), `cabac`, `slicedec` (CTU syntax + reconstruction), `mvpred` (merge / AMVP / TMVP),
@@ -85,10 +94,13 @@ with ffmpeg; tests print a message and skip when ffmpeg is absent).
   ffmpeg.
 - Robustness: hvcC input with pts round trip; randomly corrupted, truncated and garbage input never
   panics or deadlocks (single- and multi-threaded).
-- Conformance (`tests/conformance.rs`): every fixture is decoded single-threaded and frame-threaded
-  and compared sample-exactly with `ffmpeg -f rawvideo -pix_fmt yuv420p / yuv420p10le`; on mismatch
+- Conformance (`tests/conformance.rs`): every fixture is decoded with 1 thread, 3 threads and every
+  core and compared sample-exactly with `ffmpeg -f rawvideo -pix_fmt yuv420p / yuv420p10le`; on mismatch
   the first differing frame, plane, sample, CTB and 8x8 block are reported. Output pts/POC order is
-  checked too. `compare_detects_mismatch` guards the harness itself.
+  checked too, and that no picture is flagged draft without draft mode. `compare_detects_mismatch`
+  guards the harness itself. Draft mode (`draft_mode_changes_only_flagged_non_reference_pictures`):
+  on B-pyramid / weighted fixtures, single- and frame-threaded, every unflagged picture is
+  bit-exact and only flagged pictures differ.
 
 ### Fixture matrix (all bit-exact, single- and multi-threaded)
 
@@ -135,7 +147,7 @@ average 50-100), so these are lower bounds:
 | 1080p Main, x265 medium CRF 24, 60 frames | ~75 fps | ~225 fps |
 | 2160p Main 10, x265 fast CRF 26, 20 frames | ~20 fps | ~95 fps |
 
-No SIMD-specific code yet; interpolation, transforms and loop filters are plain loops. M4.8
+No intrinsics: the hot loops are written to auto-vectorise. M4.8
 profiling (`cargo xtask bench`, macOS `sample`) found the inverse transform at over half of the
 decoder's CPU time: it evaluated the full matrix product with strided table reads. It now sums
 contiguous basis rows scaled by the non-zero coefficients only, with the block size a compile-time
@@ -144,7 +156,30 @@ against the direct product on random sparse and dense blocks). SAO edge offset h
 loop for samples whose neighbours are inside the CTB. Together: ~60 % less CPU per frame
 (1080p 78 → 33 ms, 2160p 320 → 129 ms of CPU per frame through the media stack, alternating A/B), see
 [docs/performance.md](../../docs/performance.md).
-`cargo run --release -p filmcraft-hevc --example hevcdec -- in.hevc out.yuv` decodes a file.
+`cargo run --release -p filmcraft-hevc --example hevcdec -- in.hevc out.yuv` decodes a file
+(`HEVC_THREADS=n`, `HEVC_LOOPS=k`, `HEVC_DRAFT=1`).
+
+M4.10 (2026-10-03), CPU cycles per frame counted by the kernel (`/usr/bin/time -l`, all threads
+summed; mean of two interleaved base / after rounds at load average 190-320) on the
+`cargo xtask bench` decode clips (x265 preset fast, CRF 22, testsrc2 + grain), bit-exact:
+
+| stream | threads | Mcycles / frame before | after | after, draft mode |
+|---|---|---|---|---|
+| 1080p (120 frames) | 1 | 90.9 | **67.3** (−26 %) | 61.2 |
+| 1080p | 14 | 100.2 | **75.1** (−25 %) | 67.3 |
+| 2160p (72 frames) | 1 | 362.6 | **262.3** (−28 %) | 232.5 |
+| 2160p | 14 | 398.3 | **284.8** (−28 %) | 260.1 |
+
+What changed: motion compensation zeroed two 10 KB windows per prediction block per component
+and list (11 % of the time in `memset`) and filtered with dynamic-width scalar sums; it now keeps
+reusable scratch windows and runs taps outer / outputs inner over fixed block widths. SAO
+looked its offset up per sample in a table (20 % of the time); the edge / band offset is now
+selected per lane from the neighbour-sign sum / band index, so the runs vectorise. Uni / bi
+output clips with min / max instead of `clamp` (whose bound assert kept it scalar). Runs of
+bypass bins (signs, Rice suffixes, SAO / intra fields) decode with one division, and
+context-coded bins are branch-free. Single-threaded 4K now splits into CABAC residual parsing
+~28 %, reference window copies ~11 %, interpolation ~11 %, deblocking + SAO + row publication
+~15 %, inverse transform ~8 %.
 
 ## Known gaps
 

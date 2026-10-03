@@ -27,8 +27,8 @@ is used only as an external fixture generator and test oracle.
 | DCT / ADST 4..32, WHT (lossless) | done |
 | Tiles (columns and rows); tile columns decode in parallel | done |
 | Hidden frames, show_existing_frame, intra-only frames, resolution changes, error resilient / frame parallel modes | done |
-| Loop filter in parallel (superblock wavefront) | done |
-| Frame-level threading (overlapping consecutive frames) | not yet |
+| Frame threading: references published per superblock row, the loop filter / output of a frame overlaps the next frames | done |
+| Draft mode (non-reference frames skip the loop filter; reduced-resolution playback only) | done |
 
 ## API
 
@@ -45,7 +45,8 @@ for (pts, chunk) in chunks {  // one IVF / WebM block / MP4 sample each (frame o
         // pic.color { color_space (0..7 as coded), full_range }
     }
 }
-let _ = dec.flush(); // VP9 has no reordering: always empty, kept for API symmetry
+let rest = dec.flush(); // pictures still in flight (frame threads)
+// dec.set_draft(true): draft mode (playback at reduced resolution only), dec.threads()
 dec.reset(); // forget references / contexts (seek), keeps the thread pool
 let stats = dec.stats(); // what the stream exercised (frame kinds, tiles, compound, scaling...)
 
@@ -60,33 +61,60 @@ let info: Option<filmcraft_vp9::KeyframeInfo> = filmcraft_vp9::keyframe_info(chu
 (e.g. an MP4 without `stss`) still seek correctly.
 
 A superframe produces every shown frame it contains (normally one); hidden frames produce none.
+With frame threads (`Decoder::new()`, or `with_threads(n)` with n > 1) a picture can come out of
+a later `decode` call or `flush` (each carries the `pts` of the chunk that showed it);
+`with_threads(1)` returns every picture from the call that completes it.
 
 ### Architecture
 
 The calling thread parses the uncompressed and compressed headers and manages the eight reference
 slots, the four probability contexts, segmentation map and previous-frame motion vectors. Each tile
 column is decoded by one `TileDecoder` (rayon pool) into a private strip of samples and mode info
-(tile rows of a column are decoded in order — they share above contexts); strips are then
-assembled, the loop filter runs as a superblock wavefront (superblock (r, c) waits for (r-1, c+1);
-each superblock filters a private copy of its area plus 8 samples above / left and writes it
-back), counts are merged for backward adaptation and the frame is stored. Samples are `u16`
-internally for every bit depth.
+(tile rows of a column are decoded in order: they share above contexts). Counts are then merged
+for backward adaptation, the mode info is assembled (the next frame reads it for motion vector
+prediction and segment ids) and the frame goes into the reference slots at once, while its
+**post stage** runs on a thread of its own: it assembles each superblock row ("band") from the
+strips, loop filters it superblock by superblock in raster order (so the result is the
+specification's), publishes the band above it once that can no longer change (`OnceLock` per
+band; the 16-wide filter of row r reads 8 and changes 7 rows of row r - 1, which travel in 8
+padding rows on top of each band) and copies it into the output picture. Motion compensation of
+later frames reads reference rows through `Frame::row` / `Frame::span`, which wait for exactly
+the bands a block reaches, so the next frames' tile columns decode while earlier frames are still
+being filtered. Probability adaptation needs only the counts, so even backward-adaptive streams
+start the next frame before the loop filter is done; frame-parallel / error-resilient streams
+(no backward adaptation) never wait at all. Results never depend on scheduling: the conformance
+suite decodes every fixture with 1, 3 and all threads. Samples are `u16` internally for every bit
+depth.
+
+Draft mode (`Decoder::set_draft(true)`; FilmCraft enables it with Settings ▸ Playback ▸ Draft
+decoding while the Program monitor plays at 1/2 or 1/4): frames with `refresh_frame_flags` 0 —
+no reference slot receives them, so nothing predicts from their samples — skip the loop filter
+and are flagged `Picture::draft`. The loop filter changes neither mode info, segmentation map nor
+probabilities, so every other frame is unchanged. Such frames occur in temporally layered streams
+(e.g. libvpx `-ts-parameters`); single-layer realtime streams refresh LAST on every frame.
 
 Modules: `header` (6.2 / 6.3, superframes), `boolcoder` (9.2), `probs` (frame contexts, counts,
 8.4), `tile` (partition / mode info / MV prediction), `tile::recon` (residual, tokens, intra /
-inter prediction calls, reconstruction), `intra`, `inter`, `transform`, `loopfilter`, `decoder`.
+inter prediction calls, reconstruction), `intra`, `inter`, `transform`, `loopfilter`, `frame`
+(banded frames, pools), `decoder` (scheduling, post stage).
 
 ## Tests
 
 `cargo test --release -p filmcraft-vp9`. Fixtures are generated on first use into
 `target/fixtures/vp9/` with ffmpeg + libvpx-vp9 (tests print a message and skip when ffmpeg or
 libvpx is unavailable). Every frame is compared sample-exactly with `ffmpeg -c:v vp9 -f rawvideo`
-output, single-threaded and with the default thread pool; the first mismatch reports frame, plane,
-position and superblock.
+output with 1 thread, 3 threads (frame threading with a small pool) and every core; the first
+mismatch reports frame, plane, position and superblock. No picture may be flagged draft without
+draft mode.
 
 - Unit tests: boolean decoder against a literal model of 9.2, tables / trees, inverse DCT / ADST
-  against floating-point bases, DC-only shortcut vs. full transform, scaled MC path vs. unscaled,
-  superframe index, `inv_remap_prob`, probability merging.
+  against floating-point bases, DC-only shortcut vs. full transform, the column-parallel 2D
+  transform against the per-column formulation on random blocks of every size and type, scaled
+  MC path vs. unscaled (through a banded reference frame), superframe index, `inv_remap_prob`,
+  probability merging.
+- Draft mode (`draft_mode_changes_only_flagged_non_reference_frames`): on a two-layer temporal
+  scalability stream, single- and frame-threaded, every unflagged frame is bit-exact and only
+  flagged frames differ.
 - Conformance (`tests/conformance.rs`): the fixture matrix below plus a stream concatenating two
   sizes. `compare_detects_mismatch` guards the harness. `coverage_report` (ignored) prints the
   decoder statistics for each fixture.
@@ -126,47 +154,55 @@ Backward adaptation is on (`-frame-parallel 0`) unless noted.
 | fade_intra_heavy | 352x288 | fade-in, key frame every 8 |
 | hd_1080p | 1920x1080 | realtime speed 5 |
 | resize_concatenated | 352x288 then 347x251 | size change at a key frame |
+| temporal_layers | 352x288 | realtime, 2 temporal layers (`-ts-parameters`): non-reference frames |
 
 ## Performance
 
 `cargo test --release -p filmcraft-vp9 --test perf -- --ignored --nocapture` (bit-exactness is
 verified first), or `VP9_THREADS=n VP9_LOOPS=k cargo run --release -p filmcraft-vp9 --example
-vp9dec -- in.ivf` (decodes the file k times and prints the statistics).
+vp9dec -- in.ivf` (decodes the file k times and prints the statistics; `VP9_DRAFT=1` for draft
+mode).
 
-Apple M4 Pro (14 cores), 1080p 8-bit `bench_1080p` fixture (libvpx speed 4, 4 MB/s, 4 tile
-columns), 120 frames per run, before / after binaries alternated. The machine was shared with
-other builds (load average 80-110 during the multi-thread runs, up to 200 earlier), so
-wall-clock numbers are the best of 3 runs and still well below what an idle machine gives;
-single-thread CPU time is the stable figure.
+M4.10 (2026-10-03), Apple M4 Pro (14 cores) shared with other builds (load average 190-320), so
+the figures are CPU cycles per frame counted by the kernel (`/usr/bin/time -l`, all threads
+summed; mean of two interleaved base / after rounds) — wall clock only within a round. Fixtures:
+the `cargo xtask bench` decode clips (testsrc2 + grain, libvpx realtime speed 8, CRF 32; 1080p
+4 tile columns, 2160p 8 tile columns, frame-parallel mode), bit-exact with ffmpeg.
 
-| | before (5e9d7d9) | now |
-|---|---|---|
-| 1 thread, CPU time | 52-55 fps | 98-102 fps |
-| 14 threads, wall clock (best of 3, load ~90) | 82-89 fps | 143-145 fps |
+| stream | threads | Mcycles / frame before | after | wall ms / frame before → after (same load) |
+|---|---|---|---|---|
+| 1080p (120 frames) | 1 | 68.0 | **52.0** (−24 %) | |
+| 1080p | 14 | 100.7 | **57.9** (−43 %) | 95, 82 → 18, 17 |
+| 2160p (72 frames) | 1 | 273.6 | **205.8** (−25 %) | |
+| 2160p | 14 | 391.7 | **219.2** (−44 %) | 146, 118 → 38, 36 |
 
-What made the difference:
+Before M4.10 the frame-level work was serial (tile columns of one frame, then a loop-filter
+wavefront, then assembly and output conversion), so 14 threads spent 40-50 % more cycles than one
+thread (spinning between short parallel phases) and a 4K frame still took ~120 ms of wall time
+at this load; now the post stage overlaps the next frames and 4K decodes at ~27 fps on the
+loaded machine. What changed:
 
-- Loop filter: each group of 8 samples along an edge is filtered as 8 lanes at once (16-bit lanes
-  for 8 / 10-bit, 32-bit for 12-bit); the mask / flat / flat2 decisions are lane-wise and every
-  filter result is selected per lane, so the arithmetic vectorizes. Per-group decisions use masks
-  instead of divisions and skip groups with no edge before looking up levels. The parallel loop
-  filter (superblock wavefront) locks per superblock-row band only while copying, instead of
-  holding one frame-wide lock.
-- Motion compensation: the 8-tap filters run tap-outer over fixed-width rows (4..64) and no longer
-  zero a 10 KB edge window per block; the 2D inverse transform buffers are sized per transform.
-- Memory: strip / frame planes and mode-info grids are recycled through a pool (no per-frame
-  multi-megabyte allocations and page faults); assembling tile strips into the frame and the
-  cropping / 8-bit narrowing of output pictures run in parallel chunks of rows.
+- **Frame threading** (see Architecture).
+- **Loop filter** (was ~50 % of single-threaded time): the lane masks were `bool`s with
+  `clamp` and branchy selects, which kept the "vectorised" group filter scalar; masks are now
+  0 / -1 integers with bitwise selects and min / max clipping, so it compiles to NEON.
+- **Inverse transforms**: the column pass runs the generated butterflies
+  (`transform_gen::cols4` / `cols8`) on 4 / 8 columns at once.
+- **Motion compensation**: 8-bit sub-pixel filters accumulate in 16-bit lanes (8 per vector
+  instead of 4): every sum of the VP9 filters plus rounding lies in [-13706, 46474], so the sum
+  modulo 2^16 identifies it (negative sums clip to 0).
+- Bool decoder: branch-free update.
 
-The loop filter is still the largest single cost (~30% single-threaded), followed by inter
-prediction and coefficient decoding.
+Single-threaded 4K time now splits into coefficient tokens (bool decoding) ~27 %, loop filter
+~25 % (two thirds of it the vertical-edge transposes and per-group decisions), motion
+compensation ~15 %, inverse transforms ~8 %, intra prediction ~6 %.
 
 ## Known gaps
 
-- No frame-level threading: parallelism is tile columns + loop filter wavefront + row-parallel
-  copies, so streams with a single tile column (narrower than 512 pixels or encoded without tile
-  columns) decode mostly on one thread, and 1080p (at most 4 tile columns) uses 4 threads for
-  coefficient decoding and prediction.
+- A frame's tile decoding is still a barrier: the next frame starts once every tile column of
+  the current one is done (its post stage then runs alongside), so streams with a single tile
+  column decode their tiles on one thread at a time; the post stage (loop filter) of one frame
+  runs on one thread.
 - Scaled references combined with compound prediction are not covered by a fixture (both are
   verified separately; libvpx through ffmpeg cannot change size mid-stream and the synthetic
   splice cannot keep the compound streams' probability contexts intact).

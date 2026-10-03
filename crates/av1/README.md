@@ -58,7 +58,8 @@ and `b10-23-film_grain-50` are **bit-exact** in the default run. The ignored
 with scaled inter-layer prediction), `24-monochrome` (8 and 10-bit) and
 `16-intra_only-intrabc-extreme-dv` (1080p intra block copy), `23-film_grain-50` (8 and 10-bit).
 
-`tests/oracle_inter.rs` encodes SVT-AV1 GOPs (hierarchical references, compound prediction,
+`tests/oracle_inter.rs` also checks draft mode: every unflagged frame stays bit-exact with
+libdav1d and only flagged frames differ, with 1 and 4 threads. `tests/oracle_inter.rs` encodes SVT-AV1 GOPs (hierarchical references, compound prediction,
 OBMC / warped motion, motion-field projection, all loop filters; presets 3–8, 8- and 10-bit, odd
 sizes), plus super-resolution (denominator 12) and film-grain streams, and compares every frame
 with libdav1d: **bit-exact** on all 6 fixtures.
@@ -90,6 +91,36 @@ noisy; single-threaded figures use thread CPU time and are comparable.
 | `perf_1080p_gop_10bit` | 41.3 fps | 35.9 fps | 8.0 fps | 6.6 fps |
 | `perf_1080p_gop_hq` (crf 18) | 19.5 fps | 19.4 fps | 2.4 fps | 3.6 fps |
 | `perf_1080p_gop_tiles` (4x2 tiles) | 44.4 fps | 44.7 fps | 2.7 fps | 16.3 fps |
+
+### M4.10 (2026-10-03)
+
+CPU cycles per frame counted by the kernel (`/usr/bin/time -l`, all threads summed; mean of two
+interleaved base / after rounds at load average 190-320) with
+`AV1_THREADS=n cargo run --release -p filmcraft-av1 --example av1dec -- in.ivf` on the
+`cargo xtask bench` decode clips (SVT-AV1 preset 10, CRF 35, keyint 48, testsrc2 + grain),
+bit-exact with libdav1d:
+
+| stream | threads | Mcycles / frame before | after | after, draft mode |
+|---|---|---|---|---|
+| 1080p (120 frames) | 1 | 60.5 | **48.3** (−20 %) | 46.2 |
+| 1080p | 14 | 63.6 | **51.9** (−18 %) | 50.3 |
+| 2160p (72 frames) | 1 | 212.5 | **172.4** (−19 %) | 167.9 |
+| 2160p | 14 | 220.0 | **177.1** (−20 %) | 171.1 |
+
+What changed: the sub-pixel filter passes run over fixed block widths (taps outer, columns
+inner); frame and tile-region planes come from a bounded pool of recycled buffers (zeroed on
+reuse) instead of a fresh `calloc` and `munmap` per frame (allocation, page faults and zeroing
+were ~10 % of the time); the palette mode-info arrays (40 bytes per 4x4 unit) are only
+allocated when screen content tools are allowed; CDF adaptation is branch-free (a branch-free
+symbol search was tried and was slower: most symbols have 2-4 values). Single-threaded 4K now
+splits into coefficient parsing ~20 %, inter prediction ~18 %, other block-level parsing
+~12 %, deblocking ~11 % (still one edge at a time), inverse transforms ~12 %, CDEF ~5 %.
+
+Draft mode (`Decoder::set_draft(true)`, `AV1_DRAFT=1`; reduced-resolution playback only): shown
+frames whose `refresh_frame_flags` is 0 — no reference slot keeps them, so neither their samples,
+motion vectors nor CDFs reach another frame — skip deblocking, CDEF and loop restoration
+(super-resolution still runs, it sets the output size) and are flagged `Picture::draft`. In
+SVT-AV1's hierarchical GOPs that is the top layer, half of the frames.
 
 ## API
 

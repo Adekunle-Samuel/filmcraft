@@ -13,6 +13,94 @@ the before/after comparison relies on. Each milestone below alternated base / af
 each); the most load-independent figure is the decoder's own cycle count (`proc_pid_rusage`
 instructions and cycles of a process, all threads summed).
 
+## Results (M4.10: 4K VP9, AV1 and HEVC, before → after)
+
+Baseline = commit `a814ff6` (decoders unchanged since M4.8); after = M4.10. Interleaved runs on
+2026-10-03 at load average 170-320 (two base and two after rounds; the second bench round of
+each overlapped another bench run, so its wall-clock columns are extra pessimistic).
+
+### Decoder work per frame (load-independent)
+
+Codec examples (`vp9dec`, `av1dec`, `hevcdec`) on the `cargo xtask bench` decode clips, CPU
+cycles counted by the kernel (`/usr/bin/time -l`, all threads summed), mean of the two rounds;
+output bit-exact with ffmpeg / libdav1d at every thread count:
+
+| stream | 1 thread before → after | 14 threads before → after | wall ms / frame, 14 threads, before → after |
+|---|---|---|---|
+| VP9 1080p | 68.0 → **52.0** (−24 %) | 100.7 → **57.9** (−43 %) | 95, 82 → 18, 17 |
+| VP9 2160p | 273.6 → **205.8** (−25 %) | 391.7 → **219.2** (−44 %) | 146, 118 → 38, 36 |
+| HEVC 1080p | 90.9 → **67.3** (−26 %) | 100.2 → **75.1** (−25 %) | 17, 10 → 5, 13 |
+| HEVC 2160p | 362.6 → **262.3** (−28 %) | 398.3 → **284.8** (−28 %) | 24, 55 → 26, 25 |
+| AV1 1080p | 60.5 → **48.3** (−20 %) | 63.6 → **51.9** (−18 %) | 26, 8 → 8, 7 |
+| AV1 2160p | 212.5 → **172.4** (−19 %) | 220.0 → **177.1** (−20 %) | 158, 39 → 20, 32 |
+
+Mcycles per frame. Draft mode (1 thread): HEVC 2160p 232.5 (−11 % on top), AV1 2160p 167.9
+(−3 %: SVT-AV1's top-layer frames filter little); the VP9 clips have no non-reference frames.
+
+### Decode (every frame through the media stack)
+
+| codec | size | CPU ms/frame before (2 rounds) | after (2 rounds) | fps before → after |
+|---|---|---|---|---|
+| VP9 | 1080p | 33.6, 30.8 | **23.5, 21.7** | 14, 17 → 67, 56 |
+| VP9 | 2160p | 120.2, 117.7 | **68.4, 67.9** | 9.1, 7.8 → **34, 27** |
+| HEVC | 1080p | 31.2, 29.3 | **23.9, 22.4** | 50, 58 → 138, 145 |
+| HEVC | 2160p | 117.9, 111.8 | **86.9, 82.1** | 13, 14 → **30, 41** |
+| AV1 | 1080p | 18.5, 18.9 | **15.1, 15.7** | 53, 44 → 122, 69 |
+| AV1 | 2160p | 64.8, 66.7 | **48.4, 51.3** | 16, 8.9 → **25, 25** |
+
+### Program-monitor playback, 2160p (8 s, GPU path; new `vp9-2160` / `av1-2160` scenarios)
+
+| case | before: shown/dropped (4 runs) | after (4 runs) | CPU ms/frame before → after |
+|---|---|---|---|
+| VP9 Full | 6/186, 53/139, 0/192, 0/192 | **192/0, 192/0, 189/3, 192/0** | 23-49 → 75-83 |
+| VP9 1/2 | 6/186, 58/134, 2/190, 52/140 | **192/0, 191/1, 192/0, 192/0** | 34-70 → 78-80 |
+| HEVC Full | 6/186, 1/191, 0/192, 9/183 | **192/0, 192/0, 192/0, 192/0** | 74-124 → 91-97 |
+| HEVC 1/2 | 0/192, 9/183, 0/192, 19/173 | **192/0, 192/0, 192/0, 185/7** | 64-118 → 94-97 |
+| HEVC 1/2 draft | 5/187, 88/104, 97/95, 138/54 | **188/4, 192/0, 187/5, 189/3** | 135-148 → 96-104 |
+| AV1 Full | 4/188, 19/173, 0/192, 36/156 | 52/140, 0/192, **178/14**, 0/192 | 31-47 → 38-56 |
+| AV1 1/2 | 32/160, 44/148, 1/191, 38/154 | 2/190, **150/42, 184/8**, 50/142 | 30-50 → 41-72 |
+| AV1 1/2 draft | 1/191, 24/168, 1/191, 27/165 | **192/0, 187/5, 184/8, 192/0** | 25-51 → 68-70 |
+
+CPU per *displayed* frame rises where the decoder now keeps up: before, most frames were never
+decoded (dropped jobs cost nothing). At load ~180-220, 4K VP9 and HEVC now play in real time at
+Full and 1/2; AV1 does at 1/2 with draft decoding and sometimes at 1/2 / Full: its frames
+decode concurrently only once their references are complete (whole-frame dependencies) and the
+clip has a single tile, so a 4K frame waits for its references' deblocking, CDEF and output
+copy.
+
+## What M4.10 changed
+
+1. **VP9 frame threading** (the decoder had none: tile columns, then a loop-filter wavefront,
+   then assembly and output, each a barrier — 14 threads used 40-50 % more cycles than one and
+   barely ran faster). Frames are now published one superblock row at a time once loop
+   filtered; each frame's post stage (band assembly from the tile strips, loop filter in raster
+   order, publication, output picture) runs on its own thread while the next frames' tile
+   columns decode, their motion compensation waiting per band for exactly the reference rows it
+   reads. Backward-adaptive streams only wait for the previous frame's symbol counts.
+2. **VP9 kernels**: the loop filter's lane masks were `bool`s with `clamp` and branchy selects,
+   which kept it scalar; 0 / -1 integer masks, bitwise selects and min / max make it NEON. The
+   inverse transform's column pass runs the generated butterflies on 4 / 8 columns at once;
+   8-bit sub-pixel filters accumulate in 16-bit lanes (every VP9 filter sum fits modulo 2^16).
+3. **HEVC**: motion compensation zeroed two 10 KB windows per block (11 % of the time in
+   `memset`) and filtered with dynamic-width scalar sums; it now reuses scratch windows and
+   filters taps-outer over fixed widths. SAO (20 % of the time) selects edge / band offsets per
+   lane instead of a table lookup per sample. Runs of bypass bins decode with one division;
+   output clipping uses min / max. Frame threading with per-CTB-row waits was already in place.
+4. **AV1**: fixed-width sub-pixel filter passes; frame and tile-region planes recycled through a
+   bounded pool instead of a fresh `calloc` / `munmap` per frame (~10 % of the time); palette
+   mode-info arrays (40 bytes per 4x4) only with screen content tools; branch-free CDF update.
+5. **Draft mode** for all three through `VideoDecoder::set_draft` (Settings ▸ Playback ▸ Draft
+   decoding, reduced-resolution playback only): VP9 frames that refresh no reference slot skip
+   the loop filter; HEVC sub-layer non-reference pictures of the top sub-layer skip deblocking
+   and SAO; AV1 shown frames that refresh no slot skip deblocking, CDEF and loop restoration.
+   Tested per codec (unflagged pictures bit-exact, single- and multi-threaded) and through the
+   media stack (`crates/codecs/tests/draft_decoders.rs`: draft frames reach draft requests only;
+   an export after draft playback is bit-exact with ffmpeg).
+
+Not done: AV1 row-level frame threading (references are waited for as whole frames) and its
+per-edge deblocking; VP9 and HEVC coefficient / CABAC parsing are now the largest single costs
+(~27 %); HEVC reference windows are still copied per block (~11 %).
+
 ## Results (M4.9: 4K H.264, before → after)
 
 Baseline = commit `3d14099` (M3.12, unchanged decoder); after = M4.9. Interleaved runs on
