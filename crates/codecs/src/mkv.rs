@@ -138,7 +138,7 @@ fn vp9_config(private: &[u8], v: Option<&filmcraft_matroska::VideoInfo>) -> VpcC
     c
 }
 
-fn sample_entry(c: &Codec, v: Option<&filmcraft_matroska::VideoInfo>, w: u16, h: u16) -> Option<SampleEntry> {
+fn sample_entry(c: &Codec, private: &[u8], v: Option<&filmcraft_matroska::VideoInfo>, w: u16, h: u16) -> Option<SampleEntry> {
     Some(match c {
         Codec::Vp9 { private } => SampleEntry::video(FourCc(*b"vp09"), CodecConfig::Vp9(vp9_config(private, v)), w, h),
         Codec::Av1 { av1c } => SampleEntry::video(FourCc(*b"av01"), CodecConfig::Av1(filmcraft_isobmff::Av1Config::parse(av1c).unwrap_or_default()), w, h),
@@ -146,6 +146,10 @@ fn sample_entry(c: &Codec, v: Option<&filmcraft_matroska::VideoInfo>, w: u16, h:
         Codec::Hevc { hvcc } => SampleEntry::hevc(HevcConfig::parse(hvcc).ok()?, w, h),
         Codec::ProRes { fourcc } => SampleEntry::prores(FourCc(fourcc.unwrap_or(*b"apcn")), w, h),
         Codec::Mjpeg => SampleEntry::jpeg(w, h),
+        // MPEG-1/2 video: the factory finds `mp2v` (CodecPrivate holds the sequence header)
+        Codec::Other(id) if id == "V_MPEG2" || id == "V_MPEG1" => {
+            SampleEntry::video(FourCc(*b"mp2v"), CodecConfig::Unknown { fourcc: FourCc(*b"mp2v"), raw: private.to_vec() }, w, h)
+        }
         _ => return None,
     })
 }
@@ -193,6 +197,9 @@ fn codec_label(c: &Codec) -> String {
         Codec::Flac { .. } => "FLAC".into(),
         Codec::Pcm { bits, float, .. } => format!("PCM {bits}-bit{}", if *float { " float" } else { "" }),
         Codec::Mp3 => "MP3".into(),
+        Codec::Mp2 => "MPEG Audio".into(),
+        Codec::Other(id) if id == "V_MPEG2" => "MPEG-2 Video".into(),
+        Codec::Other(id) if id == "V_MPEG1" => "MPEG-1 Video".into(),
         other => other.name().to_string(),
     }
 }
@@ -231,7 +238,7 @@ impl MkvSource {
             if explicit {
                 explicit_color = Some(color);
             }
-            ventry = sample_entry(&t.codec, t.video.as_ref(), w as u16, h as u16);
+            ventry = sample_entry(&t.codec, &t.codec_private, t.video.as_ref(), w as u16, h as u16);
             let secs = file.duration_ns().unwrap_or(0) as f64 / 1e9;
             let bitrate = (secs > 0.0).then(|| (t.samples.iter().map(|s| s.size as u64).sum::<u64>() as f64 * 8.0 / secs) as u64);
             VideoStreamInfo {
@@ -327,6 +334,7 @@ impl MkvSource {
             Codec::Aac { asc } => PacketDecoder::aac(asc, rate),
             Codec::Opus { head } => PacketDecoder::opus(filmcraft_opus::OpusHead::parse(head).map_err(|e| CodecError::Unsupported(format!("Opus: {e}")))?),
             Codec::Mp3 => PacketDecoder::new(CODEC_TYPE_MP3, rate, None),
+            Codec::Mp2 => PacketDecoder::mpeg_audio(2, rate),
             // symphonia wants the STREAMINFO block body: skip `fLaC` + the 4-byte block header.
             Codec::Flac { private } => PacketDecoder::new(CODEC_TYPE_FLAC, rate, private.get(8..42).map(<[u8]>::to_vec)),
             Codec::Vorbis { headers } if headers.len() == 3 => {

@@ -380,6 +380,8 @@ const FIXTURE_GENERATORS: &[(&str, &str)] = &[
     ("prores", "oracle_decode"),
     ("dnx", "oracle_decode"),
     ("codecs", "mxf_oracle"),
+    ("codecs", "mpeg_oracle"),
+    ("mpeg2v", "oracle"),
     ("codecs", "ogg_oracle"),
 ];
 

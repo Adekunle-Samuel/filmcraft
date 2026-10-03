@@ -131,6 +131,16 @@ fn spec(name: &str) -> Vec<String> {
             NOISE,
             &["-t", "1.2", "-c:v", "mpeg1video", "-bf", "2", "-b:v", "1500k", "-c:a", "mp2", "-b:a", "128k", "-f", "mpeg"],
         ]),
+        // XDCAM HD422 in QuickTime (`xd5c`), MPEG-2 in MP4 (`mp4v`, esds object type 0x61) and
+        // Matroska (`V_MPEG2`)
+        "mov_xdcam_hd422.mov" => cat(&[
+            &["-f", "lavfi", "-i", "testsrc2=size=1920x1080:rate=50,tinterlace=mode=interleave_top,setfield=tff"],
+            &["-t", "0.4", "-c:v", "mpeg2video", "-pix_fmt", "yuv422p", "-flags", "+ilme+ildct", "-bf", "2", "-g", "12", "-b:v", "50M"],
+        ]),
+        "mp4_mpeg2.mp4" => cat(&[&["-f", "lavfi", "-i", "testsrc2=size=320x240:rate=25"], &["-t", "0.6", "-c:v", "mpeg2video", "-bf", "2", "-g", "6"]]),
+        "mkv_mpeg2.mkv" => {
+            cat(&[&["-f", "lavfi", "-i", "testsrc2=size=320x240:rate=25"], NOISE, &["-t", "0.6", "-c:v", "mpeg2video", "-bf", "2", "-g", "6", "-c:a", "mp2"]])
+        }
         "es_mpeg2.m2v" => {
             cat(&[&["-f", "lavfi", "-i", "testsrc2=size=352x288:rate=25"], &["-t", "1", "-c:v", "mpeg2video", "-bf", "2", "-g", "9", "-f", "mpeg2video"]])
         }
@@ -149,6 +159,9 @@ pub const ALL: &[&str] = &[
     "ps_mpeg2_lpcm16.vob",
     "ps_mpeg2_ac3.vob",
     "mpeg1_system.mpg",
+    "mov_xdcam_hd422.mov",
+    "mp4_mpeg2.mp4",
+    "mkv_mpeg2.mkv",
     "es_mpeg2.m2v",
 ];
 
@@ -410,6 +423,27 @@ fn video_elementary_stream() {
         let fr = src.video_frame(FrameRequest::full(rate.tick_of(i as i64))).unwrap();
         let d = max_diff(&planes(&fr), &raw_planes(&raw[i * fsize..(i + 1) * fsize], 352, 288, 176, 144, 1));
         assert!(d <= 4, "frame {i}: {d}");
+    }
+}
+
+#[test]
+fn mpeg2_in_quicktime_mp4_and_matroska() {
+    let ff = filmcraft_testkit::require_ffmpeg!();
+    for (name, chroma) in [("mov_xdcam_hd422.mov", (2, 1)), ("mp4_mpeg2.mp4", (2, 2)), ("mkv_mpeg2.mkv", (2, 2))] {
+        let f = make(&ff, name);
+        let src = filmcraft_codecs::open_bytes(name, bytes(&f)).unwrap();
+        let v = src.info().video.clone().unwrap();
+        let (w, h) = (v.width as usize, v.height as usize);
+        let (cw, ch) = (w / chroma.0, h / chroma.1);
+        let raw = ffmpeg_frames(&ff, &f, if chroma.1 == 1 { "yuv422p" } else { "yuv420p" });
+        let fsize = w * h + 2 * cw * ch;
+        let n = raw.len() / fsize;
+        assert!(n >= 10, "{name}: {n} frames");
+        for i in 0..n {
+            let fr = src.video_frame(FrameRequest::full(v.frame_rate.tick_of(i as i64))).unwrap();
+            let d = max_diff(&planes(&fr), &raw_planes(&raw[i * fsize..(i + 1) * fsize], w, h, cw, ch, 1));
+            assert!(d <= 4, "{name}: frame {i} differs by {d}");
+        }
     }
 }
 
