@@ -47,6 +47,7 @@ pub const PANELS: &[&str] = &[
     "History",
     "Markers",
     "Media Browser",
+    "Metadata",
     "Audio Track Mixer",
     "Audio Clip Mixer",
     "Essential Graphics",
@@ -552,7 +553,7 @@ impl Shortcuts {
                 out.push(Binding::new(&c.id, k, p.as_deref()));
             }
         }
-        for (c, k, p) in presets::FILMCRAFT_PANEL {
+        for (c, k, p) in presets::FILMCRAFT_PANEL.iter().chain(presets::PREMIERE_PANEL) {
             if self.known(c) {
                 out.push(Binding::new(c, k, panel_opt(p)));
             }
@@ -582,14 +583,14 @@ impl Shortcuts {
     pub fn builtin(&self, name: &str) -> Option<Vec<Binding>> {
         let mut b = self.base_defaults();
         b.extend(self.audit());
-        let table: &[Entry] = match name {
-            DEFAULT_PRESET => &[],
-            PREMIERE_PRESET => presets::PREMIERE,
-            FCP_PRESET => presets::FINAL_CUT,
-            AVID_PRESET => presets::AVID,
+        let table: Vec<Entry> = match name {
+            DEFAULT_PRESET => Vec::new(),
+            PREMIERE_PRESET => presets::premiere(),
+            FCP_PRESET => presets::FINAL_CUT.to_vec(),
+            AVID_PRESET => presets::AVID.to_vec(),
             _ => return None,
         };
-        self.apply_table(&mut b, table);
+        self.apply_table(&mut b, &table);
         Some(b)
     }
 

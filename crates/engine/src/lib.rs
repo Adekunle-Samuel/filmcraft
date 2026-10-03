@@ -18,6 +18,7 @@ pub mod essential_sound;
 pub mod export_tools;
 pub mod graphics;
 pub mod interchange;
+pub mod keyboard;
 pub mod masks;
 pub mod media_pool;
 pub mod mixer;
@@ -811,6 +812,8 @@ mod export_tests;
 mod file_tests;
 #[cfg(test)]
 mod image_sequence_tests;
+#[cfg(test)]
+mod keyboard_tests;
 #[cfg(test)]
 mod masks_tests;
 #[cfg(test)]

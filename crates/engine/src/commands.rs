@@ -1441,20 +1441,9 @@ fn build() -> Vec<CommandSpec> {
             let n = s.prefs.playback.step_many_frames as i64;
             s.execute("playhead.step", json!({"frames": -n}))
         }),
-        cmd!("playhead.nextEdit", "Go to Next Edit Point", [], Some("Down"), "{}", has_seq, |s, _| {
-            let t = s.playhead();
-            if let Some(e) = s.active_sequence().and_then(|q| q.edit_points().into_iter().find(|e| *e > t)) {
-                s.set_playhead(e);
-            }
-            Ok(Value::Null)
-        }),
-        cmd!("playhead.prevEdit", "Go to Previous Edit Point", [], Some("Up"), "{}", has_seq, |s, _| {
-            let t = s.playhead();
-            if let Some(e) = s.active_sequence().and_then(|q| q.edit_points().into_iter().rev().find(|e| *e < t)) {
-                s.set_playhead(e);
-            }
-            Ok(Value::Null)
-        }),
+        // Up / Down: edit points on the targeted tracks (Shift+Up / Shift+Down: any track)
+        cmd!("playhead.nextEdit", "Go to Next Edit Point", [], Some("Down"), "{}", has_seq, |s, _| crate::keyboard::go_to_edit(s, true, false)),
+        cmd!("playhead.prevEdit", "Go to Previous Edit Point", [], Some("Up"), "{}", has_seq, |s, _| crate::keyboard::go_to_edit(s, false, false)),
         cmd!("playhead.start", "Go to Sequence Start", [], Some("Home"), "{}", has_seq, |s, _| {
             s.set_playhead(Tick::ZERO);
             Ok(Value::Null)
@@ -2133,6 +2122,7 @@ fn build() -> Vec<CommandSpec> {
     v.extend(crate::transcript::commands());
     v.extend(crate::panels::commands());
     v.extend(crate::scopes::commands());
+    v.extend(crate::keyboard::commands());
     // Edit ▸ Label ▸ <colour>, Paste Attributes, subclips, Video / Audio Options, Replace With Clip…
     // and their menu order
     crate::clip_ops::apply_layout(&mut v);

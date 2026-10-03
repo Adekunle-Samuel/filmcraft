@@ -124,7 +124,10 @@ pub fn search_field(ui: &mut Ui, text: &mut String, hint: &str, width: f32, t: &
     icons::paint(ui.painter(), Rect::from_center_size(pos2(rect.min.x + 12.0, rect.center().y), vec2(12.0, 12.0)), Icon::Search, t.text_dim);
     let inner = Rect::from_min_max(pos2(rect.min.x + 22.0, rect.min.y + 2.0), pos2(rect.max.x - 8.0, rect.max.y - 2.0));
     let mut child = ui.new_child(egui::UiBuilder::new().max_rect(inner));
-    child.add(egui::TextEdit::singleline(text).hint_text(hint).frame(egui::Frame::NONE).desired_width(inner.width()).font(Tokens::ui(12.0)))
+    let resp = child.add(egui::TextEdit::singleline(text).hint_text(hint).frame(egui::Frame::NONE).desired_width(inner.width()).font(Tokens::ui(12.0)));
+    // Select Find Box (Shift+F) / Open Search (Cmd+Shift+F)
+    crate::panels::keyboard::take_search_focus(ui, rect, &resp);
+    resp
 }
 
 /// Premiere-style dropdown text ("Fit ▾").

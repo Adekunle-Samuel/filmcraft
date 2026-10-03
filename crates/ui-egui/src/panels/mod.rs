@@ -13,6 +13,7 @@ pub mod export_mode;
 pub mod file_dialogs;
 pub mod graphics;
 pub mod import_mode;
+pub mod keyboard;
 pub mod lumetri;
 pub mod masks;
 pub mod media_dialogs;
