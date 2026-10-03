@@ -749,6 +749,25 @@ fn build() -> Vec<CommandSpec> {
             q["format"] = json!("otio");
             crate::interchange::export(s, &q)
         }),
+        cmd!(
+            "file.exportAaf",
+            "AAF…",
+            ["File", "Export"],
+            None,
+            r#"{"path":str,"sequence":id?,"mixdownVideo":bool?,"mixdownFormat":"mov|mxf"?,"breakoutToMono":bool?,"audio":"embedded|separate|linked"?,"audioFormat":"wav|aiff"?,"sampleRate":int?,"bitDepth":"16|24"?,"trimAudio":bool?,"handles":frames?,"renderAudioEffects":bool?,"smallSectors":bool?}"#,
+            has_seq,
+            |s, p| crate::aaf_omf::export_aaf(s, p)
+        ),
+        cmd!(
+            "file.exportOmf",
+            "OMF…",
+            ["File", "Export"],
+            None,
+            r#"{"path":str,"sequence":id?,"title":str?,"audio":"embedded|separate"?,"audioFormat":"wav|aiff"?,"sampleRate":int?,"bitDepth":"16|24"?,"trimAudio":bool?,"handles":frames?,"renderAudioEffects":bool?,"breakoutToMono":bool?}"#,
+            has_seq,
+            |s, p| crate::aaf_omf::export_omf(s, p)
+        ),
+        cmd!("file.importAaf", "Import AAF…", [], None, r#"{"path":str}"#, always, |s, p| crate::aaf_omf::import_document(s, p, "file.importAaf")),
         cmd!("file.save", "Save", ["File"], Some("Cmd+S"), r#"{"path":str?}"#, always, |s, p| {
             let path = str_p(p, "path").map(str::to_string).or_else(|| s.path.clone()).ok_or_else(|| bad("file.save", "no path (use Save As)"))?;
             write_project(s, &path, true)
