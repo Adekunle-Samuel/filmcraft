@@ -59,7 +59,7 @@ and `filmcraft-cli`.
 | `edit` | L2 | pure edit algebra (insert, overwrite, razor, ripple, roll, slip, slide, rate stretch…; text-based editing: `edit::transcript`) |
 | `speech` | L2 | speech-to-text: `Transcriber` trait, Whisper model catalogue + verified downloader (feature `download`), pure-Rust Whisper inference on candle with word timestamps (feature `whisper`), speaker labelling ([transcripts.md](transcripts.md)) |
 | `codecs` | L2 | container + codec hub: MP4/MOV, MKV, MXF and Ogg sources, GOP-aware seeking, decoder registry, audio decoding |
-| `interchange` | L2 | EDL, FCP7 XML, FCPXML and OTIO import/export (no file I/O) |
+| `interchange` | L2 | EDL, FCP7 XML, FCPXML, OTIO, AAF (on `cfb`) and OMF 2.0 import/export (no file I/O; the engine supplies rendered audio essence) ([README](../crates/interchange/README.md)) |
 | `render` | L3 | sequence evaluation, CPU compositor, video effects (`effects`, `vfx`; effects needing other frames or tracks read them through `vfx::FxEnv`), transitions, audio mix |
 | `gpu` | L3 | wgpu compositor (WGSL) |
 | `golden` | L3 | test-only: golden-image tests of the CPU renderer and GPU-vs-CPU parity; empty library, dev-dependencies only |
@@ -554,9 +554,14 @@ file.exportMedia {path, preset?, settings?, format?, range?, …}     export.qui
 Video encoders implement `export::VideoEncoder`. Codec crates plug in with `register_encoder` and
 `register_audio_encoder`.
 
-Timelines can be exchanged as EDL, FCP7 XML, FCPXML or OTIO. `file.import` detects these formats and
-merges the result into the project as one undoable step, and `file.exportInterchange`,
-`file.exportEdl`, `file.exportFcpxml` and `file.exportOtio` write them.
+Timelines can be exchanged as EDL, FCP7 XML, FCPXML, OTIO, AAF or OMF. `file.import` detects these
+formats and merges the result into the project as one undoable step (AAF / OMF embedded audio is
+written next to the document first), and `file.exportInterchange`, `file.exportEdl`,
+`file.exportFcpxml`, `file.exportOtio`, `file.exportAaf` and `file.exportOmf` write them. For AAF and
+OMF the engine (`engine::aaf_omf`) first prepares the audio the document references: it lists the
+used ranges (`interchange::essence::audio_needs`), decodes or renders them (clip effects through the
+export audio pipeline), embeds them or writes WAV / AIFF files, and optionally renders a video
+mixdown.
 
 ## 7. Automation surfaces
 
