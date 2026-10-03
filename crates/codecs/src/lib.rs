@@ -7,9 +7,12 @@
 //!   `filmcraft-isobmff`: GOP-aware random access (seek to the preceding sync sample and decode
 //!   forward, caching every decoded frame of the GOP), sequential fast path for playback, and
 //!   packet-cached audio decoding.
-//! - [`MkvSource`], [`MxfSource`] (OP1a / OP-Atom: AVC, VC-3, ProRes, PCM; MPEG-2 reported as
-//!   unsupported) and [`OggSource`] (Ogg Opus with granule-position seeking, Ogg Vorbis): the same
+//! - [`MkvSource`], [`MxfSource`] (OP1a / OP-Atom: AVC, MPEG-2 incl. D-10 / XDCAM, VC-3, ProRes,
+//!   PCM) and [`OggSource`] (Ogg Opus with granule-position seeking, Ogg Vorbis): the same
 //!   GOP-aware video access and packet-cached audio.
+//! - [`MpegSource`]: MPEG-2 transport streams (`.ts`, `.m2ts`, `.mts`), program streams (`.mpg`,
+//!   `.vob`, `.mod`) and MPEG-1/2 video elementary streams: MPEG-1/2, H.264 and HEVC video; MPEG
+//!   audio, AAC (ADTS / LATM), AC-3 and LPCM.
 //! - [`AudioFileSource`]: standalone compressed audio files (MP3, FLAC, AIFF, …).
 //! - [`openers`]: the openers to register with the engine's media pool.
 

@@ -382,6 +382,7 @@ const FIXTURE_GENERATORS: &[(&str, &str)] = &[
     ("codecs", "mxf_oracle"),
     ("codecs", "mpeg_oracle"),
     ("mpeg2v", "oracle"),
+    ("ac3", "oracle"),
     ("codecs", "ogg_oracle"),
 ];
 

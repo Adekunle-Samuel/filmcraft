@@ -1,6 +1,6 @@
 [package]
 name = "filmcraft-codecs"
-description = "Container + codec hub: MP4/MOV, Matroska, MXF and Ogg sources, image sequences, GOP-aware seeking, decoder registry, audio decoding"
+description = "Container + codec hub: MP4/MOV, Matroska, MXF, Ogg and MPEG TS/PS sources, image sequences, GOP-aware seeking, decoder registry, audio decoding"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
