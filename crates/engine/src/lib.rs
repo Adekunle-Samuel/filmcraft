@@ -8,6 +8,7 @@
 //! The project is an `Arc<Project>` edited copy-on-write; undo keeps whole-project snapshots (cheap
 //! thanks to structural sharing of untouched items).
 
+pub mod aaf_omf;
 pub mod autosave;
 pub mod captions;
 pub mod clip_ops;
@@ -837,6 +838,8 @@ pub fn media_duration(p: &Project, _pool: &MediaPool, id: ItemId) -> Option<Tick
     }
 }
 
+#[cfg(test)]
+mod aaf_omf_tests;
 #[cfg(test)]
 mod audio_effects_tests;
 #[cfg(test)]

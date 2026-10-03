@@ -12,6 +12,9 @@
 //! presentation position from the index temporal offsets, random-access flag) and PCM chunk
 //! tables for sound, plus the start timecode of the material package.
 //!
+//! [`MxfWriter`] ([`write`]) writes OP1a and OP-Atom files (VC-3, ProRes, AVC byte stream, PCM)
+//! with index tables and start timecode, streaming to any `Write + Seek` sink.
+//!
 //! Layer L0: no dependencies beyond `std`, no `unsafe`, builds for `wasm32-unknown-unknown`.
 
 mod essence;
@@ -20,12 +23,17 @@ mod index;
 mod klv;
 mod meta;
 mod source;
+pub mod write;
 
 pub use essence::{Codec, PictureInfo, SoundFormat, SoundInfo, aes3_element_samples, decode_pcm};
 pub use file::{Chunk, EssenceTrack, MxfFile, OperationalPattern, Partition, PartitionKind, Sample, Timecode, TrackKind, Wrapping, open};
 pub use index::{IndexEntry, IndexSegment};
 pub use klv::{Rational, Ul};
 pub use source::ByteSource;
+pub use write::{
+    CodedKind, ColorSpace, FrameInfo, MxfWriter, OpAtomPcm, PackageIds, Pattern, PictureCoding, PictureDesc, SoundDesc, StartTimecode, Timestamp, Umid,
+    WriterConfig, encode_pcm, write_opatom_pcm,
+};
 
 use std::fmt;
 use std::io;

@@ -1747,6 +1747,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "filmcraft-cfb"
+version = "0.1.1"
+
+[[package]]
 name = "filmcraft-cli"
 version = "0.1.1"
 dependencies = [
@@ -1839,6 +1843,7 @@ dependencies = [
  "filmcraft-geom",
  "filmcraft-interchange",
  "filmcraft-media",
+ "filmcraft-mxf",
  "filmcraft-project",
  "filmcraft-render",
  "filmcraft-scopes",
@@ -1868,6 +1873,7 @@ dependencies = [
  "filmcraft-h264enc",
  "filmcraft-isobmff",
  "filmcraft-media",
+ "filmcraft-mxf",
  "filmcraft-project",
  "filmcraft-prores",
  "filmcraft-render",
@@ -1980,6 +1986,7 @@ dependencies = [
 name = "filmcraft-interchange"
 version = "0.1.1"
 dependencies = [
+ "filmcraft-cfb",
  "filmcraft-color",
  "filmcraft-geom",
  "filmcraft-media",
@@ -2174,6 +2181,7 @@ dependencies = [
  "filmcraft-frame",
  "filmcraft-geom",
  "filmcraft-gpu",
+ "filmcraft-interchange",
  "filmcraft-media",
  "filmcraft-project",
  "filmcraft-render",

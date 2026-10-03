@@ -124,6 +124,18 @@ fn every_builtin_preset_exports_and_ffprobe_confirms() {
                 assert_eq!((v["width"].as_u64().unwrap(), v["height"].as_u64().unwrap()), (640, 360));
                 continue;
             }
+            "mxf-opatom" => {
+                // Avid style: picture only in Demo.mxf, one mono PCM file per channel
+                assert_eq!(fmt_name, "mxf", "{name}");
+                assert_eq!(j["streams"].as_array().unwrap().len(), 1, "{name}");
+                assert_eq!(stream(&j, "video").unwrap()["codec_name"], "dnxhd", "{name}");
+                for k in 1..=2 {
+                    let a = probe(&format!("{}_A{k}.mxf", out.trim_end_matches(".mxf"))).unwrap();
+                    let a = stream(&a, "audio").unwrap();
+                    assert_eq!((a["codec_name"].as_str(), a["channels"].as_u64()), (Some("pcm_s24le"), Some(1)), "{name} A{k}");
+                }
+                continue;
+            }
             _ => {}
         }
         let v = stream(&j, "video").unwrap_or_else(|| panic!("{name}: no video"));
@@ -165,6 +177,16 @@ fn every_builtin_preset_exports_and_ffprobe_confirms() {
                     _ => 220.0,
                 };
                 assert!((vbr / (mbps * px) - 1.0).abs() < 0.25, "{name}: {vbr:.1} Mb/s vs nominal {:.1}", mbps * px);
+                assert_eq!(a["codec_name"], "pcm_s24le", "{name}");
+            }
+            "mxf-op1a" => {
+                assert_eq!(fmt_name, "mxf", "{name}");
+                let codec = match settings["mxfVideoCodec"].as_str().unwrap() {
+                    "proRes" => "prores",
+                    "h264" => "h264",
+                    _ => "dnxhd",
+                };
+                assert_eq!(v["codec_name"], codec, "{name}");
                 assert_eq!(a["codec_name"], "pcm_s24le", "{name}");
             }
             other => panic!("{name}: unexpected format {other}"),
@@ -222,7 +244,7 @@ fn user_presets_persist_with_favourites_import_and_export() {
     let favs = s.execute("export.presets.list", json!({"favorites": true})).unwrap()["presets"].as_array().unwrap().len();
     assert_eq!(favs, 2);
     let hits = s.execute("export.presets.list", json!({"query": "prores"})).unwrap()["presets"].as_array().unwrap().len();
-    assert_eq!(hits, 4);
+    assert_eq!(hits, 5, "four QuickTime ProRes presets and MXF OP1a ProRes 422 HQ");
     // persisted: a fresh session with the same data directory sees both
     let mut s2 = demo();
     s2.export_presets.set_dir(&dir.0);

@@ -31,6 +31,7 @@ const LAYERS: &[(&str, u8)] = &[
     ("isobmff", 0),
     ("matroska", 0),
     ("mxf", 0),
+    ("cfb", 0),
     ("mpegts", 0),
     ("mpeg2v", 0),
     ("ac3", 0),

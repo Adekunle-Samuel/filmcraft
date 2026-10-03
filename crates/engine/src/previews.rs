@@ -533,6 +533,7 @@ pub fn render(s: &mut Session, mode: RenderMode, p: &Value) -> Result<Value> {
             seconds: secs,
             bytes,
             render_fps: done_frames as f64 / secs.max(1e-6),
+            extra_files: Vec::new(),
         });
         if let Err(e) = &r {
             *prog.error.lock().unwrap_or_else(|x| x.into_inner()) = Some(e.clone());
@@ -612,7 +613,14 @@ pub fn render_audio(s: &mut Session, p: &Value) -> Result<Value> {
             store.add_audio(&g.hash);
         }
         let secs = t0.elapsed().as_secs_f64();
-        let r = outcome.map(|_| filmcraft_export::Report { path: dir.to_string_lossy().to_string(), frames: 0, seconds: secs, bytes, render_fps: 0.0 });
+        let r = outcome.map(|_| filmcraft_export::Report {
+            path: dir.to_string_lossy().to_string(),
+            frames: 0,
+            seconds: secs,
+            bytes,
+            render_fps: 0.0,
+            extra_files: Vec::new(),
+        });
         if let Err(e) = &r {
             *prog.error.lock().unwrap_or_else(|x| x.into_inner()) = Some(e.clone());
         }
