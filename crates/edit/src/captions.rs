@@ -319,7 +319,7 @@ mod tests {
 
     fn ctx(next: &mut u64) -> EditCtx<'_> {
         static NONE: fn(filmcraft_project::ItemId) -> Option<Tick> = |_| None;
-        EditCtx { next_id: next, media_duration: &NONE, min_duration: Tick(10) }
+        EditCtx { next_id: next, media_duration: &NONE, media_start: &|_| Tick::ZERO, min_duration: Tick(10) }
     }
 
     fn spans(seq: &Sequence, tid: TrackId) -> Vec<(i64, i64, String)> {

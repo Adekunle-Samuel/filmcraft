@@ -1,5 +1,12 @@
 //! Lumetri Color panel: Basic Correction, Creative, Curves (RGB + hue curves), Color Wheels,
 //! HSL Secondary, Vignette — editing the selected clip's Lumetri effect through engine commands.
+//!
+//! In an HDR sequence (Rec. 2100 PQ / HLG working space) Basic Correction shows HDR White and
+//! HDR Specular and Curves shows HDR Range (cd/m²): the sliders and curves then span 0 … that
+//! many nits (see `filmcraft_color::grade`). Automation ids for those and HSL Secondary ▸ Refine:
+//! `lumetri.param.<id>` (`hdr_white`, `hdr_specular`, `curves_hdr_range`, `hsl_denoise`,
+//! `hsl_blur`); Color Match: `lumetri.match.comparisonView` (toggles the Program monitor's
+//! Comparison View, whose reference frame Apply Match then uses).
 
 use egui::{Align2, Color32, Pos2, Rect, Sense, Stroke, StrokeKind, pos2, vec2};
 use filmcraft_project::{ClipId, EffectInstance, ParamValue};
@@ -37,6 +44,9 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         return;
     };
     let e = it.effects[idx].clone();
+    // HDR mode: the sequence's working space is Rec. 2100 PQ or HLG
+    let hdr = app.session.active_sequence().is_some_and(|q| q.settings.color.working.is_hdr());
+    let mut auto_rows: Vec<(String, Rect, &'static str)> = Vec::new();
     let ph = app.session.playhead();
     let mt = it.source_time_at(ph.clamp(it.start, it.end() - Tick(1)));
     let mut actions: Actions = Vec::new();
@@ -70,6 +80,13 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                 ("blacks", "Blacks"),
             ] {
                 slider(ui, &e, mt, id, label, None, &t, &mut actions, clip, idx);
+            }
+            if hdr {
+                sub(ui, &t, "HDR");
+                for (id, label) in [("hdr_white", "HDR White"), ("hdr_specular", "HDR Specular")] {
+                    let r = slider(ui, &e, mt, id, label, None, &t, &mut actions, clip, idx);
+                    auto_rows.push((format!("lumetri.param.{id}"), r, label));
+                }
             }
         }
         if open_section(ui, app, &e, "Creative", "creative_on", "creative", &mut sections) {
@@ -128,6 +145,10 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                 ("curve_blue", Color32::from_rgb(80, 130, 250)),
             ][ch];
             curve_editor(ui, &e, id, false, col, &t, &mut actions, clip, idx);
+            if hdr {
+                let r = slider(ui, &e, mt, "curves_hdr_range", "HDR Range", None, &t, &mut actions, clip, idx);
+                auto_rows.push(("lumetri.param.curves_hdr_range".into(), r, "HDR Range"));
+            }
             sub(ui, &t, "Hue Saturation Curves");
             for (id, label) in [
                 ("hue_vs_sat", "Hue vs Sat"),
@@ -183,6 +204,11 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                     }
                 });
             });
+            sub(ui, &t, "Refine");
+            for (id, label) in [("hsl_denoise", "Denoise"), ("hsl_blur", "Blur")] {
+                let r = slider(ui, &e, mt, id, label, None, &t, &mut actions, clip, idx);
+                auto_rows.push((format!("lumetri.param.{id}"), r, label));
+            }
             sub(ui, &t, "Correction");
             slider(ui, &e, mt, "hsl_temp", "Temperature", Some(Gradient::Temp), &t, &mut actions, clip, idx);
             slider(ui, &e, mt, "hsl_tint", "Tint", Some(Gradient::Tint), &t, &mut actions, clip, idx);
@@ -198,6 +224,11 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         }
         ui.add_space(20.0);
     });
+    for (id, r, label) in auto_rows {
+        if r.is_positive() {
+            app.auto.add(&id, r, label);
+        }
+    }
     for a in actions {
         if let Err(err) = app.session.execute("effects.setParam", a) {
             app.ui.status = err.to_string();
@@ -209,6 +240,14 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         }
     }
     for (cmd, mut p) in lut_actions {
+        if cmd == "view.display" {
+            // Comparison View on / off (a Program monitor display mode)
+            let d = p["display"].as_str().unwrap_or("composite").to_string();
+            if let Some(Err(err)) = crate::panels::monitor_view::route(app, &format!("view.display.{d}"), &json!({"monitor": "program"})) {
+                app.ui.status = err;
+            }
+            continue;
+        }
         if p.get("browse").is_some() {
             let Some(path) = app.hooks.pick_open_file.as_mut().and_then(|f| f("LUT", &["cube", "3dl"])) else { continue };
             p = json!({"path": path});
@@ -338,9 +377,9 @@ fn slider(
     actions: &mut Actions,
     clip: ClipId,
     idx: usize,
-) {
-    let Some(pd) = e.def().and_then(|d| d.param(id)) else { return };
-    let filmcraft_project::ParamKind::Float { min, max, soft_min, soft_max, decimals, .. } = pd.kind else { return };
+) -> Rect {
+    let Some(pd) = e.def().and_then(|d| d.param(id)) else { return Rect::NOTHING };
+    let filmcraft_project::ParamKind::Float { min, max, soft_min, soft_max, decimals, .. } = pd.kind else { return Rect::NOTHING };
     let v = e.param(id).map(|p| p.f64_at(mt)).unwrap_or(pd.default.as_f64().unwrap_or(0.0));
     let (row, _) = ui.allocate_exact_size(vec2(ui.available_width(), 26.0), Sense::hover());
     ui.painter().text(pos2(row.min.x + 4.0, row.center().y), Align2::LEFT_CENTER, label, Tokens::ui(12.0), t.text_dim);
@@ -396,6 +435,7 @@ fn slider(
     if let Some(nv) = out.or(nv) {
         actions.push(json!({"clip": clip.0, "effect": idx, "param": id, "value": (nv * 10f64.powi(decimals as i32)).round() / 10f64.powi(decimals as i32)}));
     }
+    row
 }
 
 fn lerp_col(a: Color32, b: Color32, f: f32) -> Color32 {
@@ -578,6 +618,18 @@ fn match_controls(ui: &mut egui::Ui, app: &mut FilmcraftApp, out: &mut Vec<(&'st
     let fd_key = egui::Id::new("lumetri-match-face");
     let mut tc: String = ui.data(|d| d.get_temp(key)).unwrap_or_else(|| "00:00:00:00".to_string());
     let mut face: bool = ui.data(|d| d.get_temp(fd_key)).unwrap_or(true);
+    // Comparison View: the Program monitor shows the reference frame next to the current one, and
+    // Apply Match uses that reference
+    let comparing = app.ui.program.display_mode() == Some(crate::state::DisplayMode::Comparison);
+    let b = ui.selectable_label(comparing, "Comparison View");
+    app.auto.add("lumetri.match.comparisonView", b.rect, "Comparison View");
+    if b.clicked() {
+        out.push(("view.display", json!({"display": if comparing { "composite" } else { "comparison" }})));
+    }
+    let reference = app.ui.program.compare_ref.filter(|_| comparing).map(filmcraft_time::Tick);
+    if let (Some(r), Some(q)) = (reference, app.session.active_sequence()) {
+        tc = filmcraft_time::format_time(r, q.settings.frame_rate, q.settings.drop_frame, filmcraft_time::TimeDisplay::Timecode, 48000);
+    }
     ui.horizontal(|ui| {
         ui.add_sized(vec2(110.0, 20.0), egui::Label::new(egui::RichText::new("Reference").color(t.text_dim)));
         let r = ui.add(egui::TextEdit::singleline(&mut tc).desired_width(96.0));
@@ -588,7 +640,11 @@ fn match_controls(ui: &mut egui::Ui, app: &mut FilmcraftApp, out: &mut Vec<(&'st
     let b = ui.button("Apply Match");
     app.auto.add("lumetri.match.apply", b.rect, "Apply Match");
     if b.clicked() {
-        out.push(("lumetri.applyMatch", json!({"referenceTimecode": tc, "faceDetection": face})));
+        let p = match reference {
+            Some(r) => json!({"referenceTime": r.0, "faceDetection": face}),
+            None => json!({"referenceTimecode": tc, "faceDetection": face}),
+        };
+        out.push(("lumetri.applyMatch", p));
     }
     ui.data_mut(|d| {
         d.insert_temp(key, tc);

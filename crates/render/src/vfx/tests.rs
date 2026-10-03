@@ -9,7 +9,16 @@ use filmcraft_project::{EffectKind, ParamKind, find_effect};
 use super::*;
 
 fn cx() -> FxCtx<'static> {
-    FxCtx { t: Tick::ZERO, px_scale: 1.0, seconds: 0.0, timecode: "01:00:00:00", clip_name: "clip", project: None, env: None }
+    FxCtx {
+        t: Tick::ZERO,
+        px_scale: 1.0,
+        seconds: 0.0,
+        timecode: "01:00:00:00",
+        clip_name: "clip",
+        project: None,
+        env: None,
+        working: filmcraft_color::WorkingSpace::Rec709,
+    }
 }
 
 fn inst(id: &str) -> EffectInstance {

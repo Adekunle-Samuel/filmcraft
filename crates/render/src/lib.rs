@@ -16,6 +16,7 @@ pub mod effects;
 pub mod graphic_clip;
 pub mod graphics;
 pub mod image;
+pub mod lumetri_presets;
 pub mod luts;
 pub mod mask;
 pub mod mixer;
@@ -148,6 +149,7 @@ pub(crate) fn render_seq_tracks(project: &Project, seq: &Sequence, t: Tick, opts
                 clip_name: &item.name,
                 project: Some(project),
                 env: None,
+                working: seq.settings.color.working,
             };
             for e in item.effects.iter().filter(|e| e.def().is_some_and(|d| !d.intrinsic)) {
                 mask::apply_effect(&mut adjusted, e, &cx);
@@ -314,6 +316,7 @@ pub(crate) fn item_layer(
             clip_name: &item.name,
             project: Some(project),
             env: Some(&env),
+            working: seq.settings.color.working,
         };
         for e in item.effects.iter().filter(|e| e.def().is_some_and(|d| !d.intrinsic) && !filmcraft_project::graphic::is_layer(e)) {
             if filmcraft_media::cancel::cancelled() {
@@ -482,6 +485,9 @@ pub fn arc_source(s: impl filmcraft_media::MediaSource + 'static) -> SharedSourc
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod lumetri_hdr_tests;
 
 #[cfg(test)]
 #[path = "adjustment_tests.rs"]

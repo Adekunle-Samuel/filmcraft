@@ -80,6 +80,7 @@ pub const UI_COMMANDS: &[UiCommand] = &[
     uic!("view.dynamicAudioWaveforms", "Dynamic Audio Waveforms", ["View"], None),
     uic!("multicam.toggleView", "Multi-Camera View", ["View"], Some("Shift+0")),
     uic!("multicam.recordToggle", "Multi-Camera Record On/Off Toggle", [], Some("0")),
+    uic!("multicam.editCamerasDialog", "Edit Cameras…", [], None),
     uic!("voiceover.recordToggle", "Voice-over Record", [], None),
     uic!("voiceover.settingsDialog", "Voice-Over Record Settings…", [], None),
     uic!("view.theme.dark", "Darkest", ["View", "Appearance"], None),

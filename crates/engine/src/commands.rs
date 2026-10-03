@@ -387,12 +387,14 @@ pub(crate) fn place_item(
                 placements.push((*tid, b));
             }
         }
-        let snapshot = p.clone();
+        let snapshot = std::sync::Arc::new(p.clone());
+        let snap = snapshot.clone();
         let durations = move |id: ItemId| crate::media_duration(&snapshot, &media, id);
+        let starts = move |id: ItemId| crate::media_start(&snap, id);
         let min = rate.frame_duration();
         let mut next = p.next_id;
         let seq = p.sequence_mut(seq_id).ok_or(EngineError::NoSequence)?;
-        let mut ctx = edit::EditCtx { next_id: &mut next, media_duration: &durations, min_duration: min };
+        let mut ctx = edit::EditCtx { next_id: &mut next, media_duration: &durations, media_start: &starts, min_duration: min };
         let span = placements.iter().map(|x| x.1.start).min().zip(placements.iter().map(|x| x.1.end()).max());
         let ids = if insert { edit::insert(seq, placements, &mut ctx)? } else { edit::overwrite(seq, placements, &mut ctx)? };
         if insert
@@ -1514,13 +1516,15 @@ fn build() -> Vec<CommandSpec> {
                 .ok_or_else(|| bad("source.open", "need `item` (or a Project panel selection)"))?;
             s.project.item(id).ok_or_else(|| bad("source.open", "no such item"))?;
             s.state.source_item = Some(id);
-            s.state.source_playhead = Tick::ZERO;
+            // a subclip opens at its In point
+            s.state.source_playhead = crate::clip_ops::source_view(s, id).map(|v| v.start).unwrap_or_default();
             s.events.push(crate::Event::OpenSource(id));
             Ok(Value::Null)
         }),
         cmd!("source.setPlayhead", "Set Source Playhead", [], None, r#"{"time":ticks|"frame":i64|"seconds":f64}"#, always, |s, p| {
             let item = s.state.source_item.ok_or_else(|| EngineError::Other("no source clip".into()))?;
-            let rate = s.project.item(item).map(|i| i.frame_rate()).unwrap_or_default();
+            let view = crate::clip_ops::source_view(s, item);
+            let rate = view.as_ref().map(|v| v.rate).unwrap_or_default();
             let t = p
                 .get("time")
                 .and_then(Value::as_i64)
@@ -1528,9 +1532,15 @@ fn build() -> Vec<CommandSpec> {
                 .or_else(|| p.get("frame").and_then(Value::as_i64).map(|f| rate.tick_of(f)))
                 .or_else(|| f64_p(p, "seconds").map(Tick::from_seconds_f64))
                 .unwrap_or_default();
-            let dur = s.project.item(item).map(|i| i.duration()).unwrap_or(Tick::MAX);
-            s.state.source_playhead = rate.snap(t.clamp(Tick::ZERO, (dur - rate.frame_duration()).max(Tick::ZERO)));
+            // the Source monitor's span: a subclip that restricts trims keeps the playhead inside it
+            let (lo, hi) = view.map(|v| (v.start, v.end)).unwrap_or((Tick::ZERO, Tick::MAX));
+            s.state.source_playhead = rate.snap(t.clamp(lo, (hi - rate.frame_duration()).max(lo))).max(lo);
             Ok(json!({"time": s.state.source_playhead.0}))
+        }),
+        query!("source.inspect", "Inspect Source Monitor", "{}", |s, _| {
+            let Some(item) = s.state.source_item else { return Ok(json!({"item": null})) };
+            let v = crate::clip_ops::source_view(s, item).ok_or_else(|| bad("source.inspect", "the source item is gone"))?;
+            Ok(v.to_json(s.state.source_playhead))
         }),
         cmd!("source.insert", "Insert", ["Clip"], Some(","), "{}", has_source, |s, _| edit_at_source(s, true)),
         cmd!("source.overwrite", "Overwrite", ["Clip"], Some("."), "{}", has_source, |s, _| edit_at_source(s, false)),

@@ -221,6 +221,7 @@ mod tests {
                 color: Default::default(),
                 has_alpha: false,
                 bitrate: None,
+                hdr: None,
             }),
             audio: (audio > 0).then(|| AudioStreamInfo { sample_rate: 48_000, channels: audio, codec: "aac".into(), bits_per_sample: None }),
             container: "mp4".into(),

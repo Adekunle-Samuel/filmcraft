@@ -424,6 +424,84 @@ fn media_root(p: &Project, id: ItemId) -> Option<(ItemId, &MediaClip, Option<Tim
     }
 }
 
+/// What the Source monitor shows for an item: the media-time span of its time ruler, its frame
+/// rate, In / Out marks and markers.
+///
+/// A subclip that restricts trims shows only its range (the playhead can't leave it); one that
+/// doesn't shows its parent's whole media with the subclip's range as In / Out. Either way a
+/// subclip shows the markers of its parent media that fall inside its range (inherited: they
+/// belong to the master clip, so adding one there shows on every subclip that covers it).
+#[derive(Clone, Debug, PartialEq)]
+pub struct SourceView {
+    pub item: ItemId,
+    /// The media item whose frames are shown (the parent of a subclip).
+    pub media: ItemId,
+    pub start: Tick,
+    pub end: Tick,
+    pub rate: FrameRate,
+    pub mark_in: Option<Tick>,
+    pub mark_out: Option<Tick>,
+    pub markers: Vec<filmcraft_project::Marker>,
+    /// For a subclip: its range and whether trims are restricted to it.
+    pub subclip: Option<(TimeRange, bool)>,
+}
+
+impl SourceView {
+    pub fn to_json(&self, playhead: Tick) -> Value {
+        json!({
+            "item": self.item.0, "media": self.media.0, "start": self.start.0, "end": self.end.0, "fps": self.rate.as_f64(),
+            "playhead": playhead.0, "markIn": self.mark_in.map(|t| t.0), "markOut": self.mark_out.map(|t| t.0),
+            "markers": self.markers.iter().map(|m| json!({"id": m.id.0, "start": m.start.0, "name": m.name, "duration": m.duration.0})).collect::<Vec<_>>(),
+            "subclip": self.subclip.map(|(r, restrict)| json!({"start": r.start.0, "end": r.end().0, "restrictTrims": restrict})),
+        })
+    }
+}
+
+/// The Source monitor view of `item` (see [`SourceView`]).
+pub fn source_view(s: &Session, item: ItemId) -> Option<SourceView> {
+    let pi = s.project.item(item)?;
+    let still = |m: &MediaClip| matches!(m.info.kind, filmcraft_media::MediaKind::Still) || m.info.duration.0 <= 0;
+    Some(match &pi.kind {
+        ItemKind::Media(m) => {
+            let rate = m.frame_rate();
+            let end = if still(m) { s.prefs.timeline.still_duration(rate) } else { m.duration() };
+            SourceView { item, media: item, start: Tick::ZERO, end, rate, mark_in: m.mark_in, mark_out: m.mark_out, markers: m.markers.clone(), subclip: None }
+        }
+        ItemKind::Sequence(q) => SourceView {
+            item,
+            media: item,
+            start: Tick::ZERO,
+            end: q.duration(),
+            rate: q.settings.frame_rate,
+            mark_in: q.mark_in,
+            mark_out: q.mark_out,
+            markers: q.markers.clone(),
+            subclip: None,
+        },
+        ItemKind::Subclip { range, restrict_trims, .. } => {
+            let (root, m, _) = media_root(&s.project, item)?;
+            let rate = m.frame_rate();
+            let fd = rate.frame_duration();
+            let markers = m.markers.iter().filter(|k| k.start >= range.start && k.start < range.end()).cloned().collect();
+            let full = if still(m) { range.end() } else { m.duration().max(range.end()) };
+            let (start, end, mi, mo) =
+                if *restrict_trims { (range.start, range.end(), None, None) } else { (Tick::ZERO, full, Some(range.start), Some(range.end() - fd)) };
+            SourceView { item, media: root, start, end, rate, mark_in: mi, mark_out: mo, markers, subclip: Some((*range, *restrict_trims)) }
+        }
+        _ => SourceView {
+            item,
+            media: item,
+            start: Tick::ZERO,
+            end: pi.duration(),
+            rate: pi.frame_rate(),
+            mark_in: None,
+            mark_out: None,
+            markers: Vec::new(),
+            subclip: None,
+        },
+    })
+}
+
 /// Frame rate of an item, resolving subclips to their media.
 fn item_rate(p: &Project, id: ItemId) -> FrameRate {
     match media_root(p, id) {
@@ -679,6 +757,7 @@ fn offline_file(s: &mut Session, p: &Value) -> Result<Value> {
             color: Default::default(),
             has_alpha: false,
             bitrate: None,
+            hdr: None,
         }),
         audio: has_a.then(|| filmcraft_media::AudioStreamInfo {
             sample_rate: u64_p(p, "sampleRate").unwrap_or(48_000) as u32,
@@ -1103,10 +1182,13 @@ fn edit_subclip(s: &mut Session, p: &Value) -> Result<Value> {
     s.edit("Edit Subclip", |pr, _| {
         let it = pr.item_mut(item).ok_or_else(|| bad("clip.editSubclip", "no such item"))?;
         if convert {
+            // a master clip of the whole media, marked with the subclip's range; the parent's
+            // markers inside that range come along (they were the subclip's inherited markers)
             let mut m = parent_media.ok_or_else(|| bad("clip.editSubclip", "the subclip's media is gone"))?;
-            m.mark_in = None;
-            m.mark_out = None;
-            m.markers.clear();
+            let fd = m.frame_rate().frame_duration();
+            m.mark_in = Some(a);
+            m.mark_out = Some((b - fd).max(a));
+            m.markers.retain(|k| k.start >= a && k.start < b);
             it.kind = ItemKind::Media(m);
         } else {
             it.kind = ItemKind::Subclip { parent, range: TimeRange::from_bounds(a, b), restrict_trims: restrict };

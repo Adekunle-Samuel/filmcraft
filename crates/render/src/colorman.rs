@@ -34,17 +34,27 @@ pub fn needs_management(pipe: &ColorPipeline, cs: ColorSpace, frame: &VideoFrame
     !(pipe.is_plain() && default_decode)
 }
 
-type Key = (ColorSpace, Range, ColorPipeline);
+type Key = (ColorSpace, Range, ColorPipeline, Option<u32>);
 
-/// A cached input transform.
-pub fn input_transform(cs: ColorSpace, range: Range, pipe: &ColorPipeline) -> Arc<InputTransform> {
+/// The content peak (cd/m²) of an item's HDR metadata (MaxCLL, else the mastering display peak),
+/// following subclips to their media. Used as the tone-mapping source peak of PQ media.
+pub fn source_peak_nits(project: &Project, item: ItemId) -> Option<f32> {
+    match &project.item(item)?.kind {
+        ItemKind::Media(m) => m.info.video.as_ref()?.hdr.as_ref()?.peak_nits(),
+        ItemKind::Subclip { parent, .. } => source_peak_nits(project, *parent),
+        _ => None,
+    }
+}
+
+/// A cached input transform (`peak_nits`: the PQ content peak from the file's HDR metadata).
+pub fn input_transform(cs: ColorSpace, range: Range, pipe: &ColorPipeline, peak_nits: Option<f32>) -> Arc<InputTransform> {
     static C: OnceLock<Mutex<HashMap<Key, Arc<InputTransform>>>> = OnceLock::new();
     let c = C.get_or_init(Default::default);
-    let key = (cs, range, *pipe);
+    let key = (cs, range, *pipe, peak_nits.map(|p| p.round() as u32));
     if let Some(t) = c.lock().unwrap_or_else(|e| e.into_inner()).get(&key) {
         return t.clone();
     }
-    let t = Arc::new(InputTransform::new(cs, range, pipe, None));
+    let t = Arc::new(InputTransform::new(cs, range, pipe, key.3.map(f64::from)));
     c.lock().unwrap_or_else(|e| e.into_inner()).insert(key, t.clone());
     t
 }
@@ -61,7 +71,7 @@ pub fn decode(project: &Project, item: ItemId, frame: &VideoFrame, n: usize, pip
         filmcraft_frame::PixelData::Rgba8(_) | filmcraft_frame::PixelData::RgbaF32(_) => Range::Full,
         _ => frame.color.range,
     };
-    let t = input_transform(cs, range, pipe);
+    let t = input_transform(cs, range, pipe, source_peak_nits(project, item));
     let float_src = matches!(frame.data, filmcraft_frame::PixelData::RgbaF32(_));
     // float frames are linear already: only the gamut/tone stages apply to them
     let (w, h, px) = frame.to_linear_f32_decimated_with(n, if float_src { None } else { Some(&t.table) });
@@ -99,6 +109,56 @@ mod tests {
         let mut f = VideoFrame::rgba8(2, 2, [rgb[0], rgb[1], rgb[2], 255].repeat(4));
         f.color = color;
         f
+    }
+
+    #[test]
+    fn mastering_metadata_sets_the_tone_mapping_peak() {
+        use filmcraft_color::HdrMetadata;
+        use filmcraft_media::MediaSource;
+        use filmcraft_project::{Label, MediaClip, MediaRef};
+        let pq = ColorInfo { transfer: Transfer::Pq, primaries: Primaries::Bt2020, ..ColorInfo::SRGB_FULL };
+        // a PQ grey of ≈ 2000 cd/m² (code 0.83) and one of ≈ 4000 cd/m² (code 0.90)
+        let px = |nits: f32| (filmcraft_color::pq_inverse_eotf(nits / 10_000.0) * 255.0).round() as u8;
+        let item_with = |hdr: Option<HdrMetadata>| {
+            let mut p = Project::new("t");
+            let g = filmcraft_media::Generator::BlackVideo;
+            let mut info = filmcraft_media::generators::GeneratorSource::new(g.clone(), 2, 2, Default::default(), filmcraft_time::Tick(1)).info().clone();
+            if let Some(v) = info.video.as_mut() {
+                v.color = pq;
+                v.hdr = hdr;
+            }
+            let clip = MediaClip {
+                media: MediaRef::Generator(g),
+                info,
+                interpret: Default::default(),
+                mark_in: None,
+                mark_out: None,
+                markers: vec![],
+                offline: false,
+                proxy: None,
+                identity: None,
+            };
+            let id = p.add_item("hdr", Label::Iris, ItemKind::Media(clip), None);
+            (p, id)
+        };
+        let out = |hdr: Option<HdrMetadata>, nits: f32| {
+            let (p, id) = item_with(hdr);
+            decode(&p, id, &frame([px(nits); 3], pq), 1, &ColorPipeline::REC709).px[0]
+        };
+        // no metadata: a 1000 cd/m² master is assumed, so 2000 and 4000 both clip to SDR white
+        assert!((out(None, 2000.0) - 1.0).abs() < 0.01 && (out(None, 4000.0) - 1.0).abs() < 0.01);
+        // MaxCLL 4000: the knee spreads up to 4000, so 1000 and 2000 stay below white and 4000 reaches it
+        let m4000 = HdrMetadata { max_cll: Some(4000.0), mastering_max_nits: Some(4000.0), ..Default::default() };
+        let (a, a2, b) = (out(Some(m4000), 1000.0), out(Some(m4000), 2000.0), out(Some(m4000), 4000.0));
+        assert!(a < out(None, 1000.0) - 0.01 && a > 0.8 && a < a2 && a2 < b && (b - 1.0).abs() < 0.02, "{a} {a2} {b}");
+        // the mastering peak alone works too; MaxCLL wins when it is lower (the real content peak)
+        let md = HdrMetadata { mastering_max_nits: Some(4000.0), ..Default::default() };
+        assert_eq!(md.peak_nits(), Some(4000.0));
+        let both = HdrMetadata { mastering_max_nits: Some(4000.0), max_cll: Some(1500.0), ..Default::default() };
+        assert_eq!(both.peak_nits(), Some(1500.0));
+        assert_eq!(HdrMetadata { max_cll: Some(0.0), ..Default::default() }.peak_nits(), None, "0 = unknown");
+        // and reference white is no lower peak than 203
+        assert_eq!(HdrMetadata { max_cll: Some(80.0), ..Default::default() }.peak_nits(), Some(203.0));
     }
 
     #[test]

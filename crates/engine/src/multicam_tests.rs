@@ -612,6 +612,168 @@ fn camera_keys_cut_and_select() {
     assert!(keys.contains(&("multicam.cutToCamera9".into(), "Ctrl+9".into())), "{keys:?}");
 }
 
+/// Colour of camera `k` (0-based) in the many-angle tests: distinct reds and greens.
+fn cam_rgb(k: usize) -> [u8; 3] {
+    [(k * 12) as u8, (250 - k * 12) as u8, 128]
+}
+
+/// `n` colour-matte cameras (64×36, 4 s) in a multi-camera source sequence, edited into a sequence
+/// on V1/A1. Returns (session, source sequence).
+fn many_angles(n: usize) -> (Session, ItemId) {
+    let mut s = Session::default();
+    let mut items = Vec::new();
+    for k in 0..n {
+        let [r, g, b] = cam_rgb(k);
+        let hex = format!("#{r:02x}{g:02x}{b:02x}");
+        let r = s.execute("file.newColorMatte", json!({"color": hex, "seconds": 4.0, "width": 64, "height": 36, "name": format!("Cam {}", k + 1)})).unwrap();
+        items.push(ItemId(r["item"].as_u64().unwrap()));
+    }
+    let r = on_items(&mut s, "clip.createMulticam", &items, json!({"method": "in", "cameraNames": "clip"})).unwrap();
+    let src = ItemId(r["sequence"].as_u64().unwrap());
+    let mut p = (*s.project).clone();
+    let edit =
+        p.new_sequence("Cut", filmcraft_project::SequenceSettings { width: 64, height: 36, frame_rate: FrameRate::FPS_24, ..Default::default() }, 2, 2, None);
+    s.project = std::sync::Arc::new(p);
+    s.state.active_sequence = Some(edit);
+    s.execute("source.open", json!({"item": src.0})).unwrap();
+    s.execute("source.overwrite", json!({})).unwrap();
+    s.set_playhead(FrameRate::FPS_24.tick_of(10));
+    (s, src)
+}
+
+/// A media source that records the scale of every frame request.
+struct Recording {
+    inner: filmcraft_media::SharedSource,
+    scales: std::sync::Arc<std::sync::Mutex<Vec<f32>>>,
+}
+
+impl filmcraft_media::MediaSource for Recording {
+    fn info(&self) -> &filmcraft_media::MediaInfo {
+        self.inner.info()
+    }
+    fn video_frame(&self, req: filmcraft_media::FrameRequest) -> filmcraft_media::Result<std::sync::Arc<filmcraft_frame::VideoFrame>> {
+        self.scales.lock().unwrap().push(req.scale);
+        self.inner.video_frame(req)
+    }
+    fn audio(&self, start: i64, frames: usize, sample_rate: u32) -> filmcraft_media::Result<filmcraft_frame::AudioBuffer> {
+        self.inner.audio(start, frames, sample_rate)
+    }
+}
+
+#[test]
+fn more_than_sixteen_angles_page_and_switch() {
+    let (mut s, src) = many_angles(20);
+    assert_eq!(s.project.sequence(src).unwrap().multicam.as_ref().unwrap().cameras.len(), 20);
+    // automatic layout: 4×4 pages, two of them
+    let g = s.execute("multicam.grid", json!({})).unwrap();
+    assert_eq!((g["cols"].as_u64(), g["rows"].as_u64(), g["pages"].as_u64(), g["page"].as_u64()), (Some(4), Some(4), Some(2), Some(0)));
+    assert_eq!(g["cells"].as_array().unwrap().len(), 16);
+    assert_eq!(g["cells"][0]["active"], true, "angle 0 is on");
+    // page 2 holds cameras 17–20
+    s.execute("multicam.nextPage", json!({})).unwrap();
+    let g = s.execute("multicam.grid", json!({})).unwrap();
+    let cams: Vec<u64> = g["cells"].as_array().unwrap().iter().map(|c| c["camera"].as_u64().unwrap()).collect();
+    assert_eq!((g["page"].as_u64(), cams), (Some(1), vec![17, 18, 19, 20]));
+    assert_eq!(g["cells"][3]["name"], "Cam 20");
+    // past the last page clamps
+    assert_eq!(s.execute("multicam.nextPage", json!({})).unwrap()["page"], 1);
+    // keys 1–9 pick cameras on the shown page: 2 → camera 18 (angle 17)
+    s.execute("multicam.selectCamera2", json!({})).unwrap();
+    assert_eq!(v1(&s), [(0, 17)]);
+    assert_eq!(a1(&s), [(0, 0)], "audio follows video is off");
+    // absolute cameras beyond 16 switch from any page; angle is 0-based
+    s.execute("multicam.page", json!({"page": 0})).unwrap();
+    s.execute("multicam.cut", json!({"camera": 20})).unwrap();
+    assert_eq!(v1(&s), [(0, 19)]);
+    // Ctrl+3 on page 1 at frame 30: an edit, camera 3 after it
+    s.set_playhead(FrameRate::FPS_24.tick_of(30));
+    s.execute("multicam.cutToCamera3", json!({})).unwrap();
+    assert_eq!(v1(&s), [(0, 19), (30, 2)]);
+    // the program shows the switched angle's colour
+    let px = frame(&mut s, 40);
+    let c = &px[(18 * 64 + 32) * 4..][..3];
+    assert!(c.iter().zip(cam_rgb(2)).all(|(a, b)| (*a as i32 - b as i32).abs() <= 3), "{c:?}");
+    s.execute("edit.undo", json!({})).unwrap();
+    assert_eq!(v1(&s), [(0, 19)]);
+    // fixed layouts re-page: 3×3 → three pages; 2×2 → five; switching layout resets the page
+    s.execute("multicam.gridLayout", json!({"layout": "3x3"})).unwrap();
+    assert_eq!(s.execute("multicam.page", json!({"page": 7})).unwrap(), json!({"page": 2, "pages": 3}));
+    let g = s.execute("multicam.grid", json!({})).unwrap();
+    assert_eq!(g["cells"].as_array().unwrap().len(), 2, "cameras 19 and 20");
+    assert_eq!(g["cells"][1]["active"], true, "camera 20 is on");
+    s.execute("multicam.gridLayout", json!({"layout": "2x2"})).unwrap();
+    let g = s.execute("multicam.grid", json!({})).unwrap();
+    assert_eq!((g["page"].as_u64(), g["pages"].as_u64(), g["layout"].as_str()), (Some(0), Some(5), Some("2x2")));
+    assert!(s.execute("multicam.gridLayout", json!({"layout": "5x5"})).is_err());
+    // the view settings are editor state: they survive a state round trip
+    let st: crate::EditorState = serde_json::from_value(serde_json::to_value(&s.state).unwrap()).unwrap();
+    assert_eq!(st.multicam_view.layout, Some(2));
+}
+
+#[test]
+fn grid_pages_decode_only_their_angles_at_reduced_resolution() {
+    let (mut s, src) = many_angles(20);
+    let scales = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let provider = s.media.provider(s.project.clone(), s.services.clone());
+    let recording = {
+        let scales = scales.clone();
+        move |item: ItemId| {
+            use filmcraft_render::SourceProvider;
+            provider.source(item).map(|inner| std::sync::Arc::new(Recording { inner, scales: scales.clone() }) as filmcraft_media::SharedSource)
+        }
+    };
+    let t = FrameRate::FPS_24.tick_of(10);
+    let (img, angles) = filmcraft_render::multicam::render_grid_page(&s.project, src, t, 0.25, None, 1, &recording).unwrap();
+    assert_eq!(angles, [16, 17, 18, 19]);
+    // 4×4 cells of 16×9 (¼ of 64×36): only the page's four angles decoded, each at ¼ scale
+    assert_eq!((img.w, img.h), (64, 36));
+    let asked = scales.lock().unwrap().clone();
+    assert_eq!(asked.len(), 4, "{asked:?}");
+    assert!(asked.iter().all(|s| (*s - 0.25).abs() < 1e-6), "{asked:?}");
+    // cell 0 is camera 17, cell 3 camera 20; empty cells are black
+    let px = img.over_black_rgba8();
+    let at = |x: usize, y: usize| px[(y * 64 + x) * 4..][..3].to_vec();
+    for (cell, cam) in [(0usize, 16usize), (3, 19)] {
+        let c = at(cell % 4 * 16 + 8, cell / 4 * 9 + 4);
+        assert!(c.iter().zip(cam_rgb(cam)).all(|(a, b)| (*a as i32 - b as i32).abs() <= 3), "cell {cell}: {c:?}");
+    }
+    assert_eq!(at(8, 20), [0, 0, 0]);
+    // Auto-Adjust Multi-Camera Playback Quality: the view asks for a lower cell scale while playing
+    let q =
+        |s: &mut Session, playing: bool| s.execute("multicam.grid", json!({"cellPixels": 16.0, "playing": playing})).unwrap()["cellScale"].as_f64().unwrap();
+    assert_eq!((q(&mut s, false), q(&mut s, true)), (0.25, 0.25));
+    s.execute("multicam.autoAdjustQuality", json!({})).unwrap();
+    assert_eq!((q(&mut s, false), q(&mut s, true)), (0.25, 0.0625));
+}
+
+#[test]
+fn selection_top_down_and_view_toggles() {
+    let (mut s, src) = many_angles(3);
+    // a second multi-camera clip of the same source stacked on V2
+    let edit = s.state.active_sequence.unwrap();
+    s.execute("timeline.place", json!({"item": src.0, "track": "V2", "frame": 0})).unwrap();
+    let ids = |s: &Session| {
+        let q = s.project.sequence(edit).unwrap();
+        (q.video_tracks[0].items[0].id.0, q.video_tracks[1].items[0].id.0)
+    };
+    let (low, high) = ids(&s);
+    // untargeted tracks: lowest first by default, topmost with Selection Top Down
+    let clip = |s: &mut Session| s.execute("multicam.inspect", json!({})).unwrap()["clip"].as_u64().unwrap();
+    let expect_default = clip(&mut s);
+    assert!(expect_default == low || expect_default == high);
+    s.execute("multicam.selectionTopDown", json!({"enabled": true})).unwrap();
+    let top = clip(&mut s);
+    s.execute("multicam.selectionTopDown", json!({"enabled": false})).unwrap();
+    let bottom = clip(&mut s);
+    assert_eq!((top, bottom), (high, low));
+    // preview monitor on by default; transmit has no device yet
+    assert!(s.state.multicam_view.show_preview);
+    assert_eq!(s.execute("multicam.showPreviewMonitor", json!({})).unwrap()["enabled"], false);
+    let t = s.execute("multicam.transmitView", json!({})).unwrap();
+    assert_eq!((t["enabled"].as_bool(), t["device"].is_null()), (Some(true), true));
+    assert_eq!(s.execute("multicam.audioFollowsVideo", json!({})).unwrap()["enabled"], true);
+}
+
 /// Process CPU time in seconds (user + system), for the perf test.
 fn process_cpu() -> f64 {
     let out = Command::new("ps").args(["-o", "cputime=", "-p", &std::process::id().to_string()]).output().ok();

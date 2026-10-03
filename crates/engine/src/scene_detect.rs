@@ -266,7 +266,7 @@ fn apply_results(s: &mut Session, seq_id: ItemId, apply: SceneApply, results: Ve
                 let min = pr.sequence(seq_id).map(|q| q.settings.frame_rate.frame_duration()).unwrap_or(Tick(1));
                 let mut next = pr.next_id;
                 let q = pr.sequence_mut(seq_id).ok_or(EngineError::NoSequence)?;
-                let mut ctx = filmcraft_edit::EditCtx { next_id: &mut next, media_duration: &durations, min_duration: min };
+                let mut ctx = filmcraft_edit::EditCtx { next_id: &mut next, media_duration: &durations, media_start: &|_| Tick::ZERO, min_duration: min };
                 // latest cut first: the left piece keeps the clip's id for the earlier cuts
                 for (t, _) in r.cuts.iter().rev() {
                     let link = q.find_item(r.clip).and_then(|(_, it)| it.link);

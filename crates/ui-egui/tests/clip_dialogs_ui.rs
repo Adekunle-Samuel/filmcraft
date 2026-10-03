@@ -191,3 +191,51 @@ fn close_project_prompt_and_nested_menus() {
     assert!(d.app().session.project.items.is_empty(), "closed without saving");
     assert!(d.app().ui.clip_dialog.is_none());
 }
+
+#[test]
+fn subclip_in_the_source_monitor_and_project_menu() {
+    let mut d = Driver::new();
+    let r24 = filmcraft_time::FrameRate::FPS_23_976;
+    let ocean = d.item_named("Ocean_Sunset.mp4");
+    d.exec("project.setMarks", json!({"item": ocean, "in": r24.tick_of(24).0, "out": r24.tick_of(71).0}));
+    d.exec("project.select", json!({"items": [ocean]}));
+    let sub = d.exec("clip.makeSubclip", json!({"name": "Waves Sub"}))["item"].as_u64().unwrap();
+    d.exec("source.open", json!({"item": sub}));
+    d.frames(4);
+    assert_eq!(d.app().session.state.source_playhead, r24.tick_of(24), "opens at the subclip's In");
+    // the scrub bar spans the subclip: its left end is the In, its right end the last frame
+    let bar = d.ok("ui.elements", json!({"prefix": "source.scrubBar"}))[0]["rect"].clone();
+    let (x, y, w, h) = (bar[0].as_f64().unwrap(), bar[1].as_f64().unwrap(), bar[2].as_f64().unwrap(), bar[3].as_f64().unwrap());
+    d.ok("ui.click", json!({"x": x + w - 1.0, "y": y + h / 2.0}));
+    d.frames(3);
+    assert_eq!(d.app().session.state.source_playhead, r24.tick_of(71));
+    d.ok("ui.click", json!({"x": x + 1.0, "y": y + h / 2.0}));
+    d.frames(3);
+    assert_eq!(d.app().session.state.source_playhead, r24.tick_of(24));
+    // Project panel ▸ right-click ▸ Edit Subclip… opens the dialog; Convert to Master Clip converts
+    d.ok("ui.panel.show", json!({"panel": "Project"}));
+    d.exec("project.view.set", json!({"view": "list"}));
+    d.exec("project.select", json!({"items": [sub]}));
+    d.frames(4);
+    // the subclip is made in its master clip's bin: expand it
+    let bin = d.app().session.project.root.parent_of(filmcraft_engine::project::ItemId(sub));
+    if let Some(b) = bin.filter(|b| *b != d.app().session.project.root.id) {
+        d.click(&format!("project.bin.{}.toggle", b.0));
+        d.frames(3);
+    }
+    let row = format!("project.item.{sub}");
+    if d.has(&row) {
+        d.ok("ui.click", json!({"id": row, "button": "right"}));
+        d.frames(3);
+        assert!(d.has("project.itemMenu.editSubclip") && d.has("project.itemMenu.convertToMaster"));
+        d.click("project.itemMenu.editSubclip");
+        assert_eq!(d.app().ui.clip_dialog.as_ref().map(|c| c.command.clone()).as_deref(), Some("clip.editSubclip"));
+        d.click("editSubclip.cancel");
+        d.ok("ui.click", json!({"id": row, "button": "right"}));
+        d.frames(3);
+        d.click("project.itemMenu.convertToMaster");
+        assert!(d.app().session.project.item(filmcraft_engine::project::ItemId(sub)).unwrap().as_media().is_some(), "converted");
+    } else {
+        panic!("subclip row not shown: {:?}", d.ok("ui.elements", json!({"prefix": "project.item."})));
+    }
+}

@@ -347,6 +347,9 @@ pub struct UiState {
     pub expanded_bins: Vec<u64>,
     /// Expanded folders in the Effects panel.
     pub expanded_fx: Vec<String>,
+    /// Effects panel: the Lumetri Presets folder shown as a thumbnail grid (wide panel).
+    #[serde(default)]
+    pub lumetri_grid_folder: Option<String>,
     /// Collapsed effect sections in Effect Controls ("clip:index").
     pub collapsed_fx: Vec<String>,
     pub show_menu_bar: bool,
@@ -431,6 +434,9 @@ pub struct UiState {
     /// Multi-Camera Record On/Off (key 0): playing in the Multi-Camera view records cuts.
     #[serde(default = "yes")]
     pub multicam_record: bool,
+    /// Edit Cameras dialog (open when Some).
+    #[serde(default)]
+    pub edit_cameras: Option<EditCamerasDraft>,
     /// Open guide dialog (Add Guide / Save Guides as Template / Manage Guides).
     #[serde(default)]
     pub guide_dialog: Option<GuideDialog>,
@@ -496,6 +502,15 @@ pub struct SavePresetDraft {
 }
 
 /// Clip ▸ Synchronize…, Merge Clips… and Create Multi-Camera Source Sequence… share one draft;
+/// The Edit Cameras dialog: camera names and on/off per angle of a multi-camera source.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct EditCamerasDraft {
+    pub sequence: u64,
+    pub names: Vec<String>,
+    pub enabled: Vec<bool>,
+}
+
 /// `kind` says which dialog it is (`synchronize`, `merge`, `multicam`).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -706,6 +721,7 @@ impl Default for UiState {
             effects_search: String::new(),
             expanded_bins: vec![],
             expanded_fx: vec!["Video Transitions".into(), "Video Transitions/Dissolve".into()],
+            lumetri_grid_folder: None,
             collapsed_fx: vec![],
             show_menu_bar: true,
             dark: true,
@@ -736,6 +752,7 @@ impl Default for UiState {
             audio_fx_editors: Vec::new(),
             sync_dialog: None,
             multicam_record: true,
+            edit_cameras: None,
             guide_dialog: None,
             clip_dialog: None,
             extras: Default::default(),

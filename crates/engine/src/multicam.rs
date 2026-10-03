@@ -14,6 +14,13 @@
 //! | `multicam.audioFollowsVideo` | | switching video switches the linked audio clips too |
 //! | `multicam.editCameras` | | rename / show / hide cameras, change the audio mode |
 //! | `multicam.inspect` | | the multi-camera clip at the playhead, its cameras and the recorder state |
+//! | `multicam.gridLayout` | Program ▸ Multi-Camera ▸ Layout | angle grid: automatic, 2×2, 3×3 or 4×4 (paged when the angles don't fit) |
+//! | `multicam.page` / `multicam.nextPage` / `multicam.prevPage` | page arrows | page of the angle grid (keys 1–9 pick cameras on the shown page) |
+//! | `multicam.selectionTopDown` | Multi-Camera Selection Top Down | stacked multi-camera clips: switch the topmost instead of the lowest |
+//! | `multicam.showPreviewMonitor` | Show Multi-Camera Preview Monitor | the program next to the grid (off: the grid fills the monitor) |
+//! | `multicam.autoAdjustQuality` | Auto-Adjust Multi-Camera Playback Quality | lower-resolution grid decode while playing |
+//! | `multicam.transmitView` | Transmit Multi-Camera View | send the grid to the transmit device (no transmit output yet: stored only) |
+//! | `multicam.grid` | | the grid page at the playhead: layout, pages, cells (camera, angle, name, active) |
 //!
 //! Sync methods are described in [`crate::sync`].
 
@@ -28,6 +35,7 @@ use filmcraft_project::{
     TrackId, TrackItem, TrackKind, resolve_auto_points,
 };
 use filmcraft_time::{FrameRate, Tick, TimeRange};
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use crate::commands::{CommandSpec, always, bad, bool_p, clips_p, has_selection, has_seq, item_p, str_p, time_p, track_p, u64_p, with_links};
@@ -52,7 +60,7 @@ macro_rules! camera_keys {
                 shortcut: Some(concat!($n)),
                 params: r#"{"videoOnly":bool?}"#,
                 enabled: has_seq,
-                run: |s, p| cut(s, &with_camera(p, $n)),
+                run: |s, p| cut(s, &on_page(with_camera(p, $n))),
                 journal: true,
             },
             CommandSpec {
@@ -62,7 +70,7 @@ macro_rules! camera_keys {
                 shortcut: Some(concat!("Ctrl+", $n)),
                 params: r#"{"videoOnly":bool?}"#,
                 enabled: has_seq,
-                run: |s, p| cut_to_camera(s, &with_camera(p, $n)),
+                run: |s, p| cut_to_camera(s, &on_page(with_camera(p, $n))),
                 journal: true,
             },
         )*]
@@ -73,6 +81,51 @@ fn with_camera(p: &Value, n: u64) -> Value {
     let mut v = if p.is_object() { p.clone() } else { json!({}) };
     v["camera"] = json!(n);
     v
+}
+
+/// Keys 1–9 pick the camera on the grid page shown.
+fn on_page(mut v: Value) -> Value {
+    v["pageRelative"] = json!(true);
+    v
+}
+
+/// Multi-Camera view settings (Program monitor ▸ wrench menu); editor state, not project data.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct MulticamView {
+    /// Grid side (2 = 2×2, 3 = 3×3, 4 = 4×4); None = automatic.
+    pub layout: Option<usize>,
+    /// Grid page (0-based).
+    pub page: usize,
+    /// Multi-Camera Selection Top Down: of stacked multi-camera clips, the topmost one is switched.
+    pub top_down: bool,
+    /// Show Multi-Camera Preview Monitor: the program next to the grid.
+    pub show_preview: bool,
+    /// Auto-Adjust Multi-Camera Playback Quality: lower-resolution grid decode while playing.
+    pub auto_quality: bool,
+    /// Transmit Multi-Camera View: send the grid (not the program) to the transmit device.
+    pub transmit: bool,
+}
+
+impl Default for MulticamView {
+    fn default() -> Self {
+        MulticamView { layout: None, page: 0, top_down: false, show_preview: true, auto_quality: false, transmit: false }
+    }
+}
+
+impl MulticamView {
+    pub fn layout_name(&self) -> &'static str {
+        match self.layout {
+            Some(2) => "2x2",
+            Some(3) => "3x3",
+            Some(4) => "4x4",
+            _ => "auto",
+        }
+    }
+    /// The grid page for `shown` angles.
+    pub fn page_layout(&self, shown: usize) -> filmcraft_render::multicam::PageLayout {
+        filmcraft_render::multicam::page_layout(shown, self.layout, self.page)
+    }
 }
 
 pub fn commands() -> Vec<CommandSpec> {
@@ -135,6 +188,40 @@ fn base_commands() -> Vec<CommandSpec> {
             true,
         ),
         spec("multicam.cutToCamera", "Cut to Camera", &[], r#"{"camera":1..16|"angle":0-based,"time":ticks?,"videoOnly":bool?}"#, has_seq, cut_to_camera, true),
+        spec("multicam.gridLayout", "Multi-Camera Layout", &[], r#"{"layout":"auto|2x2|3x3|4x4"}"#, always, grid_layout, true),
+        spec("multicam.page", "Multi-Camera Page", &[], r#"{"page":0-based|"next"|"prev"}"#, always, set_page, true),
+        spec("multicam.nextPage", "Next Multi-Camera Page", &[], "{}", always, |s, _| set_page(s, &json!({"page": "next"})), true),
+        spec("multicam.prevPage", "Previous Multi-Camera Page", &[], "{}", always, |s, _| set_page(s, &json!({"page": "prev"})), true),
+        spec("multicam.selectionTopDown", "Multi-Camera Selection Top Down", &[], r#"{"enabled":bool?}"#, always, |s, p| view_flag(s, p, Flag::TopDown), true),
+        spec(
+            "multicam.showPreviewMonitor",
+            "Show Multi-Camera Preview Monitor",
+            &[],
+            r#"{"enabled":bool?}"#,
+            always,
+            |s, p| view_flag(s, p, Flag::Preview),
+            true,
+        ),
+        spec(
+            "multicam.autoAdjustQuality",
+            "Auto-Adjust Multi-Camera Playback Quality",
+            &[],
+            r#"{"enabled":bool?}"#,
+            always,
+            |s, p| view_flag(s, p, Flag::AutoQuality),
+            true,
+        ),
+        spec("multicam.transmitView", "Transmit Multi-Camera View", &[], r#"{"enabled":bool?}"#, always, |s, p| view_flag(s, p, Flag::Transmit), true),
+        CommandSpec {
+            id: "multicam.grid",
+            label: "Multi-Camera Grid",
+            menu: &[],
+            shortcut: None,
+            params: r#"{"time":ticks?,"playing":bool?,"cellPixels":f32?,"playbackScale":f32?}"#,
+            enabled: always,
+            run: grid_info,
+            journal: false,
+        },
         CommandSpec {
             id: "multicam.inspect",
             label: "Inspect Multi-Camera",
@@ -189,14 +276,16 @@ fn offset_p(p: &Value, rate: FrameRate) -> Tick {
 
 /// Run `f` on sequence `seq_id` of `p` with an edit context (ids, media durations), then check it.
 fn seq_edit<R>(p: &mut Project, seq_id: ItemId, media: &Arc<MediaPool>, f: impl FnOnce(&mut Sequence, &mut EditCtx) -> Result<R>) -> Result<R> {
-    let snapshot = p.clone();
+    let snapshot = Arc::new(p.clone());
+    let snap = snapshot.clone();
     let media = media.clone();
     let durations = move |id: ItemId| crate::media_duration(&snapshot, &media, id);
+    let starts = move |id: ItemId| crate::media_start(&snap, id);
     let min = p.sequence(seq_id).map(|s| s.settings.frame_rate.frame_duration()).unwrap_or(Tick(1));
     let mut next = p.next_id;
     let r = {
         let seq = p.sequence_mut(seq_id).ok_or(EngineError::NoSequence)?;
-        let mut ctx = EditCtx { next_id: &mut next, media_duration: &durations, min_duration: min };
+        let mut ctx = EditCtx { next_id: &mut next, media_duration: &durations, media_start: &starts, min_duration: min };
         f(seq, &mut ctx)?
     };
     p.next_id = next;
@@ -590,12 +679,16 @@ fn create_multicam(s: &mut Session, p: &Value) -> Result<Value> {
 
 /// The topmost enabled multi-camera video clip at `t` (targeted tracks first) in the active
 /// sequence: (track, clip).
+///
+/// Targeted tracks are searched first, then every video track; from the lowest track up, or from
+/// the topmost down with Multi-Camera Selection Top Down.
 pub fn multicam_clip_at(s: &Session, t: Tick) -> Option<(TrackId, TrackItem)> {
     let q = s.active_sequence()?;
     let tg = s.targeting().targeted;
     let at = |tr: &Track| tr.item_at(t).filter(|i| i.multicam.is_some_and(|m| m.enabled) && s.project.sequence(i.item).is_some()).cloned();
-    let targeted = q.video_tracks.iter().rev().filter(|tr| tg.contains(&tr.id)).find_map(|tr| at(tr).map(|i| (tr.id, i)));
-    targeted.or_else(|| q.video_tracks.iter().rev().find_map(|tr| at(tr).map(|i| (tr.id, i))))
+    let order: Vec<&Track> = if s.state.multicam_view.top_down { q.video_tracks.iter().rev().collect() } else { q.video_tracks.iter().collect() };
+    let targeted = order.iter().filter(|tr| tg.contains(&tr.id)).find_map(|tr| at(tr).map(|i| (tr.id, i)));
+    targeted.or_else(|| order.iter().find_map(|tr| at(tr).map(|i| (tr.id, i))))
 }
 
 /// Resolve `camera` (1-based, shown order) or `angle` (0-based) for the source of `clip`.
@@ -608,8 +701,11 @@ fn angle_p(s: &Session, p: &Value, source: ItemId, cmd: &str) -> Result<u32> {
         }
         return Err(bad(cmd, format!("angle {a} out of range (0–{})", cams.cameras.len().saturating_sub(1))));
     }
-    let n = u64_p(p, "camera").ok_or_else(|| bad(cmd, "need `camera` (1-based) or `angle`"))? as usize;
+    let mut n = u64_p(p, "camera").ok_or_else(|| bad(cmd, "need `camera` (1-based) or `angle`"))? as usize;
     let shown = cams.shown_angles();
+    if bool_p(p, "pageRelative").unwrap_or(false) {
+        n += s.state.multicam_view.page_layout(shown.len()).first;
+    }
     shown.get(n.wrapping_sub(1)).map(|a| *a as u32).ok_or_else(|| bad(cmd, format!("there is no camera {n} ({} shown)", shown.len())))
 }
 
@@ -959,7 +1055,103 @@ pub fn inspect_at(s: &Session, t: Tick) -> Value {
         "cameras": cams.cameras.iter().enumerate().map(|(i, c)| json!({"angle": i, "name": c.name, "enabled": c.enabled, "video": c.video_track.is_some()})).collect::<Vec<_>>(),
         "recorder": rec,
         "audioFollowsVideo": s.state.multicam_audio_follows_video,
+        "view": s.state.multicam_view,
     })
+}
+
+// ---------------------------------------------------------------- Multi-Camera view settings
+
+fn grid_layout(s: &mut Session, p: &Value) -> Result<Value> {
+    let cmd = "multicam.gridLayout";
+    let l = str_p(p, "layout").ok_or_else(|| bad(cmd, "need `layout` (auto, 2x2, 3x3, 4x4)"))?;
+    s.state.multicam_view.layout = match l.to_ascii_lowercase().replace(['×', ' '], "x").as_str() {
+        "auto" | "automatic" => None,
+        "2x2" | "2" => Some(2),
+        "3x3" | "3" => Some(3),
+        "4x4" | "4" => Some(4),
+        _ => return Err(bad(cmd, format!("unknown layout `{l}` (auto, 2x2, 3x3, 4x4)"))),
+    };
+    s.state.multicam_view.page = 0;
+    Ok(json!({"layout": s.state.multicam_view.layout_name()}))
+}
+
+/// Shown angles of the multi-camera clip at the playhead (0 without one).
+fn shown_count(s: &Session) -> usize {
+    multicam_clip_at(s, s.playhead()).and_then(|(_, c)| s.project.sequence(c.item).map(|q| q.cameras().shown_angles().len())).unwrap_or(0)
+}
+
+fn set_page(s: &mut Session, p: &Value) -> Result<Value> {
+    let n = shown_count(s);
+    let l = s.state.multicam_view.page_layout(n);
+    let page = match p.get("page") {
+        Some(Value::String(d)) if d == "next" => (l.page + 1).min(l.pages - 1),
+        Some(Value::String(d)) if d == "prev" || d == "previous" => l.page.saturating_sub(1),
+        Some(v) => v.as_u64().ok_or_else(|| bad("multicam.page", "`page` is a 0-based number, \"next\" or \"prev\""))? as usize,
+        None => return Err(bad("multicam.page", "need `page`")),
+    };
+    let l = filmcraft_render::multicam::page_layout(n, s.state.multicam_view.layout, page);
+    s.state.multicam_view.page = l.page;
+    Ok(json!({"page": l.page, "pages": l.pages}))
+}
+
+enum Flag {
+    TopDown,
+    Preview,
+    AutoQuality,
+    Transmit,
+}
+
+fn view_flag(s: &mut Session, p: &Value, f: Flag) -> Result<Value> {
+    let v = &mut s.state.multicam_view;
+    let slot = match f {
+        Flag::TopDown => &mut v.top_down,
+        Flag::Preview => &mut v.show_preview,
+        Flag::AutoQuality => &mut v.auto_quality,
+        Flag::Transmit => &mut v.transmit,
+    };
+    *slot = bool_p(p, "enabled").unwrap_or(!*slot);
+    let on = *slot;
+    let mut out = json!({"enabled": on});
+    if matches!(f, Flag::Transmit) {
+        // no transmit (video output) devices yet: the setting is kept for when there are
+        out["device"] = Value::Null;
+    }
+    Ok(out)
+}
+
+/// The grid page at the playhead (or `time`): layout, pages and cells. With `cellPixels` (on-screen
+/// cell width in pixels), `playing` and `playbackScale` it also returns the decode scale the
+/// view uses (Auto-Adjust Multi-Camera Playback Quality).
+fn grid_info(s: &mut Session, p: &Value) -> Result<Value> {
+    let t = time_p(s, p, "").unwrap_or(s.playhead());
+    let v = s.state.multicam_view.clone();
+    let Some((_, clip)) = multicam_clip_at(s, t) else {
+        return Ok(json!({"clip": null, "view": v}));
+    };
+    let q = s.project.sequence(clip.item).ok_or(EngineError::NoSequence)?;
+    let cams = q.cameras();
+    let shown = cams.shown_angles();
+    let l = v.page_layout(shown.len());
+    let active = clip.multicam.map(|m| m.angle as usize);
+    let cells: Vec<Value> = shown
+        .iter()
+        .enumerate()
+        .skip(l.first)
+        .take(l.count)
+        .map(|(k, &a)| {
+            json!({"cell": k - l.first, "camera": k + 1, "angle": a, "name": cams.cameras.get(a).map(|c| c.name.clone()), "active": active == Some(a)})
+        })
+        .collect();
+    let mut out = json!({
+        "clip": clip.id.0, "source": clip.item.0, "layout": v.layout_name(), "cols": l.cols, "rows": l.rows,
+        "page": l.page, "pages": l.pages, "angles": shown.len(), "cells": cells, "view": v,
+    });
+    if let Some(px) = p.get("cellPixels").and_then(Value::as_f64) {
+        let playing = bool_p(p, "playing").unwrap_or(false);
+        let pb = p.get("playbackScale").and_then(Value::as_f64).unwrap_or(1.0) as f32;
+        out["cellScale"] = json!(filmcraft_render::multicam::grid_cell_scale(q.settings.width, px as f32, pb, playing, v.auto_quality, l.per_page));
+    }
+    Ok(out)
 }
 
 fn inspect(s: &mut Session, p: &Value) -> Result<Value> {

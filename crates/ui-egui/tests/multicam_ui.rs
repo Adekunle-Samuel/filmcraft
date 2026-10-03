@@ -299,3 +299,93 @@ fn synchronize_and_merge_dialogs() {
     d.click("merge.cancel");
     assert!(d.app().ui.sync_dialog.is_none());
 }
+
+/// 20 colour-matte cameras in a multi-camera source sequence, edited into "Cut".
+fn many_angle_session() -> (Session, u64) {
+    let (mut s, _) = session_empty();
+    let mut items = Vec::new();
+    for k in 0..20u32 {
+        let hex = format!("#{:02x}{:02x}80", k * 12, 250 - k * 12);
+        let r = s.execute("file.newColorMatte", json!({"color": hex, "seconds": 4.0, "width": W, "height": H, "name": format!("Cam {}", k + 1)})).unwrap();
+        items.push(r["item"].as_u64().unwrap());
+    }
+    s.execute("project.select", json!({"items": items})).unwrap();
+    let src = s.execute("clip.createMulticam", json!({"items": items, "method": "in"})).unwrap()["sequence"].as_u64().unwrap();
+    s.execute("source.open", json!({"item": src})).unwrap();
+    s.execute("playhead.set", json!({"frame": 0})).unwrap();
+    s.execute("source.overwrite", json!({})).unwrap();
+    s.execute("playhead.set", json!({"frame": 12})).unwrap();
+    (s, src)
+}
+
+/// A session with the empty sequence "Cut" and nothing imported.
+fn session_empty() -> (Session, ()) {
+    let mut s = Session::default();
+    let mut p = (*s.project).clone();
+    let seq = p.new_sequence("Cut", SequenceSettings { width: W, height: H, frame_rate: FrameRate::FPS_24, ..Default::default() }, 2, 2, None);
+    s.project = Arc::new(p);
+    s.state.active_sequence = Some(seq);
+    s.state.open_sequences = vec![seq];
+    (s, ())
+}
+
+#[test]
+fn multicam_view_pages_beyond_sixteen_angles_and_edit_cameras() {
+    let (s, src) = many_angle_session();
+    let mut d = Driver::new(s);
+    d.ok("ui.menu.invoke", json!({"id": "multicam.toggleView"}));
+    d.frames(3);
+    // page 1: cameras 1–16 and the page arrows
+    let mut angles = d.ids("program.multicam.angle.");
+    angles.sort_by_key(|a| a.rsplit('.').next().unwrap().parse::<u32>().unwrap());
+    assert_eq!(angles.len(), 16, "{angles:?}");
+    assert_eq!(angles.last().map(String::as_str), Some("program.multicam.angle.16"));
+    assert!(!d.ids("program.multicam.pageNext").is_empty() && !d.ids("program.multicam.pagePrev").is_empty());
+    d.until("grid frame", |d| d.app().frames.queue_len() == 0);
+    d.frames(4);
+    d.snapshot("multicam-paged-1");
+    // page 2: cameras 17–20; clicking one switches to it
+    d.click("program.multicam.pageNext");
+    assert_eq!(d.app().session.state.multicam_view.page, 1);
+    let angles = d.ids("program.multicam.angle.");
+    assert_eq!(angles.len(), 4, "{angles:?}");
+    d.click("program.multicam.angle.18");
+    assert_eq!(d.angles(false), [17]);
+    // the 3 key picks the third camera of the shown page (camera 19)
+    d.ok("ui.key", json!({"key": "3"}));
+    d.frames(3);
+    assert_eq!(d.angles(false), [18]);
+    d.until("grid frame", |d| d.app().frames.queue_len() == 0);
+    d.frames(4);
+    d.snapshot("multicam-paged-2");
+    d.click("program.multicam.pagePrev");
+    assert_eq!(d.app().session.state.multicam_view.page, 0);
+    // a 3×3 layout: 9 angles per page, three pages
+    d.exec("multicam.gridLayout", json!({"layout": "3x3"}));
+    d.frames(2);
+    assert_eq!(d.ids("program.multicam.angle.").len(), 9);
+    // without the preview monitor the grid fills the monitor (no program picture)
+    let width = |d: &mut Driver, id: &str| d.ok("ui.elements", json!({"prefix": id}))[0]["rect"][2].as_f64().unwrap_or(0.0);
+    let (grid_w, pic_w) = (width(&mut d, "program.multicam.grid"), width(&mut d, "program.picture"));
+    assert!(grid_w > 0.0 && pic_w > 0.0);
+    d.exec("multicam.showPreviewMonitor", json!({"enabled": false}));
+    d.frames(3);
+    let (grid_w2, pic_w2) = (width(&mut d, "program.multicam.grid"), width(&mut d, "program.picture"));
+    assert!(grid_w2 > grid_w * 1.8 && pic_w2 == 0.0, "grid {grid_w} → {grid_w2}, picture {pic_w} → {pic_w2}");
+    d.snapshot("multicam-grid-only");
+    d.exec("multicam.showPreviewMonitor", json!({"enabled": true}));
+    // Edit Cameras: a thumbnail per camera; hide camera 2
+    d.ok("ui.menu.invoke", json!({"id": "multicam.editCamerasDialog"}));
+    d.frames(3);
+    assert!(d.app().ui.edit_cameras.is_some());
+    assert_eq!(d.ids("editCameras.thumb.").len(), 20);
+    d.until("thumbnails", |d| d.app().frames.queue_len() == 0);
+    d.frames(4);
+    d.snapshot("multicam-edit-cameras");
+    d.click("editCameras.enabled.1");
+    d.click("editCameras.ok");
+    assert!(d.app().ui.edit_cameras.is_none());
+    let mc = d.app().session.project.sequence(filmcraft_engine::project::ItemId(src)).unwrap().multicam.clone().unwrap();
+    assert!(!mc.cameras[1].enabled);
+    assert_eq!(d.exec("multicam.grid", json!({}))["angles"], 19);
+}

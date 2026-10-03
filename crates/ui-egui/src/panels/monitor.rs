@@ -28,6 +28,8 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, which: Which)
     let ctx = ui.ctx().clone();
     let controls_h = 28.0 + 24.0 + 36.0;
     let video_area = Rect::from_min_max(rect.min + vec2(4.0, 4.0), pos2(rect.max.x - 4.0, rect.max.y - controls_h));
+    // the Source monitor's time ruler starts at `origin` (a subclip restricted to its range)
+    let mut origin = Tick::ZERO;
     let (target, frame_size, rate, time, duration, drop_frame, mark_in, mark_out, name) = match which {
         Which::Program => {
             let Some(seq_id) = app.session.state.active_sequence else {
@@ -53,17 +55,15 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, which: Which)
                 return;
             };
             let Some(pi) = app.session.project.item(item) else { return };
-            let size = match &pi.kind {
-                ItemKind::Media(m) => m.info.video.as_ref().map(|v| (v.width, v.height)).unwrap_or((0, 0)),
-                ItemKind::Sequence(s) => (s.settings.width, s.settings.height),
+            let Some(view) = filmcraft_engine::clip_ops::source_view(&app.session, item) else { return };
+            // a subclip shows its parent media's frames
+            let size = match app.session.project.item(view.media).map(|i| &i.kind) {
+                Some(ItemKind::Media(m)) => m.info.video.as_ref().map(|v| (v.width, v.height)).unwrap_or((0, 0)),
+                Some(ItemKind::Sequence(s)) => (s.settings.width, s.settings.height),
                 _ => (1920, 1080),
             };
-            let (mi, mo) = match &pi.kind {
-                ItemKind::Media(m) => (m.mark_in, m.mark_out),
-                ItemKind::Sequence(s) => (s.mark_in, s.mark_out),
-                _ => (None, None),
-            };
-            (Target::Item(item), size, pi.frame_rate(), app.session.state.source_playhead, pi.duration(), false, mi, mo, pi.name.clone())
+            origin = view.start;
+            (Target::Item(item), size, view.rate, app.session.state.source_playhead, view.end, false, view.mark_in, view.mark_out, pi.name.clone())
         }
     };
     let prefix = if which == Which::Program { "program" } else { "source" };
@@ -71,7 +71,11 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, which: Which)
     let display = mv.display_mode().unwrap_or(DisplayMode::Composite);
     // Multi-Camera view: the angle grid on the left, the program on the right
     let multicam = which == Which::Program && mv.multicam;
-    let (grid_area, video_area) = if multicam {
+    // without the preview monitor the grid takes the whole picture area
+    let grid_only = multicam && !app.session.state.multicam_view.show_preview;
+    let (grid_area, video_area) = if grid_only {
+        (Some(video_area), Rect::from_min_size(video_area.max, vec2(0.0, 0.0)))
+    } else if multicam {
         let mid = video_area.center().x;
         (Some(Rect::from_min_max(video_area.min, pos2(mid - 2.0, video_area.max.y))), Rect::from_min_max(pos2(mid + 2.0, video_area.min.y), video_area.max))
     } else {
@@ -96,7 +100,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, which: Which)
     if let (Some(wa), Some(item)) = (wave_area, source_item) {
         monitor_view::waveform(app, ui, wa, item, time, duration, mark_in, mark_out);
     }
-    let show_picture = has_video && !wave_only;
+    let show_picture = has_video && !wave_only && !grid_only;
     // Rulers along the top and left of the picture area.
     let rulers = show_picture && mv.show_rulers;
     let (ruler_rects, video_area) = if rulers {
@@ -297,11 +301,34 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, which: Which)
                 let _ = app.session.execute("multicam.audioFollowsVideo", json!({"enabled": follows}));
             }
             ui.checkbox(&mut app.ui.multicam_record, "Multi-Camera Record");
+            let v = app.session.state.multicam_view.clone();
+            for (cmd, label, on) in [
+                ("multicam.selectionTopDown", "Multi-Camera Selection Top Down", v.top_down),
+                ("multicam.showPreviewMonitor", "Show Multi-Camera Preview Monitor", v.show_preview),
+                ("multicam.autoAdjustQuality", "Auto-Adjust Multi-Camera Playback Quality", v.auto_quality),
+                ("multicam.transmitView", "Transmit Multi-Camera View", v.transmit),
+            ] {
+                let mut b = on;
+                if ui.checkbox(&mut b, label).changed() {
+                    let _ = app.session.execute(cmd, json!({"enabled": b}));
+                }
+            }
+            ui.menu_button("Multi-Camera Layout", |ui| {
+                for (k, label) in [("auto", "Automatic"), ("2x2", "2 × 2"), ("3x3", "3 × 3"), ("4x4", "4 × 4")] {
+                    if ui.selectable_label(v.layout_name() == k, label).clicked() {
+                        let _ = app.session.execute("multicam.gridLayout", json!({"layout": k}));
+                    }
+                }
+            });
+            if ui.button("Edit Cameras…").clicked() {
+                let _ = crate::panels::multicam::route(app, "multicam.editCamerasDialog", &json!({}));
+                ui.close();
+            }
         }
     });
     // ---- mini timeline / scrub bar
     let bar = Rect::from_min_size(pos2(rect.min.x + 14.0, row1.max.y + 2.0), vec2(rect.width() - 28.0, 22.0));
-    mini_timeline(app, ui, bar, which, time, duration, rate, mark_in, mark_out);
+    mini_timeline(app, ui, bar, which, origin, time, duration, rate, mark_in, mark_out);
 
     // ---- transport buttons
     let row3 = Rect::from_min_size(pos2(rect.min.x, bar.max.y + 4.0), vec2(rect.width(), 32.0));
@@ -341,16 +368,18 @@ fn mini_timeline(
     ui: &mut egui::Ui,
     bar: Rect,
     which: Which,
+    origin: Tick,
     time: Tick,
-    duration: Tick,
+    end: Tick,
     rate: filmcraft_time::FrameRate,
     mark_in: Option<Tick>,
     mark_out: Option<Tick>,
 ) {
     let t = app.tokens;
     let p = ui.painter();
-    let dur = duration.0.max(1) as f64;
-    let xof = |tk: Tick| bar.min.x + ((tk.0 as f64 / dur) as f32).clamp(0.0, 1.0) * bar.width();
+    let duration = end;
+    let dur = (end - origin).0.max(1) as f64;
+    let xof = |tk: Tick| bar.min.x + (((tk - origin).0 as f64 / dur) as f32).clamp(0.0, 1.0) * bar.width();
     // ticks: minor 4 pt, major 10 pt, ~20 pt spacing
     let n = ((bar.width() / 20.0) as i32).max(2);
     for i in 0..=n {
@@ -359,14 +388,17 @@ fn mini_timeline(
         p.line_segment([pos2(x, bar.max.y - h), pos2(x, bar.max.y)], Stroke::new(1.0, t.text_faint));
     }
     if mark_in.is_some() || mark_out.is_some() {
-        let a = xof(mark_in.unwrap_or(Tick::ZERO));
+        let a = xof(mark_in.unwrap_or(origin));
         let b = xof(mark_out.map(|o| o + rate.frame_duration()).unwrap_or(duration));
         p.rect_filled(Rect::from_min_max(pos2(a, bar.min.y + 8.0), pos2(b, bar.max.y)), 0.0, Color32::from_rgb(0x5c, 0x5c, 0x5c));
     }
-    if which == Which::Program
-        && let Some(q) = app.session.active_sequence()
-    {
-        for m in &q.markers {
+    // markers: the sequence's (Program), the clip's or the subclip's inherited ones (Source)
+    let markers = match which {
+        Which::Program => app.session.active_sequence().map(|q| q.markers.clone()),
+        Which::Source => app.session.state.source_item.and_then(|i| filmcraft_engine::clip_ops::source_view(&app.session, i)).map(|v| v.markers),
+    };
+    if let Some(markers) = markers {
+        for m in &markers {
             let x = xof(m.start);
             let c = m.color.marker_rgb();
             let c = Color32::from_rgb(c[0], c[1], c[2]);
@@ -393,7 +425,7 @@ fn mini_timeline(
         && let Some(pos) = resp.interact_pointer_pos()
     {
         let f = ((pos.x - bar.min.x) / bar.width()).clamp(0.0, 1.0) as f64;
-        let tk = rate.snap(Tick((f * dur) as i64));
+        let tk = rate.snap(origin + Tick((f * dur) as i64));
         match which {
             Which::Program => {
                 app.stop();
@@ -492,16 +524,12 @@ fn transport(app: &mut FilmcraftApp, ui: &mut egui::Ui, row: Rect, which: Which)
 
 fn source_nav(app: &mut FilmcraftApp, cmd: &str) {
     let Some(item) = app.session.state.source_item else { return };
-    let Some(pi) = app.session.project.item(item) else { return };
-    let rate = pi.frame_rate();
-    let (mi, mo) = match &pi.kind {
-        ItemKind::Media(m) => (m.mark_in, m.mark_out),
-        _ => (None, None),
-    };
+    let Some(v) = filmcraft_engine::clip_ops::source_view(&app.session, item) else { return };
+    let rate = v.rate;
     let cur = app.session.state.source_playhead;
     let t = match cmd {
-        "src.goIn" => mi.unwrap_or(Tick::ZERO),
-        "src.goOut" => mo.unwrap_or(pi.duration() - rate.frame_duration()),
+        "src.goIn" => v.mark_in.unwrap_or(v.start),
+        "src.goOut" => v.mark_out.unwrap_or(v.end - rate.frame_duration()),
         "src.stepBack" => cur - rate.frame_duration(),
         _ => cur + rate.frame_duration(),
     };

@@ -441,7 +441,8 @@ fn stop(s: &mut Session, p: &Value) -> Result<Value> {
             return Err(bad("audio.voiceover.stop", "the record track was deleted"));
         }
         let durations = |_: filmcraft_project::ItemId| -> Option<Tick> { None };
-        let mut ctx = filmcraft_edit::EditCtx { next_id: &mut next, media_duration: &durations, min_duration: rate.frame_duration() };
+        let mut ctx =
+            filmcraft_edit::EditCtx { next_id: &mut next, media_duration: &durations, media_start: &|_| Tick::ZERO, min_duration: rate.frame_duration() };
         filmcraft_edit::overwrite(seq, vec![(track, it)], &mut ctx)?;
         seq.check().map_err(EngineError::Other)?;
         pr.next_id = next;

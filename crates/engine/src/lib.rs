@@ -247,6 +247,10 @@ pub struct EditorState {
     /// audio clips too.
     #[serde(default)]
     pub multicam_audio_follows_video: bool,
+    /// Multi-Camera view settings: grid layout and page, selection order, preview monitor,
+    /// playback quality, transmit.
+    #[serde(default)]
+    pub multicam_view: multicam::MulticamView,
     /// Audio Clip Mixer automation mode per audio track (track id → mode; missing = Read):
     /// Latch / Touch / Write record the clip Volume and Panner moves as clip keyframes.
     #[serde(default)]
@@ -671,13 +675,15 @@ impl Session {
         let seq_id = self.state.active_sequence.ok_or(EngineError::NoSequence)?;
         let media = self.media.clone();
         self.edit(label, move |p, st| {
-            let project_snapshot = p.clone();
+            let project_snapshot = std::sync::Arc::new(p.clone());
+            let snap = project_snapshot.clone();
             let durations = move |id: ItemId| -> Option<Tick> { media_duration(&project_snapshot, &media, id) };
+            let starts = move |id: ItemId| media_start(&snap, id);
             let min = p.sequence(seq_id).map(|s| s.settings.frame_rate.frame_duration()).unwrap_or(Tick(1));
             let mut next = p.next_id;
             let r = {
                 let seq = p.sequence_mut(seq_id).ok_or(EngineError::NoSequence)?;
-                let mut ctx = EditCtx { next_id: &mut next, media_duration: &durations, min_duration: min };
+                let mut ctx = EditCtx { next_id: &mut next, media_duration: &durations, media_start: &starts, min_duration: min };
                 f(seq, &mut ctx, st)?
             };
             p.next_id = next;
@@ -819,6 +825,15 @@ impl Session {
         let provider = self.media.provider(self.project.clone(), self.services.clone());
         let opts = filmcraft_render::RenderOptions { scale, captions: true, ..Default::default() };
         Some(filmcraft_render::render_sequence(&self.project, seq, self.playhead(), opts, &provider))
+    }
+}
+
+/// The earliest media time clips of an item may show: a subclip that restricts trims starts at its
+/// In point, everything else at 0.
+pub fn media_start(p: &Project, id: ItemId) -> Tick {
+    match p.item(id).map(|i| &i.kind) {
+        Some(filmcraft_project::ItemKind::Subclip { range, restrict_trims: true, .. }) => range.start,
+        _ => Tick::ZERO,
     }
 }
 

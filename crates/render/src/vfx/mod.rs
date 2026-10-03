@@ -102,6 +102,7 @@ impl FxEnv for ItemEnv<'_> {
             clip_name: &self.item.name,
             project: Some(self.project),
             env: None,
+            working: self.seq.settings.color.working,
         };
         for e in &self.item.effects {
             if std::ptr::eq(e, upto) {

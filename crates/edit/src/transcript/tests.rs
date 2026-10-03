@@ -170,7 +170,7 @@ fn extract_text_closes_the_gap() {
     let w = sequence_words(&q, &transcripts());
     let r = word_range(&w, 0, 3, R).unwrap();
     let mut next = 1000;
-    let mut ctx = EditCtx { next_id: &mut next, media_duration: &media_dur, min_duration: R.frame_duration() };
+    let mut ctx = EditCtx { next_id: &mut next, media_duration: &media_dur, media_start: &|_| Tick::ZERO, min_duration: R.frame_duration() };
     let tracks: Vec<TrackId> = q.all_tracks().map(|t| t.id).collect();
     crate::extract(&mut q, &tracks, r, &mut ctx);
     q.check().unwrap();
@@ -192,7 +192,7 @@ fn pauses_are_found_and_removed_in_one_pass() {
     let p2 = find_pauses(&w, s(0.4), s(0.1), R);
     assert_eq!(p2.len(), 3);
     let mut next = 1000;
-    let mut ctx = EditCtx { next_id: &mut next, media_duration: &media_dur, min_duration: R.frame_duration() };
+    let mut ctx = EditCtx { next_id: &mut next, media_duration: &media_dur, media_start: &|_| Tick::ZERO, min_duration: R.frame_duration() };
     let removed = ripple_delete_ranges(&mut q, p2.clone(), &mut ctx);
     q.check().unwrap();
     assert_eq!(removed, p2.iter().map(|r| r.duration).fold(Tick::ZERO, |a, b| a + b));
@@ -219,7 +219,7 @@ fn fillers_are_found_with_phrases_and_removed() {
     // "Um," 3.70–4.00 → nearest frames 3.68–4.00; "uh" 8.20–8.50 → 8.20–8.48
     assert_eq!(ranges.iter().map(|r| (r.start, r.end())).collect::<Vec<_>>(), vec![(s(3.68), s(4.00)), (s(8.20), s(8.48))]);
     let mut next = 1000;
-    let mut ctx = EditCtx { next_id: &mut next, media_duration: &media_dur, min_duration: R.frame_duration() };
+    let mut ctx = EditCtx { next_id: &mut next, media_duration: &media_dur, media_start: &|_| Tick::ZERO, min_duration: R.frame_duration() };
     ripple_delete_ranges(&mut q, ranges, &mut ctx);
     q.check().unwrap();
     let w2 = sequence_words(&q, &transcripts());

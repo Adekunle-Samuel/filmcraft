@@ -614,3 +614,78 @@ fn audio_source_channels_pick_what_a_clip_plays() {
     it.source_channels = vec![5];
     assert_eq!(filmcraft_render::audio::source_pair(&it, 2), (0, 0), "missing channels fall back to the first");
 }
+
+#[test]
+fn subclip_source_monitor_trims_and_markers() {
+    let mut s = demo();
+    let ocean = item_named(&s, "Ocean_Sunset.mp4");
+    let r24 = filmcraft_time::FrameRate::FPS_23_976;
+    let f = |n: i64| r24.tick_of(n);
+    // clip markers on the master clip at frames 10, 30, 60 and 90
+    let mut p = (*s.project).clone();
+    if let Some(ItemKind::Media(m)) = p.item_mut(ocean).map(|i| &mut i.kind) {
+        for (k, n) in [10, 30, 60, 90].into_iter().enumerate() {
+            m.markers.push(filmcraft_project::Marker {
+                id: filmcraft_project::MarkerId(9000 + k as u64),
+                start: f(n),
+                duration: Tick::ZERO,
+                name: format!("m{n}"),
+                comment: String::new(),
+                kind: filmcraft_project::MarkerKind::Comment,
+                color: Label::Green,
+            });
+        }
+    }
+    s.project = std::sync::Arc::new(p);
+    s.execute("project.setMarks", json!({"item": ocean.0, "in": f(24).0, "out": f(71).0})).unwrap();
+    s.execute("project.select", json!({"items": [ocean.0]})).unwrap();
+    s.state.source_item = None;
+    let sub = ItemId(s.execute("clip.makeSubclip", json!({})).unwrap()["item"].as_u64().unwrap());
+    // the Source monitor shows the subclip's range, opens at its In and keeps the playhead inside
+    s.execute("source.open", json!({"item": sub.0})).unwrap();
+    let v = s.execute("source.inspect", json!({})).unwrap();
+    assert_eq!((v["start"].as_i64(), v["end"].as_i64(), v["playhead"].as_i64()), (Some(f(24).0), Some(f(72).0), Some(f(24).0)));
+    assert_eq!(v["media"], ocean.0);
+    // inherited markers: the master clip's markers inside the range
+    let names: Vec<&str> = v["markers"].as_array().unwrap().iter().map(|m| m["name"].as_str().unwrap()).collect();
+    assert_eq!(names, ["m30", "m60"]);
+    assert_eq!(s.execute("source.setPlayhead", json!({"frame": 0})).unwrap()["time"], f(24).0);
+    assert_eq!(s.execute("source.setPlayhead", json!({"frame": 500})).unwrap()["time"], f(71).0);
+    // edited in on V3 at 100 s: In 24, 48 frames
+    let r = s.execute("timeline.place", json!({"item": sub.0, "track": "V3", "seconds": 100.0})).unwrap();
+    let c = r["clips"][0].as_u64().unwrap();
+    let start = clip(&s, c).start;
+    assert_eq!((clip(&s, c).source_in, clip(&s, c).duration), (f(24), f(48)));
+    // restricted trims: no handles beyond the subclip on either side
+    let trim = |s: &mut Session, edge: &str, d: i64| {
+        s.execute("timeline.trim", json!({"clip": c, "edge": edge, "deltaFrames": d})).unwrap();
+        let it = clip(s, c);
+        (r24.frame_at(it.start - start), r24.frame_at(it.source_in), r24.frame_at(it.duration))
+    };
+    assert_eq!(trim(&mut s, "in", -10), (0, 24, 48), "head stops at the subclip's In");
+    assert_eq!(trim(&mut s, "out", 10), (0, 24, 48), "tail stops at the subclip's Out");
+    assert_eq!(trim(&mut s, "in", 6), (6, 30, 42));
+    assert_eq!(trim(&mut s, "in", -10), (0, 24, 48), "only back to the subclip's In");
+    // slip stays inside the subclip too
+    trim(&mut s, "out", -8);
+    s.execute("timeline.slip", json!({"clip": c, "deltaFrames": -20})).unwrap();
+    assert_eq!(r24.frame_at(clip(&s, c).source_in), 24);
+    s.execute("timeline.slip", json!({"clip": c, "deltaFrames": 20})).unwrap();
+    assert_eq!(r24.frame_at(clip(&s, c).source_in), 32, "In + 40 frames used = the subclip's Out");
+    // without the restriction the master clip's media is the limit (and the monitor shows it all,
+    // with the subclip's range as In / Out)
+    s.execute("project.select", json!({"items": [sub.0]})).unwrap();
+    s.execute("clip.editSubclip", json!({"restrictTrims": false})).unwrap();
+    s.execute("timeline.slip", json!({"clip": c, "deltaFrames": -20})).unwrap();
+    assert_eq!(r24.frame_at(clip(&s, c).source_in), 12);
+    let v = s.execute("source.inspect", json!({})).unwrap();
+    assert_eq!((v["start"].as_i64(), v["markIn"].as_i64(), v["markOut"].as_i64()), (Some(0), Some(f(24).0), Some(f(71).0)));
+    assert_eq!(v["subclip"]["restrictTrims"], false);
+    // Convert to Master Clip: the whole media, marked with the range, keeping the inherited markers
+    s.execute("clip.editSubclip", json!({"convertToMaster": true})).unwrap();
+    let m = s.project.item(sub).unwrap().as_media().unwrap().clone();
+    assert_eq!((m.mark_in, m.mark_out), (Some(f(24)), Some(f(71))));
+    assert_eq!(m.markers.iter().map(|k| k.name.as_str()).collect::<Vec<_>>(), ["m30", "m60"]);
+    s.execute("edit.undo", json!({})).unwrap();
+    assert!(matches!(s.project.item(sub).unwrap().kind, ItemKind::Subclip { restrict_trims: false, .. }));
+}

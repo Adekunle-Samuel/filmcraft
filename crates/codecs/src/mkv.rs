@@ -154,6 +154,20 @@ fn sample_entry(c: &Codec, private: &[u8], v: Option<&filmcraft_matroska::VideoI
     })
 }
 
+/// HDR static metadata from the Matroska `Colour` element.
+fn hdr_metadata(c: &filmcraft_matroska::Colour) -> Option<filmcraft_color::HdrMetadata> {
+    if c.mastering.is_none() && c.max_cll.is_none() && c.max_fall.is_none() {
+        return None;
+    }
+    let nz = |v: f64| (v > 0.0).then_some(v as f32);
+    Some(filmcraft_color::HdrMetadata {
+        mastering_max_nits: c.mastering.as_ref().and_then(|m| nz(m.luminance_max)),
+        mastering_min_nits: c.mastering.as_ref().map(|m| m.luminance_min as f32),
+        max_cll: c.max_cll.and_then(|v| nz(v as f64)),
+        max_fall: c.max_fall.and_then(|v| nz(v as f64)),
+    })
+}
+
 fn color_of(v: &filmcraft_matroska::VideoInfo, w: u32, h: u32) -> (ColorInfo, bool) {
     let mut c = ColorInfo { matrix: filmcraft_frame::default_matrix(w, h), transfer: Transfer::Bt709, primaries: Primaries::Bt709, range: Range::Limited };
     let Some(col) = &v.colour else { return (c, false) };
@@ -251,6 +265,7 @@ impl MkvSource {
                 color,
                 has_alpha: v.alpha_mode != 0,
                 bitrate,
+                hdr: v.colour.as_ref().and_then(hdr_metadata),
             }
         });
         let audio = atrack.map(|i| {

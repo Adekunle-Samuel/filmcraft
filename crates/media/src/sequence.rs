@@ -145,6 +145,7 @@ impl ImageSequenceSource {
                 color: filmcraft_color::ColorInfo::SRGB_FULL,
                 has_alpha,
                 bitrate: None,
+                hdr: None,
             }),
             audio: None,
             container: "Image Sequence".into(),
