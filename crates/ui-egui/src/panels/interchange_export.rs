@@ -4,7 +4,7 @@
 //!
 //! Automation ids (`<p>` is `aafExport` or `omfExport`): `<p>.mixdownVideo` (AAF),
 //! `<p>.breakoutToMono`, `<p>.audio.<embedded|separate|linked>` (linked: AAF only),
-//! `<p>.audioFormat.<wav|aiff>`, `<p>.sampleRate.<rate>`, `<p>.bitDepth.<16|24>`, `<p>.trimAudio`,
+//! `<p>.audioFormat.<wav|aiff|mxf>` (mxf: AAF only), `<p>.sampleRate.<rate>`, `<p>.bitDepth.<16|24>`, `<p>.trimAudio`,
 //! `<p>.handles` (frames), `<p>.renderAudioEffects`, `<p>.title` (OMF), `<p>.ok`, `<p>.cancel`.
 
 use serde_json::{Value, json};
@@ -18,7 +18,7 @@ struct Draft {
     mixdown_video: bool,
     breakout: bool,
     audio: &'static str,
-    aiff: bool,
+    format: &'static str,
     sample_rate: u32,
     bits: u16,
     trim: bool,
@@ -44,7 +44,7 @@ pub fn open(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str) -> Result<Val
         mixdown_video: false,
         breakout: false,
         audio: "embedded",
-        aiff: false,
+        format: "wav",
         sample_rate: sr,
         bits: 16,
         trim: omf,
@@ -99,10 +99,12 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
             ui.end_row();
             ui.label("Audio File Format:");
             ui.horizontal(|ui| {
-                for (aiff, label, k) in [(false, "Broadcast Wave", "wav"), (true, "AIFF", "aiff")] {
-                    let r = ui.add_enabled(d.audio == "separate", egui::RadioButton::new(d.aiff == aiff, label));
+                let formats: &[(&'static str, &str)] =
+                    if d.omf { &[("wav", "Broadcast Wave"), ("aiff", "AIFF")] } else { &[("wav", "Broadcast Wave"), ("aiff", "AIFF"), ("mxf", "OP-Atom MXF")] };
+                for &(k, label) in formats {
+                    let r = ui.add_enabled(d.audio == "separate", egui::RadioButton::new(d.format == k, label));
                     if r.clicked() {
-                        d.aiff = aiff;
+                        d.format = k;
                     }
                     elems.push((format!("{p}.audioFormat.{k}"), r.rect, label.to_string()));
                 }
@@ -179,7 +181,7 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
                     "path": path,
                     "breakoutToMono": d.breakout,
                     "audio": d.audio,
-                    "audioFormat": if d.aiff { "aiff" } else { "wav" },
+                    "audioFormat": d.format,
                     "sampleRate": d.sample_rate,
                     "bitDepth": d.bits,
                     "trimAudio": d.trim && d.audio != "linked",

@@ -7,7 +7,7 @@
 //! optional video mixdown rendered to one file.
 //!
 //! `file.exportAaf {path, sequence?, mixdownVideo?, breakoutToMono?, audio?: "embedded"|"separate"|
-//! "linked", audioFormat?: "wav"|"aiff", sampleRate?, bitDepth?, trimAudio?, handles? (frames),
+//! "linked", audioFormat?: "wav"|"aiff"|"mxf" (OP-Atom, AAF only), sampleRate?, bitDepth?, trimAudio?, handles? (frames),
 //! renderAudioEffects?, smallSectors?}`
 //!
 //! `file.exportOmf {path, sequence?, audio?: "embedded"|"separate", audioFormat?, sampleRate?,
@@ -42,6 +42,8 @@ pub enum AudioMode {
 pub struct AudioPlan {
     pub mode: AudioMode,
     pub aiff: bool,
+    /// Separate files as OP-Atom MXF (AAF only; Avid-style consolidated media).
+    pub mxf: bool,
     pub sample_rate: u32,
     pub bits: u16,
     pub trim: bool,
@@ -58,10 +60,11 @@ fn plan_from(s: &Session, p: &Value, seq: ItemId, cmd: &str, omf: bool) -> Resul
         "linked" | "link" if !omf => AudioMode::Linked,
         other => return Err(bad(cmd, format!("unknown audio mode {other:?} (embedded, separate{})", if omf { "" } else { " or linked" }))),
     };
-    let aiff = match str_p(p, "audioFormat").unwrap_or("wav") {
-        "wav" | "bwf" | "broadcastWave" => false,
-        "aiff" | "aif" => true,
-        other => return Err(bad(cmd, format!("unknown audio format {other:?} (wav or aiff)"))),
+    let (aiff, mxf) = match str_p(p, "audioFormat").unwrap_or("wav") {
+        "wav" | "bwf" | "broadcastWave" => (false, false),
+        "aiff" | "aif" => (true, false),
+        "mxf" | "opatom" if !omf => (false, true),
+        other => return Err(bad(cmd, format!("unknown audio format {other:?} (wav, aiff{})", if omf { "" } else { " or mxf" }))),
     };
     let sample_rate = u64_p(p, "sampleRate").map(|r| r as u32).unwrap_or(q.settings.sample_rate.max(1));
     if !(8_000..=192_000).contains(&sample_rate) {
@@ -75,6 +78,7 @@ fn plan_from(s: &Session, p: &Value, seq: ItemId, cmd: &str, omf: bool) -> Resul
     Ok(AudioPlan {
         mode,
         aiff,
+        mxf,
         sample_rate,
         bits,
         trim: bool_p(p, "trimAudio").unwrap_or(omf),
@@ -246,7 +250,13 @@ pub fn prepare_audio(s: &Session, seq: ItemId, plan: &AudioPlan, media_dir: &str
             let data = match plan.mode {
                 AudioMode::Embedded => EssenceData::Embedded(pcm),
                 AudioMode::Separate | AudioMode::Linked => {
-                    let ext = if plan.aiff { "aif" } else { "wav" };
+                    let ext = if plan.mxf {
+                        "mxf"
+                    } else if plan.aiff {
+                        "aif"
+                    } else {
+                        "wav"
+                    };
                     let stem = match ch {
                         Some(c) => format!("{base}_A{}", c + 1),
                         None => base.clone(),
@@ -257,8 +267,23 @@ pub fn prepare_audio(s: &Session, seq: ItemId, plan: &AudioPlan, media_dir: &str
                         k += 1;
                         name = format!("{stem} ({k}).{ext}");
                     }
-                    let path = if media_dir.is_empty() { name } else { format!("{media_dir}/{name}") };
-                    let bytes = if plan.aiff {
+                    let path = if media_dir.is_empty() { name.clone() } else { format!("{media_dir}/{name}") };
+                    let bytes = if plan.mxf {
+                        let bps = plan.bits.div_ceil(8) as usize;
+                        let samples: Vec<i32> = pcm
+                            .chunks_exact(bps)
+                            .map(|b| if bps == 3 { i32::from_le_bytes([0, b[0], b[1], b[2]]) >> 8 } else { i16::from_le_bytes([b[0], b[1]]) as i32 })
+                            .collect();
+                        let opts = filmcraft_mxf::OpAtomPcm {
+                            sample_rate: plan.sample_rate,
+                            bits: plan.bits as u32,
+                            channels: n,
+                            edit_rate: None,
+                            ids: filmcraft_mxf::PackageIds::from_seed(&path, &name),
+                            timecode: None,
+                        };
+                        filmcraft_mxf::write_opatom_pcm(&opts, &samples).map_err(|e| EngineError::Other(format!("{path}: {e}")))?
+                    } else if plan.aiff {
                         filmcraft_interchange::wav::aiff_file(&pcm, n as u16, plan.sample_rate, plan.bits)
                     } else {
                         filmcraft_interchange::wav::wav_file(&pcm, n as u16, plan.sample_rate, plan.bits)

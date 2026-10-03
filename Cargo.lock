@@ -1831,6 +1831,7 @@ dependencies = [
  "filmcraft-geom",
  "filmcraft-interchange",
  "filmcraft-media",
+ "filmcraft-mxf",
  "filmcraft-project",
  "filmcraft-render",
  "filmcraft-scopes",

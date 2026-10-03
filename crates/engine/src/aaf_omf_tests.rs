@@ -112,6 +112,24 @@ fn aaf_separate_aiff_breakout_and_linked() {
     assert_eq!(mono.len(), 2);
     assert!(mono.iter().all(|t| t.channels == filmcraft_project::AudioChannels::Mono));
 
+    // Avid-style consolidated OP-Atom MXF audio: our MXF reader opens every file
+    let path = dir.join("mxf.aaf").to_string_lossy().into_owned();
+    let r = s.execute("file.exportAaf", json!({"path": path, "audio": "separate", "audioFormat": "mxf", "breakoutToMono": true, "trimAudio": true})).unwrap();
+    let files: Vec<String> = r["mediaFiles"].as_array().unwrap().iter().map(|v| v.as_str().unwrap().to_string()).collect();
+    assert_eq!(files.len(), 4);
+    for f in &files {
+        let b = std::fs::read(f).unwrap();
+        let m = filmcraft_mxf::open(&b).unwrap();
+        assert_eq!(m.operational_pattern.name(), "OP-Atom");
+        let t = m.track_of_kind(filmcraft_mxf::TrackKind::Sound).unwrap();
+        assert_eq!(m.tracks[t].stored_sample_frames(), 48_000);
+    }
+    let r = s.execute("file.importAaf", json!({"path": path})).unwrap();
+    let n = imported_seq(&r);
+    let a = &s.project.sequence(n).unwrap().audio_tracks[0].items[0];
+    assert!(path_of(&s, a.item).ends_with(".mxf"));
+    assert!(!s.project.item(a.item).unwrap().as_media().unwrap().offline, "the MXF audio links");
+
     // linked: no media is written, the document points at the original movies
     let path = dir.join("linked.aaf").to_string_lossy().into_owned();
     let r = s.execute("file.exportAaf", json!({"path": path, "audio": "linked", "sequence": seq.0})).unwrap();
