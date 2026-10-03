@@ -132,6 +132,8 @@ pub struct PicState {
     /// Scaling factors [sizeId][matrixId] when scaling lists are enabled.
     pub scaling: Option<Arc<Vec<Vec<u8>>>>,
     pub deblocking_enabled_anywhere: bool,
+    /// Draft mode: no deblocking or SAO.
+    pub draft: bool,
 }
 
 impl PicState {
@@ -176,6 +178,7 @@ impl PicState {
             ds_ctx: None,
             scaling,
             deblocking_enabled_anywhere: false,
+            draft: false,
         }
     }
 
@@ -259,6 +262,7 @@ pub struct SliceDecoder<'a> {
     pub coeffs: Vec<i32>,
     pub pred0: Vec<i16>,
     pub pred1: Vec<i16>,
+    pub mc: crate::inter::McScratch,
     pub refs_buf: Refs,
     /// Collocated picture for TMVP.
     pub col: Option<RefPic>,
@@ -279,11 +283,14 @@ impl<'a> SliceDecoder<'a> {
     }
     #[inline]
     fn bypass_bits(&mut self, n: u32) -> u32 {
-        let mut v = 0;
-        for _ in 0..n {
-            v = (v << 1) | self.c.decode_bypass();
+        let mut v = 0u32;
+        let mut left = n;
+        while left > 16 {
+            v = (v << 16) | self.c.decode_bypass_bits(16);
+            left -= 16;
         }
-        v
+        // (bits beyond 32 shift out, as the bin-by-bin loop did)
+        v.checked_shl(left).unwrap_or(0) | self.c.decode_bypass_bits(left)
     }
 
     /// Decode the slice segment `job` into `pic`.
@@ -376,6 +383,7 @@ impl<'a> SliceDecoder<'a> {
             coeffs: vec![0; 32 * 32],
             pred0: vec![0; 64 * 64],
             pred1: vec![0; 64 * 64],
+            mc: Default::default(),
             refs_buf: Refs::default(),
             col,
             no_backward_pred,
@@ -1449,9 +1457,9 @@ impl<'a> SliceDecoder<'a> {
                 let frame = &self.refs[l][f.ref_idx[l] as usize].frame;
                 let buf = if l == 0 || !bi { &mut self.pred0 } else { &mut self.pred1 };
                 if c == 0 {
-                    inter::mc_luma(frame, x, y, f.mv[l], bw, bh, buf);
+                    inter::mc_luma(frame, x, y, f.mv[l], bw, bh, buf, &mut self.mc);
                 } else {
-                    inter::mc_chroma(frame, c - 1, x, y, f.mv[l], bw, bh, buf);
+                    inter::mc_chroma(frame, c - 1, x, y, f.mv[l], bw, bh, buf, &mut self.mc);
                 }
             }
             let stride = if c == 0 { self.pic.width } else { self.pic.cwidth };

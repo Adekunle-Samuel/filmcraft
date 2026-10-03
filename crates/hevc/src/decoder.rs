@@ -56,6 +56,8 @@ pub struct DecodeStats {
     pub transform_skip_pictures: u64,
     pub long_term_slices: u64,
     pub missing_refs: u64,
+    /// Pictures decoded in draft mode without in-loop filters ([`Decoder::set_draft`]).
+    pub draft_pictures: u64,
 }
 
 #[derive(Default)]
@@ -86,6 +88,7 @@ pub struct Decoder {
     pool: Option<rayon::ThreadPool>,
     in_flight: VecDeque<FrameRef>,
     max_in_flight: usize,
+    draft: bool,
 }
 
 impl Default for Decoder {
@@ -139,6 +142,7 @@ impl Decoder {
             pool,
             in_flight: VecDeque::new(),
             max_in_flight: threads.max(1) + 2,
+            draft: false,
         }
     }
 
@@ -237,6 +241,14 @@ impl Decoder {
 
     /// First error reported by a decoding job since the last call (also returned by
     /// [`Decoder::decode`]); useful after [`Decoder::flush`].
+    /// Draft mode for reduced-resolution playback (off by default): sub-layer non-reference
+    /// pictures of the highest temporal sub-layer (pictures nothing predicts from) skip
+    /// deblocking and SAO and come out flagged [`Picture::draft`]; every other picture is
+    /// unchanged.
+    pub fn set_draft(&mut self, on: bool) {
+        self.draft = on;
+    }
+
     pub fn take_error(&mut self) -> Option<Error> {
         self.shared.error.lock().ok().and_then(|mut e| e.take())
     }
@@ -422,7 +434,13 @@ impl Decoder {
         self.next_id += 1;
         let frame = Arc::new(Frame::new(id, poc, w, h, sps.log2_ctb, sps.bit_depth_luma, sps.bit_depth_chroma));
         let output = sh.pic_output && !(hdr.is_rasl() && self.skip_rasl);
-        let meta = Arc::new(output_meta(sps, pts, hdr.is_irap()));
+        // Draft mode: a sub-layer non-reference picture of the highest sub-layer is never used
+        // for prediction, so its in-loop filters can be left out without changing anything else.
+        let draft = self.draft && hdr.is_sub_layer_non_ref() && hdr.temporal_id as u32 >= sps.max_sub_layers_minus1;
+        if draft {
+            self.stat(|s| s.draft_pictures += 1);
+        }
+        let meta = Arc::new(output_meta(sps, pts, hdr.is_irap(), draft));
         self.pending = Some(PendingPic {
             frame,
             sps: sps.clone(),
@@ -452,14 +470,24 @@ impl Decoder {
         let Some(p) = self.pending.take() else { return };
         let PendingPic { frame, sps, pps, layout, first_sh, poc, output, meta, slices, .. } = p;
         let scaling = self.layout_cache.iter().find(|(pp, ss, _, _)| Arc::ptr_eq(pp, &pps) && Arc::ptr_eq(ss, &sps)).and_then(|(_, _, _, s)| s.clone());
-        self.dispatch(frame.clone(), sps, pps, layout, scaling, slices);
+        self.dispatch(frame.clone(), sps, pps, layout, scaling, slices, meta.draft);
         self.poc_state.update(&first_sh, poc);
         let mut outs = Vec::new();
         self.dpb.insert(frame, poc, output, meta, &mut outs);
         self.out_queue.extend(outs);
     }
 
-    fn dispatch(&mut self, frame: FrameRef, sps: Arc<Sps>, pps: Arc<Pps>, layout: Arc<Layout>, scaling: Option<Arc<Vec<Vec<u8>>>>, slices: Vec<SliceJob>) {
+    #[allow(clippy::too_many_arguments)]
+    fn dispatch(
+        &mut self,
+        frame: FrameRef,
+        sps: Arc<Sps>,
+        pps: Arc<Pps>,
+        layout: Arc<Layout>,
+        scaling: Option<Arc<Vec<Vec<u8>>>>,
+        slices: Vec<SliceJob>,
+        draft: bool,
+    ) {
         let shared = self.shared.clone();
         #[cfg(feature = "threads")]
         if let Some(pool) = &self.pool {
@@ -470,16 +498,27 @@ impl Decoder {
                 }
             }
             self.in_flight.push_back(frame.clone());
-            pool.spawn_fifo(move || run_job(frame, sps, pps, layout, scaling, slices, &shared));
+            pool.spawn_fifo(move || run_job(frame, sps, pps, layout, scaling, slices, draft, &shared));
             return;
         }
-        run_job(frame, sps, pps, layout, scaling, slices, &shared);
+        run_job(frame, sps, pps, layout, scaling, slices, draft, &shared);
     }
 }
 
 /// Decode all slices of one picture and publish its rows.
-fn run_job(frame: FrameRef, sps: Arc<Sps>, pps: Arc<Pps>, layout: Arc<Layout>, scaling: Option<Arc<Vec<Vec<u8>>>>, slices: Vec<SliceJob>, shared: &Shared) {
+#[allow(clippy::too_many_arguments)]
+fn run_job(
+    frame: FrameRef,
+    sps: Arc<Sps>,
+    pps: Arc<Pps>,
+    layout: Arc<Layout>,
+    scaling: Option<Arc<Vec<Vec<u8>>>>,
+    slices: Vec<SliceJob>,
+    draft: bool,
+    shared: &Shared,
+) {
     let mut pic = PicState::new(frame.clone(), sps, pps, layout, scaling);
+    pic.draft = draft;
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let mut first_err = None;
         for s in &slices {
@@ -521,7 +560,7 @@ fn run_job(frame: FrameRef, sps: Arc<Sps>, pps: Arc<Pps>, layout: Arc<Layout>, s
     }
 }
 
-fn output_meta(sps: &Sps, pts: i64, key: bool) -> OutputMeta {
+fn output_meta(sps: &Sps, pts: i64, key: bool, draft: bool) -> OutputMeta {
     let vui = sps.vui.clone().unwrap_or_default();
     OutputMeta {
         pts,
@@ -533,6 +572,7 @@ fn output_meta(sps: &Sps, pts: i64, key: bool) -> OutputMeta {
         matrix_coefficients: vui.matrix_coefficients,
         sar: vui.sar,
         bit_depth: sps.bit_depth_luma,
+        draft,
     }
 }
 
@@ -564,5 +604,6 @@ fn make_picture(o: &Output) -> Picture {
             matrix: o.meta.matrix_coefficients,
         },
         sar: o.meta.sar,
+        draft: o.meta.draft,
     }
 }

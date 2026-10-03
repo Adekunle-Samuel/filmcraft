@@ -125,4 +125,7 @@ pub struct Picture {
     pub color: ColorInfo,
     /// Sample aspect ratio (0, 0 when unspecified).
     pub sar: (u16, u16),
+    /// Decoded in draft mode without deblocking / SAO ([`Decoder::set_draft`]): approximate,
+    /// for reduced-resolution playback only. Never set without draft mode.
+    pub draft: bool,
 }

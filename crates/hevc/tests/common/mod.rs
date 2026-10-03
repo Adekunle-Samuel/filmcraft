@@ -203,8 +203,14 @@ pub type DecodeFailure = (usize, filmcraft_hevc::Error, Vec<Picture>);
 
 /// Decode with `threads` worker threads (0 = decoder default), pts = access unit index.
 pub fn decode_file_threads(path: &Path, threads: usize) -> Result<Vec<Picture>, DecodeFailure> {
+    decode_file_opts(path, threads, false)
+}
+
+/// [`decode_file_threads`] with draft mode on or off.
+pub fn decode_file_opts(path: &Path, threads: usize, draft: bool) -> Result<Vec<Picture>, DecodeFailure> {
     let data = std::fs::read(path).unwrap();
     let mut dec = if threads == 0 { Decoder::new() } else { Decoder::with_threads(threads) };
+    dec.set_draft(draft);
     let mut out = Vec::new();
     for (i, au) in split_access_units(&data).into_iter().enumerate() {
         match dec.decode(au, i as i64) {
@@ -278,7 +284,8 @@ pub fn check_fixture(name: &str) -> Result<bool, String> {
     let f = fixture(name);
     let Some((hevc, yuv)) = ensure(f) else { return Ok(false) };
     let reference = std::fs::read(&yuv).unwrap();
-    for threads in [1, 0] {
+    // Single-threaded, frame threads with a small pool, and every core.
+    for threads in [1, 3, 0] {
         let pics = match decode_file_threads(&hevc, threads) {
             Ok(p) => p,
             Err((au, e, partial)) => {
@@ -288,6 +295,9 @@ pub fn check_fixture(name: &str) -> Result<bool, String> {
         };
         compare(&pics, &reference, f.width as usize, f.height as usize, f.bit_depth).map_err(|e| format!("{name} (threads {threads}): {e}"))?;
         check_pts(&pics).map_err(|e| format!("{name} (threads {threads}): {e}"))?;
+        if pics.iter().any(|p| p.draft) {
+            return Err(format!("{name} (threads {threads}): picture flagged draft without draft mode"));
+        }
     }
     Ok(true)
 }

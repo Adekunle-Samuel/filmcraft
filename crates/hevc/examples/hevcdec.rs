@@ -17,6 +17,8 @@ fn main() {
     let mut pics = Vec::new();
     for _ in 0..loops {
         let mut dec = if threads > 0 { Decoder::with_threads(threads) } else { Decoder::new() };
+        // HEVC_DRAFT=1: draft mode (non-reference pictures skip deblocking and SAO).
+        dec.set_draft(std::env::var_os("HEVC_DRAFT").is_some());
         pics = dec.decode(&data, 0).expect("decode");
         pics.extend(dec.flush());
     }

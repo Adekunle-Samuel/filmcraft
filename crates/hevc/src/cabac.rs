@@ -60,7 +60,9 @@ pub(crate) static NEXT_STATE: [[u8; 2]; 128] = {
     t
 };
 
-pub type Contexts = [u8; NUM_CTX];
+/// Context states, padded to a power of two so that the per-bin index needs no bounds check.
+pub type Contexts = [u8; CTX_SLOTS];
+const CTX_SLOTS: usize = NUM_CTX.next_power_of_two();
 
 /// Initialise all context variables for `slice_qp` and `init_type` (9.3.2.2). Each context is stored as
 /// `pStateIdx << 1 | valMps`.
@@ -92,7 +94,7 @@ impl<'a> Cabac<'a> {
     /// Create an engine over `data` starting at byte `pos`, with contexts initialised for `slice_qp`
     /// and `init_type`.
     pub fn new(data: &'a [u8], pos: usize, slice_qp: i32, init_type: usize) -> Result<Self> {
-        let mut c = Cabac { data, next_byte: pos, range: 0, value: 0, bits: 0, ctx: [0; NUM_CTX] };
+        let mut c = Cabac { data, next_byte: pos, range: 0, value: 0, bits: 0, ctx: [0; CTX_SLOTS] };
         init_contexts(&mut c.ctx, slice_qp, init_type);
         c.init_engine()?;
         Ok(c)
@@ -146,35 +148,32 @@ impl<'a> Cabac<'a> {
 
     #[inline(always)]
     fn renorm(&mut self) {
-        if self.range < 256 {
-            let shift = self.range.leading_zeros() - 23;
-            self.range <<= shift;
-            if self.bits < shift {
-                self.refill();
-            }
-            self.bits -= shift;
+        // ivlCurrRange < 512 always, so the shift is 0 when no renormalisation is needed: no
+        // branch on the (unpredictable) range, only on the rare refill.
+        let shift = self.range.leading_zeros() - 23;
+        self.range <<= shift;
+        if self.bits < shift {
+            self.refill();
         }
+        self.bits -= shift;
     }
 
+    /// 9.3.4.3.2, branch-free: the MPS / LPS outcome of a context-coded bin is close to random
+    /// at high bit rates, so values are selected instead of jumping.
     #[inline(always)]
     pub fn decode_decision(&mut self, ctx_idx: usize) -> u32 {
-        let s = self.ctx[ctx_idx] as usize;
+        let ctx_idx = ctx_idx & (CTX_SLOTS - 1);
+        let s = (self.ctx[ctx_idx] & 127) as usize;
         let q = ((self.range >> 6) & 3) as usize;
         let lps = RANGE_TAB_LPS[s >> 1][q] as u32;
-        self.range -= lps;
-        let scaled = (self.range as u64) << self.bits;
-        let bin;
-        if self.value >= scaled {
-            bin = 1 - (s & 1) as u32;
-            self.value -= scaled;
-            self.range = lps;
-            self.ctx[ctx_idx] = NEXT_STATE[s][1];
-        } else {
-            bin = (s & 1) as u32;
-            self.ctx[ctx_idx] = NEXT_STATE[s][0];
-        }
+        let mps_range = self.range - lps;
+        let scaled = (mps_range as u64) << self.bits;
+        let is_lps = self.value >= scaled;
+        self.value -= scaled & (is_lps as u64).wrapping_neg();
+        self.range = if is_lps { lps } else { mps_range };
+        self.ctx[ctx_idx] = NEXT_STATE[s][is_lps as usize];
         self.renorm();
-        bin
+        (s & 1) as u32 ^ is_lps as u32
     }
 
     #[inline(always)]
@@ -184,12 +183,26 @@ impl<'a> Cabac<'a> {
         }
         self.bits -= 1;
         let scaled = (self.range as u64) << self.bits;
-        if self.value >= scaled {
-            self.value -= scaled;
-            1
-        } else {
-            0
+        let one = self.value >= scaled;
+        self.value -= scaled & (one as u64).wrapping_neg();
+        one as u32
+    }
+
+    /// `n` (<= 16) bypass bins at once, most significant first. The bins of a run of bypass
+    /// decodes are the binary digits of floor(ivlOffset / ivlCurrRange) in the bit-scaled
+    /// representation (no renormalisation happens between them), so one division replaces `n`
+    /// compare-subtract steps.
+    #[inline(always)]
+    pub fn decode_bypass_bits(&mut self, n: u32) -> u32 {
+        debug_assert!(n <= 16);
+        if self.bits < n {
+            self.refill();
         }
+        let s = self.bits - n;
+        let r = ((self.value >> s) / self.range as u64) as u32;
+        self.value -= ((r as u64) * self.range as u64) << s;
+        self.bits = s;
+        r
     }
 
     pub fn decode_terminate(&mut self) -> u32 {
@@ -296,7 +309,7 @@ mod tests {
 
     #[test]
     fn context_init_formula() {
-        let mut ctx = [0u8; NUM_CTX];
+        let mut ctx: Contexts = [0u8; CTX_SLOTS];
         // initValue 154 is the "equiprobable" value: m = 0, n = 64 -> pStateIdx 0, valMps 1
         init_contexts(&mut ctx, 30, 0);
         assert_eq!(ctx[crate::spec_tables::CU_TRANSQUANT_BYPASS], 1);

@@ -307,7 +307,7 @@ impl HevcDecoder {
         }
         let par = if p.sar.0 > 0 && p.sar.1 > 0 { (p.sar.0 as u32, p.sar.1 as u32) } else { (1, 1) };
         let frame = VideoFrame { width: p.width, height: p.height, data, color, par, pts: filmcraft_time::Tick::ZERO };
-        DecodedFrame { pts: p.pts, frame, draft: false }
+        DecodedFrame { pts: p.pts, frame, draft: p.draft }
     }
 }
 
@@ -329,6 +329,9 @@ impl VideoDecoder for HevcDecoder {
     }
     fn is_disposable(&self, sample: &[u8]) -> bool {
         hevc_disposable(sample, self.length_size, self.highest_tid)
+    }
+    fn set_draft(&mut self, on: bool) {
+        self.dec.set_draft(on);
     }
 }
 

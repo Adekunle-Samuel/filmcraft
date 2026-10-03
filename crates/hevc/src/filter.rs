@@ -129,7 +129,7 @@ fn edge_params(pic: &PicState, px: usize, py: usize, qx: usize, qy: usize) -> Op
 
 /// Deblock CTB row `r`: vertical edges of the row, then horizontal edges whose q side is in the row.
 fn deblock_row(pic: &mut PicState, r: usize) {
-    if !pic.deblocking_enabled_anywhere {
+    if !pic.deblocking_enabled_anywhere || pic.draft {
         return;
     }
     let ctb = 1usize << pic.log2_ctb;
@@ -319,7 +319,7 @@ fn sao_row(pic: &PicState, r: usize) -> [Vec<u16>; 3] {
         let y0 = r * cs;
         let y1 = (y0 + cs).min(h);
         out[c] = pic.planes[c][y0 * w..y1 * w].to_vec();
-        for rx in 0..pic.wctb {
+        for rx in (0..pic.wctb).filter(|_| !pic.draft) {
             let rs = r * pic.wctb + rx;
             let si = pic.ctb_slice[rs];
             if si == u32::MAX {
@@ -377,8 +377,13 @@ fn sao_ctb(
             table[(k + p.band_pos[c] as usize) & 31] = offs[k];
         }
         for y in y0..y1 {
+            if !any_nofilter {
+                let band = (p.band_pos[c] as i32, offs);
+                sao_band_run(&pic.planes[c][y * w + x0..y * w + x1], &mut dst[(y - y0) * w + x0..(y - y0) * w + x1], shift, band, max);
+                continue;
+            }
             for x in x0..x1 {
-                if any_nofilter && nofilter(pic, x, y) {
+                if nofilter(pic, x, y) {
                     continue;
                 }
                 let v = pic.planes[c][y * w + x] as i32;
@@ -473,11 +478,65 @@ fn sao_ctb(
         let na = &plane[ya * w + xa as usize..][..n];
         let nb = &plane[yb * w + xb as usize..][..n];
         let out = &mut dst[(y - y0) * w + x0 + mx..][..n];
-        for i in 0..n {
-            let v = cur[i] as i32;
-            let sum = (v - na[i] as i32).signum() + (v - nb[i] as i32).signum();
-            out[i] = (v + by_sum[(2 + sum) as usize]).clamp(0, max) as u16;
+        sao_edge_run(cur, na, nb, out, &by_sum, max);
+    }
+}
+
+/// Lanes of the SAO loops (16-bit arithmetic: samples are at most 12 bits, offsets 7 bits).
+const SAO_LANES: usize = 16;
+
+/// Edge offset of a run of samples whose two neighbours (`na`, `nb`) are all usable: per lane
+/// the sum of the two neighbour signs selects the offset (no table lookup), so the loop
+/// vectorises; bit-exact with the per-sample form.
+#[inline(always)]
+fn sao_edge_run(cur: &[u16], na: &[u16], nb: &[u16], out: &mut [u16], by_sum: &[i32; 5], max: i32) {
+    let o = by_sum.map(|v| v as i16);
+    let max = max as i16;
+    let lane = |v: i16, a: i16, b: i16| -> u16 {
+        let s = ((v > a) as i16 - (v < a) as i16) + ((v > b) as i16 - (v < b) as i16);
+        let m = |k: i16| -((s == k) as i16);
+        let off = (o[0] & m(-2)) | (o[1] & m(-1)) | (o[3] & m(1)) | (o[4] & m(2));
+        (v + off).max(0).min(max) as u16
+    };
+    let n = cur.len();
+    let full = n - n % SAO_LANES;
+    for i in (0..full).step_by(SAO_LANES) {
+        let c: &[u16; SAO_LANES] = cur[i..i + SAO_LANES].try_into().expect("lanes");
+        let a: &[u16; SAO_LANES] = na[i..i + SAO_LANES].try_into().expect("lanes");
+        let b: &[u16; SAO_LANES] = nb[i..i + SAO_LANES].try_into().expect("lanes");
+        let d: &mut [u16; SAO_LANES] = (&mut out[i..i + SAO_LANES]).try_into().expect("lanes");
+        for l in 0..SAO_LANES {
+            d[l] = lane(c[l] as i16, a[l] as i16, b[l] as i16);
         }
+    }
+    for i in full..n {
+        out[i] = lane(cur[i] as i16, na[i] as i16, nb[i] as i16);
+    }
+}
+
+/// Band offset of a run of samples: the band index relative to `band_pos` selects one of the
+/// four offsets per lane.
+#[inline(always)]
+fn sao_band_run(src: &[u16], out: &mut [u16], shift: u32, (band_pos, offs): (i32, [i32; 4]), max: i32) {
+    let o = offs.map(|v| v as i16);
+    let (bp, max) = (band_pos as i16, max as i16);
+    let lane = |v: i16| -> u16 {
+        let k = ((v >> shift) - bp) & 31;
+        let m = |j: i16| -((k == j) as i16);
+        let off = (o[0] & m(0)) | (o[1] & m(1)) | (o[2] & m(2)) | (o[3] & m(3));
+        (v + off).max(0).min(max) as u16
+    };
+    let n = src.len();
+    let full = n - n % SAO_LANES;
+    for i in (0..full).step_by(SAO_LANES) {
+        let c: &[u16; SAO_LANES] = src[i..i + SAO_LANES].try_into().expect("lanes");
+        let d: &mut [u16; SAO_LANES] = (&mut out[i..i + SAO_LANES]).try_into().expect("lanes");
+        for l in 0..SAO_LANES {
+            d[l] = lane(c[l] as i16);
+        }
+    }
+    for i in full..n {
+        out[i] = lane(src[i] as i16);
     }
 }
 

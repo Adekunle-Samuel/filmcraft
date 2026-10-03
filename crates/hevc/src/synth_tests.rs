@@ -28,7 +28,7 @@ struct Enc {
 
 impl Enc {
     fn new(w: BitWriter, qp: i32, init_type: usize) -> Self {
-        let mut ctx = [0u8; NUM_CTX];
+        let mut ctx: Contexts = [0u8; NUM_CTX.next_power_of_two()];
         init_contexts(&mut ctx, qp, init_type);
         Enc { w, low: 0, range: 510, outstanding: 0, first: true, ctx }
     }
