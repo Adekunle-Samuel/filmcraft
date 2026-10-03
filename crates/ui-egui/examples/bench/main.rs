@@ -258,6 +258,7 @@ pub fn section_markdown(v: &Value) -> String {
                 ("ui_p95_ms", "UI p95 ms"),
                 ("seeks", "seeks"),
                 ("skipped", "skipped"),
+                ("draft_frames", "draft"),
                 ("load", "load"),
             ],
             1,

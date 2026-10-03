@@ -229,6 +229,9 @@ pub struct Bench {
     pub server: FrameServer,
     pub refresh_hz: f64,
     pub seconds: f64,
+    /// Play with draft decoding (Settings ▸ Playback ▸ Draft decoding), as the monitor does at
+    /// 1/2 resolution or lower.
+    pub draft: bool,
 }
 
 impl Bench {
@@ -253,7 +256,7 @@ impl Bench {
         let last_frame = rate.frame_at(q.duration()) - 1;
         let t_pre = Instant::now();
         loop {
-            let key = FrameKey { target, frame: first, size, revision: s.revision };
+            let key = FrameKey { target, frame: first, size, revision: s.revision, draft: self.draft };
             self.server.schedule_playback(key, rate, scale, &project, 1.0, true);
             let exact = display.refresh(&self.server, key);
             meter.refresh(first, exact);
@@ -275,7 +278,7 @@ impl Bench {
             }
             frame = rate.frame_at(t);
             due_at.entry(frame).or_insert(now);
-            let key = FrameKey { target, frame, size, revision: s.revision };
+            let key = FrameKey { target, frame, size, revision: s.revision, draft: self.draft };
             self.server.schedule_playback(key, rate, scale, &project, 1.0, false);
             let exact = display.refresh(&self.server, key);
             meter.refresh(frame, exact);
@@ -368,7 +371,7 @@ impl Bench {
             rng ^= rng >> 7;
             rng ^= rng << 17;
             let frame = (rng % frames as u64) as i64;
-            let key = FrameKey { target, frame, size, revision: s.revision };
+            let key = FrameKey { target, frame, size, revision: s.revision, draft: false };
             let start = Instant::now();
             rep.due += 1;
             loop {
@@ -454,7 +457,7 @@ impl Bench {
         };
         for _ in 0..seeks {
             let frame = (next() % frames as u64) as i64;
-            let key = FrameKey { target, frame, size, revision: s.revision };
+            let key = FrameKey { target, frame, size, revision: s.revision, draft: false };
             match wait(display, key, Instant::now()) {
                 Some(l) => rep.seek_ms.push(l),
                 None => rep.timeouts += 1,
@@ -463,7 +466,7 @@ impl Bench {
         for _ in 0..drags {
             let from = (next() % (frames - drag_frames).max(1) as u64) as i64;
             for f in from..from + drag_frames {
-                let key = FrameKey { target, frame: f.min(frames - 1), size, revision: s.revision };
+                let key = FrameKey { target, frame: f.min(frames - 1), size, revision: s.revision, draft: false };
                 self.server.request(key, rate.tick_of(key.frame), scale, &project, 0);
                 if display.refresh(&self.server, key) {
                     rep.drag_shown += 1;
@@ -471,7 +474,7 @@ impl Bench {
                 rep.drag_steps += 1;
                 std::thread::sleep(period);
             }
-            let key = FrameKey { target, frame: (from + drag_frames).min(frames - 1), size, revision: s.revision };
+            let key = FrameKey { target, frame: (from + drag_frames).min(frames - 1), size, revision: s.revision, draft: false };
             match wait(display, key, Instant::now()) {
                 Some(l) => rep.settle_ms.push(l),
                 None => rep.timeouts += 1,
@@ -720,7 +723,7 @@ pub fn cli_main() {
                 // A fresh frame server per run so caches start cold, as after opening a project.
                 let server = FrameServer::new(s.media.clone(), s.services.clone(), s.previews.clone(), args.workers);
                 server.set_profiling(true);
-                let bench = Bench { server, refresh_hz: args.refresh, seconds: args.seconds };
+                let bench = Bench { server, refresh_hz: args.refresh, seconds: args.seconds, draft: false };
                 let mut display = Display::new(args.gpu);
                 if args.gpu && display.gpu.is_none() {
                     eprintln!("no GPU adapter; using the CPU path");

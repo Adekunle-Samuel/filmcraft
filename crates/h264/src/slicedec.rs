@@ -40,6 +40,8 @@ pub struct PicState {
     rows_recon: usize,
     rows_deblocked: usize,
     rows_published: usize,
+    /// Draft mode for a non-reference picture: rows are published without deblocking.
+    pub skip_deblock: bool,
 }
 
 impl PicState {
@@ -58,6 +60,7 @@ impl PicState {
             rows_recon: 0,
             rows_deblocked: 0,
             rows_published: 0,
+            skip_deblock: false,
         }
     }
 
@@ -76,6 +79,7 @@ impl PicState {
         self.rows_recon = 0;
         self.rows_deblocked = 0;
         self.rows_published = 0;
+        self.skip_deblock = false;
     }
 
     /// Record a decoded macroblock and deblock / publish rows that became final.
@@ -100,8 +104,10 @@ impl PicState {
         let deblock_limit = if finished { self.mb_h } else { self.rows_recon.saturating_sub(1) };
         while self.rows_deblocked < deblock_limit {
             let r = self.rows_deblocked;
-            for addr in r * self.mb_w..(r + 1) * self.mb_w {
-                deblock::deblock_mb(self, addr, self.mb_w);
+            if !self.skip_deblock {
+                for addr in r * self.mb_w..(r + 1) * self.mb_w {
+                    deblock::deblock_mb(self, addr, self.mb_w);
+                }
             }
             self.rows_deblocked += 1;
         }

@@ -2,7 +2,7 @@
 
 Progress toward feature parity with Adobe Premiere Pro, with estimates. Updated as milestones land.
 
-**Last updated:** 2026-10-02 · **Overall parity:** ~83% (measured scorecard below) · **Code:** 34 crates, 1479 tests
+**Last updated:** 2026-10-02 · **Overall parity:** ~84% (measured scorecard below) · **Code:** 34 crates, 1488 tests
 
 ## Parity scorecard
 
@@ -22,8 +22,8 @@ matched against `filmcraft-cli commands` and the UI command table. Effects: the 
 | Graphics and captions | 8% | text engine, shapes, per-character styles, our own graphics templates (.fcgt, 8 built-ins, export/install/edit), rolls/crawls, responsive pins + time, captions SRT/VTT/SCC/MCC/STL/TTML/DFXP, transcripts | ~85% |
 | Export | 8% | own H.264/AAC, ProRes, DNxHR, image sequences, GIF, WAV; preset library + user presets, full Export-mode settings (loudness normalization, overlays, captions), export queue, Quick Export; no AAF/OMF, MXF export | ~80% |
 | Preferences and project management | 5% | Settings dialog with 16 categories (most settings wired), project settings, scratch disks, search bins, templates | ~80% |
-| Performance | 5% | 1080p real-time, 3×1080p; HEVC 2.5× cheaper, catch-up decoding halves 4K CPU/frame, `cargo xtask bench` + `perf.stats`; 4K/8K and AV1 not yet real-time on a loaded machine | ~55% |
-| **Weighted total** | | | **~83%** |
+| Performance | 5% | 1080p real-time, 3×1080p; 4K H.264 real-time at load ≤140 (−23% decoder cycles, opt-in draft decoding at 1/2–1/4); HEVC 2.5× cheaper, catch-up decoding, `cargo xtask bench` + `perf.stats`; 8K and AV1 not yet real-time on a loaded machine | ~62% |
+| **Weighted total** | | | **~84%** |
 
 ## Estimate to parity
 
@@ -78,6 +78,7 @@ Status: ✅ done · 🟡 in progress · ⬜ not started. Estimates are remaining
 ## Log
 
 - **2026-10-03 (later):** graphics & captions (M10.7): `.fcgt` graphics templates (export/install/apply/edit, 8 original built-ins; Adobe .mogrt refused), Essential Graphics Browse/Edit, rolls/crawls, responsive design pins and time, per-character styles, Upgrade Caption to Graphic / to Source Graphic, MCC/EBU STL/TTML/DFXP, Replace Fonts; schema v12. 1479 tests.
+- **2026-10-03:** 4K H.264 playback (M4.9): vectorised deblocking, branch-free CABAC bins and column-parallel inverse transforms cut H.264 decoding by 23 % (cycles per frame, bit-exact; 4K cold seeks −27 % CPU); opt-in draft decoding (Settings ▸ Playback) skips deblocking of non-reference pictures and uploads decimated planes while playing at 1/2–1/4, never for paused frames or exports; conformance runs 1, 3 and all threads. 4K plays 192/0 at load 100–140 (before: only at load ~90).
 
 - **2026-10-03:** keyboard parity (M3.12: 143 new commands on Premiere's default keys, table validated against the registry), audio (M7.8: 5.1 tracks/submixes/Mix, 5.1 panner, BS.775 downmix, 5.1 WAV/MOV/AAC export, voice-over record with punch-in, Remix, Clip Mixer Latch/Touch/Write). 1432 tests.
 

@@ -442,7 +442,7 @@ pub fn interpolation_blend(item: &TrackItem, t: Tick, src_rate: filmcraft_time::
 }
 
 /// Largest power-of-two box decimation that keeps at least `target_w` pixels of width.
-fn decimation(have_w: f32, target_w: f32) -> usize {
+pub(crate) fn decimation(have_w: f32, target_w: f32) -> usize {
     let mut n = 1usize;
     while n < 16 && have_w / (n as f32 * 2.0) >= target_w.max(1.0) {
         n *= 2;

@@ -285,7 +285,7 @@ pub fn grid(app: &mut FilmcraftApp, ui: &mut egui::Ui, area: Rect) {
     let scale = crate::panels::monitor::quantize_scale(app.ui.program.res.scale().min((cell_px / sw).max(1.0 / 32.0)));
     let mt = Tick(info["sourceTime"].as_i64().unwrap_or(0));
     let frame = rate.frame_at(mt);
-    let key = FrameKey { target: Target::MulticamGrid(src), frame, size: (scale * 1000.0) as u32, revision: grid_revision(app, src) };
+    let key = FrameKey { target: Target::MulticamGrid(src), frame, size: (scale * 1000.0) as u32, revision: grid_revision(app, src), draft: false };
     let project = app.session.project.clone();
     if app.playback.playing {
         app.frames.schedule_playback(key, rate, scale, &project, app.playback.speed, app.playback.preroll.is_some());
