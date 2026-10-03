@@ -202,17 +202,121 @@ fn itx_narrow<const N: usize>(coefs: &[i32], p: &TxParams, dst: &mut [u16], stri
             *v = sat(*v, lim);
         }
     }
-    let mut col = [0i32; N];
-    for j in 0..N {
-        for i in 0..N {
-            col[i] = t[i][j];
-        }
-        tx1d_narrow(&mut col, N, p.col_adst);
-        for i in 0..N {
-            let d = &mut dst[i * stride + j];
-            *d = (*d as i32 + (col[i].wrapping_add(p.round) >> p.shift).clamp(-(1 << 20), 1 << 20)).clamp(0, p.max) as u16;
+    // Column pass across 4 / 8 columns at once (the same butterflies on lane vectors), then
+    // the rounding, residual add and clipping per row of lanes.
+    if N == 4 {
+        let x: [Cols<4>; N] = std::array::from_fn(|i| Cols(t[i][..4].try_into().expect("4 columns")));
+        let y = col_tx4(x, p.col_adst);
+        add_cols(&y, 0, p, dst, stride);
+    } else {
+        for c0 in (0..N).step_by(8) {
+            let x: [Cols<8>; N] = std::array::from_fn(|i| Cols(t[i][c0..c0 + 8].try_into().expect("8 columns")));
+            let y = col_tx8(x, p.col_adst);
+            add_cols(&y, c0, p, dst, stride);
         }
     }
+}
+
+/// Round the column pass output `y` (columns c0..c0 + W of every row) and add it to `dst`.
+#[inline(always)]
+fn add_cols<const N: usize, const W: usize>(y: &[Cols<W>; N], c0: usize, p: &TxParams, dst: &mut [u16], stride: usize) {
+    for (i, v) in y.iter().enumerate() {
+        let d: &mut [u16; W] = (&mut dst[i * stride + c0..i * stride + c0 + W]).try_into().expect("row");
+        for j in 0..W {
+            let r = (v.0[j].wrapping_add(p.round) >> p.shift).clamp(-(1 << 20), 1 << 20);
+            d[j] = (d[j] as i32 + r).max(0).min(p.max) as u16;
+        }
+    }
+}
+
+/// `W` columns of 32-bit values processed together: the generated butterflies
+/// (`transform_gen::cols4` / `cols8`) run on these lane vectors with the scalar arithmetic of
+/// `narrow` applied per lane, so the column pass vectorises.
+#[derive(Clone, Copy)]
+pub struct Cols<const W: usize>(pub [i32; W]);
+
+impl<const W: usize> From<i32> for Cols<W> {
+    #[inline(always)]
+    fn from(v: i32) -> Self {
+        Cols([v; W])
+    }
+}
+
+impl<const W: usize> Cols<W> {
+    #[inline(always)]
+    pub fn wrapping_add<O: Into<Self>>(self, o: O) -> Self {
+        let o = o.into();
+        Cols(std::array::from_fn(|i| self.0[i].wrapping_add(o.0[i])))
+    }
+    #[inline(always)]
+    pub fn wrapping_sub(self, o: Self) -> Self {
+        Cols(std::array::from_fn(|i| self.0[i].wrapping_sub(o.0[i])))
+    }
+    #[inline(always)]
+    pub fn wrapping_mul(self, c: i32) -> Self {
+        Cols(self.0.map(|v| v.wrapping_mul(c)))
+    }
+    #[inline(always)]
+    pub fn wrapping_neg(self) -> Self {
+        Cols(self.0.map(|v| v.wrapping_neg()))
+    }
+}
+
+impl<const W: usize> std::ops::Shr<i32> for Cols<W> {
+    type Output = Self;
+    #[inline(always)]
+    fn shr(self, s: i32) -> Self {
+        Cols(self.0.map(|v| v >> s))
+    }
+}
+
+/// `x` (N rows of 4 columns) through the 1D column transform.
+#[inline(always)]
+fn col_tx4<const N: usize>(x: [Cols<4>; N], adst: bool) -> [Cols<4>; N] {
+    use crate::transform_gen::cols4;
+    let r = if adst { iadst4_cols(fixed(&x)) } else { cols4::idct4(fixed(&x)) };
+    std::array::from_fn(|i| r[i])
+}
+
+/// `x` (N rows of 8 columns) through the 1D column transform.
+#[inline(always)]
+fn col_tx8<const N: usize>(x: [Cols<8>; N], adst: bool) -> [Cols<8>; N] {
+    use crate::transform_gen::cols8;
+    let mut out = x;
+    match (N, adst) {
+        (8, false) => out.copy_from_slice(&cols8::idct8(fixed(&x))),
+        (8, true) => out.copy_from_slice(&cols8::iadst8(fixed(&x))),
+        (16, false) => out.copy_from_slice(&cols8::idct16(fixed(&x))),
+        (16, true) => out.copy_from_slice(&cols8::iadst16(fixed(&x))),
+        _ => out.copy_from_slice(&cols8::idct32(fixed(&x))),
+    }
+    out
+}
+
+/// A slice of known length as an array.
+#[inline(always)]
+fn fixed<T: Copy, const M: usize>(x: &[T]) -> [T; M] {
+    x[..M].try_into().expect("transform size")
+}
+
+/// ADST4 (8.7.1.6) on 4 columns.
+#[inline(always)]
+fn iadst4_cols(x: [Cols<4>; 4]) -> [Cols<4>; 4] {
+    let s0 = x[0].wrapping_mul(SINPI_1_9 as i32);
+    let s1 = x[0].wrapping_mul(SINPI_2_9 as i32);
+    let s2 = x[1].wrapping_mul(SINPI_3_9 as i32);
+    let s3 = x[2].wrapping_mul(SINPI_4_9 as i32);
+    let s4 = x[2].wrapping_mul(SINPI_1_9 as i32);
+    let s5 = x[3].wrapping_mul(SINPI_2_9 as i32);
+    let s6 = x[3].wrapping_mul(SINPI_4_9 as i32);
+    let v = x[0].wrapping_sub(x[2]).wrapping_add(x[3]);
+    let s7 = v.wrapping_mul(SINPI_3_9 as i32);
+    let x0 = s0.wrapping_add(s3).wrapping_add(s5);
+    let x1 = s1.wrapping_sub(s4).wrapping_sub(s6);
+    let x2 = s7;
+    let x3 = s2;
+    let r = |v: Cols<4>| v.wrapping_add(1 << 13) >> 14;
+    [r(x0.wrapping_add(x3)), r(x1.wrapping_add(x3)), r(x2), r(x0.wrapping_add(x1).wrapping_sub(x3))]
 }
 
 /// 2D inverse transform of size N with 64-bit intermediates (high bit depth).
@@ -325,6 +429,65 @@ mod tests {
                 assert_eq!(a, b, "tx {tx} dc {dc}");
             }
         }
+    }
+
+    /// The per-column formulation the vectorised column pass replaced.
+    fn itx_narrow_ref<const N: usize>(coefs: &[i32], p: &TxParams, dst: &mut [u16], stride: usize) {
+        let lim = 1 << 24;
+        let mut t = [[0i32; N]; N];
+        for (i, row) in t.iter_mut().enumerate().take(p.rows.min(N)) {
+            for (d, s) in row.iter_mut().zip(&coefs[i * N..i * N + N]) {
+                *d = sat(*s, lim);
+            }
+            tx1d_narrow(row, N, p.row_adst);
+            for v in row.iter_mut() {
+                *v = sat(*v, lim);
+            }
+        }
+        let mut col = [0i32; N];
+        for j in 0..N {
+            for i in 0..N {
+                col[i] = t[i][j];
+            }
+            tx1d_narrow(&mut col, N, p.col_adst);
+            for i in 0..N {
+                let d = &mut dst[i * stride + j];
+                *d = (*d as i32 + (col[i].wrapping_add(p.round) >> p.shift).clamp(-(1 << 20), 1 << 20)).clamp(0, p.max) as u16;
+            }
+        }
+    }
+
+    fn check_cols<const N: usize>(seed: &mut u32) {
+        let mut rnd = || {
+            *seed ^= *seed << 13;
+            *seed ^= *seed >> 17;
+            *seed ^= *seed << 5;
+            *seed
+        };
+        let tx_size = N.trailing_zeros() - 2;
+        let shift = (tx_size + 4).min(6);
+        for case in 0..200 {
+            let (row_adst, col_adst) = if N == 32 { (false, false) } else { (case & 1 == 1, case & 2 == 2) };
+            let rows = 1 + rnd() as usize % N;
+            let big = if case % 7 == 0 { 1 << 22 } else { 2000 };
+            let coefs: Vec<i32> = (0..N * N).map(|i| if i / N < rows && rnd() % 3 == 0 { (rnd() % (2 * big)) as i32 - big as i32 } else { 0 }).collect();
+            let p = TxParams { row_adst, col_adst, rows, shift, round: 1 << (shift - 1), max: 255 };
+            let stride = N + 5;
+            let base: Vec<u16> = (0..N * stride).map(|_| (rnd() % 256) as u16).collect();
+            let (mut a, mut b) = (base.clone(), base);
+            itx_narrow::<N>(&coefs, &p, &mut a, stride);
+            itx_narrow_ref::<N>(&coefs, &p, &mut b, stride);
+            assert_eq!(a, b, "N {N} case {case}");
+        }
+    }
+
+    #[test]
+    fn column_pass_matches_per_column_transform() {
+        let mut seed = 0x9e37_79b9u32;
+        check_cols::<4>(&mut seed);
+        check_cols::<8>(&mut seed);
+        check_cols::<16>(&mut seed);
+        check_cols::<32>(&mut seed);
     }
 
     #[test]

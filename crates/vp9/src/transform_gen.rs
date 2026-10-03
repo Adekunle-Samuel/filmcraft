@@ -478,3 +478,12 @@ pub(crate) mod narrow {
 pub(crate) mod wide {
     transforms_1d!(i64);
 }
+
+/// The same butterflies on 4 / 8 columns at once (column pass of the 2D transforms).
+pub(crate) mod cols4 {
+    transforms_1d!(crate::transform::Cols<4>);
+}
+
+pub(crate) mod cols8 {
+    transforms_1d!(crate::transform::Cols<8>);
+}

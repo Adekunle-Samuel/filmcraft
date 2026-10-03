@@ -142,6 +142,18 @@ fn filter_h(s: &[u16], f: &[i16], max: i32, o: &mut [u16]) {
 #[inline(always)]
 fn filter_h_n<const W: usize>(s: &[u16], f: &[i16], max: i32, o: &mut [u16]) {
     let o: &mut [u16; W] = (&mut o[..W]).try_into().expect("row");
+    if max == 255 {
+        let mut acc = [64u16; W];
+        for t in 0..8 {
+            let c = f[t] as u16;
+            let p: &[u16; W] = s[t..t + W].try_into().expect("row");
+            for j in 0..W {
+                acc[j] = acc[j].wrapping_add(c.wrapping_mul(p[j]));
+            }
+        }
+        narrow8(&acc, o);
+        return;
+    }
     let mut acc = [64i32; W];
     for t in 0..8 {
         let c = f[t] as i32;
@@ -152,6 +164,18 @@ fn filter_h_n<const W: usize>(s: &[u16], f: &[i16], max: i32, o: &mut [u16]) {
     }
     for j in 0..W {
         o[j] = (acc[j] >> 7).clamp(0, max) as u16;
+    }
+}
+
+/// Round2(sum, 7) clipped to 8 bits, from 8-bit filter sums kept modulo 2^16 (8 lanes per
+/// vector instead of 4). With 8-bit samples every sum of the VP9 filters (whose positive taps
+/// add up to at most 182 and negative taps to at most -54) plus the rounding term 64 lies in
+/// [-13706, 46474]: wrapped, the non-negative ones stay below 0xC000 and the negative ones
+/// (which clip to 0) land above it.
+#[inline(always)]
+fn narrow8<const W: usize>(acc: &[u16; W], o: &mut [u16; W]) {
+    for j in 0..W {
+        o[j] = if acc[j] < 0xC000 { (acc[j] >> 7).min(255) } else { 0 };
     }
 }
 
@@ -176,6 +200,18 @@ fn filter_v(s: &[u16], ss: usize, f: &[i16], max: i32, o: &mut [u16]) {
 #[inline(always)]
 fn filter_v_n<const W: usize>(s: &[u16], ss: usize, f: &[i16], max: i32, o: &mut [u16]) {
     let o: &mut [u16; W] = (&mut o[..W]).try_into().expect("row");
+    if max == 255 {
+        let mut acc = [64u16; W];
+        for t in 0..8 {
+            let c = f[t] as u16;
+            let p: &[u16; W] = s[t * ss..t * ss + W].try_into().expect("row");
+            for j in 0..W {
+                acc[j] = acc[j].wrapping_add(c.wrapping_mul(p[j]));
+            }
+        }
+        narrow8(&acc, o);
+        return;
+    }
     let mut acc = [64i32; W];
     for t in 0..8 {
         let c = f[t] as i32;

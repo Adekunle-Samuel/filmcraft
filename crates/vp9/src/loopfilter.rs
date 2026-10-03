@@ -218,72 +218,77 @@ macro_rules! group_filter {
                 let thresh_bd = thresh << shift;
                 let one = 1 << shift;
                 let (p3, p2, p1, p0, q0, q1, q2, q3) = (&v[4], &v[5], &v[6], &v[7], &v[8], &v[9], &v[10], &v[11]);
-                // Filter mask process (8.8.5.1), with non-short-circuit `&` so that it vectorizes.
-                let mut mask = [false; LANES];
-                let mut hev = [false; LANES];
-                let mut flat = [false; LANES];
-                let mut flat2 = [false; LANES];
-                let can_flat = filter_size >= TX_8X8;
+                // Filter mask process (8.8.5.1). Masks are 0 / -1 per lane, selects are bitwise
+                // and clipping uses min / max (`clamp` asserts its bounds), so every lane loop
+                // below compiles to vector instructions.
+                let le = |a: T, b: T| -((a <= b) as T);
+                let sel = |m: T, a: T, b: T| (a & m) | (b & !m);
+                let mut mask = [0 as T; LANES];
+                let mut hev = [0 as T; LANES];
+                let mut flat = [0 as T; LANES];
+                let mut flat2 = [0 as T; LANES];
+                let can_flat = -((filter_size >= TX_8X8) as T);
                 let can_flat2 = R == 8 && filter_size >= TX_16X16;
+                let apply: [T; LANES] = apply.map(|a| -(a as T));
                 for l in 0..LANES {
                     let d_p1p0 = (p1[l] - p0[l]).abs();
                     let d_q1q0 = (q1[l] - q0[l]).abs();
                     mask[l] = apply[l]
-                        & ((p3[l] - p2[l]).abs() <= limit_bd)
-                        & ((p2[l] - p1[l]).abs() <= limit_bd)
-                        & (d_p1p0 <= limit_bd)
-                        & (d_q1q0 <= limit_bd)
-                        & ((q2[l] - q1[l]).abs() <= limit_bd)
-                        & ((q3[l] - q2[l]).abs() <= limit_bd)
-                        & ((p0[l] - q0[l]).abs() * 2 + (p1[l] - q1[l]).abs() / 2 <= blimit_bd);
-                    hev[l] = (d_p1p0 > thresh_bd) | (d_q1q0 > thresh_bd);
+                        & le((p3[l] - p2[l]).abs(), limit_bd)
+                        & le((p2[l] - p1[l]).abs(), limit_bd)
+                        & le(d_p1p0, limit_bd)
+                        & le(d_q1q0, limit_bd)
+                        & le((q2[l] - q1[l]).abs(), limit_bd)
+                        & le((q3[l] - q2[l]).abs(), limit_bd)
+                        & le((p0[l] - q0[l]).abs() * 2 + ((p1[l] - q1[l]).abs() >> 1), blimit_bd);
+                    hev[l] = !(le(d_p1p0, thresh_bd) & le(d_q1q0, thresh_bd));
                     flat[l] = can_flat
                         & mask[l]
-                        & (d_p1p0 <= one)
-                        & (d_q1q0 <= one)
-                        & ((p2[l] - p0[l]).abs() <= one)
-                        & ((q2[l] - q0[l]).abs() <= one)
-                        & ((p3[l] - p0[l]).abs() <= one)
-                        & ((q3[l] - q0[l]).abs() <= one);
+                        & le(d_p1p0, one)
+                        & le(d_q1q0, one)
+                        & le((p2[l] - p0[l]).abs(), one)
+                        & le((q2[l] - q0[l]).abs(), one)
+                        & le((p3[l] - p0[l]).abs(), one)
+                        & le((q3[l] - q0[l]).abs(), one);
                 }
-                if !mask.iter().fold(false, |a, &m| a | m) {
+                if mask.iter().fold(0, |a, &m| a | m) == 0 {
                     return;
                 }
                 if can_flat2 {
                     for l in 0..LANES {
                         flat2[l] = flat[l]
-                            & ((v[0][l] - p0[l]).abs() <= one)
-                            & ((v[1][l] - p0[l]).abs() <= one)
-                            & ((v[2][l] - p0[l]).abs() <= one)
-                            & ((v[3][l] - p0[l]).abs() <= one)
-                            & ((v[12][l] - q0[l]).abs() <= one)
-                            & ((v[13][l] - q0[l]).abs() <= one)
-                            & ((v[14][l] - q0[l]).abs() <= one)
-                            & ((v[15][l] - q0[l]).abs() <= one);
+                            & le((v[0][l] - p0[l]).abs(), one)
+                            & le((v[1][l] - p0[l]).abs(), one)
+                            & le((v[2][l] - p0[l]).abs(), one)
+                            & le((v[3][l] - p0[l]).abs(), one)
+                            & le((v[12][l] - q0[l]).abs(), one)
+                            & le((v[13][l] - q0[l]).abs(), one)
+                            & le((v[14][l] - q0[l]).abs(), one)
+                            & le((v[15][l] - q0[l]).abs(), one);
                     }
                 }
-                let any_flat = flat.iter().fold(false, |a, &f| a | f);
-                let any_flat2 = flat2.iter().fold(false, |a, &f| a | f);
+                let any_flat = flat.iter().fold(0, |a, &f| a | f) != 0;
+                let any_flat2 = flat2.iter().fold(0, |a, &f| a | f) != 0;
                 // Results per position across the edge; start from the unfiltered samples.
                 let mut out = v;
                 // Narrow filter (8.8.5.2) for lanes that are masked but not flat.
                 {
                     let lo = -(1 << (bit_depth - 1)) as T;
                     let hi = ((1 << (bit_depth - 1)) - 1) as T;
-                    let c = |x: T| x.clamp(lo, hi);
+                    let c = |x: T| x.max(lo).min(hi);
                     let off: T = 0x80 << shift;
                     for l in 0..LANES {
                         let (ps1, ps0, qs0, qs1) = (p1[l] - off, p0[l] - off, q0[l] - off, q1[l] - off);
-                        let filter = c(if hev[l] { c(ps1 - qs1) } else { 0 } + 3 * (qs0 - ps0));
+                        let filter = c((c(ps1 - qs1) & hev[l]) + 3 * (qs0 - ps0));
                         let filter1 = c(filter + 4) >> 3;
                         let filter2 = c(filter + 3) >> 3;
                         let f = (filter1 + 1) >> 1;
-                        let narrow = mask[l] && !flat[l];
-                        let outer = narrow && !hev[l];
-                        out[8][l] = if narrow { c(qs0 - filter1) + off } else { out[8][l] };
-                        out[7][l] = if narrow { c(ps0 + filter2) + off } else { out[7][l] };
-                        out[9][l] = if outer { c(qs1 - f) + off } else { out[9][l] };
-                        out[6][l] = if outer { c(ps1 + f) + off } else { out[6][l] };
+                        let narrow = mask[l] & !flat[l];
+                        let outer = narrow & !hev[l];
+                        out[8][l] = sel(narrow, c(qs0 - filter1) + off, out[8][l]);
+                        out[7][l] = sel(narrow, c(ps0 + filter2) + off, out[7][l]);
+                        out[9][l] = sel(outer, c(qs1 - f) + off, out[9][l]);
+                        out[6][l] = sel(outer, c(ps1 + f) + off, out[6][l]);
                     }
                 }
                 // Wide filter (8.8.5.3) with 8 taps for flat lanes (p2..q2) ...
@@ -291,9 +296,7 @@ macro_rules! group_filter {
                     let w8 = wide_filter::<3>(&v);
                     for k in 5..11 {
                         for l in 0..LANES {
-                            if flat[l] && !flat2[l] {
-                                out[k][l] = w8[k][l];
-                            }
+                            out[k][l] = sel(flat[l] & !flat2[l], w8[k][l], out[k][l]);
                         }
                     }
                 }
@@ -302,9 +305,7 @@ macro_rules! group_filter {
                     let w16 = wide_filter::<4>(&v);
                     for k in 1..15 {
                         for l in 0..LANES {
-                            if flat2[l] {
-                                out[k][l] = w16[k][l];
-                            }
+                            out[k][l] = sel(flat2[l], w16[k][l], out[k][l]);
                         }
                     }
                 }

@@ -63,14 +63,12 @@ impl<'a> BoolDecoder<'a> {
         }
         let split = 1 + (((self.range - 1) * p as u32) >> 8);
         let bigsplit = (split as u64) << 56;
-        let bit = if self.value >= bigsplit {
-            self.range -= split;
-            self.value -= bigsplit;
-            true
-        } else {
-            self.range = split;
-            false
-        };
+        // The outcome is close to random: select instead of branching on it.
+        let bit = self.value >= bigsplit;
+        let m = (bit as u64).wrapping_neg();
+        self.value -= bigsplit & m;
+        let m32 = m as u32;
+        self.range = ((self.range - split) & m32) | (split & !m32);
         let shift = self.range.leading_zeros() - 24;
         self.range <<= shift;
         self.value <<= shift;
