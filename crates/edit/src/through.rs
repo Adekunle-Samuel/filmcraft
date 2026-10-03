@@ -193,7 +193,7 @@ mod tests {
     }
 
     fn ctx(next: &mut u64) -> EditCtx<'_> {
-        EditCtx { next_id: next, media_duration: &|_| None, min_duration: Tick(1) }
+        EditCtx { next_id: next, media_duration: &|_| None, media_start: &|_| Tick::ZERO, min_duration: Tick(1) }
     }
 
     #[test]

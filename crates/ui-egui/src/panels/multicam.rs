@@ -8,7 +8,10 @@
 //!
 //! Automation ids:
 //! - Multi-Camera view: `program.multicam.grid`, `program.multicam.angle.<n>` (n = 1-based camera
-//!   in grid order), `program.multicam.record`.
+//!   in shown order, so cameras on page 2 of a 4×4 grid are 17…), `program.multicam.record`,
+//!   `program.multicam.pagePrev`, `program.multicam.pageNext` (when there is more than one page).
+//! - Edit Cameras dialog (`multicam.editCamerasDialog`): `editCameras.name.<angle>`,
+//!   `editCameras.enabled.<angle>`, `editCameras.thumb.<angle>`, `editCameras.ok`, `editCameras.cancel`.
 //! - Synchronize: `sync.method.<in|out|timecode|marker|audio>`, `sync.ignoreHours`, `sync.marker`,
 //!   `sync.offset`, `sync.track`, `sync.ok`, `sync.cancel`.
 //! - Merge Clips: `merge.name`, `merge.method.<…>`, `merge.ignoreHours`, `merge.marker`,
@@ -35,6 +38,18 @@ pub fn route(app: &mut FilmcraftApp, id: &str, params: &Value) -> Option<Result<
         "multicam.toggleView" => {
             app.ui.program.multicam = params.get("enabled").and_then(Value::as_bool).unwrap_or(!app.ui.program.multicam);
             return Some(Ok(json!({"multicam": app.ui.program.multicam})));
+        }
+        "multicam.editCamerasDialog" => {
+            let Some(src) = filmcraft_engine::multicam::multicam_clip_at(&app.session, app.session.playhead()).map(|c| c.1.item) else {
+                return Some(Err("no multi-camera clip at the playhead".into()));
+            };
+            let cams = app.session.project.sequence(src).map(|q| q.cameras()).unwrap_or_default();
+            app.ui.edit_cameras = Some(crate::state::EditCamerasDraft {
+                sequence: src.0,
+                names: cams.cameras.iter().map(|c| c.name.clone()).collect(),
+                enabled: cams.cameras.iter().map(|c| c.enabled).collect(),
+            });
+            return Some(Ok(json!({"dialog": "editCameras", "sequence": src.0})));
         }
         "multicam.recordToggle" => {
             app.ui.multicam_record = params.get("enabled").and_then(Value::as_bool).unwrap_or(!app.ui.multicam_record);
@@ -275,17 +290,31 @@ pub fn grid(app: &mut FilmcraftApp, ui: &mut egui::Ui, area: Rect) {
     let Some(q) = app.session.project.sequence(src) else { return };
     let cams = q.cameras();
     let shown = cams.shown_angles();
-    let (cols, rows) = filmcraft_render::multicam::grid_dims(shown.len().max(1));
+    let view = app.session.state.multicam_view.clone();
+    let lay = view.page_layout(shown.len());
+    let (cols, rows) = (lay.cols, lay.rows);
     let (sw, sh) = (q.settings.width as f32, q.settings.height as f32);
     let rate = q.settings.frame_rate;
-    let pic = crate::panels::monitor::fit(area.shrink(2.0), sw * cols as f32, sh * rows as f32);
+    // page arrows under the grid when the angles don't fit on one page
+    let paged = lay.pages > 1;
+    let grid_area = if paged { Rect::from_min_max(area.min, pos2(area.max.x, area.max.y - 24.0)) } else { area };
+    let pic = crate::panels::monitor::fit(grid_area.shrink(2.0), sw * cols as f32, sh * rows as f32);
     let (cw, ch) = (pic.width() / cols as f32, pic.height() / rows as f32);
-    // decode and composite at the cell's size (never more than the playback resolution)
+    // decode and composite at the cell's size (never more than the playback resolution; lower
+    // while playing with Auto-Adjust Multi-Camera Playback Quality)
     let cell_px = cw * ctx.pixels_per_point();
-    let scale = crate::panels::monitor::quantize_scale(app.ui.program.res.scale().min((cell_px / sw).max(1.0 / 32.0)));
+    let scale = crate::panels::monitor::quantize_scale(filmcraft_render::multicam::grid_cell_scale(
+        q.settings.width,
+        cell_px,
+        app.ui.program.res.scale(),
+        app.playback.playing,
+        view.auto_quality,
+        lay.per_page,
+    ));
     let mt = Tick(info["sourceTime"].as_i64().unwrap_or(0));
     let frame = rate.frame_at(mt);
-    let key = FrameKey { target: Target::MulticamGrid(src), frame, size: (scale * 1000.0) as u32, revision: grid_revision(app, src), draft: false };
+    let target = Target::MulticamGrid(src, view.layout.unwrap_or(0) as u8, lay.page as u16);
+    let key = FrameKey { target, frame, size: (scale * 1000.0) as u32, revision: grid_revision(app, src), draft: false };
     let project = app.session.project.clone();
     if app.playback.playing {
         app.frames.schedule_playback(key, rate, scale, &project, app.playback.speed, app.playback.preroll.is_some());
@@ -306,8 +335,9 @@ pub fn grid(app: &mut FilmcraftApp, ui: &mut egui::Ui, area: Rect) {
     let current = info["angle"].as_u64().map(|a| a as usize);
     let recording = app.session.mcrec.active();
     let mut click: Option<(usize, bool)> = None;
-    for (k, &angle) in shown.iter().enumerate() {
-        let cell = Rect::from_min_size(pic.min + vec2((k % cols) as f32 * cw, (k / cols) as f32 * ch), vec2(cw, ch));
+    for (k, &angle) in shown.iter().enumerate().skip(lay.first).take(lay.count) {
+        let cell_i = k - lay.first;
+        let cell = Rect::from_min_size(pic.min + vec2((cell_i % cols) as f32 * cw, (cell_i / cols) as f32 * ch), vec2(cw, ch));
         let name = cams.cameras.get(angle).map(|c| c.name.clone()).unwrap_or_default();
         let resp = ui.interact(cell, egui::Id::new(("multicam-angle", k)), Sense::click()).on_hover_text(format!("Camera {} — {name}", k + 1));
         app.auto.add(&format!("program.multicam.angle.{}", k + 1), cell, &name);
@@ -333,6 +363,22 @@ pub fn grid(app: &mut FilmcraftApp, ui: &mut egui::Ui, area: Rect) {
         ui.painter().rect_filled(lr, 3.0, Color32::from_black_alpha(160));
         ui.painter().galley(lr.min + vec2(4.0, 2.0), galley, Color32::WHITE);
     }
+    if paged {
+        let bar = Rect::from_min_max(pos2(area.min.x, area.max.y - 22.0), area.max);
+        let mid = bar.center();
+        ui.painter().text(mid, Align2::CENTER_CENTER, format!("Page {} of {}", lay.page + 1, lay.pages), Tokens::ui(11.0), t.text_dim);
+        for (id, label, dx, cmd) in [("pagePrev", "◀", -70.0, "multicam.prevPage"), ("pageNext", "▶", 70.0, "multicam.nextPage")] {
+            let r = Rect::from_center_size(mid + vec2(dx, 0.0), vec2(26.0, 18.0));
+            let enabled = if cmd == "multicam.prevPage" { lay.page > 0 } else { lay.page + 1 < lay.pages };
+            let resp = ui.interact(r, egui::Id::new(("multicam-page", id)), Sense::click()).on_hover_text(if dx < 0.0 { "Previous page" } else { "Next page" });
+            ui.painter().rect_filled(r, 3.0, if resp.hovered() && enabled { t.hover } else { t.field_bg });
+            ui.painter().text(r.center(), Align2::CENTER_CENTER, label, Tokens::ui(10.0), if enabled { t.text } else { t.text_faint });
+            app.auto.add(&format!("program.multicam.{id}"), r, label);
+            if resp.clicked() && enabled {
+                let _ = app.session.execute(cmd, json!({}));
+            }
+        }
+    }
     // record indicator
     let rr = Rect::from_min_size(area.min + vec2(8.0, 8.0), vec2(64.0, 18.0));
     let rec_on = app.ui.multicam_record;
@@ -355,6 +401,98 @@ pub fn grid(app: &mut FilmcraftApp, ui: &mut egui::Ui, area: Rect) {
         && let Err(e) = app.session.execute("multicam.cut", json!({"camera": n, "videoOnly": video_only}))
     {
         app.ui.status = e.to_string();
+    }
+}
+
+/// The Edit Cameras dialog: a thumbnail, name and on/off switch per camera (`multicam.editCameras`).
+pub fn show_edit_cameras(app: &mut FilmcraftApp, ctx: &egui::Context) {
+    let Some(mut d) = app.ui.edit_cameras.clone() else { return };
+    let src = ItemId(d.sequence);
+    let Some(q) = app.session.project.sequence(src).cloned() else {
+        app.ui.edit_cameras = None;
+        return;
+    };
+    let rate = q.settings.frame_rate;
+    let mt = filmcraft_engine::multicam::inspect_at(&app.session, app.session.playhead())["sourceTime"].as_i64().unwrap_or(0);
+    let frame = rate.frame_at(Tick(mt));
+    let rev = grid_revision(app, src);
+    let mut elems: Elems = Vec::new();
+    let mut action: Option<&str> = None;
+    let thumb_w = 96.0;
+    let scale = crate::panels::monitor::quantize_scale((thumb_w * ctx.pixels_per_point() / q.settings.width.max(1) as f32).clamp(1.0 / 32.0, 1.0));
+    let project = app.session.project.clone();
+    let mut thumbs = Vec::new();
+    for a in 0..d.names.len() {
+        let has_video = q.angle_video_track_index(a).is_some();
+        let key = FrameKey { target: Target::MulticamAngle(src, a as u32), frame, size: (scale * 1000.0) as u32, revision: rev, draft: false };
+        let tex = if has_video {
+            app.frames.request(key, rate.tick_of(frame), scale, &project, 2);
+            app.frames.get(&key).map(|img| app.texture_for(ctx, &format!("edit-cameras-{}-{a}", src.0), key, &img))
+        } else {
+            None
+        };
+        thumbs.push((has_video, tex));
+    }
+    let th = thumb_w * q.settings.height.max(1) as f32 / q.settings.width.max(1) as f32;
+    let tokens = app.tokens;
+    egui::Window::new("Edit Cameras").collapsible(false).resizable(false).default_width(420.0).anchor(Align2::CENTER_CENTER, [0.0, 0.0]).show(ctx, |ui| {
+        ui.label(RichText::new("Cameras shown in the Multi-Camera view (uncheck to hide).").weak().small());
+        egui::ScrollArea::vertical().max_height(420.0).show(ui, |ui| {
+            for a in 0..d.names.len() {
+                ui.horizontal(|ui| {
+                    let r = ui.checkbox(&mut d.enabled[a], "");
+                    push(&mut elems, format!("editCameras.enabled.{a}"), &r, "Enabled");
+                    let (tr, _) = ui.allocate_exact_size(vec2(thumb_w, th), Sense::hover());
+                    ui.painter().rect_filled(tr, 2.0, tokens.monitor_bg);
+                    match thumbs[a] {
+                        (_, Some(tex)) => {
+                            ui.painter().image(tex, tr, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
+                        }
+                        (false, None) => {
+                            ui.painter().text(tr.center(), Align2::CENTER_CENTER, "Audio", Tokens::ui(10.0), tokens.text_dim);
+                        }
+                        _ => {}
+                    }
+                    elems.push((format!("editCameras.thumb.{a}"), tr, format!("Camera {}", a + 1)));
+                    ui.label(format!("{}", a + 1));
+                    let r = ui.add(egui::TextEdit::singleline(&mut d.names[a]).desired_width(180.0));
+                    push(&mut elems, format!("editCameras.name.{a}"), &r, "Camera name");
+                });
+            }
+        });
+        ui.add_space(6.0);
+        ui.horizontal(|ui| {
+            let r = ui.button("Cancel");
+            push(&mut elems, "editCameras.cancel", &r, "Cancel");
+            if r.clicked() {
+                action = Some("cancel");
+            }
+            let r = ui.add(egui::Button::new(RichText::new("OK").color(Color32::WHITE)).fill(tokens.accent));
+            push(&mut elems, "editCameras.ok", &r, "OK");
+            if r.clicked() {
+                action = Some("ok");
+            }
+        });
+    });
+    for (id, r, l) in elems {
+        app.auto.add(&id, r, &l);
+    }
+    if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+        action = Some("cancel");
+    }
+    match action {
+        Some("cancel") => app.ui.edit_cameras = None,
+        Some("ok") => {
+            let cameras: Vec<Value> = (0..d.names.len()).map(|a| json!({"angle": a, "name": d.names[a], "enabled": d.enabled[a]})).collect();
+            match app.session.execute("multicam.editCameras", json!({"sequence": src.0, "cameras": cameras})) {
+                Ok(_) => app.ui.edit_cameras = None,
+                Err(e) => {
+                    app.ui.status = e.to_string();
+                    app.ui.edit_cameras = Some(d);
+                }
+            }
+        }
+        _ => app.ui.edit_cameras = Some(d),
     }
 }
 

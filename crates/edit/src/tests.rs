@@ -26,7 +26,7 @@ impl Fx {
         Self { seq, next: 10_000 }
     }
     fn ctx<'a>(next: &'a mut u64) -> EditCtx<'a> {
-        EditCtx { next_id: next, media_duration: &media, min_duration: f(1) }
+        EditCtx { next_id: next, media_duration: &media, media_start: &|_| Tick::ZERO, min_duration: f(1) }
     }
     fn v(&self, i: usize) -> TrackId {
         self.seq.video_tracks[i].id

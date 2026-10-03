@@ -50,8 +50,12 @@ pub type Result<T> = std::result::Result<T, EditError>;
 /// Supplies fresh ids and media durations to edits.
 pub struct EditCtx<'a> {
     pub next_id: &'a mut u64,
-    /// Media duration of a project item (None = unlimited, e.g. stills / adjustment layers).
+    /// Media duration of a project item (None = unlimited, e.g. stills / adjustment layers): the
+    /// latest media time its clips may show.
     pub media_duration: &'a dyn Fn(ItemId) -> Option<Tick>,
+    /// The earliest media time clips of a project item may show (a subclip that restricts trims
+    /// starts at its In point; everything else at 0).
+    pub media_start: &'a dyn Fn(ItemId) -> Tick,
     /// Minimum item duration (one sequence frame).
     pub min_duration: Tick,
 }
@@ -412,6 +416,14 @@ fn media_len(ctx: &EditCtx, item: &TrackItem) -> Option<Tick> {
     (ctx.media_duration)(item.item)
 }
 
+/// Media available before a clip's source In (its head handle, media ticks).
+fn head(ctx: &EditCtx, item: &TrackItem) -> Tick {
+    if item.frame_hold.is_some() {
+        return item.source_in;
+    }
+    (item.source_in - (ctx.media_start)(item.item)).max(Tick::ZERO)
+}
+
 fn src_of(dur: Tick, speed: f64) -> Tick {
     Tick((dur.0 as f64 * speed.abs()).round() as i64)
 }
@@ -435,7 +447,7 @@ pub fn clamp_trim(seq: &Sequence, clip: ClipId, edge: Edge, mode: TrimMode, delt
     match edge {
         Edge::In => {
             // extending left (d<0) needs media before source_in; shortening needs min duration
-            let max_ext = Tick((it.source_in.0 as f64 / speed).floor() as i64);
+            let max_ext = Tick((head(ctx, it).0 as f64 / speed).floor() as i64);
             let lo = if mode == TrimMode::Regular { (-(it.start - prev_end)).max(-max_ext) } else { -max_ext };
             let hi = it.duration - ctx.min_duration;
             d = d.clamp(if it.frame_hold.is_some() { Tick::MIN } else { lo }, hi);
@@ -603,7 +615,7 @@ pub fn roll(seq: &mut Sequence, left: ClipId, right: ClipId, delta: Tick, ctx: &
     if let Some(m) = media_len(ctx, l) {
         d = d.min(Tick(((m - l.source_out()).0 as f64 / l.speed.abs()).floor() as i64));
     }
-    d = d.max(-Tick((r.source_in.0 as f64 / r.speed.abs()).floor() as i64));
+    d = d.max(-Tick((head(ctx, r).0 as f64 / r.speed.abs()).floor() as i64));
     if d == Tick::ZERO {
         return Ok(d);
     }
@@ -627,7 +639,8 @@ pub fn slip(seq: &mut Sequence, clip: ClipId, delta_media: Tick, ctx: &mut EditC
     let (_, it) = seq.find_item(clip).ok_or(EditError::NoItem(clip))?;
     let used = src_of(it.duration, it.speed);
     let max_in = media_len(ctx, it).map(|m| m - used).unwrap_or(Tick::MAX);
-    let new_in = (it.source_in + delta_media).clamp(Tick::ZERO, max_in.max(Tick::ZERO));
+    let lo = if it.frame_hold.is_some() { Tick::ZERO } else { (ctx.media_start)(it.item) };
+    let new_in = (it.source_in + delta_media).clamp(lo, max_in.max(lo));
     let d = new_in - it.source_in;
     let (_, it) = seq.find_item_mut(clip).ok_or(EditError::NoItem(clip))?;
     it.source_in = new_in;
@@ -653,7 +666,7 @@ pub fn slide(seq: &mut Sequence, clip: ClipId, delta: Tick, ctx: &mut EditCtx) -
     }
     if let Some(n) = &next {
         d = d.min(n.duration - ctx.min_duration);
-        d = d.max(-Tick((n.source_in.0 as f64 / n.speed.abs()).floor() as i64));
+        d = d.max(-Tick((head(ctx, n).0 as f64 / n.speed.abs()).floor() as i64));
     } else {
         d = d.min(neighbours(tr, clip).1 - it.end());
     }

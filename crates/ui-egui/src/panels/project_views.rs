@@ -228,6 +228,22 @@ fn item_menu(app: &mut FilmcraftApp, ui: &mut egui::Ui, id: ItemId, kind: &ItemK
         actions.push(("clip.interpretFootage".into(), json!({"items": [id.0]})));
         ui.close();
     }
+    // subclips: Make Subclip (media), Edit Subclip and Convert to Master Clip (subclips)
+    let subclip_items: &[(&str, &str, &str)] = match kind {
+        ItemKind::Media(_) => &[("makeSubclip", "Make Subclip…", "clip.makeSubclip")],
+        ItemKind::Subclip { .. } => &[("editSubclip", "Edit Subclip…", "clip.editSubclip"), ("convertToMaster", "Convert to Master Clip", "clip.editSubclip")],
+        _ => &[],
+    };
+    for (key, label, cmd) in subclip_items {
+        let b = ui.button(*label);
+        app.auto.add(&format!("project.itemMenu.{key}"), b.rect, label);
+        if b.clicked() {
+            actions.push(("project.select".into(), sel()));
+            let p = if *key == "convertToMaster" { json!({"item": id.0, "convertToMaster": true}) } else { json!({}) };
+            actions.push((cmd.to_string(), p));
+            ui.close();
+        }
+    }
     ui.menu_button("Label", |ui| {
         for l in filmcraft_project::Label::ALL {
             if ui.button(l.name()).clicked() {
