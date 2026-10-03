@@ -71,6 +71,21 @@ pub fn h264_disposable(sample: &[u8], length_size: usize) -> bool {
     slices > 0
 }
 
+/// [`h264_disposable`] for an Annex B (start-code) sample.
+pub fn h264_disposable_annexb(sample: &[u8]) -> bool {
+    let mut slices = 0;
+    for n in filmcraft_bitstream::annexb_nals(sample) {
+        let Some(&h) = n.first() else { continue };
+        if (1..=5).contains(&(h & 0x1f)) {
+            if h & 0x60 != 0 {
+                return false;
+            }
+            slices += 1;
+        }
+    }
+    slices > 0
+}
+
 /// HEVC (7.4.2.2): every VCL NAL unit is a sub-layer non-reference picture (TRAIL_N, TSA_N,
 /// STSA_N, RADL_N, RASL_N, RSV_VCL_N10/12/14) of the highest temporal sub-layer, so no picture
 /// references it. `highest_tid` = numTemporalLayers - 1 from the hvcC (None: unknown).
@@ -148,6 +163,10 @@ impl H264Decoder {
         let length_size = avcc.get(4).map_or(4, |b| (b & 3) as usize + 1);
         Ok(Self { avcc, dec, length_size })
     }
+    /// A decoder for Annex B byte-stream samples (start codes, in-band parameter sets: MXF, TS).
+    pub fn annexb() -> Self {
+        Self { avcc: Vec::new(), dec: filmcraft_h264::Decoder::new(), length_size: 0 }
+    }
     fn convert(p: filmcraft_h264::Picture) -> DecodedFrame {
         use std::sync::Arc;
         let (w, h) = (p.width as usize, p.height as usize);
@@ -187,7 +206,9 @@ impl VideoDecoder for H264Decoder {
         self.dec.flush().into_iter().map(Self::convert).collect()
     }
     fn reset(&mut self) {
-        if let Ok(d) = filmcraft_h264::Decoder::from_avcc(&self.avcc) {
+        if self.avcc.is_empty() {
+            self.dec = filmcraft_h264::Decoder::new();
+        } else if let Ok(d) = filmcraft_h264::Decoder::from_avcc(&self.avcc) {
             self.dec = d;
         }
     }
@@ -195,7 +216,14 @@ impl VideoDecoder for H264Decoder {
         "FilmCraft H.264"
     }
     fn is_disposable(&self, sample: &[u8]) -> bool {
+        if self.length_size == 0 {
+            return h264_disposable_annexb(sample);
+        }
         h264_disposable(sample, self.length_size)
+    }
+    fn is_random_access(&self, sample: &[u8]) -> Option<bool> {
+        // Annex B samples carry their parameter sets: an IDR access unit is a starting point.
+        (self.length_size == 0).then(|| filmcraft_bitstream::annexb_nals(sample).iter().any(|n| n.first().is_some_and(|h| h & 0x1f == 5)))
     }
 }
 

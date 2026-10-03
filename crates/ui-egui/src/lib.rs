@@ -656,6 +656,16 @@ impl FilmcraftApp {
                 }
                 r
             }
+            // File ▸ Import with Image Sequence: choose the first numbered still
+            "file.importImageSequence" => {
+                let paths = self.hooks.pick_files.as_mut().map(|f| f(filmcraft_media::STILL_EXTENSIONS)).unwrap_or_default();
+                let Some(path) = paths.into_iter().next() else { return Ok(Value::Null) };
+                let r = self.session.execute("file.importImageSequence", json!({"path": path})).map_err(|e| e.to_string());
+                if let Err(e) = &r {
+                    self.ui.status = e.clone();
+                }
+                r
+            }
             "file.saveAs" | "file.save" | "file.saveCopy" => {
                 let suggested =
                     if id == "file.saveCopy" { format!("{} copy.fcproj", self.session.project.name) } else { format!("{}.fcproj", self.session.project.name) };

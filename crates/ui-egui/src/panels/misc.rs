@@ -207,6 +207,7 @@ pub fn media_browser(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
             .unwrap_or_default();
         entries.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.to_lowercase().cmp(&b.1.to_lowercase())));
         let mut import = Vec::new();
+        let mut import_sequence = None;
         egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
             for (is_dir, name) in &entries {
                 let path = format!("{dir}/{name}");
@@ -237,11 +238,36 @@ pub fn media_browser(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                         import.push(path.clone());
                     }
                 }
+                if !*is_dir {
+                    resp.context_menu(|ui| {
+                        let b = ui.button("Import");
+                        app.auto.add(&format!("mediaBrowser.import.{name}"), b.rect, "Import");
+                        if b.clicked() {
+                            import.push(path.clone());
+                            ui.close();
+                        }
+                        // numbered stills: the sequence starting at this frame, as one clip
+                        if filmcraft_media::sequence::Numbered::parse(&path).is_some() {
+                            let b = ui.button("Import as Image Sequence");
+                            app.auto.add(&format!("mediaBrowser.importSequence.{name}"), b.rect, "Import as Image Sequence");
+                            if b.clicked() {
+                                import_sequence = Some(path.clone());
+                                ui.close();
+                            }
+                        }
+                    });
+                }
             }
         });
         ui.data_mut(|d| d.insert_temp(dir_id, dir));
         if !import.is_empty() {
             let r = app.session.execute("file.import", serde_json::json!({"paths": import}));
+            if let Err(e) = r {
+                app.ui.status = e.to_string();
+            }
+        }
+        if let Some(first) = import_sequence {
+            let r = app.session.execute("file.importFromMediaBrowser", serde_json::json!({"paths": [first], "imageSequence": true}));
             if let Err(e) = r {
                 app.ui.status = e.to_string();
             }
