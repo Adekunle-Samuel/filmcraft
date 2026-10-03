@@ -1734,6 +1734,7 @@ dependencies = [
  "filmcraft-text",
  "filmcraft-time",
  "proptest",
+ "roxmltree",
  "thiserror 2.0.21",
 ]
 

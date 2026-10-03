@@ -452,6 +452,10 @@ pub struct UiState {
     /// `panels::menu_dialogs`.
     #[serde(default)]
     pub extras: crate::panels::menu_dialogs::Extras,
+    /// Essential Graphics ▸ Browse and the graphics template / Replace Fonts dialogs. See
+    /// `panels::graphics_templates`.
+    #[serde(default)]
+    pub gfx_templates: crate::panels::graphics_templates::GfxTemplatesState,
     /// Lumetri Scopes, Timecode, Events, Progress and Reference Monitor settings. See
     /// `panels::panel_state`.
     #[serde(default)]
@@ -740,6 +744,7 @@ impl Default for UiState {
             guide_dialog: None,
             clip_dialog: None,
             extras: Default::default(),
+            gfx_templates: Default::default(),
             panels: Default::default(),
             keys: Default::default(),
         }

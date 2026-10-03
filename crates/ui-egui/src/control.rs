@@ -208,6 +208,22 @@ pub fn handle(app: &mut FilmcraftApp, ctx: &egui::Context, req: &ControlRequest)
                     Err(e) => return err(format!("`panels`: {e}")),
                 }
             }
+            // Essential Graphics ▸ Browse and the template / font dialogs (`panels::graphics_templates`), merged
+            if let Some(patch) = p.get("gfxTemplates") {
+                let mut cur = serde_json::to_value(&app.ui.gfx_templates).unwrap_or_default();
+                merge(&mut cur, patch);
+                match serde_json::from_value(cur) {
+                    Ok(v) => app.ui.gfx_templates = v,
+                    Err(e) => return err(format!("`gfxTemplates`: {e}")),
+                }
+            }
+            // the Type tool's text editing state: {"clip", "layer", "caret", "anchor"} (byte offsets) or null
+            if let Some(v) = p.get("gfxEdit") {
+                match serde_json::from_value(v.clone()) {
+                    Ok(e) => app.ui.gfx_edit = e,
+                    Err(e) => return err(format!("`gfxEdit`: {e}")),
+                }
+            }
             // fields of the open Edit / Clip / File dialog (`panels::clip_dialogs`)
             if let Some(m) = p.get("clipDialog").and_then(Value::as_object) {
                 let Some(d) = app.ui.clip_dialog.as_mut() else { return err("no clip dialog is open") };

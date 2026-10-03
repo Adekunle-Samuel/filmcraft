@@ -309,6 +309,55 @@ fn graphic_scene(bg: DemoScene, layers: Vec<EffectInstance>) -> Scene {
     b.at(12)
 }
 
+/// A built-in graphics template (Lower Third – Slab) placed on a 320×180 sequence with its
+/// editable properties overridden (name, slab and accent colours, hidden role line): checks the
+/// template's scaling, pins (the slab widens with the longer name) and the overrides.
+fn graphic_template() -> Scene {
+    use filmcraft_project::gtemplate::{builtin_templates, layer_uid};
+    let t = builtin_templates().into_iter().find(|t| t.id == "builtin:lower-third-slab").unwrap();
+    let (mut layers, meta) = t.instantiate((W, H));
+    let mut over = |control: &str, v: ParamValue| {
+        let c = t.controls.iter().find(|c| c.id == control).unwrap();
+        let l = layers.iter_mut().find(|l| layer_uid(l) == c.layer).unwrap();
+        if c.param == "enabled" {
+            l.enabled = v.as_bool().unwrap();
+        } else {
+            l.params.get_mut(&c.param).unwrap().value = v;
+        }
+    };
+    over("name", ParamValue::Text("Golden Overrides".into()));
+    over("slab_color", ParamValue::Color([0.75, 0.15, 0.18, 1.0]));
+    over("accent_color", ParamValue::Color([0.2, 0.85, 0.4, 1.0]));
+    over("show_role", ParamValue::Bool(false));
+    let mut s = graphic_scene(DemoScene::Forest, layers);
+    let seq = s.seq;
+    let q = s.project.sequence_mut(seq).unwrap();
+    q.video_tracks[1].items[0].graphic = Some(Box::new(meta));
+    s
+}
+
+/// Per-character styles (a bold, bigger, coloured word and an underlined one) and a rounded box
+/// pinned around the text on all four edges.
+fn graphic_rich_text() -> Scene {
+    use filmcraft_project::graphic::{new_shape_layer, new_text_layer};
+    use filmcraft_project::graphic_design::{CharStyle, LayerExtra, Pin, PinTarget, StyleRun};
+    let mut text = new_text_layer("Mixed STYLES in one layer", Vec2::new(28.0, 100.0), 16.0);
+    let runs = vec![
+        StyleRun { start: 6, end: 12, style: CharStyle { size: Some(26.0), faux_bold: Some(true), fill: Some([1.0, 0.8, 0.1, 1.0]), ..Default::default() } },
+        StyleRun {
+            start: 16,
+            end: 19,
+            style: CharStyle { underline: Some(true), font: Some("Noto Serif".into()), faux_italic: Some(true), ..Default::default() },
+        },
+    ];
+    text.layer = Some(Box::new(LayerExtra { uid: 1, runs, ..Default::default() }));
+    let mut bx = new_shape_layer(0, Vec2::new(150.0, 90.0), Vec2::new(10.0, 10.0), vec![]);
+    set(&mut bx, &[("corner_radius", fl(6.0)), ("fill_color", ParamValue::Color([0.1, 0.12, 0.3, 1.0])), ("opacity", fl(80.0))]);
+    let pin = Pin { to: PinTarget::Layer(1), left: true, top: true, right: true, bottom: true, offsets: [-10.0, -8.0, 10.0, 8.0] };
+    bx.layer = Some(Box::new(LayerExtra { uid: 2, pin: Some(pin), ..Default::default() }));
+    graphic_scene(DemoScene::Dunes, vec![bx, text])
+}
+
 /// A title: bold centred text with an outer stroke and a soft drop shadow, a lower-third bar with
 /// rounded corners and a background-boxed caption line.
 fn graphic_title() -> Scene {
@@ -555,6 +604,8 @@ fn scenes() -> Vec<(&'static str, &'static str, fn() -> Scene)> {
         ("text_burnin", "Timecode and Clip Name burn-in text", text_burnin),
         ("graphic_title", "Graphic clip: title text with stroke and shadow, lower-third bar", graphic_title),
         ("graphic_shapes", "Graphic clip: ellipse, polygon, path and rotated text with background", graphic_shapes),
+        ("graphic_template", "Graphics template (Lower Third – Slab) with overridden properties", graphic_template),
+        ("graphic_rich_text", "Per-character text styles and a box pinned around the text", graphic_rich_text),
         ("log_to_rec709", "Colour management: S-Log3/S-Gamut3.Cine footage to Rec. 709 (tone mapped)", log_to_rec709),
         ("hdr_tone_map", "Colour management: Rec. 2100 PQ footage tone mapped into a Rec. 709 sequence", hdr_tone_map),
         ("mask_blur", "Masks: Gaussian Blur inside a feathered ellipse mask", mask_blur),
@@ -620,6 +671,8 @@ goldens!(
     text_burnin,
     graphic_title,
     graphic_shapes,
+    graphic_template,
+    graphic_rich_text,
     log_to_rec709,
     hdr_tone_map,
     mask_blur,

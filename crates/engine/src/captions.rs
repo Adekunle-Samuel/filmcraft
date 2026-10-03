@@ -95,11 +95,11 @@ fn hex(c: [u8; 4]) -> String {
     format!("#{:02x}{:02x}{:02x}{:02x}", c[0], c[1], c[2], c[3])
 }
 
-/// The caption format of a file, if it is one (extension `.srt` / `.vtt` / `.scc`, confirmed by
-/// content).
+/// The caption format of a file, if it is one (extension `.srt` / `.vtt` / `.scc` / `.mcc` /
+/// `.stl` / `.ttml` / `.dfxp` / `.xml`, confirmed by content).
 pub fn detect(path: &str, bytes: &[u8]) -> Option<Format> {
     let ext = std::path::Path::new(path).extension().and_then(|e| e.to_str()).map(str::to_ascii_lowercase);
-    if !matches!(ext.as_deref(), Some("srt" | "vtt" | "scc" | "webvtt")) {
+    if !matches!(ext.as_deref(), Some("srt" | "vtt" | "scc" | "webvtt" | "mcc" | "stl" | "ttml" | "dfxp" | "xml")) {
         return None;
     }
     filmcraft_captions::detect(bytes, ext.as_deref())
@@ -206,7 +206,7 @@ fn export(s: &mut Session, p: &Value) -> Result<Value> {
     let track = seq.caption_track(tid).ok_or_else(|| bad("captions.export", "no such caption track"))?;
     let doc: Document = filmcraft_captions::document_from_track(track, Tick::ZERO);
     let df = bool_p(p, "dropFrame").unwrap_or(true);
-    let bytes = filmcraft_captions::write(&doc, format, WriteOptions { drop_frame: df });
+    let bytes = filmcraft_captions::write(&doc, format, WriteOptions { drop_frame: df, rate: Some(seq.settings.frame_rate) });
     let n = doc.cues.len();
     s.services.write_file(&path, &bytes).map_err(|e| EngineError::Other(e.to_string()))?;
     Ok(json!({"path": path, "format": format.name(), "captions": n, "bytes": bytes.len()}))
@@ -500,7 +500,7 @@ pub fn commands() -> Vec<CommandSpec> {
             "Captions…",
             &["File", "Export"],
             None,
-            r#"{"path":str,"format":"srt|vtt|scc"?,"track":id|"C1"?,"dropFrame":bool=true}"#,
+            r#"{"path":str,"format":"srt|vtt|scc|mcc|stl|ttml|dfxp"? (default: from the extension),"track":id|"C1"?,"dropFrame":bool=true}"#,
             has_caption_track,
             export,
         ),

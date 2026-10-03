@@ -956,6 +956,11 @@ impl Write for SharedBuf {
     }
 }
 
+/// Encode straight sRGB RGBA8 pixels as a PNG file (thumbnails, previews).
+pub fn encode_png(rgba: Vec<u8>, w: u32, h: u32) -> Result<Vec<u8>> {
+    encode_still(Format::PngSequence, rgba, w, h)
+}
+
 /// Encode one still of an image sequence (also Export Frame).
 pub fn encode_still(format: Format, rgba: Vec<u8>, w: u32, h: u32) -> Result<Vec<u8>> {
     let enc = |e: image::ImageError| ExportError::Encode(e.to_string());

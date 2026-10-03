@@ -196,6 +196,8 @@ pub struct TextProps {
     pub box_width: f32,
     /// Vertical text (characters stacked top to bottom; columns right to left).
     pub vertical: bool,
+    /// Per-character style overrides as *byte* ranges of `text` (sorted, non-overlapping).
+    pub runs: Vec<(std::ops::Range<usize>, crate::graphic_design::CharStyle)>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -220,6 +222,10 @@ pub enum LayerContent {
 pub struct LayerSpec {
     pub name: String,
     pub enabled: bool,
+    /// Stable layer id within the clip (0 = none).
+    pub uid: u64,
+    /// Responsive Design – Position.
+    pub pin: Option<crate::graphic_design::Pin>,
     pub content: LayerContent,
     pub appearance: Appearance,
     pub transform: LayerTransform,
@@ -260,23 +266,28 @@ fn vv(e: &EffectInstance, id: &str, t: Tick) -> Vec2 {
 /// means the canvas centre.
 pub fn eval_layer(e: &EffectInstance, t: Tick, frame: (u32, u32)) -> Option<LayerSpec> {
     let content = match e.effect.as_str() {
-        TEXT_LAYER => LayerContent::Text(TextProps {
-            text: ss(e, "text", t),
-            font: ss(e, "font", t),
-            style: ss(e, "font_style", t),
-            size: ff(e, "size", t).max(0.1),
-            align: ch(e, "align", t),
-            tracking: ff(e, "tracking", t),
-            kerning: bb(e, "kerning", t),
-            ligatures: bb(e, "ligatures", t),
-            leading: ff(e, "leading", t),
-            baseline_shift: ff(e, "baseline_shift", t),
-            faux_bold: bb(e, "faux_bold", t),
-            faux_italic: bb(e, "faux_italic", t),
-            caps: ch(e, "caps", t),
-            underline: bb(e, "underline", t),
-            box_width: ff(e, "box_width", t).max(0.0),
-            vertical: bb(e, "vertical", t),
+        TEXT_LAYER => LayerContent::Text({
+            let text = ss(e, "text", t);
+            let runs = byte_runs(&text, e.layer.as_ref().map_or(&[][..], |x| &x.runs[..]));
+            TextProps {
+                text,
+                runs,
+                font: ss(e, "font", t),
+                style: ss(e, "font_style", t),
+                size: ff(e, "size", t).max(0.1),
+                align: ch(e, "align", t),
+                tracking: ff(e, "tracking", t),
+                kerning: bb(e, "kerning", t),
+                ligatures: bb(e, "ligatures", t),
+                leading: ff(e, "leading", t),
+                baseline_shift: ff(e, "baseline_shift", t),
+                faux_bold: bb(e, "faux_bold", t),
+                faux_italic: bb(e, "faux_italic", t),
+                caps: ch(e, "caps", t),
+                underline: bb(e, "underline", t),
+                box_width: ff(e, "box_width", t).max(0.0),
+                vertical: bb(e, "vertical", t),
+            }
         }),
         SHAPE_LAYER => {
             let sz = vv(e, "size", t);
@@ -316,6 +327,8 @@ pub fn eval_layer(e: &EffectInstance, t: Tick, frame: (u32, u32)) -> Option<Laye
     Some(LayerSpec {
         name: ss(e, "name", t),
         enabled: e.enabled,
+        uid: e.layer.as_ref().map_or(0, |x| x.uid),
+        pin: e.layer.as_ref().and_then(|x| x.pin.clone()).filter(|p| p.any()),
         content,
         appearance: Appearance { fill: bb(e, "fill", t).then(|| cc(e, "fill_color", t)), strokes, background, shadow },
         transform: LayerTransform {
@@ -326,6 +339,21 @@ pub fn eval_layer(e: &EffectInstance, t: Tick, frame: (u32, u32)) -> Option<Laye
             opacity: (ff(e, "opacity", t) / 100.0).clamp(0.0, 1.0),
         },
     })
+}
+
+/// Character-offset style runs → byte ranges of `text` (clamped; empty runs dropped).
+pub fn byte_runs(text: &str, runs: &[crate::graphic_design::StyleRun]) -> Vec<(std::ops::Range<usize>, crate::graphic_design::CharStyle)> {
+    if runs.is_empty() {
+        return Vec::new();
+    }
+    let offs: Vec<usize> = text.char_indices().map(|(b, _)| b).chain(std::iter::once(text.len())).collect();
+    let at = |c: usize| offs[c.min(offs.len() - 1)];
+    runs.iter().map(|r| (at(r.start)..at(r.end), r.style.clone())).filter(|(r, s)| r.start < r.end && !s.is_empty()).collect()
+}
+
+/// Character count of a text layer's source text at time `t` (for style-run commands).
+pub fn text_chars(e: &EffectInstance, t: Tick) -> usize {
+    ss(e, "text", t).chars().count()
 }
 
 fn set(e: &mut EffectInstance, id: &str, v: ParamValue) {

@@ -30,6 +30,9 @@
 //! - **v7** (M5.5): effect masks (keyframable Bézier mask paths on effect instances). No-op step.
 //! - **v8** (M12): multi-camera source sequences, multi-camera clips and merged clips. No-op step;
 //!   older builds would drop the camera data when saving.
+//! - **v12** (M10.7): graphics templates, rolls / crawls, responsive design (pins, intro / outro),
+//!   per-character text styles (`TrackItem::graphic`, `EffectInstance::layer`) and source graphics
+//!   (`Project::source_graphics`). No-op step; older builds would drop these fields when saving.
 
 pub mod atomic;
 pub mod autosave;
@@ -48,7 +51,7 @@ pub type Migration = fn(Value) -> Result<Value, String>;
 
 /// `MIGRATIONS[i]` upgrades schema `i + 1` to `i + 2`. Append one function per schema bump; never
 /// edit a shipped one.
-pub const MIGRATIONS: &[Migration] = &[v1_to_v2, v2_to_v3, v3_to_v4, v4_to_v5, v5_to_v6, v6_to_v7, v7_to_v8, v8_to_v9, v9_to_v10, v10_to_v11];
+pub const MIGRATIONS: &[Migration] = &[v1_to_v2, v2_to_v3, v3_to_v4, v4_to_v5, v5_to_v6, v6_to_v7, v7_to_v8, v8_to_v9, v9_to_v10, v10_to_v11, v11_to_v12];
 
 /// The schema version this build writes (and the newest it reads).
 pub const SCHEMA_VERSION: u32 = MIGRATIONS.len() as u32 + 1;
@@ -270,13 +273,19 @@ fn v10_to_v11(doc: Value) -> Result<Value, String> {
     Ok(doc)
 }
 
+/// v11 → v12: graphics templates, rolls / crawls, responsive design and per-character text styles
+/// on graphic clips, and source graphics. Existing data needs no change.
+fn v11_to_v12(doc: Value) -> Result<Value, String> {
+    Ok(doc)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn schema_version_matches_table() {
-        assert_eq!(SCHEMA_VERSION, 11);
+        assert_eq!(SCHEMA_VERSION, 12);
     }
 
     #[test]

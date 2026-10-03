@@ -170,13 +170,20 @@ pub fn is_axis_uniform(m: &Xform) -> bool {
 
 /// The whole layout (glyphs + underlines) as one device-space path.
 pub fn layout_path(l: &Layout, m: &Xform) -> Path {
+    layout_path_run(l, m, None)
+}
+
+/// The glyphs and underlines set in style `run` (all with None) as one device-space path.
+pub fn layout_path_run(l: &Layout, m: &Xform, run: Option<u16>) -> Path {
     let mut p = Path::new();
-    for g in &l.glyphs {
+    for g in l.glyphs.iter().filter(|g| run.is_none_or(|r| g.run == r)) {
         let gm = compose(m, &[1.0, 0.0, 0.0, 1.0, g.x, g.y]);
         p.extend(&glyph_path(g, &gm));
     }
-    for u in &l.underlines {
-        p.extend(&Path::rect(u[0], u[1], u[2], u[3]).transformed(m));
+    for (i, u) in l.underlines.iter().enumerate() {
+        if run.is_none_or(|r| l.underline_runs.get(i).copied().unwrap_or(0) == r) {
+            p.extend(&Path::rect(u[0], u[1], u[2], u[3]).transformed(m));
+        }
     }
     p
 }
@@ -197,10 +204,17 @@ pub fn device_bounds(l: &Layout, m: &Xform) -> [f32; 4] {
 /// Add the coverage of layout `l` under transform `m` into `out` (whose pixel (0,0) is device
 /// pixel `origin`).
 pub fn draw(l: &Layout, m: &Xform, out: &mut Mask, origin: (i32, i32)) {
+    draw_run(l, m, out, origin, None)
+}
+
+/// [`draw`] limited to the glyphs and underlines set in style `run` (see
+/// [`Glyph::run`](crate::Glyph::run)); None draws everything.
+pub fn draw_run(l: &Layout, m: &Xform, out: &mut Mask, origin: (i32, i32), run: Option<u16>) {
     let (ox, oy) = origin;
+    let keep = |r: u16| run.is_none_or(|x| x == r);
     if is_axis_uniform(m) {
         let s = m[0];
-        for g in &l.glyphs {
+        for g in l.glyphs.iter().filter(|g| keep(g.run)) {
             let (x, y) = apply(m, g.x, g.y);
             let px = g.size * s;
             if px < 0.5 {
@@ -213,13 +227,17 @@ pub fn draw(l: &Layout, m: &Xform, out: &mut Mask, origin: (i32, i32)) {
         }
         if !l.underlines.is_empty() {
             let mut p = Path::new();
-            for u in &l.underlines {
-                p.extend(&Path::rect(u[0], u[1], u[2], u[3]).transformed(m));
+            for (i, u) in l.underlines.iter().enumerate() {
+                if keep(l.underline_runs.get(i).copied().unwrap_or(0)) {
+                    p.extend(&Path::rect(u[0], u[1], u[2], u[3]).transformed(m));
+                }
             }
-            fill_into(&p, out, -ox as f32, -oy as f32);
+            if !p.is_empty() {
+                fill_into(&p, out, -ox as f32, -oy as f32);
+            }
         }
     } else {
-        let p = layout_path(l, m);
+        let p = layout_path_run(l, m, run);
         fill_into(&p, out, -ox as f32, -oy as f32);
     }
 }

@@ -60,6 +60,7 @@ impl Fx {
             hold_filters: false,
             field_options: None,
             source_channels: Vec::new(),
+            graphic: None,
         }
     }
     fn put(&mut self, track: TrackId, start: i64, dur: i64, src_in: i64) -> ClipId {

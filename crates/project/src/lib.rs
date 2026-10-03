@@ -12,6 +12,8 @@ pub mod effect;
 pub mod essential;
 pub mod find;
 pub mod graphic;
+pub mod graphic_design;
+pub mod gtemplate;
 pub mod keyframe;
 pub mod mask;
 pub mod mixer;
@@ -30,6 +32,7 @@ pub use caption::{Caption, CaptionAlign, CaptionAnchor, CaptionFormat, CaptionSt
 pub use effect::{EffectDef, EffectInstance, EffectKind, ParamDef, ParamKind, effect_defs, find_effect};
 pub use essential::{AudioType, EssentialSound};
 pub use find::{FindOp, FindQuery, FindRow, SearchBin};
+pub use graphic_design::{CharStyle, GraphicMeta, LayerExtra, Pin, PinTarget, Roll, RollMode, SourceGraphic, StyleRun};
 pub use keyframe::{Interpolation, Keyframe, Param, ParamValue};
 pub use mask::{Mask, MaskMode, MaskPath, MaskVertex, TrackMethod};
 pub use mixer::{AutomationMode, InputMap, MixerStrip, TrackSend};
@@ -533,6 +536,10 @@ pub struct TrackItem {
     /// left/right). Empty = the first two channels (mono sources on both sides).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub source_channels: Vec<u16>,
+    /// Graphic clips: roll / crawl, responsive time and the template the graphic came from
+    /// ([`GraphicMeta`]). Schema v12.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub graphic: Option<Box<GraphicMeta>>,
 }
 
 /// Time interpolation for speed-changed clips (Clip ▸ Video Options ▸ Time Interpolation).
@@ -1085,6 +1092,10 @@ pub struct Project {
     /// Schema v11.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub search_bins: Vec<SearchBin>,
+    /// Source graphics (Graphics and Titles ▸ Upgrade to Source Graphic): shared layers by
+    /// project item. Schema v12.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub source_graphics: BTreeMap<ItemId, SourceGraphic>,
 }
 
 /// A LUT imported into the project (`lut.import`). Lumetri refers to it as `lib:<id>`.
@@ -1118,6 +1129,7 @@ impl Project {
             luts: Vec::new(),
             transcripts: BTreeMap::new(),
             search_bins: Vec::new(),
+            source_graphics: BTreeMap::new(),
         }
     }
 
@@ -1261,10 +1273,15 @@ impl Project {
         let it = self.items.get(&item)?;
         let name = it.name.clone();
         let label = it.label;
-        let effects = match kind {
+        let mut effects = match kind {
             TrackKind::Video => effect::intrinsic_video(),
             TrackKind::Audio => effect::intrinsic_audio(),
         };
+        // a source graphic edits in with its shared layers and settings
+        let source_graphic = self.source_graphics.get(&item).filter(|_| kind == TrackKind::Video).cloned();
+        if let Some(sg) = &source_graphic {
+            effects.extend(sg.layers.iter().cloned());
+        }
         // a multi-camera source sequence edits in as a multi-camera clip showing its first angle
         let multicam =
             it.as_sequence().and_then(|q| q.multicam.as_ref()).map(|m| MulticamSel { enabled: true, angle: m.first_video_angle().unwrap_or(0) as u32 });
@@ -1298,6 +1315,7 @@ impl Project {
             hold_filters: false,
             field_options: None,
             source_channels,
+            graphic: source_graphic.and_then(|sg| sg.meta.map(Box::new)),
         })
     }
 

@@ -54,6 +54,8 @@ procedural demo footage (`crates/media/src/generators.rs`); no external media. R
 | `crates/golden/goldens/crop.png` | FilmCraft contributors | Original work: golden reference rendered by FilmCraft (crates/golden/tests/golden.rs, scene `crop`) from procedurally generated media | MIT OR Apache-2.0 |
 | `crates/golden/goldens/gaussian_blur.png` | FilmCraft contributors | Original work: golden reference rendered by FilmCraft (crates/golden/tests/golden.rs, scene `gaussian_blur`) from procedurally generated media | MIT OR Apache-2.0 |
 | `crates/golden/goldens/graphic_shapes.png` | FilmCraft contributors | Original work: golden reference rendered by FilmCraft (crates/golden/tests/golden.rs, scene `graphic_shapes`) from procedurally generated media and bundled OFL fonts | MIT OR Apache-2.0 |
+| `crates/golden/goldens/graphic_template.png` | FilmCraft contributors | Original work: golden reference rendered by FilmCraft (crates/golden/tests/golden.rs, scene `graphic_template`; a built-in FilmCraft graphics template) from procedurally generated media and bundled OFL fonts | MIT OR Apache-2.0 |
+| `crates/golden/goldens/graphic_rich_text.png` | FilmCraft contributors | Original work: golden reference rendered by FilmCraft (crates/golden/tests/golden.rs, scene `graphic_rich_text`) from procedurally generated media and bundled OFL fonts | MIT OR Apache-2.0 |
 | `crates/golden/goldens/log_to_rec709.png` | FilmCraft contributors | Original work: golden reference rendered by FilmCraft (crates/golden/tests/golden.rs, scene `log_to_rec709`) from procedurally generated media re-encoded as S-Log3 | MIT OR Apache-2.0 |
 | `crates/golden/goldens/hdr_tone_map.png` | FilmCraft contributors | Original work: golden reference rendered by FilmCraft (crates/golden/tests/golden.rs, scene `hdr_tone_map`) from procedurally generated media re-encoded as Rec. 2100 PQ | MIT OR Apache-2.0 |
 | `crates/golden/goldens/graphic_title.png` | FilmCraft contributors | Original work: golden reference rendered by FilmCraft (crates/golden/tests/golden.rs, scene `graphic_title`) from procedurally generated media and bundled OFL fonts | MIT OR Apache-2.0 |
@@ -97,6 +99,7 @@ is traced or derived from Adobe artwork.
 | UI icons (tools, transport, panels, header) | `crates/ui-egui/src/icons.rs`: vector paths on a 16×16 grid |
 | Align / distribute / paragraph-alignment glyphs in the graphics panel | `crates/ui-egui/src/panels/graphics.rs` (`align_glyph`): bars and lines drawn with the egui painter |
 | Demo footage (ocean sunset, aurora, city night, dunes, forest, plasma), bars and tone, counting leader, colour matte | `crates/media/src/generators.rs` |
+| Built-in graphics templates (Lower Third – Slab / Rule, Ticker – Crawl, Title – Centered / Boxed, End Credits – Roll, Callout – Pointer / Tag) and their placeholder text | `crates/project/src/gtemplate.rs` (`builtin_templates`): original designs defined in code with the bundled Inter font; thumbnails are rendered at runtime, no template, image or font files |
 | Lumetri "Look" presets (Teal & Orange, Warm Film, …) | `crates/render/src/effects.rs` (`apply_look`): procedural colour transforms, not LUT files |
 | Colour palette and layout metrics | `crates/ui-egui/src/theme.rs`: colour values and sizes only; no artwork |
 
