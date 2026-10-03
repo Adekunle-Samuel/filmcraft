@@ -24,6 +24,8 @@ pub struct OutputMeta {
     pub transfer_characteristics: u8,
     pub matrix_coefficients: u8,
     pub sar: (u16, u16),
+    /// Decoded without deblocking (draft mode, non-reference picture).
+    pub draft: bool,
 }
 
 pub struct DpbEntry {

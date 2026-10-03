@@ -88,28 +88,34 @@ fn clip_u8(v: i32) -> u8 {
 }
 
 /// Inverse 4x4 transform of raster-order `d` and add to `dst` (8.5.12.2, 8.5.14).
+///
+/// Rows first, then columns (the spec's order: the `>> 1` steps make it matter). The column
+/// pass and the reconstruction run across all columns at once so they vectorise.
 pub fn idct4_add(d: &[i32; 16], dst: &mut [u8], stride: usize) {
-    let mut t = [0i32; 16];
-    for i in 0..4 {
+    let mut t = [[0i32; 4]; 4];
+    for (i, row) in t.iter_mut().enumerate() {
         let r = &d[i * 4..i * 4 + 4];
         let e = r[0] + r[2];
         let f = r[0] - r[2];
         let g = (r[1] >> 1) - r[3];
         let h = r[1] + (r[3] >> 1);
-        t[i * 4] = e + h;
-        t[i * 4 + 1] = f + g;
-        t[i * 4 + 2] = f - g;
-        t[i * 4 + 3] = e - h;
+        *row = [e + h, f + g, f - g, e - h];
     }
+    let mut o = [[0i32; 4]; 4];
     for j in 0..4 {
-        let e = t[j] + t[8 + j];
-        let f = t[j] - t[8 + j];
-        let g = (t[4 + j] >> 1) - t[12 + j];
-        let h = t[4 + j] + (t[12 + j] >> 1);
-        let col = [e + h, f + g, f - g, e - h];
-        for i in 0..4 {
-            let p = &mut dst[i * stride + j];
-            *p = clip_u8(*p as i32 + ((col[i] + 32) >> 6));
+        let e = t[0][j] + t[2][j];
+        let f = t[0][j] - t[2][j];
+        let g = (t[1][j] >> 1) - t[3][j];
+        let h = t[1][j] + (t[3][j] >> 1);
+        o[0][j] = e + h;
+        o[1][j] = f + g;
+        o[2][j] = f - g;
+        o[3][j] = e - h;
+    }
+    for (i, row) in o.iter().enumerate() {
+        let line: &mut [u8; 4] = (&mut dst[i * stride..i * stride + 4]).try_into().unwrap();
+        for (p, &v) in line.iter_mut().zip(row) {
+            *p = clip_u8(*p as i32 + ((v + 32) >> 6));
         }
     }
 }
@@ -146,18 +152,24 @@ fn idct8_1d(d: [i32; 8]) -> [i32; 8] {
     [b0 + b7, b2 + b5, b4 + b3, b6 + b1, b6 - b1, b4 - b3, b2 - b5, b0 - b7]
 }
 
-/// Inverse 8x8 transform of raster-order `d` and add to `dst` (8.5.13.2).
+/// Inverse 8x8 transform of raster-order `d` and add to `dst` (8.5.13.2): rows, then columns,
+/// the column pass and reconstruction across all columns at once (they vectorise).
 pub fn idct8_add(d: &[i32; 64], dst: &mut [u8], stride: usize) {
-    let mut t = [0i32; 64];
-    for i in 0..8 {
-        let row: [i32; 8] = d[i * 8..i * 8 + 8].try_into().unwrap();
-        t[i * 8..i * 8 + 8].copy_from_slice(&idct8_1d(row));
+    let mut t = [[0i32; 8]; 8];
+    for (i, row) in t.iter_mut().enumerate() {
+        *row = idct8_1d(d[i * 8..i * 8 + 8].try_into().unwrap());
     }
+    let mut o = [[0i32; 8]; 8];
     for j in 0..8 {
-        let col = idct8_1d(std::array::from_fn(|i| t[i * 8 + j]));
+        let col = idct8_1d(std::array::from_fn(|i| t[i][j]));
         for i in 0..8 {
-            let p = &mut dst[i * stride + j];
-            *p = clip_u8(*p as i32 + ((col[i] + 32) >> 6));
+            o[i][j] = col[i];
+        }
+    }
+    for (i, row) in o.iter().enumerate() {
+        let line: &mut [u8; 8] = (&mut dst[i * stride..i * stride + 8]).try_into().unwrap();
+        for (p, &v) in line.iter_mut().zip(row) {
+            *p = clip_u8(*p as i32 + ((v + 32) >> 6));
         }
     }
 }
@@ -165,6 +177,52 @@ pub fn idct8_add(d: &[i32; 64], dst: &mut [u8], stride: usize) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The straightforward per-column formulation (8.5.12.2 / 8.5.13.2) the vectorised
+    /// transforms must equal.
+    fn reference_add(d: &[i32], n: usize, dst: &mut [u8], stride: usize) {
+        let one = |v: &[i32]| -> Vec<i32> {
+            if n == 4 {
+                let (e, f, g, h) = (v[0] + v[2], v[0] - v[2], (v[1] >> 1) - v[3], v[1] + (v[3] >> 1));
+                vec![e + h, f + g, f - g, e - h]
+            } else {
+                idct8_1d(v.try_into().unwrap()).to_vec()
+            }
+        };
+        let rows: Vec<Vec<i32>> = (0..n).map(|i| one(&d[i * n..i * n + n])).collect();
+        for j in 0..n {
+            let col = one(&(0..n).map(|i| rows[i][j]).collect::<Vec<_>>());
+            for i in 0..n {
+                let p = &mut dst[i * stride + j];
+                *p = (*p as i32 + ((col[i] + 32) >> 6)).clamp(0, 255) as u8;
+            }
+        }
+    }
+
+    #[test]
+    fn vectorised_transforms_match_reference() {
+        let mut rng = 0x1234_5678_9abc_def1u64;
+        let mut next = move || {
+            rng ^= rng << 13;
+            rng ^= rng >> 7;
+            rng ^= rng << 17;
+            rng
+        };
+        for iter in 0..5000 {
+            let range = [64u64, 1024, 8192, 1 << 15][iter % 4];
+            let d4: [i32; 16] = std::array::from_fn(|_| (next() % (2 * range + 1)) as i32 - range as i32);
+            let d8: [i32; 64] = std::array::from_fn(|_| (next() % (2 * range + 1)) as i32 - range as i32);
+            let base: Vec<u8> = (0..24 * 8).map(|_| next() as u8).collect();
+            let (mut a, mut b) = (base.clone(), base.clone());
+            idct4_add(&d4, &mut a[3..], 24);
+            reference_add(&d4, 4, &mut b[3..], 24);
+            assert_eq!(a, b, "4x4 iteration {iter}");
+            let (mut a, mut b) = (base.clone(), base);
+            idct8_add(&d8, &mut a[5..], 24);
+            reference_add(&d8, 8, &mut b[5..], 24);
+            assert_eq!(a, b, "8x8 iteration {iter}");
+        }
+    }
 
     #[test]
     fn idct4_dc_only_matches_shortcut() {

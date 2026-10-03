@@ -98,6 +98,51 @@ impl VideoFrame {
         }
     }
 
+    /// A planar Y'CbCr frame reduced by `n` (2, 4, 8…) in each direction: every sample (luma,
+    /// chroma at its own resolution, alpha) is the rounded mean of an `n`×`n` block, chroma format
+    /// and bit depth unchanged. Reduced-resolution playback hands the GPU this instead of the full
+    /// picture (a quarter / sixteenth of the upload). None for RGBA frames or `n` < 2.
+    pub fn box_decimated(&self, n: usize) -> Option<VideoFrame> {
+        if n < 2 {
+            return None;
+        }
+        let (w, h) = (self.width as usize, self.height as usize);
+        let (ow, oh) = ((w / n).max(1), (h / n).max(1));
+        let data = match &self.data {
+            PixelData::Yuv8 { planes, chroma, alpha } => {
+                let (sx, sy) = chroma.shifts();
+                let (cw, ch) = (w.div_ceil(1 << sx), h.div_ceil(1 << sy));
+                let (ocw, och) = (ow.div_ceil(1 << sx), oh.div_ceil(1 << sy));
+                PixelData::Yuv8 {
+                    planes: [
+                        Arc::new(box_plane(&planes[0], w, h, ow, oh, n)),
+                        Arc::new(box_plane(&planes[1], cw, ch, ocw, och, n)),
+                        Arc::new(box_plane(&planes[2], cw, ch, ocw, och, n)),
+                    ],
+                    chroma: *chroma,
+                    alpha: alpha.as_ref().map(|a| Arc::new(box_plane(a, w, h, ow, oh, n))),
+                }
+            }
+            PixelData::Yuv16 { planes, chroma, bits, alpha } => {
+                let (sx, sy) = chroma.shifts();
+                let (cw, ch) = (w.div_ceil(1 << sx), h.div_ceil(1 << sy));
+                let (ocw, och) = (ow.div_ceil(1 << sx), oh.div_ceil(1 << sy));
+                PixelData::Yuv16 {
+                    planes: [
+                        Arc::new(box_plane(&planes[0], w, h, ow, oh, n)),
+                        Arc::new(box_plane(&planes[1], cw, ch, ocw, och, n)),
+                        Arc::new(box_plane(&planes[2], cw, ch, ocw, och, n)),
+                    ],
+                    chroma: *chroma,
+                    bits: *bits,
+                    alpha: alpha.as_ref().map(|a| Arc::new(box_plane(a, w, h, ow, oh, n))),
+                }
+            }
+            PixelData::Rgba8(_) | PixelData::RgbaF32(_) => return None,
+        };
+        Some(VideoFrame { width: ow as u32, height: oh as u32, data, color: self.color, par: self.par, pts: self.pts })
+    }
+
     /// Convert to premultiplied linear RGBA f32 (the compositor's working format).
     pub fn to_linear_f32(&self) -> Vec<f32> {
         self.to_linear_f32_decimated(1).2
@@ -376,8 +421,59 @@ pub fn default_matrix(width: u32, height: u32) -> Matrix {
     if width <= 1024 && height <= 576 { Matrix::Bt601 } else { Matrix::Bt709 }
 }
 
+/// `n`×`n` box mean of a `w`×`h` plane into `ow`×`oh` (blocks clamped at the right / bottom).
+fn box_plane<T: Copy + Into<u32> + TryFrom<u32> + Send + Sync + Default>(src: &[T], w: usize, h: usize, ow: usize, oh: usize, n: usize) -> Vec<T> {
+    let mut out = vec![T::default(); ow * oh];
+    if w == 0 || h == 0 || src.len() < w * h {
+        return out;
+    }
+    out.par_chunks_mut(ow).enumerate().for_each(|(oy, row)| {
+        let mut acc = vec![0u32; ow];
+        let mut cnt = vec![0u32; ow];
+        for y in (oy * n..(oy + 1) * n).filter(|&y| y < h) {
+            let line = &src[y * w..y * w + w];
+            for ((a, c), chunk) in acc.iter_mut().zip(cnt.iter_mut()).zip(line.chunks(n)) {
+                *a += chunk.iter().map(|&v| v.into()).sum::<u32>();
+                *c += chunk.len() as u32;
+            }
+        }
+        for ((o, a), c) in row.iter_mut().zip(&acc).zip(&cnt) {
+            let c = (*c).max(1);
+            *o = T::try_from((a + c / 2) / c).unwrap_or_default();
+        }
+    });
+    out
+}
+
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn box_decimation_averages_blocks_per_plane() {
+        // 6x4 4:2:0: luma ramp, chroma 3x2
+        let y: Vec<u8> = (0..24).map(|i| (i * 10) as u8).collect();
+        let u = vec![10, 20, 30, 40, 50, 60];
+        let v = vec![200; 6];
+        let f = VideoFrame {
+            width: 6,
+            height: 4,
+            data: PixelData::Yuv8 { planes: [Arc::new(y), Arc::new(u), Arc::new(v)], chroma: Chroma::C420, alpha: None },
+            color: ColorInfo::REC709,
+            par: (1, 1),
+            pts: Tick::ZERO,
+        };
+        let d = f.box_decimated(2).expect("yuv");
+        assert_eq!((d.width, d.height), (3, 2));
+        let PixelData::Yuv8 { planes, .. } = &d.data else { panic!() };
+        // luma block (0,0): 0, 10, 60, 70 -> 35
+        assert_eq!(planes[0][0], 35);
+        assert_eq!(planes[0].len(), 6);
+        // chroma 3x2 -> 2x1: blocks {10,20,40,50} = 30 and the clamped edge block {30,60} = 45
+        assert_eq!(&planes[1][..], &[30, 45]);
+        assert_eq!(&planes[2][..], &[200, 200]);
+        assert!(f.box_decimated(1).is_none());
+        assert!(VideoFrame::rgba8(2, 2, vec![0; 16]).box_decimated(2).is_none());
+    }
     use super::*;
 
     #[test]

@@ -237,7 +237,10 @@ wgpu render ms per frame), `export` (H.264 + AAC and ProRes) and `project` (save
 Options: `--sections decode,scrub`, `--only <substring>` (fixture or scenario), `--repeat N`,
 `--quick`, `--cpu`, `--label NAME` (output `target/bench/bench-<label>.{json,md}`),
 `--section NAME --json FILE` (one section in-process, e.g. under a profiler). Fixtures are made
-with ffmpeg in `target/fixtures/playback/` (or `$FILMCRAFT_FIXTURES/playback`).
+with ffmpeg in `target/fixtures/playback/` (or `$FILMCRAFT_FIXTURES/playback`). The suite's
+`playback` section plays `h264-1080` and `stack3` at Full, `h264-2160` at Full, 1/2 and 1/4 and with
+draft decoding (Settings ▸ Playback ▸ Draft decoding) at 1/2 and 1/4, and `hevc-2160` at Full and
+1/2; its `draft` column counts the frames decoded in draft mode.
 
 The perf tests check bit-exactness before they time anything. Results go in the crate README's
 performance table, with machine and thread count. Headline numbers go in

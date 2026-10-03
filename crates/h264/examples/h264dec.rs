@@ -1,5 +1,6 @@
 //! Decode an Annex-B H.264 file to raw yuv420p: `h264dec in.h264 [out.yuv]`.
-//! Prints timing information to stderr.
+//! Prints timing information to stderr. `H264_BENCH_ITERS=n` (with `H264_THREADS=t`, and
+//! `H264_DRAFT=1` for draft mode) turns it into a benchmark.
 
 use filmcraft_h264::Decoder;
 use std::io::Write;
@@ -18,6 +19,7 @@ fn main() {
         let threads = std::env::var("H264_THREADS").ok().and_then(|v| v.parse::<usize>().ok());
         for _ in 0..n {
             let mut dec = threads.map(Decoder::with_threads).unwrap_or_default();
+            dec.set_draft(std::env::var_os("H264_DRAFT").is_some());
             let t0 = std::time::Instant::now();
             frames = dec.decode(&data, 0).expect("decode").len() + dec.flush().len();
             best = best.min(t0.elapsed().as_secs_f64());

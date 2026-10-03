@@ -31,6 +31,8 @@ pub struct GopStats {
     pub decode_ns: u64,
     /// Non-reference samples left out while catching up (frames already late).
     pub skipped: u64,
+    /// Frames decoded in draft mode (reduced-resolution playback, [`VideoDecoder::set_draft`]).
+    pub draft: u64,
 }
 
 impl GopStats {
@@ -53,6 +55,7 @@ static DECODED: AtomicU64 = AtomicU64::new(0);
 static EVICTED: AtomicU64 = AtomicU64::new(0);
 static DECODE_NS: AtomicU64 = AtomicU64::new(0);
 static SKIPPED: AtomicU64 = AtomicU64::new(0);
+static DRAFT: AtomicU64 = AtomicU64::new(0);
 
 /// Run a decoder call, adding its wall time to the process-wide counter.
 fn timed<R>(f: impl FnOnce() -> R) -> R {
@@ -72,6 +75,7 @@ pub fn gop_stats() -> GopStats {
         evicted: EVICTED.load(Ordering::Relaxed),
         decode_ns: DECODE_NS.load(Ordering::Relaxed),
         skipped: SKIPPED.load(Ordering::Relaxed),
+        draft: DRAFT.load(Ordering::Relaxed),
     }
 }
 
@@ -86,6 +90,7 @@ impl std::ops::Sub for GopStats {
             evicted: self.evicted - o.evicted,
             decode_ns: self.decode_ns - o.decode_ns,
             skipped: self.skipped - o.skipped,
+            draft: self.draft - o.draft,
         }
     }
 }
@@ -116,7 +121,21 @@ struct State {
     out_max: i64,
     /// Decoded frames by presentation pts (bounded).
     frames: BTreeMap<i64, Arc<VideoFrame>>,
+    /// The cached frames that were decoded in draft mode: served to draft requests only.
+    drafts: std::collections::BTreeSet<i64>,
     bytes: usize,
+}
+
+impl State {
+    /// The cached frame at `pts`, unless it is a draft frame and the request wants the exact one.
+    fn cached(&self, pts: i64, draft_ok: bool) -> Option<&Arc<VideoFrame>> {
+        self.frames.get(&pts).filter(|_| draft_ok || !self.drafts.contains(&pts))
+    }
+
+    /// The nearest usable frame at or before `pts` (robust to decoder pts quirks).
+    fn at_or_before(&self, pts: i64, draft_ok: bool) -> Option<Arc<VideoFrame>> {
+        self.cached(pts, draft_ok).or_else(|| self.frames.range(..=pts).rev().find(|(p, _)| draft_ok || !self.drafts.contains(p)).map(|(_, f)| f)).cloned()
+    }
 }
 
 thread_local! {
@@ -177,6 +196,7 @@ impl GopCache {
                 start: 0,
                 out_max: i64::MIN,
                 frames: BTreeMap::new(),
+                drafts: Default::default(),
                 bytes: 0,
             }),
             explicit_color,
@@ -193,8 +213,14 @@ impl GopCache {
         }
     }
 
-    fn store(&self, st: &mut State, pts: i64, mut f: VideoFrame) {
+    fn store(&self, st: &mut State, pts: i64, mut f: VideoFrame, draft: bool) {
         self.apply_color(&mut f);
+        if draft {
+            st.drafts.insert(pts);
+            DRAFT.fetch_add(1, Ordering::Relaxed);
+        } else {
+            st.drafts.remove(&pts);
+        }
         let budget = self.budget.max(MIN_FRAMES * f.byte_size());
         st.bytes += f.byte_size();
         if let Some(old) = st.frames.insert(pts, Arc::new(f)) {
@@ -206,6 +232,7 @@ impl GopCache {
             let last = *st.frames.keys().next_back().expect("non-empty");
             let victim = if pts - first > last - pts { first } else { last };
             if let Some(v) = st.frames.remove(&victim) {
+                st.drafts.remove(&victim);
                 st.bytes -= v.byte_size();
                 EVICTED.fetch_add(1, Ordering::Relaxed);
             }
@@ -216,7 +243,7 @@ impl GopCache {
     fn store_output(&self, st: &mut State, out: Vec<crate::video::DecodedFrame>) {
         for d in out {
             st.out_max = st.out_max.max(d.pts);
-            self.store(st, d.pts, d.frame);
+            self.store(st, d.pts, d.frame, d.draft);
         }
     }
 
@@ -234,6 +261,10 @@ impl GopCache {
     /// late. Non-reference samples of late frames are left out on the way to the wanted frame
     /// (no other picture depends on them, so the wanted frame decodes exactly as it would
     /// otherwise; a later request for a skipped frame re-seeks).
+    ///
+    /// Inside [`filmcraft_media::cancel::with_draft`]`(true, …)` the decoder runs in draft mode
+    /// ([`VideoDecoder::set_draft`]); its draft frames are cached for draft requests only, and an
+    /// exact request for one re-decodes it.
     pub fn frame_late(&self, s: &dyn VideoSamples, target: i64, late_before: Option<i64>) -> crate::Result<Arc<VideoFrame>> {
         let n = s.count();
         let i = s.sample_at(target.max(0)).or_else(|| (n > 0).then(|| n - 1)).ok_or_else(|| CodecError::Decode("empty track".into()))?;
@@ -242,9 +273,10 @@ impl GopCache {
         if DecodingGuard::active(me) {
             return self.private_frame(s, i, want_pts, n);
         }
+        let draft = filmcraft_media::cancel::draft();
         let mut st = self.state.lock().unwrap_or_else(|e| e.into_inner());
         let _decoding = DecodingGuard::enter(me);
-        if let Some(f) = st.frames.get(&want_pts) {
+        if let Some(f) = st.cached(want_pts, draft) {
             HITS.fetch_add(1, Ordering::Relaxed);
             return Ok(f.clone());
         }
@@ -293,6 +325,7 @@ impl GopCache {
         }
         let limit = (i.max(st.next) + 64).min(n);
         let late = late_before.unwrap_or(i64::MIN).min(want_pts);
+        st.decoder.as_mut().expect("decoder").set_draft(draft);
         while st.next < limit {
             if filmcraft_media::cancel::cancelled() {
                 // The decoder state stays consistent (`next`, `out_max`): a later request continues.
@@ -309,21 +342,17 @@ impl GopCache {
             st.next += 1;
             DECODED.fetch_add(1, Ordering::Relaxed);
             self.store_output(&mut st, out);
-            if st.frames.contains_key(&want_pts) {
+            if st.cached(want_pts, draft).is_some() {
                 break;
             }
         }
-        if !st.frames.contains_key(&want_pts) {
+        if st.cached(want_pts, draft).is_none() {
             let out = timed(|| st.decoder.as_mut().expect("decoder").flush());
             self.store_output(&mut st, out);
             st.next = usize::MAX;
         }
         // nearest decoded frame at or before the wanted pts (robust to decoder pts quirks)
-        st.frames
-            .get(&want_pts)
-            .cloned()
-            .or_else(|| st.frames.range(..=want_pts).next_back().map(|(_, f)| f.clone()))
-            .ok_or_else(|| CodecError::Decode("frame not produced".into()))
+        st.at_or_before(want_pts, draft).ok_or_else(|| CodecError::Decode("frame not produced".into()))
     }
 
     /// A nested request (see [`Self::frame`]): decode from the sync sample with a fresh decoder,
@@ -407,13 +436,9 @@ impl GopCache {
             st.spare.push(dec);
         }
         for d in res? {
-            self.store(&mut st, d.pts, d.frame);
+            self.store(&mut st, d.pts, d.frame, d.draft);
         }
-        st.frames
-            .get(&want_pts)
-            .cloned()
-            .or_else(|| st.frames.range(..=want_pts).next_back().map(|(_, f)| f.clone()))
-            .ok_or_else(|| CodecError::Decode("frame not produced".into()))
+        st.at_or_before(want_pts, true).ok_or_else(|| CodecError::Decode("frame not produced".into()))
     }
 }
 
@@ -438,20 +463,24 @@ mod tests {
     struct Dec {
         delay: usize,
         intra: bool,
-        held: VecDeque<i64>,
+        /// (pts, decoded as a draft picture)
+        held: VecDeque<(i64, bool)>,
+        draft: bool,
         resets: Arc<AtomicUsize>,
         decodes: Arc<AtomicUsize>,
     }
 
-    fn picture(pts: i64) -> DecodedFrame {
+    /// A picture whose pixel encodes its index (and, in blue, whether it is a draft picture).
+    fn picture((pts, draft): (i64, bool)) -> DecodedFrame {
         let i = (pts / 1000) as u32;
-        DecodedFrame { pts, frame: VideoFrame::rgba8(1, 1, vec![i as u8, (i >> 8) as u8, 0, 255]) }
+        DecodedFrame { pts, frame: VideoFrame::rgba8(1, 1, vec![i as u8, (i >> 8) as u8, draft as u8, 255]), draft }
     }
 
     impl VideoDecoder for Dec {
-        fn decode(&mut self, _sample: &[u8], pts: i64) -> crate::Result<Vec<DecodedFrame>> {
+        fn decode(&mut self, sample: &[u8], pts: i64) -> crate::Result<Vec<DecodedFrame>> {
             self.decodes.fetch_add(1, Ordering::Relaxed);
-            self.held.push_back(pts);
+            // like H.264 draft mode: only non-reference (odd) pictures are approximate
+            self.held.push_back((pts, self.draft && sample[0] % 2 == 1));
             let mut out = Vec::new();
             while self.held.len() > self.delay {
                 out.push(picture(self.held.pop_front().expect("held")));
@@ -464,6 +493,9 @@ mod tests {
         fn reset(&mut self) {
             self.resets.fetch_add(1, Ordering::Relaxed);
             self.held.clear();
+        }
+        fn set_draft(&mut self, on: bool) {
+            self.draft = on;
         }
         fn name(&self) -> &str {
             "test"
@@ -495,7 +527,14 @@ mod tests {
             Ok(vec![i as u8])
         }
         fn make_decoder(&self) -> crate::Result<Box<dyn VideoDecoder>> {
-            Ok(Box::new(Dec { delay: self.delay, intra: self.intra, held: VecDeque::new(), resets: self.resets.clone(), decodes: self.decodes.clone() }))
+            Ok(Box::new(Dec {
+                delay: self.delay,
+                intra: self.intra,
+                held: VecDeque::new(),
+                draft: false,
+                resets: self.resets.clone(),
+                decodes: self.decodes.clone(),
+            }))
         }
     }
 
@@ -590,6 +629,43 @@ mod tests {
             assert_eq!(index_of(&c3.frame(&s3, i as i64 * 1000).expect("cached")), i);
         }
         assert_eq!(s3.resets.load(Ordering::Relaxed), 1);
+    }
+
+    fn is_draft(f: &VideoFrame) -> bool {
+        match &f.data {
+            filmcraft_frame::PixelData::Rgba8(d) => d[2] == 1,
+            _ => unreachable!(),
+        }
+    }
+
+    #[test]
+    fn draft_frames_are_served_to_draft_requests_only() {
+        let s = samples(300, 250, 3, false);
+        let c = GopCache::new(None);
+        let before = gop_stats().draft;
+        // reduced-resolution playback: odd (non-reference) pictures come out as drafts
+        for i in 0..12usize {
+            let f = filmcraft_media::cancel::with_draft(true, || c.frame(&s, i as i64 * 1000)).expect("frame");
+            assert_eq!(index_of(&f), i);
+            assert_eq!(is_draft(&f), i % 2 == 1, "frame {i}");
+        }
+        assert!(gop_stats().draft - before >= 6);
+        assert_eq!(s.resets.load(Ordering::Relaxed), 1);
+        // paused / export (no draft hint): an even frame is exact and cached
+        let f = c.frame(&s, 4_000).expect("frame");
+        assert!(!is_draft(&f) && index_of(&f) == 4);
+        assert_eq!(s.resets.load(Ordering::Relaxed), 1, "exact frames are served from the cache");
+        // a draft frame is decoded again, exactly
+        let f = c.frame(&s, 5_000).expect("frame");
+        assert!(!is_draft(&f) && index_of(&f) == 5);
+        assert_eq!(s.resets.load(Ordering::Relaxed), 2, "re-decoded from the sync sample");
+        // and a draft request takes the exact frame now cached
+        let f = filmcraft_media::cancel::with_draft(true, || c.frame(&s, 5_000)).expect("frame");
+        assert!(!is_draft(&f));
+        // without the hint nothing is ever a draft
+        let s2 = samples(300, 250, 3, false);
+        let c2 = GopCache::new(None);
+        assert!((0..12).all(|i| !is_draft(&c2.frame(&s2, i * 1000).expect("frame"))));
     }
 
     #[test]

@@ -68,7 +68,7 @@ pub fn frame_signal(app: &mut FilmcraftApp, ctx: &egui::Context, slot: &str, fra
     let fresh = if pq {
         filmcraft_engine::scopes::scope_signal(&app.session, rate.tick_of(frame), 0.125, true)
     } else {
-        let fkey = FrameKey { target: Target::Sequence(seq_id), frame, size: 250, revision: rev };
+        let fkey = FrameKey { target: Target::Sequence(seq_id), frame, size: 250, revision: rev, draft: false };
         let project = app.session.project.clone();
         app.frames.request(fkey, rate.tick_of(frame), 0.25, &project, prio);
         app.frames.get(&fkey).map(|img| Signal::from_rgba8(img.w, img.h, &img.px))

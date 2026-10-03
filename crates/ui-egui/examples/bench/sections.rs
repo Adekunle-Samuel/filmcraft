@@ -149,23 +149,27 @@ pub fn seek(o: &Opts) -> Vec<Value> {
 fn new_bench(s: &Session, seconds: f64) -> Bench {
     let server = FrameServer::new(s.media.clone(), s.services.clone(), s.previews.clone(), FrameServer::default_workers());
     server.set_profiling(true);
-    Bench { server, refresh_hz: 60.0, seconds }
+    Bench { server, refresh_hz: 60.0, seconds, draft: false }
 }
 
 /// Program-monitor playback through the real scheduler (see `playback.rs`), frames shown vs
 /// dropped over N seconds.
 pub fn playback(o: &Opts) -> Vec<Value> {
     let seconds = if o.quick { 4.0 } else { 8.0 };
-    let cases: &[(&str, &str, f32)] = &[
-        ("h264-1080", "full", 1.0),
-        ("stack3", "full", 1.0),
-        ("h264-2160", "full", 1.0),
-        ("h264-2160", "half", 0.5),
-        ("hevc-2160", "full", 1.0),
-        ("hevc-2160", "half", 0.5),
+    // (scenario, resolution, scale, draft decoding)
+    let cases: &[(&str, &str, f32, bool)] = &[
+        ("h264-1080", "full", 1.0, false),
+        ("stack3", "full", 1.0, false),
+        ("h264-2160", "full", 1.0, false),
+        ("h264-2160", "half", 0.5, false),
+        ("h264-2160", "half draft", 0.5, true),
+        ("h264-2160", "quarter", 0.25, false),
+        ("h264-2160", "quarter draft", 0.25, true),
+        ("hevc-2160", "full", 1.0, false),
+        ("hevc-2160", "half", 0.5, false),
     ];
     let mut rows = Vec::new();
-    for &(scenario, res, scale) in cases.iter().filter(|c| o.wants(&format!("{} {}", c.0, c.1))) {
+    for &(scenario, res, scale, draft) in cases.iter().filter(|c| o.wants(&format!("{} {}", c.0, c.1))) {
         let Some((s, seq)) = playback::scenario_session(scenario) else {
             eprintln!("playback {scenario}: skipped (fixtures unavailable)");
             continue;
@@ -173,7 +177,8 @@ pub fn playback(o: &Opts) -> Vec<Value> {
         let fps = s.project.sequence(seq).map(|q| q.settings.frame_rate.as_f64()).unwrap_or(24.0);
         for rep in 0..o.repeat {
             // A fresh frame server per run: caches start cold, as after opening a project.
-            let bench = new_bench(&s, seconds);
+            let mut bench = new_bench(&s, seconds);
+            bench.draft = draft;
             let mut display = Display::new(o.gpu);
             let path = if display.gpu_available() { "gpu" } else { "cpu" };
             let r = bench.play(&s, seq, &mut display, scale, Tick::ZERO, &format!("{scenario} {res} #{}", rep + 1));
@@ -184,6 +189,7 @@ pub fn playback(o: &Opts) -> Vec<Value> {
             v["ui_p95_ms"] = json!(pct(&r.present, 0.95));
             v["seeks"] = json!(r.gop.seeks);
             v["skipped"] = json!(r.gop.skipped);
+            v["draft_frames"] = json!(r.gop.draft);
             v["load"] = json!(r.load);
             v["cores_needed"] = json!(r.process_cpu / frames * fps / 1000.0);
             eprintln!("playback {scenario} {res}: {}/{} shown/dropped (load {})", r.shown, r.dropped, r.load);

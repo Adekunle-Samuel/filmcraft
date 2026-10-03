@@ -41,7 +41,7 @@ mod synth_tests;
 mod tables;
 mod transform;
 
-pub use decoder::{DecodeStats, Decoder};
+pub use decoder::{DecodeStats, Decoder, default_threads};
 pub use error::{Error, Result};
 
 /// Colour description from the VUI (ITU-T H.273 code points).
@@ -77,4 +77,8 @@ pub struct Picture {
     pub color: ColorInfo,
     /// Sample aspect ratio (0, 0 when unspecified).
     pub sar: (u16, u16),
+    /// Decoded in draft mode ([`Decoder::set_draft`]): a non-reference picture whose deblocking
+    /// filter was skipped. Its samples are approximate (not the conforming output); no other
+    /// picture is affected.
+    pub draft: bool,
 }

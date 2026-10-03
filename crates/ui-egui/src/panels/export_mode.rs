@@ -824,7 +824,7 @@ fn preview_column(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, seq_id:
     ui.painter().rect_filled(pic, 0.0, Color32::BLACK);
     if app.ui.export.settings.has_video() {
         let frame = rate.frame_at(app.session.playhead());
-        let key = FrameKey { target: Target::Sequence(seq_id), frame, size: 500, revision: app.session.revision };
+        let key = FrameKey { target: Target::Sequence(seq_id), frame, size: 500, revision: app.session.revision, draft: false };
         let project = app.session.project.clone();
         app.frames.request(key, rate.tick_of(frame), 0.5, &project, 0);
         if let Some(img) = app.frames.get(&key) {
