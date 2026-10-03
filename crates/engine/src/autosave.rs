@@ -156,6 +156,8 @@ pub struct Preferences {
     pub trim: TrimPrefs,
     pub essential_sound: EssentialSoundPrefs,
     pub guides: GuidePrefs,
+    /// Voice-Over Record Settings (timeline track header ▸ right-click the microphone).
+    pub voice_over: crate::voiceover::VoiceOverPrefs,
 }
 
 impl Default for Preferences {
@@ -180,6 +182,7 @@ impl Default for Preferences {
             trim: Default::default(),
             essential_sound: Default::default(),
             guides: Default::default(),
+            voice_over: Default::default(),
         }
     }
 }

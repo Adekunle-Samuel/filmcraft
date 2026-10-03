@@ -29,6 +29,7 @@ pub mod panel_state;
 pub mod presets;
 pub mod project;
 pub mod reference;
+pub mod remix;
 pub mod scopes;
 pub mod settings;
 pub mod shortcuts_dialog;
@@ -39,6 +40,7 @@ pub mod timeline_automation;
 pub mod timeline_captions;
 pub mod tools;
 pub mod trim_monitor;
+pub mod voiceover;
 
 use egui::{Align2, Color32, Rect};
 use filmcraft_project::ItemId;

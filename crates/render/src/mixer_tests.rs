@@ -20,6 +20,7 @@ const SR: i64 = 48_000;
 struct FnSource {
     info: MediaInfo,
     f: fn(i64, usize) -> f32,
+    ch: usize,
 }
 
 impl MediaSource for FnSource {
@@ -31,7 +32,7 @@ impl MediaSource for FnSource {
     }
     fn audio(&self, start: i64, frames: usize, sample_rate: u32) -> filmcraft_media::Result<AudioBuffer> {
         let f = self.f;
-        Ok(AudioBuffer { sample_rate, channels: (0..2).map(|c| (0..frames).map(|i| f(start + i as i64, c)).collect()).collect() })
+        Ok(AudioBuffer { sample_rate, channels: (0..self.ch).map(|c| (0..frames).map(|i| f(start + i as i64, c)).collect()).collect() })
     }
 }
 
@@ -44,6 +45,10 @@ struct Rig {
 impl Rig {
     /// A sequence with `n` audio tracks, each holding one 10 s clip of its signal.
     fn new(signals: &[fn(i64, usize) -> f32]) -> Rig {
+        Self::with_channels(signals, 2)
+    }
+    /// Like [`Rig::new`] with `ch`-channel sources.
+    fn with_channels(signals: &[fn(i64, usize) -> f32], ch: usize) -> Rig {
         let mut p = Project::new("mix");
         let seq = p.new_sequence("s", SequenceSettings::default(), 0, signals.len(), None);
         let mut map = SourceMap::default();
@@ -53,7 +58,7 @@ impl Rig {
                 kind: MediaKind::AudioOnly,
                 duration: Tick(10 * TICKS_PER_SECOND),
                 video: None,
-                audio: Some(AudioStreamInfo { sample_rate: 48_000, channels: 2, codec: "test".into(), bits_per_sample: Some(32) }),
+                audio: Some(AudioStreamInfo { sample_rate: 48_000, channels: ch as u32, codec: "test".into(), bits_per_sample: Some(32) }),
                 container: "test".into(),
                 start_timecode: None,
                 file_size: None,
@@ -74,7 +79,7 @@ impl Rig {
                 }),
                 None,
             );
-            map.0.insert(id, Arc::new(FnSource { info, f: *f }));
+            map.0.insert(id, Arc::new(FnSource { info, f: *f, ch }));
             let ti = p.make_track_item(id, TrackKind::Audio, Tick::ZERO, TimeRange::new(Tick::ZERO, Tick(10 * TICKS_PER_SECOND)), FrameRate::FPS_24).unwrap();
             p.sequence_mut(seq).unwrap().audio_tracks[k].items.push(ti);
         }
@@ -470,4 +475,136 @@ fn audio_transition_curves() {
         let (a, b) = audio_gains(k, 1.0);
         assert!(a.abs() < 1e-6 && close(b, 1.0, 1e-6), "{k} ends on B");
     }
+}
+
+// ------------------------------------------------------------------------------------- 5.1
+
+/// Distinct DC level per source channel: 0.1, 0.2, … (L, R, C, LFE, Ls, Rs for 6-channel sources).
+fn chan_dc(_: i64, c: usize) -> f32 {
+    (c + 1) as f32 * 0.1
+}
+
+fn set_master_51(r: &mut Rig) {
+    r.p.sequence_mut(r.seq).unwrap().settings.audio_master = AudioChannels::Surround51;
+}
+
+fn mix_all(r: &Rig, start: i64, n: usize) -> Vec<Vec<f32>> {
+    mix_graph(&r.p, r.p.sequence(r.seq).unwrap(), start, n, &r.map, None).channels
+}
+
+#[test]
+fn stereo_and_mono_tracks_into_a_51_mix_use_the_51_panner() {
+    use filmcraft_project::mixer::{LANE_PAN51_CENTER, LANE_PAN51_LFE, LANE_PAN51_X, LANE_PAN51_Y};
+    let mut r = Rig::new(&[chan_dc]);
+    set_master_51(&mut r);
+    // stereo track at the default puck (front centre): L → L, R → R, nothing else
+    let m = mix_all(&r, 0, 256);
+    assert_eq!(m.len(), 6);
+    let at = |m: &Vec<Vec<f32>>, c: usize| m[c][100];
+    assert!(close(at(&m, 0), 0.1, 1e-6) && close(at(&m, 1), 0.2, 1e-6), "{:?}", m.iter().map(|c| c[100]).collect::<Vec<_>>());
+    for c in 2..6 {
+        assert!(at(&m, c).abs() < 1e-6, "channel {c} = {}", at(&m, c));
+    }
+    // LFE knob: mean of the source channels
+    r.track(0).set_lane_static(LANE_PAN51_LFE, 0.0);
+    let m = mix_all(&r, 0, 256);
+    assert!(close(at(&m, 3), 0.15, 1e-6));
+    r.track(0).set_lane_static(LANE_PAN51_LFE, -96.0);
+    // mono track: folded, then a point source; front centre at 100 % centre = C only
+    r.track(0).channels = AudioChannels::Mono;
+    let m = mix_all(&r, 0, 256);
+    assert!(close(at(&m, 2), 0.15, 1e-6) && at(&m, 0).abs() < 1e-6 && at(&m, 4).abs() < 1e-6);
+    // hard rear right
+    r.track(0).set_lane_static(LANE_PAN51_X, 100.0);
+    r.track(0).set_lane_static(LANE_PAN51_Y, -100.0);
+    let m = mix_all(&r, 0, 256);
+    assert!(close(at(&m, 5), 0.15, 1e-6));
+    // room centre, 0 % centre: equal power over L, R, Ls, Rs (−6 dB each)
+    r.track(0).set_lane_static(LANE_PAN51_X, 0.0);
+    r.track(0).set_lane_static(LANE_PAN51_Y, 0.0);
+    r.track(0).set_lane_static(LANE_PAN51_CENTER, 0.0);
+    let m = mix_all(&r, 0, 256);
+    for c in [0, 1, 4, 5] {
+        assert!(close(at(&m, c), 0.075, 1e-6), "channel {c}");
+    }
+    let power: f32 = (0..6).map(|c| at(&m, c) * at(&m, c)).sum();
+    assert!(close(power, 0.15 * 0.15, 1e-6), "equal power: {power}");
+}
+
+#[test]
+fn a_51_track_passes_through_a_51_mix_and_folds_into_stereo() {
+    let mut r = Rig::with_channels(&[chan_dc], 6);
+    r.track(0).channels = AudioChannels::Surround51;
+    set_master_51(&mut r);
+    let m = mix_all(&r, 0, 256);
+    for (c, ch) in m.iter().enumerate() {
+        assert!(close(ch[17], (c + 1) as f32 * 0.1, 1e-6), "channel {c} = {}", ch[17]);
+    }
+    // the same track into a stereo Mix: ITU-R BS.775 downmix (LFE omitted)
+    r.p.sequence_mut(r.seq).unwrap().settings.audio_master = AudioChannels::Stereo;
+    let k = std::f32::consts::FRAC_1_SQRT_2;
+    let st = mix_all(&r, 0, 256);
+    assert_eq!(st.len(), 2);
+    assert!(close(st[0][9], 0.1 + k * 0.3 + k * 0.5, 1e-6) && close(st[1][9], 0.2 + k * 0.3 + k * 0.6, 1e-6));
+    // mix_sequence of a 5.1 Mix is the BS.775 stereo fold of the 6-channel mix
+    set_master_51(&mut r);
+    let folded = crate::audio::mix_sequence(&r.p, r.p.sequence(r.seq).unwrap(), 0, 256, &r.map);
+    assert_eq!(folded.channels.len(), 2);
+    assert!(close(folded.channels[0][9], st[0][9], 1e-6) && close(folded.channels[1][9], st[1][9], 1e-6));
+    // Front Only mixdown for playback devices drops the surrounds
+    let front = crate::audio::mix_sequence_layout(
+        &r.p,
+        r.p.sequence(r.seq).unwrap(),
+        0,
+        256,
+        &r.map,
+        filmcraft_audio_dsp::channels::Layout::Stereo,
+        filmcraft_audio_dsp::channels::Mixdown::Front,
+    );
+    assert!(close(front.channels[0][9], 0.1 + k * 0.3, 1e-6));
+    // meters: one per channel of the strip
+    let live = LiveMix::new();
+    mix_graph(&r.p, r.p.sequence(r.seq).unwrap(), 0, 256, &r.map, Some(&live));
+    let meters = live.take_meters();
+    assert_eq!(meters.get(&crate::mixer::MASTER).map(Vec::len), Some(6));
+    assert!(close(meters[&crate::mixer::MASTER][5], 0.6, 1e-6));
+}
+
+#[test]
+fn stereo_track_through_a_51_submix_into_a_stereo_mix() {
+    let mut r = Rig::new(&[chan_dc]);
+    let sub = r.add_submix("5.1 bus");
+    r.submix(sub).channels = AudioChannels::Surround51;
+    r.track(0).mixer.output = Some(sub);
+    // puck hard left at the front: source L on L, source R at front centre (C); folded into stereo
+    // L = L + k·C, R = k·C
+    r.track(0).set_lane_static(filmcraft_project::mixer::LANE_PAN51_X, -100.0);
+    let st = mix_all(&r, 0, 128);
+    let k = std::f32::consts::FRAC_1_SQRT_2;
+    assert!(close(st[0][50], 0.1 + k * 0.2, 1e-6) && close(st[1][50], k * 0.2, 1e-6), "{} {}", st[0][50], st[1][50]);
+}
+
+#[test]
+fn pan51_automation_is_block_invariant() {
+    use filmcraft_project::mixer::LANE_PAN51_X;
+    let mut r = Rig::new(&[noise]);
+    set_master_51(&mut r);
+    let p = r.track(0).lane_mut(LANE_PAN51_X).unwrap();
+    p.keyframes.push(kf(0, -100.0));
+    p.keyframes.push(kf(12_000, 100.0));
+    let whole = mix_all(&r, 0, 12_000);
+    let mut cut: Vec<Vec<f32>> = vec![Vec::new(); 6];
+    let mut pos = 0i64;
+    for m in [97usize, 1000, 4000, 6903] {
+        let b = mix_all(&r, pos, m);
+        for (c, ch) in b.into_iter().enumerate() {
+            cut[c].extend(ch);
+        }
+        pos += m as i64;
+    }
+    assert_eq!(whole, cut);
+    // the puck moved from left to right: L dominates early, R late
+    let energy = |c: usize, a: usize, b: usize| whole[c][a..b].iter().map(|x| x * x).sum::<f32>();
+    assert!(energy(0, 0, 2000) > 5.0 * energy(1, 0, 2000));
+    assert!(energy(1, 10_000, 12_000) > 5.0 * energy(0, 10_000, 12_000));
 }

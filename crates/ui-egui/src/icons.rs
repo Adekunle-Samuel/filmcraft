@@ -13,6 +13,7 @@ pub enum Icon {
     Ripple,
     Rolling,
     RateStretch,
+    Remix,
     Razor,
     Slip,
     Slide,
@@ -191,6 +192,17 @@ pub fn paint(painter: &Painter, rect: Rect, icon: Icon, color: Color32) {
             pen.fill(&[(12.0, 8.0), (9.5, 6.0), (9.5, 10.0)]);
             pen.circle(8.0, 4.0, 1.4);
             pen.circle(8.0, 12.0, 1.4);
+        }
+        Remix => {
+            // original: a waveform cut in three blocks that swap places (two arrows over a gap)
+            pen.line(&[(2.0, 8.0), (3.0, 5.5), (4.0, 10.5), (5.0, 7.0)]);
+            pen.line(&[(11.0, 7.0), (12.0, 10.5), (13.0, 5.5), (14.0, 8.0)]);
+            pen.line(&[(7.0, 3.0), (7.0, 13.0)]);
+            pen.line(&[(9.0, 3.0), (9.0, 13.0)]);
+            pen.line(&[(4.0, 2.5), (12.0, 2.5)]);
+            pen.fill(&[(12.5, 2.5), (10.5, 1.0), (10.5, 4.0)]);
+            pen.line(&[(12.0, 13.5), (4.0, 13.5)]);
+            pen.fill(&[(3.5, 13.5), (5.5, 12.0), (5.5, 14.8)]);
         }
         Razor => {
             pen.closed(&[(2.5, 5.0), (13.5, 5.0), (13.5, 11.0), (2.5, 11.0)]);

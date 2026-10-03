@@ -90,22 +90,31 @@ impl AudioOut {
     }
 
     /// Mix `n` samples from `pos`, folded to the output channels (silence past the range end).
+    /// Stereo output of a 5.1 Mix is the ITU-R BS.775 downmix; 5.1 output of a stereo Mix places it
+    /// on L and R; 5.1 is in L, R, C, LFE, Ls, Rs order.
     fn mix(&self, pos: i64, n: usize, sources: &dyn SourceProvider) -> Vec<Vec<f32>> {
         let real = (self.end - pos).clamp(0, n as i64) as usize;
-        let mut st = if real > 0 { filmcraft_render::audio::mix_sequence(&self.project, &self.seq, pos, real, sources).channels } else { vec![Vec::new(); 2] };
+        let out_ch = if self.channels == 6 { 6 } else { 2 };
+        let mut st = if real > 0 {
+            let layout = filmcraft_audio_dsp::channels::Layout::from_channels(out_ch);
+            filmcraft_render::audio::mix_sequence_layout(
+                &self.project,
+                &self.seq,
+                pos,
+                real,
+                sources,
+                layout,
+                filmcraft_audio_dsp::channels::Mixdown::FrontRear,
+            )
+            .channels
+        } else {
+            vec![Vec::new(); out_ch]
+        };
+        st.resize(out_ch, Vec::new());
         for c in st.iter_mut() {
             c.resize(n, 0.0);
         }
-        if st.len() < 2 {
-            let c0 = st.first().cloned().unwrap_or_else(|| vec![0.0; n]);
-            st = vec![c0.clone(), c0];
-        }
-        if self.channels == 1 {
-            vec![st[0].iter().zip(&st[1]).map(|(l, r)| 0.5 * (l + r)).collect()]
-        } else {
-            st.truncate(2);
-            st
-        }
+        if self.channels == 1 { vec![st[0].iter().zip(&st[1]).map(|(l, r)| 0.5 * (l + r)).collect()] } else { st }
     }
 
     /// Output samples up to `until` (exclusive), planar; None when there is nothing new.

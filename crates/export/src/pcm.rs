@@ -7,22 +7,34 @@ fn quantise(s: f32, bits: u16) -> i32 {
     (s.clamp(-1.0, 1.0) * max).round() as i32
 }
 
-/// A RIFF/WAVE file of interleaved samples.
+/// A RIFF/WAVE file of interleaved samples. More than two channels are written as
+/// `WAVE_FORMAT_EXTENSIBLE` with the speaker mask of the layout (6 channels: L, R, C, LFE, Ls, Rs
+/// = `0x3F`).
 pub fn write_wav(interleaved: &[f32], channels: u16, sample_rate: u32, bits: u16) -> Vec<u8> {
     let bits: u16 = if bits >= 24 { 24 } else { 16 };
     let bps = (bits / 8) as u32;
     let data_len = interleaved.len() as u32 * bps;
-    let mut v = Vec::with_capacity(44 + data_len as usize);
+    let ext = channels > 2;
+    let fmt_len: u32 = if ext { 40 } else { 16 };
+    let mut v = Vec::with_capacity(28 + fmt_len as usize + data_len as usize);
     v.extend_from_slice(b"RIFF");
-    v.extend_from_slice(&(36 + data_len).to_le_bytes());
+    v.extend_from_slice(&(20 + fmt_len + data_len).to_le_bytes());
     v.extend_from_slice(b"WAVEfmt ");
-    v.extend_from_slice(&16u32.to_le_bytes());
-    v.extend_from_slice(&1u16.to_le_bytes());
+    v.extend_from_slice(&fmt_len.to_le_bytes());
+    v.extend_from_slice(&(if ext { 0xFFFEu16 } else { 1 }).to_le_bytes());
     v.extend_from_slice(&channels.to_le_bytes());
     v.extend_from_slice(&sample_rate.to_le_bytes());
     v.extend_from_slice(&(sample_rate * channels as u32 * bps).to_le_bytes());
     v.extend_from_slice(&(channels * bps as u16).to_le_bytes());
     v.extend_from_slice(&bits.to_le_bytes());
+    if ext {
+        // cbSize, valid bits, channel mask, KSDATAFORMAT_SUBTYPE_PCM
+        v.extend_from_slice(&22u16.to_le_bytes());
+        v.extend_from_slice(&bits.to_le_bytes());
+        let mask: u32 = if channels == 6 { 0x3F } else { 0 };
+        v.extend_from_slice(&mask.to_le_bytes());
+        v.extend_from_slice(&[0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x10, 0x00, 0x80, 0x00, 0x00, 0xAA, 0x00, 0x38, 0x9B, 0x71]);
+    }
     v.extend_from_slice(b"data");
     v.extend_from_slice(&data_len.to_le_bytes());
     for &s in interleaved {

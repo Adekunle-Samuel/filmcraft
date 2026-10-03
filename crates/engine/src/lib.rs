@@ -31,6 +31,7 @@ pub mod project_manager;
 pub mod project_tools;
 pub mod proxies;
 pub mod relink;
+pub mod remix;
 pub mod scene_detect;
 pub mod scopes;
 pub mod sequence_extras;
@@ -41,6 +42,7 @@ pub mod shortcuts;
 pub mod sync;
 pub mod transcript;
 pub mod trim;
+pub mod voiceover;
 
 use std::sync::Arc;
 
@@ -219,6 +221,10 @@ pub struct EditorState {
     /// audio clips too.
     #[serde(default)]
     pub multicam_audio_follows_video: bool,
+    /// Audio Clip Mixer automation mode per audio track (track id → mode; missing = Read):
+    /// Latch / Touch / Write record the clip Volume and Panner moves as clip keyframes.
+    #[serde(default)]
+    pub clip_mixer_modes: std::collections::BTreeMap<u64, filmcraft_project::AutomationMode>,
     /// Sequence ▸ Selection Follows Playhead: moving the playhead selects the clips under it on
     /// targeted tracks.
     #[serde(default)]
@@ -280,6 +286,8 @@ pub struct Session {
     pub mixrec: mixer::Recorder,
     /// Multi-camera live switching pass in progress.
     pub mcrec: multicam::Recorder,
+    /// Voice-over recording: the input device and the take in progress.
+    pub voiceover: voiceover::VoiceOver,
     /// Dynamic (J/K/L) trimming and trim-mode loop playback in progress.
     pub trim_play: trim::TrimPlayback,
     /// Keyboard shortcuts (active bindings, presets; `shortcuts.*` commands).
@@ -377,6 +385,7 @@ impl Session {
             previews: Arc::new(previews::PreviewStore::temp()),
             mixrec: Default::default(),
             mcrec: Default::default(),
+            voiceover: Default::default(),
             trim_play: Default::default(),
             shortcuts: shortcuts::Shortcuts::new(),
             offline: Default::default(),
@@ -835,6 +844,8 @@ mod proxies_tests;
 #[cfg(test)]
 mod relink_tests;
 #[cfg(test)]
+mod remix_tests;
+#[cfg(test)]
 mod scopes_tests;
 #[cfg(test)]
 mod sequence_tools_tests;
@@ -850,3 +861,5 @@ mod transcript_tests;
 mod trim_tests;
 #[cfg(test)]
 mod vfx_tests;
+#[cfg(test)]
+mod voiceover_tests;

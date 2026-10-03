@@ -419,6 +419,8 @@ impl FilmcraftApp {
         }
         // Multi-Camera view: playing records live cuts (keys 1–9 / clicking angles)
         panels::multicam::on_play(self);
+        // voice-over: the capture starts with the audio clock
+        panels::voiceover::on_play(self);
     }
 
     pub fn stop(&mut self) {
@@ -438,6 +440,7 @@ impl FilmcraftApp {
             }
         }
         panels::multicam::on_stop(self);
+        panels::voiceover::on_stop(self);
     }
 
     fn start_audio(&mut self) {
@@ -455,9 +458,12 @@ impl FilmcraftApp {
         let start_tick = self.session.playhead();
         // Settings ▸ Audio Hardware ▸ Output Mapping
         let map = [self.session.prefs.audio_hardware.map_left, self.session.prefs.audio_hardware.map_right];
+        // Preferences ▸ Audio ▸ 5.1 Mixdown Type: how a 5.1 Mix plays on a stereo device
+        let mixdown = filmcraft_audio_dsp::channels::Mixdown::from_id(&self.session.prefs.audio.mixdown_type).unwrap_or_default();
         let Some(a) = self.audio.as_mut() else { return };
         let sr = a.sample_rate();
         let mut cursor = start_tick.to_units_floor(sr as i64);
+        let cues = panels::voiceover::cues(&self.session, sr);
         previews.live.publish_project(project.clone());
         let fill = Box::new(move |buf: &mut [f32], ch: usize| {
             // the newest project snapshot: mixer moves and other edits are heard while playing
@@ -466,22 +472,35 @@ impl FilmcraftApp {
             let n = buf.len() / ch.max(1);
             // Mix at the sequence rate; convert when the device rate differs (nearest sample).
             let seq_sr = seq.settings.sample_rate;
+            // a 5.1 Mix plays as six channels (L, R, C, LFE, Ls, Rs) on a device with at least six
+            use filmcraft_audio_dsp::channels::Layout;
+            let layout = if ch >= 6 && seq.settings.audio_master == filmcraft_project::AudioChannels::Surround51 { Layout::Surround51 } else { Layout::Stereo };
             let mix = if seq_sr == sr {
-                previews.mix(&project, seq_id, cursor, n, &provider)
+                previews.mix_layout(&project, seq_id, cursor, n, &provider, layout, mixdown)
             } else {
                 let s0 = (cursor as i128 * seq_sr as i128 / sr as i128) as i64;
                 let m = n * seq_sr as usize / sr as usize + 2;
-                let b = previews.mix(&project, seq_id, s0, m, &provider);
-                let mut out = filmcraft_frame::AudioBuffer::silence(sr, 2, n);
-                for c in 0..2 {
-                    for i in 0..n {
+                let b = previews.mix_layout(&project, seq_id, s0, m, &provider, layout, mixdown);
+                let mut out = filmcraft_frame::AudioBuffer::silence(sr, b.channels.len(), n);
+                for (o, c) in out.channels.iter_mut().zip(&b.channels) {
+                    for (i, x) in o.iter_mut().enumerate() {
                         let j = (i * seq_sr as usize / sr as usize).min(m - 1);
-                        out.channels[c][i] = b.channels[c][j];
+                        *x = c[j];
                     }
                 }
                 out
             };
-            filmcraft_engine::settings::map_output(&mix.channels[0], &mix.channels[1.min(mix.channels.len() - 1)], buf, ch, map);
+            if layout == Layout::Surround51 {
+                buf.fill(0.0);
+                for (i, frame) in buf.chunks_mut(ch).enumerate() {
+                    for (c, x) in frame.iter_mut().take(6).enumerate() {
+                        *x = mix.channels[c][i];
+                    }
+                }
+            } else {
+                filmcraft_engine::settings::map_output(&mix.channels[0], &mix.channels[1.min(mix.channels.len() - 1)], buf, ch, map);
+            }
+            panels::voiceover::mix_cues(buf, ch, cursor, &cues);
             cursor += n as i64;
         });
         match a.start(fill) {
@@ -1000,6 +1019,7 @@ impl FilmcraftApp {
             state::Tool::Ripple => "Drag an edit point to ripple trim; later clips move to keep the gap closed.",
             state::Tool::Rolling => "Drag an edit point to roll it: the out of one clip and the in of the next move together.",
             state::Tool::RateStretch => "Drag an edge to change the clip's speed so it fills the new duration.",
+            state::Tool::Remix => "Drag the edge of a music clip to remix it to the new duration at musically matching beats.",
             state::Tool::Razor => "Click to split a clip. Shift-click to split all tracks.",
             state::Tool::Slip => "Drag a clip to slip its source in/out without moving it.",
             state::Tool::Slide => "Drag a clip to slide it between its neighbours.",

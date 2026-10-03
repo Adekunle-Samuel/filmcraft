@@ -11,6 +11,9 @@
 //! | `pan` | pan / balance, −100 … 100 | `MixerStrip::lanes` |
 //! | `mute` | 0 / 1 (hold) | `MixerStrip::lanes` |
 //! | `send.<i>.level` | send `i` level, dB | `MixerStrip::lanes` |
+//! | `pan51.x`, `pan51.y` | 5.1 panner puck, −100 (left / rear) … 100 (right / front) | `MixerStrip::lanes` (static value = the lane's value) |
+//! | `pan51.center` | 5.1 panner Center %, 0 … 100 | `MixerStrip::lanes` |
+//! | `pan51.lfe` | 5.1 panner LFE level, dB | `MixerStrip::lanes` |
 //! | `fx.<slot>.<param>` | insert effect parameter | the effect's own `Param` keyframes |
 //!
 //! [`AutomationMode`] decides whether playback reads the lanes (anything but Off) and how the
@@ -27,6 +30,29 @@ use crate::{Track, TrackId};
 pub const LANE_VOLUME: &str = "volume";
 pub const LANE_PAN: &str = "pan";
 pub const LANE_MUTE: &str = "mute";
+/// 5.1 panner puck, left (−100) … right (100). Used when the strip feeds a 5.1 submix or Mix.
+pub const LANE_PAN51_X: &str = "pan51.x";
+/// 5.1 panner puck, rear (−100) … front (100).
+pub const LANE_PAN51_Y: &str = "pan51.y";
+/// 5.1 panner Center % (0 … 100): the centre speaker's share of the front image.
+pub const LANE_PAN51_CENTER: &str = "pan51.center";
+/// 5.1 panner LFE level (dB).
+pub const LANE_PAN51_LFE: &str = "pan51.lfe";
+/// The 5.1 panner lanes.
+pub const PAN51_LANES: [&str; 4] = [LANE_PAN51_X, LANE_PAN51_Y, LANE_PAN51_CENTER, LANE_PAN51_LFE];
+
+/// Default value of a 5.1 panner lane for a strip of channel format `channels`: puck at front
+/// centre, Center 100 %, LFE 0 dB for 5.1 strips (their LFE channel passes) and −∞ for mono /
+/// stereo strips (nothing is sent to the subwoofer unless asked for).
+pub fn pan51_default(key: &str, channels: crate::AudioChannels) -> Option<f64> {
+    match key {
+        LANE_PAN51_X => Some(0.0),
+        LANE_PAN51_Y => Some(100.0),
+        LANE_PAN51_CENTER => Some(100.0),
+        LANE_PAN51_LFE => Some(if channels == crate::AudioChannels::Surround51 { 0.0 } else { FADER_MIN_DB }),
+        _ => None,
+    }
+}
 
 /// At most this many insert effects per strip (Premiere's effect slots 1–5).
 pub const MAX_INSERTS: usize = 5;
@@ -176,6 +202,9 @@ pub fn lane_info(key: &str) -> Option<LaneInfo> {
         LANE_VOLUME => Some(LaneInfo { min: FADER_MIN_DB, max: FADER_MAX_DB, hold: false, unit: "dB" }),
         LANE_PAN => Some(LaneInfo { min: -100.0, max: 100.0, hold: false, unit: "" }),
         LANE_MUTE => Some(LaneInfo { min: 0.0, max: 1.0, hold: true, unit: "" }),
+        LANE_PAN51_X | LANE_PAN51_Y => Some(LaneInfo { min: -100.0, max: 100.0, hold: false, unit: "" }),
+        LANE_PAN51_CENTER => Some(LaneInfo { min: 0.0, max: 100.0, hold: false, unit: "%" }),
+        LANE_PAN51_LFE => Some(LaneInfo { min: FADER_MIN_DB, max: FADER_MAX_DB, hold: false, unit: "dB" }),
         k if parse_send_lane(k).is_some() => Some(LaneInfo { min: FADER_MIN_DB, max: FADER_MAX_DB, hold: false, unit: "dB" }),
         _ => None,
     }
@@ -198,6 +227,7 @@ impl Track {
             LANE_VOLUME => Some(self.volume_db),
             LANE_PAN => Some(self.pan),
             LANE_MUTE => Some(if self.muted { 1.0 } else { 0.0 }),
+            k if PAN51_LANES.contains(&k) => self.mixer.lanes.get(k).and_then(|p| p.value.as_f64()).or_else(|| pan51_default(k, self.channels)),
             k => {
                 if let Some(i) = parse_send_lane(k) {
                     return self.mixer.sends.get(i).map(|s| s.level_db);
@@ -262,6 +292,11 @@ impl Track {
             LANE_VOLUME => self.volume_db = v.clamp(FADER_MIN_DB, FADER_MAX_DB),
             LANE_PAN => self.pan = v.clamp(-100.0, 100.0),
             LANE_MUTE => self.muted = v >= 0.5,
+            k if PAN51_LANES.contains(&k) => {
+                let i = lane_info(k).expect("pan51 lanes have info");
+                let v = v.clamp(i.min, i.max);
+                self.mixer.lanes.entry(k.to_string()).or_insert_with(|| Param::new(ParamValue::Float(v))).value = ParamValue::Float(v);
+            }
             k => {
                 if let Some(i) = parse_send_lane(k) {
                     match self.mixer.sends.get_mut(i) {
@@ -359,6 +394,20 @@ impl crate::Sequence {
     }
     pub fn mix_track_mut(&mut self, id: TrackId) -> Option<&mut Track> {
         self.audio_tracks.iter_mut().chain(self.submix_tracks.iter_mut()).find(|t| t.id == id)
+    }
+    /// Channel format of the bus strip `id` feeds (its output submix, or the Mix).
+    pub fn output_channels(&self, id: TrackId) -> crate::AudioChannels {
+        if id == MASTER_STRIP {
+            return self.settings.audio_master;
+        }
+        match self.mix_track(id).and_then(|t| t.mixer.output).and_then(|o| self.submix_tracks.iter().find(|s| s.id == o)) {
+            Some(s) => s.channels,
+            None => self.settings.audio_master,
+        }
+    }
+    /// Whether strip `id` pans with the 5.1 panner (it feeds a 5.1 submix or a 5.1 Mix).
+    pub fn pans_51(&self, id: TrackId) -> bool {
+        id != MASTER_STRIP && self.output_channels(id) == crate::AudioChannels::Surround51
     }
     /// Mix track volume (dB) at sequence time `t` (automation unless the Mix is in Off mode).
     pub fn master_volume_at(&self, t: Tick) -> f64 {
@@ -533,6 +582,26 @@ mod tests {
         assert_eq!(t.mixer.sends.len(), 2);
         assert_eq!(t.lane_keyframes(&send_lane(1))[0].value, ParamValue::Float(-2.0));
         assert!(t.lane(&send_lane(2)).is_none());
+    }
+
+    #[test]
+    fn pan51_lanes_have_defaults_and_store_statics_in_lanes() {
+        let mut t = tr();
+        assert_eq!(t.lane_static(LANE_PAN51_Y), Some(100.0));
+        assert_eq!(t.lane_static(LANE_PAN51_CENTER), Some(100.0));
+        assert_eq!(t.lane_static(LANE_PAN51_LFE), Some(FADER_MIN_DB));
+        t.channels = crate::AudioChannels::Surround51;
+        assert_eq!(t.lane_static(LANE_PAN51_LFE), Some(0.0));
+        assert!(t.set_lane_static(LANE_PAN51_X, -250.0));
+        assert_eq!(t.lane_static(LANE_PAN51_X), Some(-100.0));
+        assert!(t.automated_lanes().is_empty());
+        let p = t.lane_mut(LANE_PAN51_X).unwrap();
+        p.keyframes.push(Keyframe::new(Tick(0), ParamValue::Float(-100.0)));
+        p.keyframes.push(Keyframe::new(Tick(100), ParamValue::Float(100.0)));
+        assert_eq!(t.lane_value(LANE_PAN51_X, Tick(50)), 0.0);
+        assert_eq!(t.automated_lanes(), vec![LANE_PAN51_X.to_string()]);
+        let back: Track = serde_json::from_str(&serde_json::to_string(&t).unwrap()).unwrap();
+        assert_eq!(back, t);
     }
 
     #[test]

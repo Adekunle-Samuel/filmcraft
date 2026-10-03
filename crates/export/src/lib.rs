@@ -557,7 +557,12 @@ impl AudioEncoder for AacEncoder {
         SampleEntry::aac(self.enc.audio_specific_config(), self.channels, self.rate)
     }
     fn encode(&mut self, planar: &[Vec<f32>]) -> Result<Vec<Vec<u8>>> {
-        let refs: Vec<&[f32]> = planar.iter().map(Vec::as_slice).collect();
+        let refs: Vec<&[f32]> = if planar.len() == 6 {
+            // ours: L, R, C, LFE, Ls, Rs → AAC channel configuration 6: C, L, R, Ls, Rs, LFE
+            [2usize, 0, 1, 4, 5, 3].iter().map(|&c| planar[c].as_slice()).collect()
+        } else {
+            planar.iter().map(Vec::as_slice).collect()
+        };
         Ok(self.enc.encode(&refs))
     }
     fn flush(&mut self) -> Result<Vec<Vec<u8>>> {
@@ -1074,3 +1079,6 @@ mod tests;
 
 #[cfg(test)]
 mod settings_tests;
+
+#[cfg(test)]
+mod surround_tests;

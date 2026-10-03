@@ -1408,6 +1408,14 @@ impl SampleEntry {
                 b.u8(p.bits as u8);
                 b.end(m);
             }
+            CodecConfig::Pcm(p) if p.channels == 6 => {
+                // QuickTime channel layout: kAudioChannelLayoutTag_MPEG_5_1_A (L R C LFE Ls Rs)
+                let m = b.start_full(b"chan", 0, 0);
+                b.u32((121 << 16) | 6);
+                b.u32(0);
+                b.u32(0);
+                b.end(m);
+            }
             _ => {}
         }
         if let Some(br) = self.bitrate {

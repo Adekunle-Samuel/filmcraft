@@ -17,6 +17,7 @@
 
 mod app_nap;
 mod audio;
+mod audio_in;
 mod control_server;
 #[cfg(target_os = "macos")]
 mod native_menu;
@@ -96,6 +97,8 @@ fn main() -> eframe::Result {
                     eprintln!("filmcraft: auto-save and crash recovery unavailable: {e}");
                 }
             }
+            // voice-over recording reads the microphone through cpal
+            session.voiceover.input = Some(Box::new(audio_in::CpalIn::new(&session.prefs.audio_hardware.device_class)));
             let project = files.iter().find(|f| f.ends_with(".fcproj")).cloned();
             if let Some(p) = project {
                 if let Err(e) = session.execute("file.open", json!({"path": p})) {
