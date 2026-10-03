@@ -22,7 +22,7 @@ matched against `filmcraft-cli commands` and the UI command table. Effects: the 
 | Graphics and captions | 8% | text engine, shapes, captions, transcripts; no MOGRT, rolls/crawls, responsive design | ~60% |
 | Export | 8% | own H.264/AAC, ProRes, DNxHR, image sequences, GIF, WAV; preset library + user presets, full Export-mode settings (loudness normalization, overlays, captions), export queue, Quick Export; no AAF/OMF, MXF export | ~80% |
 | Preferences and project management | 5% | Settings dialog with 16 categories (most settings wired), project settings, scratch disks, search bins, templates | ~80% |
-| Performance | 5% | 1080p real-time, 3×1080p; HEVC 2.5× cheaper, catch-up decoding halves 4K CPU/frame, `cargo xtask bench` + `perf.stats`; 4K/8K and AV1 not yet real-time on a loaded machine | ~55% |
+| Performance | 5% | 1080p real-time, 3×1080p; 4K H.264 real-time at load ≤140 (−23% decoder cycles, opt-in draft decoding at 1/2–1/4); HEVC 2.5× cheaper, catch-up decoding, `cargo xtask bench` + `perf.stats`; 8K and AV1 not yet real-time on a loaded machine | ~60% |
 | **Weighted total** | | | **~77%** |
 
 ## Estimate to parity
@@ -76,6 +76,8 @@ Status: ✅ done · 🟡 in progress · ⬜ not started. Estimates are remaining
 - Nothing; next: remaining Premiere menu items (Settings categories, Scene Edit Detection, Normalize Mix Track, OMF/AAF, Find), AV1 single-thread re-measure on an idle machine
 
 ## Log
+
+- **2026-10-03:** 4K H.264 playback (M4.9): vectorised deblocking, branch-free CABAC bins and column-parallel inverse transforms cut H.264 decoding by 23 % (cycles per frame, bit-exact; 4K cold seeks −27 % CPU); opt-in draft decoding (Settings ▸ Playback) skips deblocking of non-reference pictures and uploads decimated planes while playing at 1/2–1/4, never for paused frames or exports; conformance runs 1, 3 and all threads. 4K plays 192/0 at load 100–140 (before: only at load ~90).
 
 - **2026-10-02 (late):** export parity (M6.5): built-in preset library + user presets, full Export-mode settings (loudness normalization, image/name/timecode overlays, captions, range), export queue, Quick Export, Premiere-style image-sequence export, `filmcraft-cli export --preset`; media import (M9.14): MXF OP1a/OP-Atom (new `crates/mxf`, H.264/DNx/ProRes/PCM, timecode), Ogg Opus (new `crates/ogg`), image sequences as clips, BWF timecode. 1373 tests.
 

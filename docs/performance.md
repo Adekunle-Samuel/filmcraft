@@ -9,10 +9,103 @@ and `.md` (options and sections: [testing.md](testing.md) §5). Agents read live
 **75–200** during every run below. Wall-clock columns (fps, shown/dropped frames, seek latency)
 swing by 2–5× between back-to-back runs at that load and are only comparable within one run. CPU
 time per frame, samples decoded and skipped, and peak RSS are much less sensitive, and are what
-the before/after comparison relies on. Baseline = commit `457aca1` (the harness on unchanged
-code); after = M4.8. Runs alternated base / after (2 rounds each, 2026-10-02).
+the before/after comparison relies on. Each milestone below alternated base / after runs (2 rounds
+each); the most load-independent figure is the decoder's own cycle count (`proc_pid_rusage`
+instructions and cycles of a process, all threads summed).
+
+## Results (M4.9: 4K H.264, before → after)
+
+Baseline = commit `3d14099` (M3.12, unchanged decoder); after = M4.9. Interleaved runs on
+2026-10-02/03, load average 92–178 (the playback rows say which load each run saw).
+
+### Decoder work per frame (load-independent)
+
+`h264dec` example, one decoder, CPU cycles and instructions counted by the kernel (all threads),
+output bit-exact with ffmpeg:
+
+| stream | Mcycles / frame before | after | after, draft mode |
+|---|---|---|---|
+| 2160p (`a2160.mp4`, 170 Mbit/s, first 48 frames) | 505 | **390** (−23 %) | **356** (−30 %) |
+| 1080p (`dec_h264_1080.mp4`, 120 frames) | 132 | **100** (−24 %) | **90** (−32 %) |
+
+The cycle count is the same with 1, 4 or 14 frame threads (no spinning or contention overhead):
+at ~4.5 GHz a 4K frame is ~85 ms of one core, so 23.976 fps needs about two cores.
+
+### Decode (every frame through the media stack)
+
+| codec | size | CPU ms/frame before (2 rounds) | after (2 rounds) |
+|---|---|---|---|
+| H.264 | 1080p | 35.8, 39.5 | **33.0, 29.4** |
+| H.264 | 2160p | 138.9, 152.1 | **125.7, 112.3** |
+
+(A run at load ~190 before any change gave 41.6 / 160.2 ms; an intermediate build 32.2 / 118.3.)
+
+### Cold seeks on the 4K fixture (12 random targets, GOP 250, fresh source per seek)
+
+| mode | CPU ms per seek before | after | wall p50 ms before → after |
+|---|---|---|---|
+| full decode from the keyframe | 7529, 7418 | **5531, 5268** (−27 %) | 2757, 1848 → 924, 739 |
+| keep 2 s (scrub) | 7488, 7373 | **5442, 5397** | 2408, 1995 → 872, 795 |
+| late (playback catch-up) | 5597, 5487 | **4079, 3949** | 2014, 1248 → 735, 526 |
+
+Samples decoded per seek are identical (~48, ~34 in catch-up): the same pictures, decoded with
+less work. The cold seek is a chain of reference pictures, so it shows the per-picture cost
+directly.
+
+### Program-monitor playback, 2160p (8 s, GPU path)
+
+| case | before: shown/dropped (load) | after: shown/dropped (load) | CPU ms/frame before → after |
+|---|---|---|---|
+| Full | 192/0 (92), 9/183 (167) | 113/79 (171), **192/0** (139) | 159 (no skips), 133 (17 skipped) → 131, 130 |
+| 1/2 | 12/180 (95), 5/187 (169) | 173/19 (172), **192/0** (124) | 143, 127 → 133, 132 |
+| 1/2 draft | – | 183/9 (175), **192/0** (119) | – → 144, 134 |
+| 1/4 | – | 186/6 (177), **192/0** (111) | – → 134, 125 |
+| 1/4 draft | – | **192/0** (178), 190/2 (101) | – → 132, 131 |
+| 1080p Full | 192/0, 192/0 | 192/0, 192/0 | 41, 48 → 39, 36 |
+
+Before, the 4K clip kept up in one run (Full at load 92; 1/2 dropped 94 % at load 95) and dropped
+95–97 % at load ~168. After, every 4K case plays 192/0 at load 100–140; at load 171–178 Full drops
+41 %, 1/2 10 % (5 % with draft decoding), 1/4 3 % (none with draft decoding). CPU per
+displayed frame (whole process: decode, frame workers, compositing) drops ~15 % where no frames
+were skipped; draft decoding at 1/2 and 1/4 is within run-to-run noise in this column (its saving
+is the ~9 % of decoder cycles above, plus a quarter / sixteenth of the texture upload), while the
+frame jobs wait for the decoder less (decode ms/job 212 → 67 at 1/2, 98 → 44 at 1/4 in the busy
+round). On an idle machine the 4K clip needs about two cores.
+
+## What M4.9 changed
+
+1. **Deblocking** (25–30 % of 4K decode time before): the edge filter runs on all 16 luma / 8
+   chroma lines of an edge at once with per-lane masks and min/max clipping (no `clamp`, whose
+   bounds assert blocked vectorisation), so it compiles to NEON; edges whose alpha or beta index
+   is 0 are skipped. Bit-exact with the per-line filter (random-edge unit test) and ffmpeg.
+2. **CABAC**: `decode_decision` / `decode_bypass` select instead of branching on the bin value
+   (the MPS/LPS outcome is close to random at high bit rates), renormalisation has no branch on
+   the range, and context / state indexing has no bounds checks.
+3. **Inverse transforms**: the 4x4 / 8x8 column pass and the add/clip run across all columns.
+4. **Frame threading** was already in place (M2): pictures decode concurrently and wait per
+   macroblock row for the reference rows their motion vectors reach, with deblocking pipelined row
+   by row inside each picture's job. The conformance suite now decodes every fixture with 1, 3 and
+   all threads (bit-exact each time). A separate deblocking thread was not added: a picture's rows
+   are published about two rows after they are reconstructed, so a reference chain advances a few
+   rows behind its predecessor and the pool already has more pictures in flight than cores
+   (crates/h264/README.md, "Threading model").
+5. **Draft decoding** (Settings ▸ Playback ▸ Draft decoding, off by default; `perf.stats`
+   `playback.draftDecode`, `decode.draftFrames`, `decode.h264Threads`): while the Program monitor
+   plays at 1/2 or 1/4, H.264 non-reference pictures skip deblocking (no other picture can change),
+   and draft plans hand the GPU box-decimated Y'CbCr planes at the drawn size. Draft frames carry
+   their own frame-cache keys and the GOP cache serves them to draft requests only, so pausing,
+   rendering and exporting always decode exact pictures (tested through the media stack against
+   ffmpeg after draft playback). The CPU renderer already converted reduced-resolution frames
+   straight to the decimated size (`to_linear_f32_decimated`).
+
+Not done: CABAC residual decoding (now 41 % of the work, ~19 cycles per bin) is inherently serial;
+the remaining deblocking cost is mostly the vertical-edge transposes; motion compensation and the
+per-row / per-picture copies (4 %) are unchanged.
 
 ## Results (M4.8, before → after)
+
+Baseline = commit `457aca1` (the harness on unchanged code); after = M4.8. Runs alternated base /
+after (2 rounds each, 2026-10-02).
 
 ### Decode (every frame through the media stack: container, GOP cache, decoder, conversion)
 
