@@ -442,9 +442,10 @@ fn format_bytes(b: u64) -> String {
     }
 }
 
-/// Is the item listed in the Project panel? (Graphic sources are internal.)
-pub fn listed(it: &ProjectItem) -> bool {
-    !matches!(it.kind, ItemKind::Graphic { .. })
+/// Is the item listed in the Project panel? (Graphic clip sources are internal, except source
+/// graphics: Upgrade to Source Graphic.)
+pub fn listed(p: &Project, it: &ProjectItem) -> bool {
+    !matches!(it.kind, ItemKind::Graphic { .. }) || p.source_graphics.contains_key(&it.id)
 }
 
 /// Sort item ids by a column (ties keep their order; bins are sorted separately by the caller).
@@ -478,7 +479,7 @@ pub fn bin_children(p: &Project, bin: &Bin, sort: &SortSpec) -> (Vec<BinId>, Vec
         match e {
             BinEntry::Bin(b) => bins.push((b.name.to_lowercase(), b.id)),
             BinEntry::Item(i) => {
-                if p.item(*i).is_some_and(listed) {
+                if p.item(*i).is_some_and(|it| listed(p, it)) {
                     items.push(*i)
                 }
             }
@@ -539,7 +540,7 @@ fn freeform_items(p: &Project, bin: Option<BinId>) -> Vec<ItemId> {
     b.children
         .iter()
         .filter_map(|e| match e {
-            BinEntry::Item(i) if p.item(*i).is_some_and(listed) => Some(*i),
+            BinEntry::Item(i) if p.item(*i).is_some_and(|it| listed(p, it)) => Some(*i),
             _ => None,
         })
         .collect()

@@ -1779,6 +1779,28 @@ fn interact(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, layout: &
             crate::panels::clear_drag(ui);
         }
     }
+    // graphics templates from Essential Graphics ▸ Browse: placed on the video track under the pointer
+    if let Some(template) = crate::panels::dragged_template(ui)
+        && let Some(p) = ctx.pointer_hover_pos()
+        && layout.content.contains(p)
+    {
+        let t = snap(app, seq, layout, rate.snap_nearest(layout.tick_at(p.x).max(Tick::ZERO)), &[]);
+        let row = layout.row_at(p.y).cloned().filter(|r| r.kind == TrackKind::Video);
+        if let Some(row) = &row {
+            let r = Rect::from_min_max(pos2(layout.x_of(t), row.rect.min.y + 1.0), pos2(layout.x_of(t) + 60.0, row.rect.max.y - 1.0));
+            ui.painter().rect_stroke(r, 3.0, Stroke::new(1.5, Color32::WHITE), StrokeKind::Inside);
+        }
+        if ctx.input(|i| i.pointer.any_released()) {
+            let mut q = json!({"template": template, "time": t.0});
+            if let Some(row) = row {
+                q["track"] = json!(row.index);
+            }
+            if let Err(e) = app.session.execute("graphics.template.apply", q) {
+                app.ui.status = e.to_string();
+            }
+            crate::panels::clear_drag(ui);
+        }
+    }
     if let Some(effect) = crate::panels::dragged_effect(ui)
         && let Some(p) = ctx.pointer_hover_pos()
         && layout.content.contains(p)

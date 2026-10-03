@@ -107,7 +107,8 @@ Each codec README has the full fixture matrix and the measured results.
   projects (demo-generator footage, bars, no media files) at 320×180 and renders one frame of each
   through the CPU compositor: Motion transform + opacity, four blend modes (Multiply, Screen,
   Overlay, Difference), Gaussian Blur, Lumetri basic correction, Crop, Cross Dissolve at 50 %, Dip
-  to Black at 25 %, Wipe at 50 %, Timecode / Clip Name burn-in text, graphic clips, and colour
+  to Black at 25 %, Wipe at 50 %, Timecode / Clip Name burn-in text, graphic clips (also a built-in
+  graphics template with overridden properties and per-character styles with a pinned box), and colour
   management: S-Log3/S-Gamut3.Cine footage interpreted into Rec. 709 (`log_to_rec709`) and
   Rec. 2100 PQ footage tone mapped into Rec. 709 (`hdr_tone_map`; the footage is demo frames
   re-encoded by the test's `Encoded` source). Each frame is compared

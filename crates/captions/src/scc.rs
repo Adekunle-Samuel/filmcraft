@@ -242,6 +242,24 @@ impl Decoder {
     }
 }
 
+/// Decode channel-1 CEA-608 byte pairs `(frame, b1, b2)` (with or without parity; frames
+/// ascending) into cues at `rate`. A caption still showing after the last pair stays up for one
+/// second more.
+pub fn decode_pairs(pairs: impl IntoIterator<Item = (i64, u8, u8)>, rate: FrameRate) -> Vec<Cue> {
+    let mut dec = Decoder::new();
+    let mut last_frame = 0;
+    for (f, b1, b2) in pairs {
+        dec.pair(f, b1, b2);
+        last_frame = last_frame.max(f + 1);
+    }
+    let one_second = rate.frame_at(Tick(filmcraft_time::TICKS_PER_SECOND)).max(1);
+    if let Some((s, text)) = dec.open.take() {
+        let end = last_frame.max(s + 1) + one_second;
+        dec.cues.push((s, end, text));
+    }
+    dec.cues.into_iter().map(|(s, e, text)| Cue { start: rate.tick_of(s), end: rate.tick_of(e), text, ..Default::default() }).collect()
+}
+
 pub fn parse(text: &str) -> Result<Document> {
     let mut lines = text.lines().enumerate().filter(|(_, l)| !l.trim().is_empty());
     match lines.next() {
@@ -369,7 +387,9 @@ fn word((a, b): (u8, u8)) -> u16 {
     (cea608::with_parity(a) as u16) << 8 | cea608::with_parity(b) as u16
 }
 
-pub fn write(doc: &Document, drop_frame: bool) -> String {
+/// Schedule pop-on CEA-608 byte pairs (without parity) for `doc`, one pair per 29.97 fps frame,
+/// so each caption's End of Caption lands on its start frame (see the module docs).
+pub fn schedule(doc: &Document) -> BTreeMap<i64, (u8, u8)> {
     let mut occ: BTreeMap<i64, (u8, u8)> = BTreeMap::new();
     let mut cursor = 0i64; // first frame this cue's load may use
     let mut prev_end: Option<i64> = None;
@@ -422,6 +442,16 @@ pub fn write(doc: &Document, drop_frame: bool) -> String {
         let f = place_free_from(&mut occ, pe, edm);
         occ.insert(f + 1, edm);
     }
+    occ
+}
+
+/// The parity-coded SCC code word of a byte pair.
+pub fn code_word(p: (u8, u8)) -> u16 {
+    word(p)
+}
+
+pub fn write(doc: &Document, drop_frame: bool) -> String {
+    let occ = schedule(doc);
     let mut out = String::from(HEADER);
     out.push_str("\n\n");
     let mut line: Option<(i64, Vec<String>)> = None;

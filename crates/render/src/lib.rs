@@ -296,7 +296,7 @@ pub(crate) fn item_layer(
         // vectors straight to the output: no resampling, crisp at any Motion scale
         let m = Affine::scale(opts.scale as f64, opts.scale as f64).then_apply(&motion);
         let mut canvas = Image::new(w, h);
-        graphic_clip::render_graphic(&item.effects, mt, src_size, &m, &mut canvas);
+        graphic_clip::render_graphic(item, mt, src_size, &m, &mut canvas);
         let (op, bl) = opacity_blend(item, mt);
         return Some((canvas, op, bl));
     }
@@ -392,7 +392,7 @@ pub(crate) fn base_layer(
             // standard effects work on the graphic at source resolution, then Motion places it
             let (gw, gh) = (((src_size.0 as f32 * want).ceil() as usize).max(1), ((src_size.1 as f32 * want).ceil() as usize).max(1));
             let mut img = Image::new(gw, gh);
-            graphic_clip::render_graphic(&item.effects, mt, src_size, &Affine::scale(want as f64, want as f64), &mut img);
+            graphic_clip::render_graphic(item, mt, src_size, &Affine::scale(want as f64, want as f64), &mut img);
             img
         }
     })

@@ -16,6 +16,7 @@ pub mod commands;
 pub mod demo;
 pub mod essential_sound;
 pub mod export_tools;
+pub mod graphic_templates;
 pub mod graphics;
 pub mod interchange;
 pub mod keyboard;
@@ -589,6 +590,10 @@ impl Session {
         self.exec_depth += 1;
         let r = (spec.run)(self, &params);
         self.exec_depth -= 1;
+        // source graphics: an edited instance updates the shared layers and the other instances
+        if r.is_ok() && spec.journal && id.starts_with("graphics.") && !self.project.source_graphics.is_empty() {
+            graphic_templates::sync_source_graphics(self);
+        }
         if self.exec_depth == 0
             && let Err(e) = &r
         {

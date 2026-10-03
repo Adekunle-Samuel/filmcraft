@@ -430,6 +430,7 @@ impl Builder {
             hold_filters: false,
             field_options: None,
             source_channels: Vec::new(),
+            graphic: None,
         }
     }
 
@@ -617,6 +618,7 @@ pub(crate) fn transition_effect(name: &str, audio: bool, report: &mut Report) ->
         masks: vec![],
         post_fader: false,
         essential: false,
+        layer: None,
     })
 }
 

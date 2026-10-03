@@ -76,7 +76,7 @@ fn paint_badges(ui: &egui::Ui, b: &Badge, at: egui::Pos2, t: &Tokens) {
 }
 
 fn matches_filter(app: &FilmcraftApp, id: ItemId, filter: &str) -> bool {
-    app.session.project.item(id).is_some_and(|i| pp::listed(i) && (filter.is_empty() || i.name.to_ascii_lowercase().contains(filter)))
+    app.session.project.item(id).is_some_and(|i| pp::listed(&app.session.project, i) && (filter.is_empty() || i.name.to_ascii_lowercase().contains(filter)))
 }
 
 fn label_color(app: &FilmcraftApp, l: filmcraft_project::Label) -> Color32 {

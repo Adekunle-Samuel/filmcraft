@@ -486,7 +486,7 @@ fn count_items(app: &FilmcraftApp, bin: BinId) -> usize {
     if let Some(b) = app.session.project.root.find_bin(bin) {
         b.all_items(&mut ids);
     }
-    ids.iter().filter(|i| app.session.project.item(**i).is_some_and(filmcraft_engine::project_panel::listed)).count()
+    ids.iter().filter(|i| app.session.project.item(**i).is_some_and(|it| filmcraft_engine::project_panel::listed(&app.session.project, it))).count()
 }
 
 /// Preview Area: the selected item's poster frame and its properties.

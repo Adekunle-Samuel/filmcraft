@@ -2,7 +2,7 @@
 //! documents each format can represent exactly.
 
 use filmcraft_captions::{Cue, Document, Format, WriteOptions, parse, scc, write};
-use filmcraft_time::{TICKS_PER_SECOND, Tick};
+use filmcraft_time::{FrameRate, TICKS_PER_SECOND, Tick};
 use proptest::prelude::*;
 
 const MS: i64 = TICKS_PER_SECOND / 1000;
@@ -93,10 +93,10 @@ proptest! {
             })
             .collect();
         let doc = Document { cues, ..Default::default() };
-        let bytes = write(&doc, Format::Scc, WriteOptions { drop_frame });
+        let bytes = write(&doc, Format::Scc, WriteOptions { drop_frame, ..Default::default() });
         let back = parse(&bytes, Format::Scc).unwrap();
         prop_assert_eq!(&back.cues, &doc.cues);
-        prop_assert_eq!(write(&back, Format::Scc, WriteOptions { drop_frame }), bytes);
+        prop_assert_eq!(write(&back, Format::Scc, WriteOptions { drop_frame, ..Default::default() }), bytes);
     }
 
     /// Back-to-back SCC captions (no gap) still come back frame-exact when each lasts long enough
@@ -117,12 +117,131 @@ proptest! {
         prop_assert_eq!(back.cues, doc.cues);
     }
 
+    /// MCC: frame-exact at 29.97 fps (CEA-608 path), like SCC.
+    #[test]
+    fn mcc_roundtrip(
+        v in proptest::collection::vec((60i64..400, 3i64..300, proptest::collection::vec("[A-Za-z0-9,.!?'()é-]{1,8}", 1..4)), 1..6),
+        drop_frame in any::<bool>(),
+    ) {
+        let mut f = 0i64;
+        let cues: Vec<Cue> = v
+            .into_iter()
+            .map(|(gap, dur, words)| {
+                let start = f + gap;
+                f = start + dur;
+                Cue { start: scc::RATE.tick_of(start), end: scc::RATE.tick_of(f), text: words.join(" "), ..Default::default() }
+            })
+            .collect();
+        let doc = Document { cues, ..Default::default() };
+        let bytes = write(&doc, Format::Mcc, WriteOptions { drop_frame, ..Default::default() });
+        let back = parse(&bytes, Format::Mcc).unwrap();
+        prop_assert_eq!(&back.cues, &doc.cues);
+        prop_assert_eq!(write(&back, Format::Mcc, WriteOptions { drop_frame, ..Default::default() }), bytes);
+    }
+
+    /// MCC CEA-708 path alone is frame-exact too.
+    #[test]
+    fn mcc_708_roundtrip(v in proptest::collection::vec((60i64..400, 3i64..300, proptest::collection::vec("[A-Za-z0-9,.!?'()é-]{1,8}", 1..4)), 1..6)) {
+        let mut f = 0i64;
+        let cues: Vec<Cue> = v
+            .into_iter()
+            .map(|(gap, dur, words)| {
+                let start = f + gap;
+                f = start + dur;
+                Cue { start: scc::RATE.tick_of(start), end: scc::RATE.tick_of(f), text: words.join(" "), ..Default::default() }
+            })
+            .collect();
+        let doc = Document { cues, ..Default::default() };
+        let text = filmcraft_captions::mcc::write_with(&doc, true, false, true);
+        let back = parse(text.as_bytes(), Format::Mcc).unwrap();
+        prop_assert_eq!(&back.cues, &doc.cues);
+    }
+
+    /// EBU STL: frame-exact at 25 and 29.97 fps, multi-line text with accents, long subtitles in
+    /// extension blocks.
+    #[test]
+    fn stl_roundtrip(v in proptest::collection::vec((0i64..200, 1i64..300, text()), 0..10), ntsc in any::<bool>()) {
+        let rate = if ntsc { FrameRate::FPS_29_97 } else { FrameRate::FPS_25 };
+        let mut f = 0i64;
+        let cues: Vec<Cue> = v
+            .into_iter()
+            .map(|(gap, dur, text)| {
+                let start = f + gap;
+                f = start + dur;
+                Cue { start: rate.tick_of(start), end: rate.tick_of(f), text, ..Default::default() }
+            })
+            .collect();
+        let doc = Document { cues, ..Default::default() };
+        let opts = WriteOptions { rate: Some(rate), ..Default::default() };
+        let bytes = write(&doc, Format::Stl, opts);
+        let back = parse(&bytes, Format::Stl).unwrap();
+        prop_assert_eq!(&back.cues, &doc.cues);
+        prop_assert_eq!(write(&back, Format::Stl, opts), bytes);
+    }
+
+    /// TTML (IMSC1): frame-exact at the sequence rate; ids and speakers kept.
+    #[test]
+    fn ttml_roundtrip(
+        v in proptest::collection::vec((0i64..200, 1i64..300, text()), 0..10),
+        rate in prop_oneof![Just(FrameRate::FPS_23_976), Just(FrameRate::FPS_25), Just(FrameRate::FPS_29_97), Just(FrameRate::FPS_59_94)],
+        speakers in proptest::collection::vec(proptest::option::of("[A-Z][a-z]{1,6}( [A-Z][a-z]{1,6})?"), 10),
+    ) {
+        let mut f = 0i64;
+        let cues: Vec<Cue> = v
+            .into_iter()
+            .enumerate()
+            .map(|(i, (gap, dur, text))| {
+                let start = f + gap;
+                f = start + dur;
+                Cue { start: rate.tick_of(start), end: rate.tick_of(f), text, speaker: speakers[i].clone(), id: Some(format!("c{}", i + 1)), ..Default::default() }
+            })
+            .collect();
+        let doc = Document { cues, ..Default::default() };
+        let opts = WriteOptions { rate: Some(rate), ..Default::default() };
+        let bytes = write(&doc, Format::Ttml, opts);
+        let back = parse(&bytes, Format::Ttml).unwrap();
+        prop_assert_eq!(&back.cues, &doc.cues);
+        prop_assert_eq!(write(&back, Format::Ttml, opts), bytes);
+    }
+
+    /// DFXP: clock times in milliseconds; frame-exact after snapping to the sequence rate.
+    #[test]
+    fn dfxp_roundtrip(v in proptest::collection::vec((0i64..200, 1i64..300, text()), 0..10), ntsc in any::<bool>()) {
+        let rate = if ntsc { FrameRate::FPS_29_97 } else { FrameRate::FPS_25 };
+        let mut f = 0i64;
+        let cues: Vec<Cue> = v
+            .into_iter()
+            .enumerate()
+            .map(|(i, (gap, dur, text))| {
+                let start = f + gap;
+                f = start + dur;
+                Cue { start: rate.tick_of(start), end: rate.tick_of(f), text, id: Some(format!("c{}", i + 1)), ..Default::default() }
+            })
+            .collect();
+        let doc = Document { cues, ..Default::default() };
+        let bytes = write(&doc, Format::Dfxp, WriteOptions { rate: Some(rate), ..Default::default() });
+        let mut back = parse(&bytes, Format::Dfxp).unwrap();
+        back.snap_to_frames(rate);
+        prop_assert_eq!(&back.cues, &doc.cues);
+    }
+
     /// Readers never panic on arbitrary input.
     #[test]
     fn readers_are_total(bytes in proptest::collection::vec(any::<u8>(), 0..400)) {
         for f in Format::ALL {
             let _ = parse(&bytes, f);
         }
+    }
+
+    /// The binary STL reader never panics on a valid header followed by arbitrary blocks, and
+    /// the MCC reader on arbitrary data lines.
+    #[test]
+    fn stl_and_mcc_readers_are_total(tail in proptest::collection::vec(any::<u8>(), 0..1200), line in "[0-9A-Za-z:;\t ]{0,200}") {
+        let mut stl = write(&Document::default(), Format::Stl, WriteOptions::default());
+        stl.extend(tail);
+        let _ = parse(&stl, Format::Stl);
+        let mcc = format!("File Format=MacCaption_MCC V1.0\nTime Code Rate=30DF\n\n00:00:00;00\t{line}\n");
+        let _ = parse(mcc.as_bytes(), Format::Mcc);
     }
 }
 

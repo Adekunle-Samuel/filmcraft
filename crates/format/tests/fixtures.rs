@@ -192,6 +192,23 @@ fn v8_loads_without_transcripts_and_v9_roundtrips_them() {
     assert_eq!(again.project.transcripts[&ItemId(7)].speakers[0].name, "Speaker 1");
 }
 
+/// Schema 11 (before M10.7): no source graphics; graphic clips without template / roll /
+/// responsive data and layers without style runs or pins load with those empty.
+#[test]
+fn v11_minimal_loads_without_graphics_design_data() {
+    let l = decode(&fixture("v11-minimal.fcproj")).unwrap();
+    assert_eq!(l.schema_version, 11);
+    assert!(l.migrated());
+    let p = &l.project;
+    assert_eq!(p.name, "Before Graphics Templates");
+    assert!(p.source_graphics.is_empty());
+    assert!(p.root.find_bin(filmcraft_project::BinId(1)).is_some());
+    let again = decode(&encode(p, true)).unwrap();
+    assert_eq!(again.schema_version, SCHEMA_VERSION);
+    const { assert!(SCHEMA_VERSION >= 12) };
+    assert_eq!(&again.project, p);
+}
+
 /// Schema 10 (before M3.11): no search bins, no safe areas / capture format / scratch disks in
 /// the project settings.
 #[test]

@@ -171,6 +171,10 @@ impl Face {
             .as_ref()
             .map(FaceBytes::get)
     }
+    /// A copy of the font file's bytes (None if it is missing or unreadable).
+    pub fn data(&self) -> Option<Vec<u8>> {
+        self.bytes().map(<[u8]>::to_vec)
+    }
     /// The parsed font (None if the file is missing or unreadable).
     pub fn font(&self) -> Option<FontRef<'_>> {
         FontRef::from_index(self.bytes()?, self.info.index).ok()
