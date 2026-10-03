@@ -53,7 +53,7 @@ and `filmcraft-cli`.
 | `frame` | L1 | `VideoFrame` (planar YUV / RGBA8 / linear RGBA f32, colour metadata), `AudioBuffer` |
 | `media` | L1 | `MediaSource` trait, probing/openers, frame cache, generators, stills, image sequences, WAV / Broadcast WAV |
 | `project` | L1 | document model, effect definitions, keyframes |
-| `audio-dsp` | L1 | loudness metering (BS.1770 / R128) and audio effects; no dependencies |
+| `audio-dsp` | L1 | loudness metering (BS.1770 / R128), audio effects, channel layouts (BS.775 up/downmix, 5.1 panner), music remix analysis; no dependencies |
 | `text` | L1 | text engine: font database (bundled OFL fonts + system fonts), shaping (harfrust), bidi, line breaking, paragraph layout, glyph/path rasteriser, strokes ([crates/text/README.md](../crates/text/README.md)) |
 | `edit` | L2 | pure edit algebra (insert, overwrite, razor, ripple, roll, slip, slide, rate stretch…; text-based editing: `edit::transcript`) |
 | `speech` | L2 | speech-to-text: `Transcriber` trait, Whisper model catalogue + verified downloader (feature `download`), pure-Rust Whisper inference on candle with word timestamps (feature `whisper`), speaker labelling ([transcripts.md](transcripts.md)) |
@@ -292,8 +292,73 @@ Mix:  bus sum → pre-fader inserts → fader → meter → post-fader inserts �
   thinning, optional minimum time interval) and written over its time range as one undo step,
   with boundary keyframes that keep the automation outside the range unchanged.
 - **Live state.** `PreviewStore::live` (`LiveMix`) also carries per-strip meter peaks posted by the
-  mix (Track Mixer and Audio Meters read them) and the newest project snapshot, which the audio
-  callback uses, so edits made during playback are heard.
+  mix (one per channel; Track Mixer and Audio Meters read them), the voice-over input level (Meter
+  Input(s) Only) and the newest project snapshot, which the audio callback uses, so edits made
+  during playback are heard.
+- **Audio Clip Mixer automation.** Each audio track has a Clip Mixer mode (`clipMixer.setMode`,
+  session state `EditorState::clip_mixer_modes`, Read by default). During a pass the Clip Mixer's
+  fader and pan knob are gestures on the track's `clip.volume` / `clip.pan` lanes
+  (`clipMixer.touch` / `clipMixer.release`): the clip under the playhead plays the held value at
+  once (`render::audio::track_input_live`), and Latch / Touch / Write follow the track rules. At
+  `mixer.recordStop` each stream is thinned and written as **clip keyframes** (Volume `level`,
+  Panner `balance`, in media time) into every clip it covers, with boundary keyframes that keep the
+  clip's values outside the range; one undo step for the whole pass.
+- **Track Mixer view.** The panel menu (`mixer.menu`) has Show/Hide Tracks (`UiState::mixer_hidden`)
+  and Meter Input(s) Only (`UiState::mixer_meter_input_only`: record-armed tracks meter the
+  voice-over input). The transport's record button runs `voiceover.recordToggle`.
+
+### 5.1.1 Multichannel and 5.1
+
+```text
+5.1 track (6 ch: L R C LFE Ls Rs) ─┐                         ┌─► 5.1 Mix ─► 6-ch export / 5.1 device
+stereo / mono track ──5.1 panner───┼─► 5.1 submix / 5.1 Mix ─┤
+5.1 strip ──BS.775 downmix─────────┴─► stereo bus            └─► stereo device: 5.1 Mixdown Type fold
+```
+
+- **Model.** `Track::channels` (Standard = Stereo, Mono, 5.1, Adaptive) and
+  `SequenceSettings::audio_master` (the Mix: Stereo, Mono, 5.1, Adaptive) existed already;
+  `file.newSequence {mix, trackType}` and `sequence.settings {mix}` set them, `mixer.setStrip
+  {channels}` / `mixer.addSubmix {channels}` per strip. The 5.1 panner is four lanes in
+  `MixerStrip::lanes` (`pan51.x`, `pan51.y` −100…100, `pan51.center` 0…100 %, `pan51.lfe` dB): a
+  lane without keyframes stores the static value, so no new project fields were needed and the
+  puck is automatable like any lane.
+- **Maths** (`audio_dsp::channels`). 5.1 order is L, R, C, LFE, Ls, Rs everywhere inside FilmCraft.
+  Downmix is ITU-R BS.775 (`Lo = L + k·C + k·Ls`, `Ro = R + k·C + k·Rs`, mono
+  `M = k·L + k·R + C + ½·Ls + ½·Rs`, `k = 1/√2`, LFE omitted); upmix puts mono on C and stereo on
+  L/R. The panner splits a point source front/rear and left/right with the sine/cosine
+  constant-power law and gives the centre speaker `center·(1 − |x|)` of the front power (Σg² = 1).
+  Stereo sources sit at the puck ± 1 in x; 5.1 sources keep their layout moved by the puck's offset
+  from front-centre (the default puck is the identity). LFE gets the source LFE (5.1) or the mean of
+  the source channels (mono/stereo, default −∞) times the LFE level.
+- **Graph.** Buses are 2 or 6 channels wide (`render::mixer::width_of`); inserts are built for the
+  strip's width; routes convert between widths (5.1 panner into 5.1 buses, BS.775 into stereo
+  buses); meters have one value per channel. `mix_graph` returns the Mix's width;
+  `audio::mix_sequence` always returns stereo, `mix_sequence_layout` any layout and mixdown. Clips
+  on 5.1 tracks play the source's first six channels (or the six picked with Modify ▸ Audio
+  Channels), mono/stereo sources upmixed; clip effects run on all six channels.
+- **Playback.** On a device with ≥ 6 output channels a 5.1 Mix plays as six channels; on a stereo
+  device it is folded with Preferences ▸ Audio ▸ 5.1 Mixdown Type (Front Only, Front + Rear
+  Surround = BS.775, Front + LFE, Front + Rear Surround + LFE; `PreviewStore::mix_layout`).
+- **Export.** Audio Channels Mono / Stereo / 5.1: WAV writes `WAVE_FORMAT_EXTENSIBLE` with channel
+  mask `0x3F`; QuickTime PCM (ProRes, DNxHR, MJPEG) adds a `chan` atom
+  (`kAudioChannelLayoutTag_MPEG_5_1_A`); AAC uses channel configuration 6 (our encoder already
+  supported 1–8 channels; the exporter reorders to AAC's C, L, R, Ls, Rs, LFE). A stereo export of a
+  5.1 Mix is the BS.775 downmix.
+
+### 5.1.2 Voice-over recording
+
+**Voice-over recording** (`engine::voiceover`, `audio.voiceover.*`). The record point R is the playhead, or the In point when In/Out are set (punch-in; punch-out at Out). Playback starts the pre-roll before it (C = max(0, R − pre-roll)) and the input is captured from C. When the UI's audio clock really starts, `audio.voiceover.sync` restarts the capture there. `audio.voiceover.stop` keeps the audio from R to min(stop, Out), writes a mono 32-bit float WAV `<Name> <n>.wav` (Scratch Disks ▸ Captured, else next to the project, else the data or temporary directory), imports it and overwrites it onto the record track at R as one undo step. The record track is the given one, else the record-armed one, else the first targeted one. Input goes through the `AudioInput` trait: cpal in the desktop app (`apps/filmcraft/src/audio_in.rs`, on its own thread), and `SyntheticInput` headless, which produces exactly the samples the timeline asks for so recordings land sample-accurately. Voice-Over Record Settings (Source, Input channel, Name, Countdown Sound Cues, Pre-/Post-roll) are preferences (`voiceOver`). The track header's microphone records or stops, and a right-click opens the settings dialog. Countdown beeps (1 kHz, 100 ms, each whole second of pre-roll and at R) are mixed into playback, an overlay counts down, and playback stops at Out + post-roll.
+
+### 5.1.3 Remix
+
+```text
+clip media (source In … +duration) ─► audio_dsp::remix::analyze: spectral-flux onsets → tempo (autocorrelation, 50–200 BPM)
+  → DP beat tracker → per-beat chroma + mel cepstra → beat self-similarity
+  ─► plan(target, Segments, Variations): intro … joints at beat boundaries … outro, length within one beat
+  ─► hidden clip effect `remix` (target, sliders, original duration, plan in ticks) ─► render::remix::read (20 ms equal-power crossfades)
+```
+
+Clip ▸ Remix ▸ Enable Remix / Remix Properties… / Revert Remix (`clip.remix.*`; agents can use `clip.remix {duration|seconds…}`) and the Remix tool in the Rate Stretch group (drag a music clip's Out edge) retime a music clip to a target duration. The analysis finds the beat and compares every pair of beats by harmony (chroma) and timbre (cepstra). Each joint leaves the music at one beat boundary and continues at the beat boundary whose four beats on either side sound most alike. The intro and outro are kept, and the result lands within one beat of the target. Segments (0–100) sets the number of joints (1–3, more for long extensions). Variations (0–100) sets how far a joint may move from its evenly spaced position (±1–8 beats). The state is a hidden effect instance with no definition, so panels, the effect chain and Paste Attributes ignore it. The plan is stored in ticks, so playback and export read it without re-analysing. A remix never moves other clips: one that would overlap the next clip is refused, and Revert restores the original duration. Results are deterministic and the analysis is cached per media range.
 
 ### 5.2 Essential Sound
 
@@ -325,8 +390,7 @@ essentialSound.generateDucking   trigger clips' summed level (10 ms hops) → ac
   fade-down before it and a fade-up after it (`audio_dsp::ducking::duck_keyframes`), written as Volume
   level keyframes that replace earlier ones.
 - **Presets** (our own names and values) per type; user presets are saved in preferences
-  (`essentialSound.userPresets`). Music remixing to a duration is out of scope (the Duration section
-  says so).
+  (`essentialSound.userPresets`). Music remixing to a duration is Clip ▸ Remix (§5.1.3).
 - **Enhance Speech** is a DSP chain (high-pass, de-mud, presence and air EQ, expander, compressor), not a
   model: no speech-enhancement model with an open licence that we could ship and verify is bundled.
   DeepFilterNet (MIT/Apache-2.0, Rust inference via tract) is the candidate for a future optional
@@ -461,13 +525,13 @@ file.exportMedia {path, preset?, settings?, format?, range?, …}     export.qui
 | `dnxhr` | `filmcraft-dnx` (LB / SQ / HQ / HQX) | MOV (`AVdh`) |
 | `mjpeg` | built in | MOV |
 | `png`, `tiff`, `bmp` | `image` | numbered stills `<name>000.<ext>`, `<name>001.<ext>` … |
-| `gif`, `wav`, `aiff` | built in / `image` | GIF / RIFF WAVE / AIFF (16- or 24-bit PCM) |
+| `gif`, `wav`, `aiff` | built in / `image` | GIF / RIFF WAVE (`WAVE_FORMAT_EXTENSIBLE` for 5.1) / AIFF (16- or 24-bit PCM) |
 
 - **Settings.** `ExportSettings` (serde, camelCase, every field optional) holds Video (frame size or
   Match Source, frame rate, Scale to Fit / Fill / Stretch, pixel aspect, field order — progressive
   only, profile / level, bitrate encoding, target / maximum / adaptive bitrate, keyframe distance,
   maximum render quality), Audio (codec, sample rate, channels, AAC bitrate, PCM sample size),
-  Multiplexer, Captions (burn-in or SRT / WebVTT sidecar), Effects (image / name / timecode
+  Multiplexer (audio channels: mono, stereo or 5.1, §5.1.1), Captions (burn-in or SRT / WebVTT sidecar), Effects (image / name / timecode
   overlays, video limiter, loudness normalization), Metadata (`udta` `©nam`, `©ART`, `©cpy`, `©des`,
   `©cmt`). `settings.summary()` / `estimate_bytes()` feed Export mode's Summary.
 - **Presets.** `export::presets::builtin_presets()` are our own definitions (Match Source adaptive

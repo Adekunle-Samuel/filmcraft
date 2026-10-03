@@ -493,7 +493,7 @@ fn build() -> Vec<CommandSpec> {
             "Sequence…",
             ["File", "New"],
             Some("Cmd+N"),
-            r#"{"name":str,"width":u32=1920,"height":u32=1080,"fps":f64=23.976,"sampleRate":u32=48000,"video":n=3,"audio":n=3,"fromItem":itemId?}"#,
+            r#"{"name":str,"width":u32=1920,"height":u32=1080,"fps":f64=23.976,"sampleRate":u32=48000,"video":n=3,"audio":n=3,"mix":"Stereo|Mono|5.1|Adaptive"?,"trackType":"Standard|Mono|5.1|Adaptive"?,"fromItem":itemId?}"#,
             always,
             |s, p| {
                 let mut st = SequenceSettings::default();
@@ -512,6 +512,17 @@ fn build() -> Vec<CommandSpec> {
                 if let Some(sr) = u64_p(p, "sampleRate") {
                     st.sample_rate = sr as u32;
                 }
+                if let Some(m) = str_p(p, "mix") {
+                    st.audio_master =
+                        crate::mixer::channels_from(m).ok_or_else(|| bad("file.newSequence", format!("unknown mix `{m}` (Stereo, Mono, 5.1, Adaptive)")))?;
+                }
+                let track_type = match str_p(p, "trackType") {
+                    Some(t) => Some(
+                        crate::mixer::channels_from(t)
+                            .ok_or_else(|| bad("file.newSequence", format!("unknown track type `{t}` (Standard, Mono, 5.1, Adaptive)")))?,
+                    ),
+                    None => None,
+                };
                 st.preset = format!("{}x{} {}", st.width, st.height, st.frame_rate.label());
                 let nv = u64_p(p, "video").unwrap_or(3) as usize;
                 let na = u64_p(p, "audio").unwrap_or(3) as usize;
@@ -522,6 +533,9 @@ fn build() -> Vec<CommandSpec> {
                     let id = pr.new_sequence(&name, st, nv, na, None);
                     if let Some(it) = pr.item_mut(id) {
                         it.label = seq_label;
+                    }
+                    if let (Some(c), Some(q)) = (track_type, pr.sequence_mut(id)) {
+                        q.audio_tracks.iter_mut().for_each(|t| t.channels = c);
                     }
                     st2.active_sequence = Some(id);
                     if !st2.open_sequences.contains(&id) {
@@ -1216,27 +1230,47 @@ fn build() -> Vec<CommandSpec> {
             })?;
             Ok(Value::Null)
         }),
-        cmd!("sequence.settings", "Sequence Settings…", ["Sequence"], None, r#"{"width":u32?,"height":u32?,"fps":f64?,"name":str?}"#, has_seq, |s, p| {
-            let id = s.state.active_sequence.ok_or(EngineError::NoSequence)?;
-            let p = p.clone();
-            s.edit("Sequence Settings", |pr, _| {
-                if let Some(n) = str_p(&p, "name") {
-                    pr.item_mut(id).expect("seq").name = n.to_string();
-                }
-                let q = pr.sequence_mut(id).ok_or(EngineError::NoSequence)?;
-                if let Some(w) = u64_p(&p, "width") {
-                    q.settings.width = w as u32;
-                }
-                if let Some(h) = u64_p(&p, "height") {
-                    q.settings.height = h as u32;
-                }
-                if let Some(f) = f64_p(&p, "fps") {
-                    q.settings.frame_rate = FrameRate::from_f64(f);
-                }
-                Ok(())
-            })?;
-            Ok(Value::Null)
-        }),
+        cmd!(
+            "sequence.settings",
+            "Sequence Settings…",
+            ["Sequence"],
+            None,
+            r#"{"width":u32?,"height":u32?,"fps":f64?,"name":str?,"sampleRate":u32?,"mix":"Stereo|Mono|5.1|Adaptive"?}"#,
+            has_seq,
+            |s, p| {
+                let id = s.state.active_sequence.ok_or(EngineError::NoSequence)?;
+                let mix = match str_p(p, "mix") {
+                    Some(m) => Some(
+                        crate::mixer::channels_from(m).ok_or_else(|| bad("sequence.settings", format!("unknown mix `{m}` (Stereo, Mono, 5.1, Adaptive)")))?,
+                    ),
+                    None => None,
+                };
+                let p = p.clone();
+                s.edit("Sequence Settings", |pr, _| {
+                    if let Some(n) = str_p(&p, "name") {
+                        pr.item_mut(id).expect("seq").name = n.to_string();
+                    }
+                    let q = pr.sequence_mut(id).ok_or(EngineError::NoSequence)?;
+                    if let Some(w) = u64_p(&p, "width") {
+                        q.settings.width = w as u32;
+                    }
+                    if let Some(h) = u64_p(&p, "height") {
+                        q.settings.height = h as u32;
+                    }
+                    if let Some(f) = f64_p(&p, "fps") {
+                        q.settings.frame_rate = FrameRate::from_f64(f);
+                    }
+                    if let Some(sr) = u64_p(&p, "sampleRate") {
+                        q.settings.sample_rate = sr as u32;
+                    }
+                    if let Some(m) = mix {
+                        q.settings.audio_master = m;
+                    }
+                    Ok(())
+                })?;
+                Ok(Value::Null)
+            }
+        ),
         cmd!("sequence.renderEffectsInToOut", "Render Effects In to Out", ["Sequence"], Some("Enter"), r#"{"wait":bool=false}"#, has_seq, |s, p| {
             crate::previews::render(s, crate::previews::RenderMode::EffectsInToOut, p)
         }),
@@ -2133,6 +2167,8 @@ fn build() -> Vec<CommandSpec> {
     v.extend(crate::transcript::commands());
     v.extend(crate::panels::commands());
     v.extend(crate::scopes::commands());
+    v.extend(crate::remix::commands());
+    v.extend(crate::voiceover::commands());
     // Edit ▸ Label ▸ <colour>, Paste Attributes, subclips, Video / Audio Options, Replace With Clip…
     // and their menu order
     crate::clip_ops::apply_layout(&mut v);

@@ -17,6 +17,8 @@
 //! Playback asks [`PreviewStore::frame`] first: when the frame lies in a segment with a preview, the
 //! decoded preview frame replaces the live render.
 
+use filmcraft_audio_dsp::channels::{Layout, Mixdown};
+use filmcraft_render::audio::to_layout;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -257,15 +259,35 @@ impl PreviewStore {
         Some(samples)
     }
 
-    /// Sequence audio for playback and meters: rendered audio previews where they are valid, the
-    /// live mix ([`filmcraft_render::audio::mix_sequence`]) everywhere else.
+    /// Sequence audio for playback and meters, as stereo (a 5.1 Mix folded with the BS.775
+    /// downmix): rendered audio previews where they are valid, the live mix everywhere else.
     pub fn mix(&self, project: &Arc<Project>, seq: ItemId, start: i64, frames: usize, sources: &dyn filmcraft_render::SourceProvider) -> AudioBuffer {
-        let Some(q) = project.sequence(seq) else { return AudioBuffer::silence(48_000, 2, frames) };
+        self.mix_layout(project, seq, start, frames, sources, Layout::Stereo, Mixdown::FrontRear)
+    }
+
+    /// [`PreviewStore::mix`] in `layout`: a 5.1 Mix is folded to stereo with `mixdown` (Preferences ▸
+    /// Audio ▸ 5.1 Mixdown Type) or played as six channels on a 5.1 device; a stereo Mix is placed
+    /// on the front speakers of a 5.1 device. Rendered audio previews are stereo BS.775 folds, so
+    /// they are used only for stereo output of a stereo Mix or with the BS.775 mixdown.
+    #[allow(clippy::too_many_arguments)]
+    pub fn mix_layout(
+        &self,
+        project: &Arc<Project>,
+        seq: ItemId,
+        start: i64,
+        frames: usize,
+        sources: &dyn filmcraft_render::SourceProvider,
+        layout: Layout,
+        mixdown: Mixdown,
+    ) -> AudioBuffer {
+        let Some(q) = project.sequence(seq) else { return AudioBuffer::silence(48_000, layout.channels(), frames) };
         let live = Some(&*self.live);
         let has_audio = self.files.read().unwrap_or_else(|e| e.into_inner()).iter().any(|n| n.ends_with(".wav"));
+        let surround = q.settings.audio_master == filmcraft_project::AudioChannels::Surround51;
+        let previews_ok = layout == Layout::Stereo && (!surround || mixdown == Mixdown::FrontRear);
         // held mixer controls are heard live (rendered previews don't know them)
-        if !has_audio || self.live.is_active() {
-            return filmcraft_render::mixer::mix_graph(project, q, start, frames, sources, live);
+        if !has_audio || self.live.is_active() || !previews_ok {
+            return to_layout(filmcraft_render::mixer::mix_graph(project, q, start, frames, sources, live), layout, mixdown);
         }
         let segs = self.audio_segments(project, seq);
         let mut out = AudioBuffer::silence(q.settings.sample_rate, 2, frames);
@@ -290,7 +312,7 @@ impl PreviewStore {
                     }
                 }
                 _ => {
-                    let b = filmcraft_render::mixer::mix_graph(project, q, pos, n, sources, live);
+                    let b = to_layout(filmcraft_render::mixer::mix_graph(project, q, pos, n, sources, live), Layout::Stereo, mixdown);
                     for c in 0..2 {
                         out.channels[c][off..off + n].copy_from_slice(&b.channels[c.min(b.channels.len() - 1)][..n]);
                     }

@@ -19,7 +19,15 @@
 //! | Write | every control from the start of playback | keeps writing the last value until playback stops |
 //!
 //! With "Switch to Touch after Write" (on by default) a Write strip changes to Touch after the
-//! pass. Without a recording pass, `mixer.touch` holds the control live and `mixer.release` commits
+//! pass.
+//!
+//! **Audio Clip Mixer.** Each audio track also has a Clip Mixer mode (`clipMixer.setMode`, session
+//! state, Read by default). Its fader and pan knob are the lanes `clip.volume` / `clip.pan` of the
+//! track (`clipMixer.touch` / `clipMixer.release`); they are heard live (the clip under the
+//! playhead plays the held value) and recorded with the same Latch / Touch / Write rules, but the
+//! pass writes **clip keyframes**: the Volume `level` and Panner `balance` of every clip the
+//! gesture covers, in media time, thinned like track automation, with boundary keyframes that keep
+//! each clip's values outside the recorded range. Without a recording pass, `mixer.touch` holds the control live and `mixer.release` commits
 //! it once (a static value, or a keyframe at the playhead when the lane is automated).
 
 use serde_json::{Value, json};
@@ -32,6 +40,8 @@ use filmcraft_time::{TICKS_PER_SECOND, Tick};
 
 use crate::commands::{CommandSpec, always, bad, bool_p, f64_p, has_seq, str_p, time_p, u64_p};
 use crate::{EngineError, Result, Session};
+use filmcraft_project::mixer::{LANE_PAN51_X, LANE_PAN51_Y, PAN51_LANES};
+use filmcraft_render::audio::{CLIP_LANE_PAN, CLIP_LANE_VOLUME};
 
 type Run = fn(&mut Session, &Value) -> Result<Value>;
 type Enabled = fn(&Session) -> std::result::Result<(), String>;
@@ -103,9 +113,93 @@ impl Recorder {
     }
 }
 
-/// Lanes a Write pass records on every strip.
-fn write_lanes(strip: TrackId) -> &'static [&'static str] {
-    if strip == MASTER_STRIP { &[LANE_VOLUME] } else { &[LANE_VOLUME, LANE_PAN, LANE_MUTE] }
+/// Lanes a Write pass records on a strip (the 5.1 puck instead of pan when it feeds a 5.1 bus).
+fn write_lanes(seq: &Sequence, strip: TrackId) -> &'static [&'static str] {
+    if strip == MASTER_STRIP {
+        &[LANE_VOLUME]
+    } else if seq.pans_51(strip) {
+        &[LANE_VOLUME, LANE_PAN51_X, LANE_PAN51_Y, LANE_MUTE]
+    } else {
+        &[LANE_VOLUME, LANE_PAN, LANE_MUTE]
+    }
+}
+
+// ------------------------------------------------------------------------------------- clip lanes
+
+/// Whether `lane` is an Audio Clip Mixer lane (`clip.volume`, `clip.pan`).
+pub fn is_clip_lane(lane: &str) -> bool {
+    lane == CLIP_LANE_VOLUME || lane == CLIP_LANE_PAN
+}
+
+/// The clip effect parameter behind a Clip Mixer lane.
+fn clip_target(lane: &str) -> (&'static str, &'static str) {
+    if lane == CLIP_LANE_PAN { ("panner", "balance") } else { ("volume", "level") }
+}
+
+/// The Clip Mixer mode of an audio track (Read unless set).
+pub fn clip_mode(s: &Session, track: TrackId) -> AutomationMode {
+    s.state.clip_mixer_modes.get(&track.0).copied().unwrap_or_default()
+}
+
+/// The clip lane value at `t`: the clip under `t` on the track (its keyframes or static value).
+fn clip_underlying(tr: &Track, lane: &str, t: Tick) -> f64 {
+    let (eff, par) = clip_target(lane);
+    tr.item_at(t).and_then(|c| c.effect(eff).map(|e| e.f64_at(par, c.source_time_at(t)))).unwrap_or(0.0)
+}
+
+fn lane_underlying(tr: &Track, lane: &str, t: Tick) -> f64 {
+    if is_clip_lane(lane) { clip_underlying(tr, lane, t) } else { underlying(tr, lane, t) }
+}
+
+/// Parse a Clip Mixer lane from `lane` / `param` (`volume`/`level`, `pan`/`balance`).
+fn clip_lane_p(p: &Value) -> String {
+    match str_p(p, "lane").or_else(|| str_p(p, "param")).unwrap_or("volume") {
+        "pan" | "balance" | "clip.pan" => CLIP_LANE_PAN.to_string(),
+        _ => CLIP_LANE_VOLUME.to_string(),
+    }
+}
+
+/// Write recorded clip-lane points (sequence time) as keyframes into every clip of `tr` they cover.
+fn write_clip_points(tr: &mut Track, lane: &str, pts: &[(Tick, f64)], sr: i64) -> usize {
+    let (eff, par) = clip_target(lane);
+    let (Some(t0), Some(t1)) = (pts.first().map(|p| p.0), pts.last().map(|p| p.0)) else { return 0 };
+    let mut written = 0;
+    for c in tr.items.iter_mut().filter(|c| c.end() > t0 && c.start <= t1) {
+        let c0 = t0.max(c.start);
+        let c1 = t1.min(c.end() - Tick(1));
+        if c1 < c0 {
+            continue;
+        }
+        // points inside the clip, plus the interpolated value at its edges of the range
+        let at = |t: Tick| -> f64 {
+            let i = pts.partition_point(|p| p.0 <= t);
+            match (i.checked_sub(1).map(|j| pts[j]), pts.get(i)) {
+                (Some(a), Some(b)) if b.0 > a.0 => a.1 + (b.1 - a.1) * ((t - a.0).0 as f64 / (b.0 - a.0).0 as f64),
+                (Some(a), _) => a.1,
+                (None, Some(b)) => b.1,
+                (None, None) => 0.0,
+            }
+        };
+        let mut local: Vec<(Tick, f64)> = vec![(c0, at(c0))];
+        local.extend(pts.iter().copied().filter(|p| p.0 > c0 && p.0 < c1));
+        if c1 > c0 {
+            local.push((c1, at(c1)));
+        }
+        let mt: Vec<(Tick, f64)> = local.iter().map(|&(t, v)| (c.source_time_at(t), v)).collect();
+        let (m0, m1) = (mt[0].0.min(mt[mt.len() - 1].0), mt[0].0.max(mt[mt.len() - 1].0));
+        let mut mt = mt;
+        mt.sort_by_key(|p| p.0);
+        let eps = Tick::from_units(1, sr).max(Tick(1));
+        let starts_inside = c0 > c.start;
+        let ends_inside = c1 < c.end() - Tick(1);
+        let Some(e) = c.effect_mut(eff) else { continue };
+        let Some(param) = e.param_mut(par) else { continue };
+        let before = starts_inside.then(|| param.f64_at(m0 - eps));
+        let after = ends_inside.then(|| param.f64_at(m1 + eps));
+        write_lane(param, m0, m1, &mt, before, after, eps, false);
+        written += mt.len();
+    }
+    written
 }
 
 /// The lane value as automation plays it (no live overrides).
@@ -122,6 +216,12 @@ fn underlying(tr: &Track, lane: &str, t: Tick) -> f64 {
 }
 
 fn clamp_lane(lane: &str, v: f64) -> f64 {
+    if lane == CLIP_LANE_VOLUME {
+        return v.clamp(FADER_MIN_DB, FADER_MAX_DB);
+    }
+    if lane == CLIP_LANE_PAN {
+        return v.clamp(-100.0, 100.0);
+    }
     match lane_info(lane) {
         Some(i) if i.hold => {
             if v >= 0.5 {
@@ -149,9 +249,20 @@ pub fn record_start(s: &mut Session, t: Tick) -> Result<Value> {
         if tr.mixer.mode != AutomationMode::Write {
             continue;
         }
-        for lane in write_lanes(id) {
+        for lane in write_lanes(seq, id) {
             let v = underlying(&tr, lane, t);
             let mut g = Gesture::new(id, lane, AutomationMode::Write, t, v);
+            g.touching = false;
+            gestures.push(g);
+        }
+    }
+    // Audio Clip Mixer tracks in Write mode
+    for tr in &seq.audio_tracks {
+        if clip_mode(s, tr.id) != AutomationMode::Write {
+            continue;
+        }
+        for lane in [CLIP_LANE_VOLUME, CLIP_LANE_PAN] {
+            let mut g = Gesture::new(tr.id, lane, AutomationMode::Write, t, clip_underlying(tr, lane, t));
             g.touching = false;
             gestures.push(g);
         }
@@ -169,7 +280,8 @@ pub fn record_start(s: &mut Session, t: Tick) -> Result<Value> {
 pub fn touch(s: &mut Session, strip: TrackId, lane: &str, v: f64, t: Tick) -> Result<Value> {
     let v = clamp_lane(lane, v);
     let seq_id = s.mixrec.seq.or(s.state.active_sequence).ok_or(EngineError::NoSequence)?;
-    let mode = seq_of(s, seq_id)?.strip(strip).ok_or_else(|| bad("mixer.touch", "no such strip"))?.mixer.mode;
+    let strip_mode = seq_of(s, seq_id)?.strip(strip).ok_or_else(|| bad("mixer.touch", "no such strip"))?.mixer.mode;
+    let mode = if is_clip_lane(lane) { clip_mode(s, strip) } else { strip_mode };
     s.previews.live.hold(strip, lane, v);
     if !s.mixrec.active() || !mode.writes() {
         return Ok(json!({"recording": false, "value": v}));
@@ -214,6 +326,10 @@ pub fn release(s: &mut Session, strip: TrackId, lane: &str, t: Tick) -> Result<V
     let held = s.previews.live.get(strip, lane);
     s.previews.live.clear(strip, lane);
     match held {
+        Some(o) if is_clip_lane(lane) => {
+            set_clip_value(s, strip, lane, o.value, t)?;
+            Ok(json!({"recording": false, "value": o.value}))
+        }
         Some(o) => {
             set_value(s, strip, lane, o.value, t)?;
             Ok(json!({"recording": false, "value": o.value}))
@@ -243,7 +359,8 @@ pub fn record_stop(s: &mut Session, t_stop: Tick) -> Result<Value> {
                 continue;
             }
             let Some(tr) = seq.strip(g.strip).map(|c| c.into_owned()) else { continue };
-            let hold = lane_info(&g.lane).is_some_and(|i| i.hold);
+            let clip_lane = is_clip_lane(&g.lane);
+            let hold = !clip_lane && lane_info(&g.lane).is_some_and(|i| i.hold);
             let held = g.value();
             let end = match g.mode {
                 AutomationMode::Touch => g.released.unwrap_or(t_stop).min(t_stop.max(g.points[0].0)),
@@ -254,18 +371,25 @@ pub fn record_stop(s: &mut Session, t_stop: Tick) -> Result<Value> {
             let mut pts = g.points.clone();
             if g.mode == AutomationMode::Touch && automatch.0 > 0 && !hold {
                 let back = end + automatch;
-                pts.push((back, underlying(&tr, &g.lane, back)));
+                pts.push((back, lane_underlying(&tr, &g.lane, back)));
             }
             let t0 = pts[0].0;
             let t1 = pts.last().map(|p| p.0).unwrap_or(t0);
             let tol = if hold {
                 0.0
             } else if prefs.linear_keyframe_thinning {
-                if g.lane == LANE_PAN { 0.25 } else { 0.05 }
+                if g.lane == LANE_PAN || g.lane == CLIP_LANE_PAN || PAN51_LANES.contains(&g.lane.as_str()) { 0.25 } else { 0.05 }
             } else {
                 0.0
             };
             let thinned = thin_points(&pts, tol, min_interval, hold);
+            if clip_lane {
+                let lane = g.lane.clone();
+                let n = seq.mix_track_mut(g.strip).map(|tr| write_clip_points(tr, &lane, &thinned, rate)).unwrap_or(0);
+                keyframes += n;
+                written.push(json!({"strip": g.strip.0, "lane": lane, "from": t0.0, "to": t1.0, "keyframes": n, "points": pts.len(), "clips": true}));
+                continue;
+            }
             let before = (t0.0 > 0).then(|| underlying(&tr, &g.lane, t0 - eps));
             let after = tr.lane(&g.lane).filter(|p| p.keyframes.iter().any(|k| k.time > t1)).map(|_| underlying(&tr, &g.lane, t1 + eps));
             keyframes += thinned.len();
@@ -292,6 +416,34 @@ pub fn record_stop(s: &mut Session, t_stop: Tick) -> Result<Value> {
     s.previews.live.publish_project(s.project.clone());
     result?;
     Ok(json!({"recording": false, "lanes": written.len(), "keyframes": keyframes, "written": written}))
+}
+
+/// Commit a Clip Mixer value outside a pass: the clip under `t` on the track gets the value (a
+/// keyframe at `t` when the parameter is animated, else its static value).
+pub fn set_clip_value(s: &mut Session, track: TrackId, lane: &str, v: f64, t: Tick) -> Result<()> {
+    let (eff, par) = clip_target(lane);
+    let v = clamp_lane(lane, v);
+    s.edit_sequence("Audio Clip Mixer", move |q, _, _| {
+        let tr = q.mix_track_mut(track).ok_or_else(|| EngineError::Other("no such track".into()))?;
+        let idx = tr.items.iter().position(|c| c.start <= t && t < c.end()).ok_or_else(|| EngineError::Other("no clip under the playhead".into()))?;
+        let c = &mut tr.items[idx];
+        let mt = c.source_time_at(t);
+        let p = c.effect_mut(eff).and_then(|e| e.param_mut(par)).ok_or_else(|| EngineError::Other(format!("the clip has no {eff} effect")))?;
+        if p.is_animated() {
+            p.put_keyframe(mt, ParamValue::Float(v));
+        } else {
+            p.value = ParamValue::Float(v);
+        }
+        Ok(())
+    })
+}
+
+fn clip_track_p(s: &Session, p: &Value, cmd: &str) -> Result<TrackId> {
+    let id = strip_p(s, p, cmd)?;
+    if !active_seq(s)?.audio_tracks.iter().any(|t| t.id == id) {
+        return Err(bad(cmd, "the Audio Clip Mixer has audio tracks only"));
+    }
+    Ok(id)
 }
 
 // ------------------------------------------------------------------------------------- helpers
@@ -353,7 +505,7 @@ fn lane_p(s: &Session, p: &Value, strip: TrackId, cmd: &str) -> Result<String> {
     if !ok {
         return Err(bad(cmd, format!("no lane `{lane}` on this strip (volume, pan, mute, send.<i>.level, fx.<slot>.<param>)")));
     }
-    if strip == MASTER_STRIP && (lane == LANE_PAN || lane == LANE_MUTE || parse_send_lane(&lane).is_some()) {
+    if strip == MASTER_STRIP && (lane == LANE_PAN || lane == LANE_MUTE || PAN51_LANES.contains(&lane.as_str()) || parse_send_lane(&lane).is_some()) {
         return Err(bad(cmd, "the Mix track has volume and effect lanes only"));
     }
     Ok(lane)
@@ -398,7 +550,7 @@ fn mode_p(p: &Value) -> Option<AutomationMode> {
     str_p(p, "mode").and_then(AutomationMode::from_name)
 }
 
-fn channels_name(c: AudioChannels) -> &'static str {
+pub(crate) fn channels_name(c: AudioChannels) -> &'static str {
     match c {
         AudioChannels::Mono => "Mono",
         AudioChannels::Stereo => "Stereo",
@@ -407,10 +559,11 @@ fn channels_name(c: AudioChannels) -> &'static str {
     }
 }
 
-fn channels_from(s: &str) -> Option<AudioChannels> {
+/// Parse a channel format / track type name (`Mono`, `Stereo` or `Standard`, `5.1`, `Adaptive`).
+pub(crate) fn channels_from(s: &str) -> Option<AudioChannels> {
     match s.to_ascii_lowercase().as_str() {
         "mono" => Some(AudioChannels::Mono),
-        "stereo" => Some(AudioChannels::Stereo),
+        "stereo" | "standard" => Some(AudioChannels::Stereo),
         "5.1" | "surround51" => Some(AudioChannels::Surround51),
         "adaptive" => Some(AudioChannels::Adaptive),
         _ => None,
@@ -455,6 +608,9 @@ pub fn strip_json(s: &Session, seq: &Sequence, id: TrackId, t: Tick) -> Value {
         "inserts": tr.effects.iter().enumerate().map(|(i, e)| json!({"slot": i, "effect": e.effect, "name": e.def().map(|d| d.name).unwrap_or(""), "enabled": e.enabled, "postFader": e.post_fader, "params": insert_params(e)})).collect::<Vec<_>>(),
         "sends": tr.mixer.sends.iter().enumerate().map(|(i, sd)| json!({"send": i, "target": strip_label(seq, sd.target), "levelDb": sd.level_db, "pan": sd.pan, "preFader": sd.pre_fader, "muted": sd.muted})).collect::<Vec<_>>(),
         "at": {"time": t.0, "volumeDb": shown(LANE_VOLUME), "pan": shown(LANE_PAN), "mute": shown(LANE_MUTE) >= 0.5},
+        "outputChannels": channels_name(seq.output_channels(id)),
+        "pans51": seq.pans_51(id),
+        "pan51": {"x": shown(LANE_PAN51_X), "y": shown(LANE_PAN51_Y), "center": shown(pm::LANE_PAN51_CENTER), "lfeDb": shown(pm::LANE_PAN51_LFE)},
         "lanes": lanes,
     })
 }
@@ -469,6 +625,7 @@ fn inspect(s: &mut Session, p: &Value) -> Result<Value> {
         "gestures": s.mixrec.gestures.iter().map(|g| json!({"strip": strip_label(seq, g.strip), "lane": g.lane, "mode": g.mode.label(), "touching": g.touching, "points": g.points.len(), "value": g.value()})).collect::<Vec<_>>(),
         "latencySamples": filmcraft_render::mixer::graph_latency(seq),
         "automatchTime": s.prefs.audio.automatch_time,
+        "clipModes": seq.audio_tracks.iter().map(|t| json!({"track": strip_label(seq, t.id), "mode": clip_mode(s, t.id).label()})).collect::<Vec<_>>(),
     }))
 }
 
@@ -1121,6 +1278,52 @@ pub fn commands() -> Vec<CommandSpec> {
             r#"{"clip":id,"effect":"volume"|"panner","param":"level"|"balance","value":f64,"keyframe":bool?,"time":ticks?,"begin":bool?}"#,
             has_seq,
             clip_set,
+            true,
+        ),
+        spec(
+            "clipMixer.setMode",
+            "Audio Clip Mixer Automation Mode",
+            &[],
+            None,
+            r#"{"track":"A1"|id,"mode":"Off|Read|Latch|Touch|Write"}"#,
+            has_seq,
+            |s, p| {
+                let id = clip_track_p(s, p, "clipMixer.setMode")?;
+                let m = mode_p(p).ok_or_else(|| bad("clipMixer.setMode", "need `mode` (Off, Read, Latch, Touch, Write)"))?;
+                s.state.clip_mixer_modes.insert(id.0, m);
+                Ok(json!({"track": id.0, "mode": m.label()}))
+            },
+            false,
+        ),
+        spec(
+            "clipMixer.touch",
+            "Touch Clip Mixer Control",
+            &[],
+            None,
+            r#"{"track":"A1"|id,"lane":"volume|pan","value":f64,"time":ticks?}"#,
+            has_seq,
+            |s, p| {
+                let id = clip_track_p(s, p, "clipMixer.touch")?;
+                let lane = clip_lane_p(p);
+                let v = f64_p(p, "value").ok_or_else(|| bad("clipMixer.touch", "need `value`"))?;
+                let t = time_p(s, p, "").unwrap_or(s.playhead());
+                touch(s, id, &lane, v, t)
+            },
+            false,
+        ),
+        spec(
+            "clipMixer.release",
+            "Release Clip Mixer Control",
+            &[],
+            None,
+            r#"{"track":"A1"|id,"lane":"volume|pan","time":ticks?}"#,
+            has_seq,
+            |s, p| {
+                let id = clip_track_p(s, p, "clipMixer.release")?;
+                let lane = clip_lane_p(p);
+                let t = time_p(s, p, "").unwrap_or(s.playhead());
+                release(s, id, &lane, t)
+            },
             true,
         ),
         spec(

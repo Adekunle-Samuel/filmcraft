@@ -15,6 +15,7 @@ pub enum Tool {
     Ripple,
     Rolling,
     RateStretch,
+    Remix,
     Razor,
     Slip,
     Slide,
@@ -27,13 +28,14 @@ pub enum Tool {
 }
 
 impl Tool {
-    pub const ALL: [Tool; 15] = [
+    pub const ALL: [Tool; 16] = [
         Tool::Selection,
         Tool::TrackSelectForward,
         Tool::TrackSelectBackward,
         Tool::Ripple,
         Tool::Rolling,
         Tool::RateStretch,
+        Tool::Remix,
         Tool::Razor,
         Tool::Slip,
         Tool::Slide,
@@ -52,6 +54,7 @@ impl Tool {
             Tool::Ripple => "Ripple Edit Tool",
             Tool::Rolling => "Rolling Edit Tool",
             Tool::RateStretch => "Rate Stretch Tool",
+            Tool::Remix => "Remix Tool",
             Tool::Razor => "Razor Tool",
             Tool::Slip => "Slip Tool",
             Tool::Slide => "Slide Tool",
@@ -71,6 +74,7 @@ impl Tool {
             Tool::Ripple => "B",
             Tool::Rolling => "N",
             Tool::RateStretch => "R",
+            Tool::Remix => "",
             Tool::Razor => "C",
             Tool::Slip => "Y",
             Tool::Slide => "U",
@@ -89,6 +93,7 @@ impl Tool {
             Tool::Ripple => Icon::Ripple,
             Tool::Rolling => Icon::Rolling,
             Tool::RateStretch => Icon::RateStretch,
+            Tool::Remix => Icon::Remix,
             Tool::Razor => Icon::Razor,
             Tool::Slip => Icon::Slip,
             Tool::Slide => Icon::Slide,
@@ -112,7 +117,7 @@ impl Tool {
         vec![
             vec![Tool::Selection],
             vec![Tool::TrackSelectForward, Tool::TrackSelectBackward],
-            vec![Tool::Ripple, Tool::Rolling, Tool::RateStretch],
+            vec![Tool::Ripple, Tool::Rolling, Tool::RateStretch, Tool::Remix],
             vec![Tool::Razor],
             vec![Tool::Slip, Tool::Slide],
             vec![Tool::Pen, Tool::Rectangle, Tool::Ellipse],
@@ -388,6 +393,12 @@ pub struct UiState {
     /// Audio Track Mixer: effects and sends section expanded.
     #[serde(default)]
     pub mixer_fx_open: bool,
+    /// Audio Track Mixer ▸ Show/Hide Tracks: strip ids (audio tracks, submixes) not shown.
+    #[serde(default)]
+    pub mixer_hidden: Vec<u64>,
+    /// Audio Track Mixer ▸ Meter Input(s) Only: record-armed track meters show the recording input.
+    #[serde(default)]
+    pub mixer_meter_input_only: bool,
     /// Audio Gain dialog draft (mode, dB values).
     #[serde(default)]
     pub audio_gain: AudioGainDraft,
@@ -705,6 +716,8 @@ impl Default for UiState {
             transcript_search: String::new(),
             play_after_render: true,
             mixer_fx_open: false,
+            mixer_hidden: Vec::new(),
+            mixer_meter_input_only: false,
             settings: None,
             audio_gain: AudioGainDraft::default(),
             delete_tracks: DeleteTracksDraft::default(),

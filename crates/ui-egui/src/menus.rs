@@ -80,6 +80,8 @@ pub const UI_COMMANDS: &[UiCommand] = &[
     uic!("view.dynamicAudioWaveforms", "Dynamic Audio Waveforms", ["View"], None),
     uic!("multicam.toggleView", "Multi-Camera View", ["View"], Some("Shift+0")),
     uic!("multicam.recordToggle", "Multi-Camera Record On/Off Toggle", [], Some("0")),
+    uic!("voiceover.recordToggle", "Voice-over Record", [], None),
+    uic!("voiceover.settingsDialog", "Voice-Over Record Settings…", [], None),
     uic!("view.theme.dark", "Darkest", ["View", "Appearance"], None),
     uic!("view.theme.medium", "Medium", ["View", "Appearance"], None),
     uic!("view.theme.light", "Light", ["View", "Appearance"], None),
@@ -97,6 +99,7 @@ pub const UI_COMMANDS: &[UiCommand] = &[
     uic!("tool.ripple", "Ripple Edit Tool", [], Some("B")),
     uic!("tool.rolling", "Rolling Edit Tool", [], Some("N")),
     uic!("tool.rateStretch", "Rate Stretch Tool", [], Some("R")),
+    uic!("tool.remix", "Remix Tool", [], None),
     uic!("tool.razor", "Razor Tool", [], Some("C")),
     uic!("tool.slip", "Slip Tool", [], Some("Y")),
     uic!("tool.slide", "Slide Tool", [], Some("U")),
@@ -171,6 +174,9 @@ pub fn invoke(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, params: Val
         if let Err(e) = &r {
             app.ui.status = e.clone();
         }
+        return r;
+    }
+    if let Some(r) = crate::panels::voiceover::route(app, ctx, id, &params) {
         return r;
     }
     if let Some(r) = crate::panels::clip_dialogs::route(app, id, &params) {
@@ -281,6 +287,11 @@ pub fn invoke(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, params: Val
             filmcraft_engine::find_command(id).map_or(Ok(()), |c| (c.enabled)(&app.session))?;
             crate::panels::color_dialogs::open_interpret(app, &params);
             return Ok(json!({"dialog": "interpretFootage"}));
+        }
+        // Remix Properties… from the menu opens the dialog; with params it applies directly.
+        "clip.remix.properties" if params.as_object().is_none_or(|m| m.is_empty()) => {
+            filmcraft_engine::find_command(id).map_or(Ok(()), |c| (c.enabled)(&app.session))?;
+            return crate::panels::remix::open(app, ctx);
         }
         "sequence.deleteTracks" if params.as_object().is_none_or(|m| m.is_empty()) => {
             filmcraft_engine::find_command(id).map_or(Ok(()), |c| (c.enabled)(&app.session))?;

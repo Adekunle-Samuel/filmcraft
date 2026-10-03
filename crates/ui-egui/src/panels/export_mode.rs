@@ -705,9 +705,13 @@ fn audio_section(ui: &mut egui::Ui, reg: &mut Reg, s: &mut ExportSettings, t: &T
         }
     });
     row(ui, t, "Channels", |ui| {
-        let cur = if s.audio.channels == 1 { "Mono" } else { "Stereo" };
-        if let Some(i) = combo(ui, reg, "export.audio.channels", cur, &opts(&["Mono", "Stereo"]), 120.0) {
-            s.audio.channels = i as u32 + 1;
+        let cur = match s.audio.channels {
+            1 => "Mono",
+            6 => "5.1",
+            _ => "Stereo",
+        };
+        if let Some(i) = combo(ui, reg, "export.audio.channels", cur, &opts(&["Mono", "Stereo", "5.1"]), 120.0) {
+            s.audio.channels = [1, 2, 6][i.min(2)];
         }
     });
     if s.audio_codec() == AudioCodec::Aac {
