@@ -299,3 +299,54 @@ fn offline_slate_is_deterministic_and_marked() {
         ::image::save_buffer(p, &a, 640, 360, ::image::ExtendedColorType::Rgba8).unwrap();
     }
 }
+
+/// A 320×180 4:2:0 source with smooth gradients (what decoders hand the renderer).
+struct YuvSource(GeneratorSource);
+
+impl MediaSource for YuvSource {
+    fn info(&self) -> &filmcraft_media::MediaInfo {
+        self.0.info()
+    }
+    fn video_frame(&self, _req: FrameRequest) -> filmcraft_media::Result<Arc<filmcraft_frame::VideoFrame>> {
+        let (w, h) = (320usize, 180usize);
+        let y = (0..w * h).map(|i| (16 + (i % w) * 200 / w + (i / w) * 20 / h) as u8).collect();
+        let u = (0..w * h / 4).map(|i| (90 + (i % (w / 2)) * 60 / (w / 2)) as u8).collect();
+        let v = (0..w * h / 4).map(|i| (100 + (i / (w / 2)) * 50 / (h / 2)) as u8).collect();
+        Ok(Arc::new(filmcraft_frame::VideoFrame {
+            width: w as u32,
+            height: h as u32,
+            data: filmcraft_frame::PixelData::Yuv8 { planes: [Arc::new(y), Arc::new(u), Arc::new(v)], chroma: filmcraft_frame::Chroma::C420, alpha: None },
+            color: filmcraft_color::ColorInfo::REC709,
+            par: (1, 1),
+            pts: Tick::ZERO,
+        }))
+    }
+    fn audio(&self, start: i64, frames: usize, sample_rate: u32) -> filmcraft_media::Result<filmcraft_frame::AudioBuffer> {
+        self.0.audio(start, frames, sample_rate)
+    }
+}
+
+#[test]
+fn draft_reduced_resolution_plans_carry_decimated_yuv() {
+    let (mut p, red, _ocean, seq, mut map) = setup();
+    let matte = GeneratorSource::new(Generator::ColorMatte { color: [0.0, 0.0, 0.0, 1.0] }, 320, 180, FrameRate::FPS_24, Tick(10 * TICKS_PER_SECOND));
+    map.0.insert(red, Arc::new(YuvSource(matte)) as SharedSource);
+    place(&mut p, seq, 0, red, 0, 48);
+    let t = FrameRate::FPS_24.tick_of(3);
+    for draft in [false, true] {
+        for (scale, small_w) in [(1.0f32, 320u32), (0.5, 160), (0.25, 80)] {
+            let opts = RenderOptions { scale, ..Default::default() };
+            let plan = filmcraft_media::cancel::with_draft(draft, || plan::plan_frame(&p, seq, t, opts, &map));
+            let plan::FramePlan::Layers { layers, .. } = &plan else { panic!("GPU-drawable") };
+            // exact playback hands over the decoded picture; draft playback planes at the drawn size
+            assert_eq!(layers[0].frame.width, if draft { small_w } else { 320 }, "scale {scale}, draft {draft}");
+            assert!(matches!(layers[0].frame.data, filmcraft_frame::PixelData::Yuv8 { .. }));
+            let got = plan::execute_cpu(&plan);
+            let reference = render_sequence(&p, seq, t, opts, &map);
+            assert_eq!((got.w, got.h), (reference.w, reference.h));
+            let max = got.px.iter().zip(&reference.px).map(|(a, b)| (a - b).abs()).fold(0f32, f32::max);
+            // the Y'CbCr-code mean differs from a linear-light mean by a little on gradients
+            assert!(max < if draft { 0.03 } else { 1e-5 }, "scale {scale}, draft {draft}: max diff {max}");
+        }
+    }
+}

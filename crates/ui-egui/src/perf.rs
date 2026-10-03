@@ -18,6 +18,7 @@ pub fn stats(app: &FilmcraftApp) -> Value {
         "dropped": dropped,
         "dropRate": if shown + dropped == 0 { 0.0 } else { dropped as f64 / (shown + dropped) as f64 },
         "resolution": app.ui.program.res.label(),
+        "draftDecode": app.session.prefs.playback.draft_decode,
     });
     let mut frames = app.frames.stats().to_json();
     frames["workers"] = json!(app.frames.workers());

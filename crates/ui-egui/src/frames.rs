@@ -40,6 +40,17 @@ pub struct FrameKey {
     /// Output width in pixels (thumbnails) or scale ×1000 (monitors).
     pub size: u32,
     pub revision: u64,
+    /// Draft decoding (reduced-resolution playback with Settings ▸ Playback ▸ Draft decoding):
+    /// sources may decode approximate non-reference pictures
+    /// ([`filmcraft_media::cancel::with_draft`]). Draft frames have their own keys, so a paused
+    /// monitor, an export or a render never shows one.
+    pub draft: bool,
+}
+
+/// Whether a monitor frame is requested with draft decoding ([`FrameKey::draft`]): only while
+/// playing, at 1/2 resolution or lower, with the preference on.
+pub fn draft_playback(playing: bool, scale: f32, enabled: bool) -> bool {
+    enabled && playing && scale <= 0.5
 }
 
 pub struct Rgba {
@@ -597,7 +608,7 @@ impl FrameServer {
     /// The most recent cached frame for `target` at or before `frame` within `max_back` frames.
     pub fn nearest(&self, target: Target, frame: i64, size: u32, revision: u64, max_back: i64) -> Option<Arc<Rgba>> {
         for d in 0..=max_back {
-            if let Some(v) = self.get(&FrameKey { target, frame: frame - d, size, revision }) {
+            if let Some(v) = self.get(&FrameKey { target, frame: frame - d, size, revision, draft: false }) {
                 return Some(v);
             }
         }
@@ -756,23 +767,25 @@ fn run_job(sh: &Shared, job: &Job, pool: &Arc<MediaPool>, services: &Arc<dyn Ser
     let mut loading = false;
     let preview = filmcraft_media::cancel::with_cancel(&job.cancel, || {
         filmcraft_media::cancel::with_catch_up(job.catch_up, || {
-            if let Target::SequencePlan(seq) = job.key.target {
-                let (plan, pv) = plan_job(job, seq, pool, services, previews);
-                loading = filmcraft_media::pending::take();
-                if !job.cancel.load(Ordering::Relaxed) && !loading {
-                    // Convert texels for upload here, not on the UI thread when the frame is shown.
-                    let prepared = filmcraft_gpu::prepare(&plan);
-                    sh.plans.lock().unwrap_or_else(|e| e.into_inner()).insert(job.key, GpuPlan { plan, prepared });
+            filmcraft_media::cancel::with_draft(job.key.draft, || {
+                if let Target::SequencePlan(seq) = job.key.target {
+                    let (plan, pv) = plan_job(job, seq, pool, services, previews);
+                    loading = filmcraft_media::pending::take();
+                    if !job.cancel.load(Ordering::Relaxed) && !loading {
+                        // Convert texels for upload here, not on the UI thread when the frame is shown.
+                        let prepared = filmcraft_gpu::prepare(&plan);
+                        sh.plans.lock().unwrap_or_else(|e| e.into_inner()).insert(job.key, GpuPlan { plan, prepared });
+                    }
+                    pv
+                } else {
+                    let (img, pv) = render_job(job, pool, services, previews);
+                    loading = filmcraft_media::pending::take();
+                    if !job.cancel.load(Ordering::Relaxed) && !loading {
+                        sh.done.lock().unwrap_or_else(|e| e.into_inner()).insert(job.key, Arc::new(img));
+                    }
+                    pv
                 }
-                pv
-            } else {
-                let (img, pv) = render_job(job, pool, services, previews);
-                loading = filmcraft_media::pending::take();
-                if !job.cancel.load(Ordering::Relaxed) && !loading {
-                    sh.done.lock().unwrap_or_else(|e| e.into_inner()).insert(job.key, Arc::new(img));
-                }
-                pv
-            }
+            })
         })
     });
     let cancelled = job.cancel.load(Ordering::Relaxed);
@@ -893,6 +906,16 @@ fn render_job(job: &Job, pool: &Arc<MediaPool>, services: &Arc<dyn Services>, pr
 #[cfg(test)]
 mod tests {
     use super::{PlaybackMeter, playback_plan};
+
+    #[test]
+    fn draft_decoding_only_for_reduced_resolution_playback() {
+        use super::draft_playback;
+        assert!(draft_playback(true, 0.5, true) && draft_playback(true, 0.25, true));
+        assert!(!draft_playback(true, 1.0, true), "full resolution is never draft");
+        assert!(!draft_playback(false, 0.5, true), "a paused frame is never draft");
+        assert!(!draft_playback(true, 0.5, false), "off unless enabled");
+        assert!(!filmcraft_engine::autosave::Preferences::default().playback.draft_decode, "off by default");
+    }
 
     #[test]
     fn playback_plan_skips_frames_only_when_workers_cannot_keep_up() {

@@ -951,6 +951,7 @@ static CATEGORIES: &[Category] = &[
             b("playback.pauseEncoderQueue", "Pause Media Encoder queue during playback", false),
             b("playback.enableTransmit", "Enable Mercury Transmit", false),
             b("playback.disableVideoInBackground", "Disable video output when in the background", false),
+            b("playback.draftDecode", "Draft decoding at reduced playback resolution (H.264: faster, some frames less filtered)", true),
         ],
     },
     Category {
