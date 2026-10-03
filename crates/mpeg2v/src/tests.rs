@@ -4,17 +4,17 @@
 use super::*;
 
 /// A minimal bit writer for building streams.
-struct W {
-    out: Vec<u8>,
+pub(crate) struct W {
+    pub(crate) out: Vec<u8>,
     acc: u64,
     n: u32,
 }
 
 impl W {
-    fn new() -> W {
+    pub(crate) fn new() -> W {
         W { out: Vec::new(), acc: 0, n: 0 }
     }
-    fn put(&mut self, v: u32, bits: u32) {
+    pub(crate) fn put(&mut self, v: u32, bits: u32) {
         for i in (0..bits).rev() {
             self.acc = (self.acc << 1) | ((v >> i) & 1) as u64;
             self.n += 1;
@@ -25,17 +25,17 @@ impl W {
             }
         }
     }
-    fn code(&mut self, s: &str) {
+    pub(crate) fn code(&mut self, s: &str) {
         for c in s.chars().filter(|c| *c != ' ') {
             self.put((c == '1') as u32, 1);
         }
     }
-    fn align(&mut self) {
+    pub(crate) fn align(&mut self) {
         while self.n != 0 {
             self.put(0, 1);
         }
     }
-    fn start(&mut self, code: u8) {
+    pub(crate) fn start(&mut self, code: u8) {
         self.align();
         self.out.extend_from_slice(&[0, 0, 1, code]);
     }

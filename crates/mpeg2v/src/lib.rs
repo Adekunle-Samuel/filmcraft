@@ -407,6 +407,8 @@ pub struct Decoder {
     fwd: Option<Anchor>,
     bwd: Option<Anchor>,
     building: Option<Building>,
+    /// Mid-gray stand-in for missing references.
+    gray: Option<Arc<Frame>>,
     pending: Option<Pending>,
     out: Vec<Picture>,
     errors: usize,
@@ -430,6 +432,7 @@ impl Decoder {
             fwd: None,
             bwd: None,
             building: None,
+            gray: None,
             pending: None,
             out: Vec::new(),
             errors: 0,
@@ -642,9 +645,19 @@ impl Decoder {
         };
         // a P second field may predict from the first field of its own frame
         let first_field = (is_second && ptype == PictureType::P).then(|| frame.clone());
+        // A missing reference (decoding started at a P picture, or a broken link) predicts from
+        // mid-gray.
+        if self.gray.as_ref().is_none_or(|g| g.w != w || g.h != h || g.cw != cw) {
+            let mut g = Frame::new(w, h, cw, ch);
+            g.planes[0].fill(128);
+            self.gray = Some(Arc::new(g));
+        }
+        let gray = self.gray.as_deref();
+        let latest = self.bwd.as_ref().map(|a| &*a.frame);
+        let older = self.fwd.as_ref().map(|a| &*a.frame);
         let (fwd, bwd) = match ptype {
-            PictureType::P => (self.bwd.as_ref().map(|a| &*a.frame), None),
-            PictureType::B => (self.fwd.as_ref().map(|a| &*a.frame), self.bwd.as_ref().map(|a| &*a.frame)),
+            PictureType::P => (latest.or(gray), None),
+            PictureType::B => (older.or(latest).or(gray), latest.or(gray)),
             _ => (None, None),
         };
         let p = PicParams {
@@ -796,5 +809,7 @@ fn to_picture(f: &Frame, meta: &Meta) -> Picture {
     }
 }
 
+#[cfg(test)]
+mod synth_tests;
 #[cfg(test)]
 mod tests;

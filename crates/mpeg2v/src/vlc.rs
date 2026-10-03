@@ -112,7 +112,7 @@ impl Vlc {
 /// macroblock_address_increment (B.1): 1..=33, [`MBA_ESCAPE`], [`MBA_STUFFING`].
 pub(crate) const MBA_ESCAPE: i16 = 34;
 pub(crate) const MBA_STUFFING: i16 = 35;
-const MBA: &[(&str, i16)] = &[
+pub(crate) const MBA: &[(&str, i16)] = &[
     ("1", 1),
     ("011", 2),
     ("010", 3),
@@ -158,9 +158,9 @@ pub(crate) const MB_PATTERN: i16 = 8;
 pub(crate) const MB_INTRA: i16 = 16;
 
 /// B.2: I pictures.
-const MBTYPE_I: &[(&str, i16)] = &[("1", MB_INTRA), ("01", MB_INTRA | MB_QUANT)];
+pub(crate) const MBTYPE_I: &[(&str, i16)] = &[("1", MB_INTRA), ("01", MB_INTRA | MB_QUANT)];
 /// B.3: P pictures.
-const MBTYPE_P: &[(&str, i16)] = &[
+pub(crate) const MBTYPE_P: &[(&str, i16)] = &[
     ("1", MB_FWD | MB_PATTERN),
     ("01", MB_PATTERN),
     ("001", MB_FWD),
@@ -170,7 +170,7 @@ const MBTYPE_P: &[(&str, i16)] = &[
     ("0000 01", MB_QUANT | MB_INTRA),
 ];
 /// B.4: B pictures.
-const MBTYPE_B: &[(&str, i16)] = &[
+pub(crate) const MBTYPE_B: &[(&str, i16)] = &[
     ("10", MB_FWD | MB_BWD),
     ("11", MB_FWD | MB_BWD | MB_PATTERN),
     ("010", MB_BWD),
@@ -184,10 +184,10 @@ const MBTYPE_B: &[(&str, i16)] = &[
     ("0000 01", MB_QUANT | MB_INTRA),
 ];
 /// ISO/IEC 11172-2 D pictures (DC intra-coded).
-const MBTYPE_D: &[(&str, i16)] = &[("1", MB_INTRA)];
+pub(crate) const MBTYPE_D: &[(&str, i16)] = &[("1", MB_INTRA)];
 
 /// B.9: coded_block_pattern (0 only in ISO/IEC 13818-2).
-const CBP: &[(&str, i16)] = &[
+pub(crate) const CBP: &[(&str, i16)] = &[
     ("111", 60),
     ("1101", 4),
     ("1100", 8),
@@ -255,7 +255,7 @@ const CBP: &[(&str, i16)] = &[
 ];
 
 /// B.10: motion_code (-16..=16).
-const MOTION: &[(&str, i16)] = &[
+pub(crate) const MOTION: &[(&str, i16)] = &[
     ("0000 0011 001", -16),
     ("0000 0011 011", -15),
     ("0000 0011 101", -14),
@@ -292,10 +292,10 @@ const MOTION: &[(&str, i16)] = &[
 ];
 
 /// B.11: dmvector.
-const DMV: &[(&str, i16)] = &[("11", -1), ("0", 0), ("10", 1)];
+pub(crate) const DMV: &[(&str, i16)] = &[("11", -1), ("0", 0), ("10", 1)];
 
 /// B.12: dct_dc_size_luminance.
-const DC_LUMA: &[(&str, i16)] = &[
+pub(crate) const DC_LUMA: &[(&str, i16)] = &[
     ("100", 0),
     ("00", 1),
     ("01", 2),
@@ -311,7 +311,7 @@ const DC_LUMA: &[(&str, i16)] = &[
 ];
 
 /// B.13: dct_dc_size_chrominance.
-const DC_CHROMA: &[(&str, i16)] = &[
+pub(crate) const DC_CHROMA: &[(&str, i16)] = &[
     ("00", 0),
     ("01", 1),
     ("10", 2),
@@ -330,16 +330,16 @@ const DC_CHROMA: &[(&str, i16)] = &[
 pub(crate) const DCT_EOB: i16 = -1;
 pub(crate) const DCT_ESCAPE: i16 = -2;
 
-const fn rl(run: i16, level: i16) -> i16 {
+pub(crate) const fn rl(run: i16, level: i16) -> i16 {
     run | (level << 6)
 }
 
 /// Table zero's codes for levels 12-15 at run 0 (table one has shorter ones).
-const DCT_ZERO_LONG: &[(&str, i16)] =
+pub(crate) const DCT_ZERO_LONG: &[(&str, i16)] =
     &[("0000 0000 1101 0", rl(0, 12)), ("0000 0000 1100 1", rl(0, 13)), ("0000 0000 1100 0", rl(0, 14)), ("0000 0000 1011 1", rl(0, 15))];
 
 /// Codes from "0000 0000 1" on, common to tables zero and one (sign bit excluded).
-const DCT_LONG: &[(&str, i16)] = &[
+pub(crate) const DCT_LONG: &[(&str, i16)] = &[
     ("0000 0000 1011 0", rl(1, 6)),
     ("0000 0000 1010 1", rl(1, 7)),
     ("0000 0000 1010 0", rl(2, 5)),
@@ -403,7 +403,7 @@ const DCT_LONG: &[(&str, i16)] = &[
 ];
 
 /// "0000 0001 xxxx" codes of both tables (table one replaces the six marked `*` with shorter ones).
-const DCT_MID_SHARED: &[(&str, i16)] = &[
+pub(crate) const DCT_MID_SHARED: &[(&str, i16)] = &[
     ("0000 0001 1100", rl(3, 3)),
     ("0000 0001 0010", rl(4, 3)),
     ("0000 0001 1110", rl(6, 2)),
@@ -417,7 +417,7 @@ const DCT_MID_SHARED: &[(&str, i16)] = &[
 ];
 
 /// B.14: DCT coefficients table zero (the "1s" first-coefficient code is handled by the caller).
-const DCT_ZERO: &[(&str, i16)] = &[
+pub(crate) const DCT_ZERO: &[(&str, i16)] = &[
     ("10", DCT_EOB),
     ("11", rl(0, 1)),
     ("011", rl(1, 1)),
@@ -460,7 +460,7 @@ const DCT_ZERO: &[(&str, i16)] = &[
 ];
 
 /// B.15: DCT coefficients table one (intra blocks with intra_vlc_format = 1).
-const DCT_ONE: &[(&str, i16)] = &[
+pub(crate) const DCT_ONE: &[(&str, i16)] = &[
     ("0110", DCT_EOB),
     ("10", rl(0, 1)),
     ("010", rl(1, 1)),
@@ -519,7 +519,7 @@ pub(crate) struct Tables {
 }
 
 /// A complete DCT coefficient table: its own short codes plus the shared long ones.
-fn dct_table(short: &'static [(&'static str, i16)], extra: &'static [(&'static str, i16)]) -> Vec<(&'static str, i16)> {
+pub(crate) fn dct_table(short: &'static [(&'static str, i16)], extra: &'static [(&'static str, i16)]) -> Vec<(&'static str, i16)> {
     let mut v = short.to_vec();
     v.extend_from_slice(extra);
     v.extend_from_slice(DCT_MID_SHARED);

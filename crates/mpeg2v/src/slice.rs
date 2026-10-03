@@ -8,7 +8,8 @@ use crate::mc::{Frame, predict};
 use crate::vlc::{DCT_EOB, DCT_ESCAPE, MB_BWD, MB_FWD, MB_INTRA, MB_PATTERN, MB_QUANT, MBA_ESCAPE, MBA_STUFFING, tables};
 
 /// Non-linear quantiser_scale (Table 7-6), indexed by quantiser_scale_code.
-const NON_LINEAR_Q: [u8; 32] = [0, 1, 2, 3, 4, 5, 6, 7, 8, 10, 12, 14, 16, 18, 20, 22, 24, 28, 32, 36, 40, 44, 48, 52, 56, 64, 72, 80, 88, 96, 104, 112];
+pub(crate) const NON_LINEAR_Q: [u8; 32] =
+    [0, 1, 2, 3, 4, 5, 6, 7, 8, 10, 12, 14, 16, 18, 20, 22, 24, 28, 32, 36, 40, 44, 48, 52, 56, 64, 72, 80, 88, 96, 104, 112];
 
 /// Motion types (frame_motion_type / field_motion_type values).
 const MT_FIELD: u8 = 1;
@@ -211,11 +212,12 @@ fn skipped_mb(p: &PicParams, st: &mut SliceState, addr: usize, buf: &mut MbBuf, 
             if last.flags & MB_INTRA != 0 {
                 return Err(SliceError("skipped macroblock after an intra macroblock"));
             }
-            // the previous macroblock's direction, one vector per direction (PMV[0][s])
+            // the previous macroblock's direction, one vector per direction (PMV[0][s]); field
+            // pictures predict from the field of the same parity (§7.6.6.4)
             let mut m = Motion { flags: last.flags & (MB_FWD | MB_BWD), mtype: if p.frame_picture() { MT_FRAME } else { MT_FIELD }, ..Default::default() };
             for s in 0..2 {
                 m.mv[0][s] = st.pmv[0][s];
-                m.select[0][s] = last.select[0][s];
+                m.select[0][s] = p.parity;
             }
             m
         }
@@ -285,13 +287,7 @@ fn macroblock(p: &PicParams, st: &mut SliceState, b: &mut Bits, addr: usize, buf
                 let delta = if f == 1 || code == 0 { code } else { (((code.abs() - 1) * f) + residual + 1) * code.signum() };
                 let halve = p.mpeg2 && field_fmt && c == 1 && frame_pic;
                 let pred = if halve { st.pmv[r][s][c] >> 1 } else { st.pmv[r][s][c] };
-                let (low, high, range) = (-16 * f, 16 * f - 1, 32 * f);
-                let mut v = pred + delta;
-                if v < low {
-                    v += range;
-                } else if v > high {
-                    v -= range;
-                }
+                let v = wrap_vector(pred, delta, f);
                 st.pmv[r][s][c] = if halve { v * 2 } else { v };
                 m.mv[r][s][c] = v;
             }
@@ -461,6 +457,23 @@ fn block(p: &PicParams, st: &mut SliceState, b: &mut Bits, cc: usize, intra: boo
         ac = true;
     }
     Ok(!ac && blk[1..].iter().all(|&v| v == 0))
+}
+
+/// `prediction + delta`, brought back into [-16f, 16f-1] (§7.6.3.1). The range is restored on
+/// the side the delta moves the vector, and a zero delta keeps the prediction, as the MPEG
+/// Software Simulation Group reference decoder (ISO/IEC TR 13818-5) does. This only matters when
+/// the prediction itself is out of range: a field vector's doubled vertical predictor before a
+/// frame vector.
+#[inline(always)]
+pub(crate) fn wrap_vector(pred: i32, delta: i32, f: i32) -> i32 {
+    let v = pred + delta;
+    if delta > 0 && v > 16 * f - 1 {
+        v - 32 * f
+    } else if delta < 0 && v < -16 * f {
+        v + 32 * f
+    } else {
+        v
+    }
 }
 
 #[inline(always)]
