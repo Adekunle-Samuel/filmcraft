@@ -797,10 +797,10 @@ pub fn mpeg2_pixel_format(info: &filmcraft_mpeg2v::SequenceInfo, field_order: Op
 impl VideoDecoder for Mpeg2Decoder {
     fn decode(&mut self, sample: &[u8], pts: i64) -> Result<Vec<DecodedFrame>> {
         let pics = self.dec.decode(sample, pts).map_err(|e| CodecError::Decode(e.to_string()))?;
-        Ok(pics.into_iter().map(|p| DecodedFrame { pts: p.pts, frame: mpeg2_to_video_frame(p) }).collect())
+        Ok(pics.into_iter().map(|p| DecodedFrame { pts: p.pts, frame: mpeg2_to_video_frame(p), draft: false }).collect())
     }
     fn flush(&mut self) -> Vec<DecodedFrame> {
-        self.dec.flush().into_iter().map(|p| DecodedFrame { pts: p.pts, frame: mpeg2_to_video_frame(p) }).collect()
+        self.dec.flush().into_iter().map(|p| DecodedFrame { pts: p.pts, frame: mpeg2_to_video_frame(p), draft: false }).collect()
     }
     fn reset(&mut self) {
         self.dec.reset();
