@@ -8,7 +8,7 @@ writing them is `crates/format` (`filmcraft-format`); the engine's `file.*` comm
 ```json
 {
   "format": "filmcraft.project",
-  "schema_version": 10,
+  "schema_version": 12,
   "generator": "FilmCraft 0.1.0",
   "project": { "name": "…", "settings": { … }, "root": { … }, "items": { … }, "next_id": 48 }
 }
@@ -35,6 +35,7 @@ writing them is `crates/format` (`filmcraft-format`); the engine's `file.*` comm
 | 9 | M10.5 | transcripts of media items (`project.transcripts`); no-op step |
 | 10 | M3.10 | clip time interpolation, Hold Filters, Field Options, audio source channels, Modify ▸ Audio Channels map, subclip Restrict Trims; no-op step |
 | 11 | M3.11 | search bins (`project.search_bins`), Flash Cue markers, Project Settings safe areas, capture format and scratch disks; no-op step |
+| 12 | M10.7 | graphics design data: `TrackItem::graphic` (roll / crawl, responsive time, template link), `EffectInstance::layer` (layer uid, per-character styles, responsive pins), `project.source_graphics`; no-op step |
 
 ### Migrations
 

@@ -1,6 +1,6 @@
 [package]
 name = "filmcraft-captions"
-description = "FilmCraft captions: SRT, WebVTT and SCC (CEA-608 pop-on) import/export, caption layout and burn-in rasterisation"
+description = "FilmCraft captions: SRT, WebVTT, SCC, MCC, EBU STL and TTML/IMSC1/DFXP import/export, caption layout and burn-in rasterisation"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -15,6 +15,7 @@ filmcraft-color = { workspace = true }
 filmcraft-project = { workspace = true }
 filmcraft-text = { workspace = true }
 thiserror = { workspace = true }
+roxmltree = { workspace = true }
 
 [dev-dependencies]
 proptest = { workspace = true }

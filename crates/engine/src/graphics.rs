@@ -10,7 +10,7 @@
 use filmcraft_geom::Vec2;
 use filmcraft_project::graphic::{self, LayerContent, SHAPE_OPTS, eval_layer, layer_display_name, layer_indices, new_shape_layer, new_text_layer};
 use filmcraft_project::{ClipId, ItemId, ItemKind, Label, ParamValue, Sequence, TrackKind};
-use filmcraft_render::graphic_clip::{layer_local_bounds, layer_quad};
+use filmcraft_render::graphic_clip::{item_layer_specs, layer_local_bounds, layer_quad};
 use filmcraft_time::{Tick, TimeRange};
 use serde_json::{Value, json};
 
@@ -60,7 +60,7 @@ fn has_graphic(s: &Session) -> std::result::Result<(), String> {
 }
 
 /// Effect index of graphic layer `layer` (or the selected / frontmost layer) of `clip`.
-fn layer_effect_index(s: &Session, clip: ClipId, p: &Value) -> Result<(usize, usize)> {
+pub(crate) fn layer_effect_index(s: &Session, clip: ClipId, p: &Value) -> Result<(usize, usize)> {
     let seq = s.active_sequence().ok_or(EngineError::NoSequence)?;
     let (_, it) = seq.find_item(clip).ok_or_else(|| bad("graphics", "no such clip"))?;
     let idx = layer_indices(&it.effects);
@@ -78,16 +78,17 @@ fn layer_effect_index(s: &Session, clip: ClipId, p: &Value) -> Result<(usize, us
     Ok((l, e))
 }
 
-fn vec2_p(p: &Value, k: &str) -> Option<Vec2> {
+pub(crate) fn vec2_p(p: &Value, k: &str) -> Option<Vec2> {
     let a = p.get(k)?.as_array()?;
     Some(Vec2::new(a.first()?.as_f64()?, a.get(1)?.as_f64()?))
 }
 
-/// Find or create the graphic source item for the active sequence's frame size.
-fn graphic_source(p: &mut filmcraft_project::Project, w: u32, h: u32, rate: filmcraft_time::FrameRate) -> ItemId {
-    if let Some((id, _)) =
-        p.items.iter().find(|(_, i)| matches!(i.kind, ItemKind::Graphic { width, height, rate: r } if width == w && height == h && r == rate))
-    {
+/// Find or create the graphic source item for the active sequence's frame size (source graphics
+/// have their own items and are never reused here).
+pub(crate) fn graphic_source(p: &mut filmcraft_project::Project, w: u32, h: u32, rate: filmcraft_time::FrameRate) -> ItemId {
+    if let Some((id, _)) = p.items.iter().find(|(id, i)| {
+        !p.source_graphics.contains_key(id) && matches!(i.kind, ItemKind::Graphic { width, height, rate: r } if width == w && height == h && r == rate)
+    }) {
         return *id;
     }
     p.add_item("Graphic", Label::Rose, ItemKind::Graphic { width: w, height: h, rate }, None)
@@ -105,7 +106,7 @@ fn new_graphic_clip(s: &mut Session, layer: filmcraft_project::EffectInstance, n
 
 /// Place a video clip of the item `source` returns (with its duration) at the playhead (or
 /// `time`), above the clips there, as one undo step; selects it.
-fn place_video_clip(
+pub(crate) fn place_video_clip(
     s: &mut Session,
     name: &str,
     p: &Value,
@@ -197,7 +198,7 @@ fn param_id(k: &str) -> &str {
 }
 
 /// JSON value for a property, accepting names for choices ("center", "small caps", "ellipse"…).
-fn to_param(template: &ParamValue, id: &str, v: &Value) -> Option<ParamValue> {
+pub(crate) fn to_param(template: &ParamValue, id: &str, v: &Value) -> Option<ParamValue> {
     if let (ParamValue::Choice(_), Value::String(name)) = (template, v) {
         let opts: &[&str] = match id {
             "align" => graphic::ALIGN_OPTS,
@@ -213,8 +214,9 @@ fn to_param(template: &ParamValue, id: &str, v: &Value) -> Option<ParamValue> {
     crate::commands::json_to_param(template, v)
 }
 
-/// Set properties `props` on a layer (keyframe-aware at time `tl`).
-fn set_props(s: &mut Session, clip: ClipId, eidx: usize, props: &serde_json::Map<String, Value>, tl: Tick, label: &str) -> Result<()> {
+/// Set properties `props` on a layer (keyframe-aware at time `tl`). Changing the text keeps
+/// per-character styles on their characters.
+pub(crate) fn set_props(s: &mut Session, clip: ClipId, eidx: usize, props: &serde_json::Map<String, Value>, tl: Tick, label: &str) -> Result<()> {
     let props = props.clone();
     s.edit_sequence(label, |q, _, _| {
         let (_, it) = q.find_item_mut(clip).ok_or(filmcraft_edit::EditError::NoItem(clip))?;
@@ -228,7 +230,13 @@ fn set_props(s: &mut Session, clip: ClipId, eidx: usize, props: &serde_json::Map
             let id = param_id(k);
             let prm = e.params.get_mut(id).ok_or_else(|| bad("graphics.set", format!("no property `{k}`")))?;
             let pv = to_param(&prm.value, id, v).ok_or_else(|| bad("graphics.set", format!("`{k}`: value has the wrong type")))?;
-            prm.set_at(mt, pv);
+            let old = prm.value_at(mt);
+            prm.set_at(mt, pv.clone());
+            if let (ParamValue::Text(a), ParamValue::Text(b), "text") = (&old, &pv, id)
+                && let Some(x) = e.layer.as_mut()
+            {
+                x.runs = filmcraft_project::graphic_design::adjust_runs(a, b, &x.runs);
+            }
         }
         Ok(())
     })
@@ -244,13 +252,15 @@ fn list_layers(s: &Session, clip: ClipId) -> Result<Value> {
     };
     let ph = s.playhead();
     let mt = it.source_time_at(ph.clamp(it.start, it.end() - Tick(1)));
+    let shown = item_layer_specs(it, mt, size);
     let layers: Vec<Value> = layer_indices(&it.effects)
         .iter()
         .enumerate()
         .filter_map(|(i, &ei)| {
             let e = &it.effects[ei];
-            let sp = eval_layer(e, mt, size)?;
+            let sp = shown.iter().find(|(x, _)| *x == ei).map(|(_, s)| s.clone()).or_else(|| eval_layer(e, mt, size))?;
             let q = layer_quad(&sp);
+            let extra = e.layer.as_deref();
             let (kind, text) = match &sp.content {
                 LayerContent::Text(t) => ("text", Some(t.text.clone())),
                 LayerContent::Shape(sh) => (SHAPE_OPTS.get(sh.shape as usize).copied().unwrap_or("Shape"), None),
@@ -263,12 +273,19 @@ fn list_layers(s: &Session, clip: ClipId) -> Result<Value> {
                 "text": text,
                 "enabled": e.enabled,
                 "position": [sp.transform.position.x, sp.transform.position.y],
+                "uid": extra.map_or(0, |x| x.uid),
+                "pin": extra.and_then(|x| x.pin.as_ref()).map(|p| serde_json::to_value(p).unwrap_or_default()),
+                "styles": extra.map(|x| serde_json::to_value(&x.runs).unwrap_or_default()).unwrap_or(json!([])),
                 "localBounds": layer_local_bounds(&sp),
                 "quad": q.iter().map(|p| [p.x, p.y]).collect::<Vec<_>>(),
             }))
         })
         .collect();
-    Ok(json!({"clip": clip.0, "name": it.name, "start": it.start.0, "duration": it.duration.0, "canvas": [size.0, size.1], "layers": layers}))
+    let meta = it.graphic.as_deref().map(|m| serde_json::to_value(m).unwrap_or_default());
+    let source = s.project.source_graphics.contains_key(&it.item).then_some(it.item.0);
+    Ok(
+        json!({"clip": clip.0, "name": it.name, "start": it.start.0, "duration": it.duration.0, "canvas": [size.0, size.1], "layers": layers, "graphic": meta, "sourceGraphic": source}),
+    )
 }
 
 fn quad_bounds(q: &[Vec2; 4]) -> [f64; 4] {
@@ -289,11 +306,15 @@ fn layer_boxes(s: &Session, clip: ClipId, layers: &[usize]) -> Result<(Vec<(usiz
     };
     let mt = it.source_time_at(s.playhead().clamp(it.start, it.end() - Tick(1)));
     let idx = layer_indices(&it.effects);
+    let shown = item_layer_specs(it, mt, size);
     let mut out = Vec::new();
     for &l in layers {
         let ei = *idx.get(l).ok_or_else(|| bad("graphics.align", format!("no layer {l}")))?;
-        let sp = eval_layer(&it.effects[ei], mt, size).ok_or_else(|| bad("graphics.align", "bad layer"))?;
-        out.push((ei, sp.transform.position, quad_bounds(&layer_quad(&sp))));
+        let sp = shown.iter().find(|(x, _)| *x == ei).map(|(_, s)| s.clone()).ok_or_else(|| bad("graphics.align", "bad layer"))?;
+        // the position stored in the layer (what moving it changes)
+        let own = eval_layer(&it.effects[ei], mt, size).map_or(sp.transform.position, |o| o.transform.position);
+        // bounds where it is shown (after pins / roll); moving `own` by d moves those by d
+        out.push((ei, own, quad_bounds(&layer_quad(&sp))));
     }
     Ok((out, size))
 }
@@ -309,14 +330,23 @@ fn layers_p(s: &Session, clip: ClipId, p: &Value) -> Result<Vec<usize>> {
     Ok(vec![l])
 }
 
-fn move_layers(s: &mut Session, clip: ClipId, moves: Vec<(usize, Vec2)>, label: &str) -> Result<()> {
+pub(crate) fn move_layers(s: &mut Session, clip: ClipId, moves: Vec<(usize, Vec2)>, label: &str) -> Result<()> {
     let tl = s.playhead();
     s.edit_sequence(label, |q, _, _| {
         let (_, it) = q.find_item_mut(clip).ok_or(filmcraft_edit::EditError::NoItem(clip))?;
         let mt = it.source_time_at(tl.clamp(it.start, it.end() - Tick(1)));
         for (ei, pos) in &moves {
-            if let Some(prm) = it.effects.get_mut(*ei).and_then(|e| e.params.get_mut("position")) {
-                prm.set_at(mt, ParamValue::Vec2(*pos));
+            let Some(e) = it.effects.get_mut(*ei) else { continue };
+            let Some(prm) = e.params.get_mut("position") else { continue };
+            let old = prm.value_at(mt).as_vec2().unwrap_or(*pos);
+            prm.set_at(mt, ParamValue::Vec2(*pos));
+            // a pinned layer keeps following its target from its new place
+            if let Some(pin) = e.layer.as_mut().and_then(|x| x.pin.as_mut()) {
+                let (dx, dy) = (pos.x - old.x, pos.y - old.y);
+                pin.offsets[0] += dx;
+                pin.offsets[2] += dx;
+                pin.offsets[1] += dy;
+                pin.offsets[3] += dy;
             }
         }
         Ok(())

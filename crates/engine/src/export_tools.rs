@@ -335,7 +335,8 @@ fn write_sidecar(s: &Session, project: &Project, seq: ItemId, settings: &ExportS
     let format = filmcraft_captions::Format::from_name(kind).ok_or_else(|| bad("export", format!("caption sidecar `{kind}`: srt | vtt")))?;
     let range = filmcraft_export::export_range(project, seq, settings).map_err(|e| EngineError::Other(e.to_string()))?;
     let doc = filmcraft_captions::document_from_track(track, range.start);
-    let bytes = filmcraft_captions::write(&doc, format, filmcraft_captions::WriteOptions { drop_frame: q.settings.drop_frame });
+    let bytes =
+        filmcraft_captions::write(&doc, format, filmcraft_captions::WriteOptions { drop_frame: q.settings.drop_frame, rate: Some(q.settings.frame_rate) });
     let ext = if format == filmcraft_captions::Format::WebVtt { "vtt" } else { kind };
     let path = format!("{}.{ext}", settings.path.rsplit_once('.').map_or(settings.path.as_str(), |x| x.0));
     s.services.write_file(&path, &bytes).map_err(|e| EngineError::Other(format!("{path}: {e}")))?;

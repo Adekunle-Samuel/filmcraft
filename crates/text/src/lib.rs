@@ -5,7 +5,7 @@
 //!   web unless the host registers font data), family/style resolution with synthetic bold/italic
 //!   and per-character fallback.
 //! - [`layout`]: shaping (harfrust: kerning, ligatures, complex scripts), bidi, line breaking,
-//!   paragraph layout, carets and hit testing; cached.
+//!   paragraph layout, per-character style runs, carets and hit testing; cached.
 //! - [`raster`]: our own anti-aliased path rasteriser (linear coverage, so compositing in linear
 //!   light is correct) and vector shapes.
 //! - [`render`]: glyph outlines and the glyph-mask cache (sub-pixel positioned), drawing layouts
@@ -20,7 +20,7 @@ pub mod render;
 pub mod sfnt;
 
 pub use fonts::{FaceId, Resolved, families, resolve};
-pub use layout::{Align, Caps, Glyph, Layout, Line, ParagraphStyle, TextStyle, layout, measure};
+pub use layout::{Align, Caps, Glyph, Layout, Line, ParagraphStyle, StyleRun, TextStyle, layout, layout_rich, measure};
 pub use mask::StrokeKind;
 pub use raster::{Mask, Path, Xform};
 

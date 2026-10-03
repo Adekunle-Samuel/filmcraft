@@ -160,6 +160,13 @@ impl Param {
     pub fn is_animated(&self) -> bool {
         !self.keyframes.is_empty()
     }
+    /// Apply `f` to the static value and every keyframe value.
+    pub fn map_values(&mut self, f: impl Fn(ParamValue) -> ParamValue) {
+        self.value = f(std::mem::replace(&mut self.value, ParamValue::Float(0.0)));
+        for k in &mut self.keyframes {
+            k.value = f(std::mem::replace(&mut k.value, ParamValue::Float(0.0)));
+        }
+    }
 
     /// Set a value at `t`: updates the static value, or adds/replaces a keyframe when animated.
     pub fn set_at(&mut self, t: Tick, value: ParamValue) {

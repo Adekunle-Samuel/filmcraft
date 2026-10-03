@@ -1,8 +1,10 @@
 //! FilmCraft captions.
 //!
-//! - **Files:** [SubRip](srt) (`.srt`), [WebVTT](vtt) (`.vtt`) and [Scenarist SCC](scc) (`.scc`,
-//!   CEA-608 pop-on, roll-up and paint-on on read; pop-on on write) parse into a [`Document`] of
-//!   [`Cue`]s and write back. Readers are forgiving (BOM, UTF-16, Windows-1252 fallback, CRLF/CR,
+//! - **Files:** [SubRip](srt) (`.srt`), [WebVTT](vtt) (`.vtt`), [Scenarist SCC](scc) (`.scc`,
+//!   CEA-608 pop-on, roll-up and paint-on on read; pop-on on write), [MacCaption MCC](mcc)
+//!   (`.mcc`, SMPTE ST 334-2 packets with CEA-608 and CEA-708), [EBU STL](stl) (`.stl`, EBU
+//!   Tech 3264) and [TTML](ttml) (`.ttml` IMSC1 Text profile, `.dfxp` DFXP) parse into a
+//!   [`Document`] of [`Cue`]s and write back. Readers are forgiving (BOM, UTF-16, Windows-1252 fallback, CRLF/CR,
 //!   missing SRT indexes, `,` or `.` milliseconds, missing hours, no blank line between cues);
 //!   writers are strict. WebVTT cue identifiers, cue settings, `<v Speaker>` voices and
 //!   STYLE/REGION/NOTE blocks are kept.
@@ -15,8 +17,11 @@
 
 pub mod burn;
 pub mod cea608;
+pub mod mcc;
 pub mod scc;
 pub mod srt;
+pub mod stl;
+pub mod ttml;
 pub mod vtt;
 
 use filmcraft_project::{Caption, CaptionFormat, CaptionTrack, ClipId, TrackId};
@@ -28,15 +33,27 @@ pub enum Format {
     Srt,
     WebVtt,
     Scc,
+    /// MacCaption MCC (CEA-608 + CEA-708 in SMPTE ST 334-2 packets).
+    Mcc,
+    /// EBU STL (EBU Tech 3264).
+    Stl,
+    /// TTML, IMSC1 Text profile.
+    Ttml,
+    /// DFXP (TTML1).
+    Dfxp,
 }
 
 impl Format {
-    pub const ALL: [Format; 3] = [Format::Srt, Format::WebVtt, Format::Scc];
+    pub const ALL: [Format; 7] = [Format::Srt, Format::WebVtt, Format::Scc, Format::Mcc, Format::Stl, Format::Ttml, Format::Dfxp];
     pub fn name(self) -> &'static str {
         match self {
             Format::Srt => "SubRip (SRT)",
             Format::WebVtt => "WebVTT",
             Format::Scc => "Scenarist SCC (CEA-608)",
+            Format::Mcc => "MacCaption MCC (CEA-608/708)",
+            Format::Stl => "EBU STL",
+            Format::Ttml => "TTML (IMSC1)",
+            Format::Dfxp => "DFXP (TTML1)",
         }
     }
     pub fn extension(self) -> &'static str {
@@ -44,6 +61,10 @@ impl Format {
             Format::Srt => "srt",
             Format::WebVtt => "vtt",
             Format::Scc => "scc",
+            Format::Mcc => "mcc",
+            Format::Stl => "stl",
+            Format::Ttml => "ttml",
+            Format::Dfxp => "dfxp",
         }
     }
     pub fn from_name(s: &str) -> Option<Format> {
@@ -51,6 +72,10 @@ impl Format {
             "srt" | "subrip" => Some(Format::Srt),
             "vtt" | "webvtt" => Some(Format::WebVtt),
             "scc" | "cea608" | "cea-608" => Some(Format::Scc),
+            "mcc" | "maccaption" | "cea708" | "cea-708" => Some(Format::Mcc),
+            "stl" | "ebu-stl" | "ebustl" | "ebu" => Some(Format::Stl),
+            "ttml" | "imsc" | "imsc1" | "xml" => Some(Format::Ttml),
+            "dfxp" => Some(Format::Dfxp),
             _ => None,
         }
     }
@@ -58,8 +83,14 @@ impl Format {
     pub fn track_format(self) -> CaptionFormat {
         match self {
             Format::Scc => CaptionFormat::Cea608,
+            Format::Mcc => CaptionFormat::Cea708,
+            Format::Stl => CaptionFormat::Teletext,
             _ => CaptionFormat::Subtitle,
         }
+    }
+    /// Whether the format is a binary file (EBU STL).
+    pub fn is_binary(self) -> bool {
+        self == Format::Stl
     }
 }
 
@@ -138,6 +169,9 @@ impl Document {
 
 /// Guess a caption format from content (and the file extension as a hint).
 pub fn detect(bytes: &[u8], ext: Option<&str>) -> Option<Format> {
+    if stl::sniff(bytes) {
+        return Some(Format::Stl);
+    }
     let text = decode_text(&bytes[..bytes.len().min(4096)]);
     let head = text.trim_start_matches('\u{feff}').trim_start();
     if head.starts_with("WEBVTT") {
@@ -146,12 +180,21 @@ pub fn detect(bytes: &[u8], ext: Option<&str>) -> Option<Format> {
     if head.starts_with("Scenarist_SCC") {
         return Some(Format::Scc);
     }
+    if head.starts_with("File Format=MacCaption_MCC") {
+        return Some(Format::Mcc);
+    }
     let ext = ext.map(|e| e.trim_start_matches('.').to_ascii_lowercase());
+    if (head.starts_with('<') && (head.contains("<tt ") || head.contains("<tt>") || head.contains(":tt ")))
+        && (head.contains("ns/ttml") || head.contains("ttaf1"))
+    {
+        let legacy = head.contains("ttaf1") || head.contains("dfxp");
+        return Some(if ext.as_deref() == Some("dfxp") || (legacy && ext.as_deref() != Some("ttml")) { Format::Dfxp } else { Format::Ttml });
+    }
     let has_arrow_timing = head.lines().take(40).any(|l| srt::parse_timing_line(l).is_some());
     match ext.as_deref() {
         Some("srt") if has_arrow_timing || head.is_empty() => Some(Format::Srt),
         Some("vtt") if has_arrow_timing => Some(Format::WebVtt),
-        Some("srt" | "vtt" | "scc") => None,
+        Some("srt" | "vtt" | "scc" | "mcc" | "stl" | "ttml" | "dfxp" | "xml") => None,
         _ if has_arrow_timing => Some(Format::Srt),
         _ => None,
     }
@@ -159,24 +202,33 @@ pub fn detect(bytes: &[u8], ext: Option<&str>) -> Option<Format> {
 
 /// Parse caption bytes.
 pub fn parse(bytes: &[u8], format: Format) -> Result<Document> {
+    if format == Format::Stl {
+        return stl::parse(bytes);
+    }
     let text = decode_text(bytes);
     match format {
         Format::Srt => srt::parse(&text),
         Format::WebVtt => vtt::parse(&text),
         Format::Scc => scc::parse(&text),
+        Format::Mcc => mcc::parse(&text),
+        Format::Ttml | Format::Dfxp => ttml::parse(&text),
+        Format::Stl => unreachable!("handled above"),
     }
 }
 
 /// Options for [`write`].
 #[derive(Clone, Copy, Debug)]
 pub struct WriteOptions {
-    /// SCC: drop-frame timecode (the usual choice for 29.97 fps SCC).
+    /// SCC / MCC: drop-frame timecode (the usual choice for 29.97 fps).
     pub drop_frame: bool,
+    /// The sequence frame rate: TTML (IMSC1) writes exact frame times at it; EBU STL picks
+    /// `STL25.01` or `STL30.01` from it (None = 25 fps). Other formats ignore it.
+    pub rate: Option<FrameRate>,
 }
 
 impl Default for WriteOptions {
     fn default() -> Self {
-        Self { drop_frame: true }
+        Self { drop_frame: true, rate: None }
     }
 }
 
@@ -186,6 +238,10 @@ pub fn write(doc: &Document, format: Format, opts: WriteOptions) -> Vec<u8> {
         Format::Srt => srt::write(doc).into_bytes(),
         Format::WebVtt => vtt::write(doc).into_bytes(),
         Format::Scc => scc::write(doc, opts.drop_frame).into_bytes(),
+        Format::Mcc => mcc::write(doc, opts.drop_frame).into_bytes(),
+        Format::Stl => stl::write(doc, opts.rate),
+        Format::Ttml => ttml::write(doc, ttml::Flavor::Imsc1, opts.rate, "en").into_bytes(),
+        Format::Dfxp => ttml::write(doc, ttml::Flavor::Dfxp, opts.rate, "en").into_bytes(),
     }
 }
 
@@ -326,6 +382,16 @@ mod tests {
         assert_eq!(detect(b"Scenarist_SCC V1.0\n\n00:00:00;00\t9420\n", Some("scc")), Some(Format::Scc));
         assert_eq!(detect(b"hello", Some("srt")), None);
         assert_eq!(detect(b"<xml/>", None), None);
+        assert_eq!(detect(b"File Format=MacCaption_MCC V1.0\n", Some("mcc")), Some(Format::Mcc));
+        let ttml = b"<?xml version=\"1.0\"?><tt xmlns=\"http://www.w3.org/ns/ttml\"><body/></tt>";
+        assert_eq!(detect(ttml, Some("ttml")), Some(Format::Ttml));
+        assert_eq!(detect(ttml, Some("dfxp")), Some(Format::Dfxp));
+        assert_eq!(detect(b"<tt xmlns=\"http://www.w3.org/2006/10/ttaf1\"></tt>", Some("xml")), Some(Format::Dfxp));
+        let stl = stl::write(&Document::default(), None);
+        assert_eq!(detect(&stl, Some("stl")), Some(Format::Stl));
+        for f in Format::ALL {
+            assert_eq!(Format::from_name(f.extension()), Some(f));
+        }
     }
 
     #[test]
