@@ -2150,6 +2150,7 @@ dependencies = [
  "filmcraft-frame",
  "filmcraft-geom",
  "filmcraft-gpu",
+ "filmcraft-interchange",
  "filmcraft-media",
  "filmcraft-project",
  "filmcraft-render",
