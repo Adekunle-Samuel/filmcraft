@@ -22,6 +22,7 @@ filmcraft-engine = { workspace = true }
 filmcraft-media = { workspace = true }
 filmcraft-codecs = { workspace = true }
 filmcraft-mxf = { workspace = true }
+filmcraft-mpegts = { workspace = true }
 filmcraft-ogg = { workspace = true }
 filmcraft-time = { workspace = true }
 filmcraft-automation = { workspace = true }

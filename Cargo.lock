@@ -1746,6 +1746,7 @@ dependencies = [
  "filmcraft-codecs",
  "filmcraft-engine",
  "filmcraft-media",
+ "filmcraft-mpegts",
  "filmcraft-mxf",
  "filmcraft-ogg",
  "filmcraft-time",
