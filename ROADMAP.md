@@ -2,7 +2,7 @@
 
 Progress toward feature parity with Adobe Premiere Pro, with estimates. Updated as milestones land.
 
-**Last updated:** 2026-10-02 · **Overall parity:** ~74% (measured scorecard below) · **Code:** 34 crates, 1297 tests
+**Last updated:** 2026-10-02 · **Overall parity:** ~77% (measured scorecard below) · **Code:** 34 crates, 1373 tests
 
 ## Parity scorecard
 
@@ -15,15 +15,15 @@ matched against `filmcraft-cli commands` and the UI command table. Effects: the 
 | Editing, timeline, trimming, multicam | 20% | core edit algebra, trim modes, sync, multicam, menu long tail, Scene Edit Detection, Automate to Sequence | ~80% |
 | Menus / commands | (cross-check) | ~325 of 344 in-scope menu items | ~95% |
 | Effects and transitions | 12% | video effects 93/93 (+Legacy, Obsolete), audio effects 53/53, video transitions 84/84 (+21 Legacy), audio transitions 3/3; some approximations (Warp Stabilizer 2-D, Morph Cut, Auto Reframe) | ~92% |
-| Media I/O and codecs | 12% | H.264, HEVC, VP9, AV1, ProRes, DNx, MJPEG, Opus, AAC, MP4/MOV/MKV/WebM; MXF (OP1a/OP-Atom), Ogg Opus/Vorbis, image sequences, BWF timecode; no HW decode | ~70% |
+| Media I/O and codecs | 12% | H.264, HEVC, VP9, AV1, ProRes, DNx, MJPEG, Opus, AAC; MP4/MOV/MKV/WebM, MXF (OP1a/OP-Atom), Ogg Opus, image sequences, BWF timecode; no MPEG-2, camera raw, HW decode | ~80% |
 | Panels and UI fidelity | 12% | all main panels incl. Metadata, Timecode, Events, Progress, Reference Monitor, full Lumetri Scopes, audio effect editors; Media Browser and Libraries-style panels thin | ~75% |
 | Audio | 10% | mixer, automation, Essential Sound, meters, all 53 effects; no 5.1 buses, voice-over record | ~70% |
 | Colour | 8% | Lumetri complete, LUTs, colour management, HDR, all Lumetri Scopes (+ `scopes.read` for agents) | ~88% |
 | Graphics and captions | 8% | text engine, shapes, captions, transcripts; no MOGRT, rolls/crawls, responsive design | ~60% |
-| Export | 8% | own H.264/AAC, ProRes, DNxHR, PNG/GIF/WAV; no preset library/queue UI, AAF/OMF, MXF | ~60% |
+| Export | 8% | own H.264/AAC, ProRes, DNxHR, image sequences, GIF, WAV; preset library + user presets, full Export-mode settings (loudness normalization, overlays, captions), export queue, Quick Export; no AAF/OMF, MXF export | ~80% |
 | Preferences and project management | 5% | Settings dialog with 16 categories (most settings wired), project settings, scratch disks, search bins, templates | ~80% |
 | Performance | 5% | 1080p real-time, 3×1080p; HEVC 2.5× cheaper, catch-up decoding halves 4K CPU/frame, `cargo xtask bench` + `perf.stats`; 4K/8K and AV1 not yet real-time on a loaded machine | ~55% |
-| **Weighted total** | | | **~74%** |
+| **Weighted total** | | | **~77%** |
 
 ## Estimate to parity
 
@@ -35,9 +35,9 @@ small, but there are many), so the estimate applies a 1.3–1.5× tail factor.
 
 | | Opus 5.5 agent-hours | Wall-clock (4–5 parallel agents + integrator) |
 |---|---|---|
-| Feature parity by checklist (~28 points left) | ~130–180 | **~30–45 h** |
+| Feature parity by checklist (~23 points left) | ~110–150 | **~25–40 h** |
 | Robust on real-world material (codec edge cases, 4K/8K performance, pro workflows) | +120–200 | **+30–50 h** |
-| **Total to "100% and better"** | **~250–380** | **~60–95 h (≈2.5–4 days, 24/7)** |
+| **Total to "100% and better"** | **~230–350** | **~55–90 h (≈2.5–4 days, 24/7)** |
 
 The 2026-10-02 block moved parity ~62% → ~72% with six agents in ~6 wall-clock hours, despite the
 disk filling twice; the remaining work is mostly panels (scopes, Metadata, Media Browser), export
@@ -76,6 +76,8 @@ Status: ✅ done · 🟡 in progress · ⬜ not started. Estimates are remaining
 - Nothing; next: remaining Premiere menu items (Settings categories, Scene Edit Detection, Normalize Mix Track, OMF/AAF, Find), AV1 single-thread re-measure on an idle machine
 
 ## Log
+
+- **2026-10-02 (late):** export parity (M6.5): built-in preset library + user presets, full Export-mode settings (loudness normalization, image/name/timecode overlays, captions, range), export queue, Quick Export, Premiere-style image-sequence export, `filmcraft-cli export --preset`; media import (M9.14): MXF OP1a/OP-Atom (new `crates/mxf`, H.264/DNx/ProRes/PCM, timecode), Ogg Opus (new `crates/ogg`), image sequences as clips, BWF timecode. 1373 tests.
 
 - **2026-10-02 (panels):** complete Lumetri Scopes (new `filmcraft-scopes` crate: Vectorscope YUV/HLS, Histogram, Parade RGB/YUV/RGB-White, Waveform RGB/Luma/YC/YC no Chroma; wrench menu with presets, colour space, brightness, scale; < 1 ms per scope at 1080p; `scopes.read` returns the numbers); Metadata panel (editable log fields, undoable `metadata.set`), Timecode panel, Events panel (event log of failed commands, jobs, auto-save), Progress panel (jobs with Cancel), Reference Monitor (parked or ganged, picture or scopes).
 - **2026-10-02 (evening):** performance (M4.8): `cargo xtask bench` (decode, seek, playback, scrub, timeline UI, export, project I/O, memory; results in docs/performance.md) and `perf.stats` for agents; HEVC transform/SAO 2.5× cheaper; late frames skip non-reference pictures (4K CPU per displayed frame halved, cold seeks 20–45% faster); decoders stay bit-exact. 1270 tests.
