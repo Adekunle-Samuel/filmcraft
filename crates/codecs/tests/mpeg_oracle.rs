@@ -350,7 +350,8 @@ fn avchd_ac3_audio() {
     let a = src.info().audio.clone().unwrap();
     if filmcraft_codecs::audio::AC3_DECODER {
         assert_eq!((a.codec.as_str(), a.channels), ("AC-3", 2));
-        let e = check_audio(&ff, &f, 1e-3);
+        // AC-3 zero-bit mantissas carry decoder-specific dither (A/52 §7.3.4)
+        let e = check_audio(&ff, &f, 5e-3);
         println!("m2ts_h264_ac3: AC-3 max error {e:.2e}");
     } else {
         assert_eq!(a.codec, "AC-3 (unsupported)");
@@ -396,7 +397,9 @@ fn program_streams() {
     // AC-3 in private stream 1
     let f = make(&ff, "ps_mpeg2_ac3.vob");
     let src = open(&f);
-    assert!(src.info().audio.as_ref().unwrap().codec.starts_with("AC-3"));
+    assert_eq!(src.info().audio.as_ref().unwrap().codec, "AC-3");
+    let e = check_audio(&ff, &f, 5e-3);
+    println!("ps_mpeg2_ac3: AC-3 max error {e:.2e}");
     // MPEG-1 system stream
     let f = make(&ff, "mpeg1_system.mpg");
     let src = open(&f);

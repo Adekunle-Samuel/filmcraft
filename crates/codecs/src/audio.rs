@@ -24,6 +24,8 @@ enum Inner {
     Opus { dec: Box<filmcraft_opus::Decoder>, order: Option<&'static [usize]> },
     /// Bootstrap decoders (MP3, ALAC, FLAC, HE-AAC…) via symphonia.
     Symphonia(Box<dyn Decoder>),
+    /// Our AC-3 decoder (ATSC A/52).
+    Ac3(Box<filmcraft_ac3::Decoder>),
 }
 
 /// Opus always decodes at 48 kHz (RFC 7845 §5.1: the input rate in the header is informational).
@@ -122,7 +124,7 @@ impl PacketDecoder {
     }
     /// AC-3 (ATSC A/52).
     pub fn ac3() -> Result<Self> {
-        Err(CodecError::Unsupported("AC-3 audio".into()))
+        Ok(Self { inner: Inner::Ac3(Box::new(filmcraft_ac3::Decoder::new())), channels: 0 })
     }
     /// Whether this decodes Opus (which needs [`OPUS_PRE_ROLL`] of pre-roll after a seek).
     pub fn is_opus(&self) -> bool {
@@ -133,6 +135,7 @@ impl PacketDecoder {
         match c {
             C::Aac(a) => Self::aac(&a.asc, if a.sample_rate > 0 { a.sample_rate } else { rate }),
             C::Mp3 => Self::new(CODEC_TYPE_MP3, rate, None),
+            C::Ac3 { .. } => Self::ac3(),
             C::Alac { cookie } => Self::new(CODEC_TYPE_ALAC, rate, Some(cookie.clone())),
             C::Flac(_) => Self::new(CODEC_TYPE_FLAC, rate, None),
             C::Opus(o) => Self::opus(filmcraft_opus::OpusHead::from_dops(&o.to_bytes()).map_err(|e| CodecError::Unsupported(format!("Opus: {e}")))?),
@@ -161,6 +164,24 @@ impl PacketDecoder {
             }
             Inner::Symphonia(d) => d,
             Inner::AacPending => return Err(CodecError::Decode("AAC: no configuration yet".into())),
+            Inner::Ac3(d) => {
+                // a packet may hold several syncframes (MP4 / Matroska)
+                let mut out: Vec<Vec<f32>> = Vec::new();
+                let mut p = 0;
+                while p < data.len() {
+                    let f = d.decode(&data[p..]).map_err(|e| CodecError::Decode(e.to_string()))?;
+                    p += f.header.frame_bytes;
+                    if out.is_empty() {
+                        out = f.channels;
+                    } else {
+                        for (o, c) in out.iter_mut().zip(f.channels) {
+                            o.extend(c);
+                        }
+                    }
+                }
+                self.channels = out.len();
+                return Ok(out);
+            }
         };
         let pkt = Packet::new_from_slice(0, ts, 0, data);
         let buf = dec.decode(&pkt).map_err(|e| CodecError::Decode(e.to_string()))?;
@@ -188,13 +209,14 @@ impl PacketDecoder {
             }
             Inner::Opus { dec, .. } => dec.reset(),
             Inner::Symphonia(d) => d.reset(),
+            Inner::Ac3(d) => d.reset(),
             Inner::AacPending => {}
         }
     }
 }
 
 /// Whether AC-3 audio decodes (our ATSC A/52 decoder).
-pub const AC3_DECODER: bool = false;
+pub const AC3_DECODER: bool = true;
 
 /// An AudioSpecificConfig for AAC with these parameters (ISO/IEC 14496-3 §1.6.2.1, GA specific
 /// config with no extension flags).
