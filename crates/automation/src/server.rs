@@ -543,12 +543,27 @@ impl FilmcraftMcp {
     }
 }
 
-#[tool_handler(
-    router = self.tool_router,
-    name = "filmcraft",
-    instructions = "FilmCraft video editor (Premiere Pro-class). Every edit is an engine command: `command_list` to discover ids/params, `command_run` to execute (undoable; `command_batch` runs several). `doc_inspect` (or `project_inspect`/`sequence_inspect`) returns ids you can pass to commands; `render_preview` shows the result. In bridge mode the `ui_*` tools drive the live app: `ui_elements` lists clickable ids, `ui_click`/`ui_drag`/`ui_key` operate it, `ui_screenshot` shows it. Time is in ticks: 254016000000 per second (commands also accept `seconds`, `frame` or `timecode`)."
-)]
+const INSTRUCTIONS: &str = "FilmCraft video editor (Premiere Pro-class). Every edit is an engine command: `command_list` to discover ids/params, `command_run` to execute (undoable; `command_batch` runs several). `doc_inspect` (or `project_inspect`/`sequence_inspect`) returns ids you can pass to commands; `render_preview` shows the result. In bridge mode the `ui_*` tools drive the live app: `ui_elements` lists clickable ids, `ui_click`/`ui_drag`/`ui_key` operate it, `ui_screenshot` shows it. Time is in ticks: 254016000000 per second (commands also accept `seconds`, `frame` or `timecode`).";
+
+/// Resources: the project (as `doc_inspect`) and the command catalog (as `command_list`).
+const DOCUMENT_URI: &str = "filmcraft://document";
+const COMMANDS_URI: &str = "filmcraft://commands";
+
+/// MCP 2026-07-28 clients (current Claude Code) require `ttlMs` and `cacheScope` on list and read
+/// results; rmcp fills `resultType` and leaves the cache hints to the server, as the generated
+/// `tools/list` does. The resource list never changes; the document does, so reads aren't cached.
+fn cache_hints(context: &rmcp::service::RequestContext<rmcp::RoleServer>, ttl_ms: u64) -> Option<(u64, rmcp::model::CacheScope)> {
+    context.protocol_version().is_some_and(|v| v >= rmcp::model::ProtocolVersion::V_2026_07_28).then_some((ttl_ms, rmcp::model::CacheScope::Private))
+}
+
+#[tool_handler(router = self.tool_router)]
 impl ServerHandler for FilmcraftMcp {
+    fn get_info(&self) -> rmcp::model::ServerConfig {
+        rmcp::model::ServerConfig::new(rmcp::model::ServerCapabilities::builder().enable_tools().enable_resources().build())
+            .with_server_info(rmcp::model::Implementation::new("filmcraft", env!("CARGO_PKG_VERSION")))
+            .with_instructions(INSTRUCTIONS.to_string())
+    }
+
     /// Strict arguments in front of the tool router.
     async fn call_tool(
         &self,
@@ -560,6 +575,47 @@ impl ServerHandler for FilmcraftMcp {
         }
         let tcc = rmcp::handler::server::tool::ToolCallContext::new(self, request, context);
         self.tool_router.call(tcc).await
+    }
+
+    async fn list_resources(
+        &self,
+        _request: Option<rmcp::model::PaginatedRequestParams>,
+        context: rmcp::service::RequestContext<rmcp::RoleServer>,
+    ) -> Result<rmcp::model::ListResourcesResult, McpError> {
+        use rmcp::model::Resource;
+        let mut r = rmcp::model::ListResourcesResult::with_all_items(vec![
+            Resource::new(DOCUMENT_URI, "document")
+                .with_title("Project")
+                .with_description("The project tree and the active sequence (same as doc_inspect).")
+                .with_mime_type("application/json"),
+            Resource::new(COMMANDS_URI, "commands")
+                .with_title("Command catalog")
+                .with_description("Every command with id, label, menu path, shortcut, params and enabled state (same as command_list).")
+                .with_mime_type("application/json"),
+        ]);
+        if let Some((ttl, scope)) = cache_hints(&context, 600_000) {
+            r = r.with_ttl_ms(ttl).with_cache_scope(scope);
+        }
+        Ok(r)
+    }
+
+    async fn read_resource(
+        &self,
+        request: rmcp::model::ReadResourceRequestParams,
+        context: rmcp::service::RequestContext<rmcp::RoleServer>,
+    ) -> Result<rmcp::model::ReadResourceResponse, McpError> {
+        let v = match request.uri.as_str() {
+            DOCUMENT_URI => self.document().await,
+            COMMANDS_URI => self.run("command.list", json!({})).await,
+            other => return Err(McpError::resource_not_found(format!("resource not found: {other}"), None)),
+        }
+        .map_err(|e| McpError::internal_error(e.to_string(), None))?;
+        let text = serde_json::to_string_pretty(&v).map_err(|e| McpError::internal_error(e.to_string(), None))?;
+        let mut r = rmcp::model::ReadResourceResult::new(vec![rmcp::model::ResourceContents::text(text, request.uri).with_mime_type("application/json")]);
+        if let Some((ttl, scope)) = cache_hints(&context, 0) {
+            r = r.with_ttl_ms(ttl).with_cache_scope(scope);
+        }
+        Ok(r.into())
     }
 }
 
@@ -675,6 +731,57 @@ mod tests {
         assert!(v["project"].is_object() && v["sequence"].is_object(), "{v}");
         let r = c.call(9, "render_preview", json!({"max_side": 64})).await;
         assert_eq!(r["result"]["content"][0]["type"], "image", "{r}");
+    }
+
+    /// `filmcraft://document` and `filmcraft://commands` are listed and readable as JSON.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn resources_document_and_commands() {
+        let mut c = Client::start(demo());
+        let init = c.init().await;
+        assert!(init["result"]["capabilities"]["resources"].is_object(), "{init}");
+        assert!(init["result"]["instructions"].as_str().unwrap().contains("doc_inspect"), "{init}");
+        let r = c.ask(json!({"jsonrpc":"2.0","id":1,"method":"resources/list"})).await;
+        let uris: Vec<&str> = r["result"]["resources"].as_array().unwrap().iter().filter_map(|x| x["uri"].as_str()).collect();
+        assert_eq!(uris, [DOCUMENT_URI, COMMANDS_URI], "{r}");
+        let r = c.ask(json!({"jsonrpc":"2.0","id":2,"method":"resources/read","params":{"uri":DOCUMENT_URI}})).await;
+        assert_eq!(r["result"]["contents"][0]["mimeType"], "application/json", "{r}");
+        let v: Value = serde_json::from_str(r["result"]["contents"][0]["text"].as_str().unwrap()).unwrap();
+        assert!(v["project"].is_object() && v["sequence"].is_object(), "{v}");
+        let r = c.ask(json!({"jsonrpc":"2.0","id":3,"method":"resources/read","params":{"uri":COMMANDS_URI}})).await;
+        assert!(r["result"]["contents"][0]["text"].as_str().unwrap().contains("timeline.razor"), "{r}");
+        let r = c.ask(json!({"jsonrpc":"2.0","id":4,"method":"resources/read","params":{"uri":"filmcraft://nope"}})).await;
+        assert!(r["error"]["code"].is_i64(), "{r}");
+    }
+
+    /// MCP 2026-07-28 clients (current Claude Code) negotiate per request and reject list and read
+    /// results without `resultType`, `ttlMs` and `cacheScope`; sessions that negotiated an older
+    /// revision through `initialize` get the old shape.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn modern_clients_get_result_type_and_cache_hints() {
+        let mut c = Client::start(Session::default());
+        let meta = json!({
+            "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+            "io.modelcontextprotocol/clientInfo": {"name": "t", "version": "1"},
+            "io.modelcontextprotocol/clientCapabilities": {},
+        });
+        let r = c.ask(json!({"jsonrpc":"2.0","id":1,"method":"server/discover","params":{"_meta":meta}})).await;
+        assert!(r["result"]["supportedVersions"].as_array().unwrap().contains(&json!("2026-07-28")), "{r}");
+        for (id, method, params) in [
+            (2, "tools/list", json!({"_meta": meta})),
+            (3, "resources/list", json!({"_meta": meta})),
+            (4, "resources/read", json!({"_meta": meta, "uri": DOCUMENT_URI})),
+        ] {
+            let r = c.ask(json!({"jsonrpc":"2.0","id":id,"method":method,"params":params})).await;
+            assert_eq!(r["result"]["resultType"], "complete", "{method}: {r}");
+            assert!(r["result"]["ttlMs"].is_u64(), "{method}: {r}");
+            assert!(matches!(r["result"]["cacheScope"].as_str(), Some("public" | "private")), "{method}: {r}");
+        }
+        let mut c = Client::start(Session::default());
+        c.init().await;
+        for (id, method, params) in [(2, "tools/list", json!({})), (3, "resources/list", json!({})), (4, "resources/read", json!({"uri": DOCUMENT_URI}))] {
+            let r = c.ask(json!({"jsonrpc":"2.0","id":id,"method":method,"params":params})).await;
+            assert!(r["result"].is_object() && r["result"].get("resultType").is_none() && r["result"].get("ttlMs").is_none(), "{method}: {r}");
+        }
     }
 
     /// A command that panicked used to poison the session lock, and every later call failed with
