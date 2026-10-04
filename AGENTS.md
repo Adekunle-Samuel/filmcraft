@@ -3,6 +3,44 @@
 These rules apply to every human and AI contributor. `CLAUDE.md` holds the working instructions; this
 file holds the rules that must never be broken. When the two disagree, this file wins.
 
+## 0. Never crash
+
+People trust FilmCraft with hours of work. A malformed file, a bad command or MCP parameter, a corrupt
+preset or project, an odd keystroke or a full disk must give an error the user (or agent) can act on,
+never a crash and never lost work. **This rule outranks feature work:** don't ship a feature by adding a
+panic path, and fix a crash before building on top of it. The cross-app standard is
+[`craftrules/standards/never-crash.md`](https://github.com/storytold/craftrules/blob/main/standards/never-crash.md).
+
+1. **Fail with `Result<T, E>`.** Return the crate's error type and propagate with `?`; add context
+   (`map_err`, an error variant) instead of discarding it. In the UI, report the error (status bar, error
+   dialog) and carry on.
+2. **No panicking shortcuts outside tests:** no `unwrap()`, `expect()`, `panic!`, `unreachable!`, `todo!`
+   or `unimplemented!`. Use `?`, `ok_or(..)?`, `let Some(x) = .. else { return Err(..) }`, `if let`, or a
+   fallback that is truly correct (never one that silently corrupts a project). An unfinished feature
+   returns an "unsupported" error. The only exception is a call that is provably infallible from local
+   code alone (a literal that always parses): a single-item `#[allow(clippy::expect_used)]` with the reason.
+3. **No `unsafe`** (`unsafe_code = "forbid"` for the workspace).
+4. **Every input-derived number is hostile.** Media files, project and interchange files, presets, fonts,
+   CLI / MCP / control-channel parameters and UI state are untrusted. Index and slice with `get()` (or
+   validate bounds once, up front, for a hot loop); slice strings only at char boundaries; use
+   `checked_*` / `saturating_*` for lengths, offsets and counts; never divide by a value that can be zero
+   (frame rates, timescales, sample rates, sizes); don't cast negative or NaN values to integers; don't
+   call `clamp` with bounds that can cross; cap allocations sized by input.
+5. **Bound recursion and loops.** Projects can be cyclic (nested sequences) or deeply nested: walk them
+   with seen-sets or depth limits.
+6. **Don't cascade.** Lock poisoning is not fatal: `lock().unwrap_or_else(PoisonError::into_inner)`.
+   Every thread or job (export, previews, proxies, decoding workers…) runs under `catch_unwind` and
+   reports a failure as an error: a dead worker leaves monitors blank or jobs "running" forever.
+7. **Last-resort guard.** The panic hook (`crates/ui-egui/src/crash.rs`) logs every panic, and the UI pass
+   runs under `catch_unwind`, so an escaped panic becomes an error window and the session (and unsaved
+   project) survives. It is a safety net, not a substitute for rules 1–6. Keep `panic = "unwind"`.
+8. **Prove it.** Every crash fix comes with a small synthetic regression test that panicked before the
+   fix. Parsers and decoders get mutation-fuzz tests (truncation, bit flips, corrupt sizes) run under
+   `catch_unwind`; new commands get hostile-parameter tests. Fuzzer findings become tests.
+9. **Enforced:** clean crates carry `#![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic,
+   clippy::unimplemented, clippy::todo, clippy::unreachable)]` (moving to `[workspace.lints.clippy]` once
+   every crate is clean). `clippy.toml` allows them in tests: a failing test should fail loudly.
+
 ## 1. Assets: no Adobe artwork, every asset licensed and attributed
 
 This rule is absolute. Breaking it is the most serious mistake a contributor can make on this project.
@@ -68,32 +106,9 @@ reproduce an image (for example, point lists traced from someone else's icon).
 
 ## 3. Engineering rules
 
-### 3.1 Never panic: fail with `Result`
+### 3.1 Never crash
 
-FilmCraft must not crash. A user losing unsaved work, or an agent's session dying, because of a bad file
-or an unexpected input is a bug as serious as wrong output.
-
-1. **No panics in production code.** Don't use `unwrap()`, `expect()`, `panic!`, `unreachable!`,
-   `todo!` or `unimplemented!` outside tests. Return `Result<T, E>` with the crate's error type and
-   propagate with `?`; in the UI, report the error (status bar, error dialog) and carry on.
-2. **Avoid implicit panics too.** Index and slice with `get()` (or validate the bounds once, up front,
-   where a hot loop needs plain indexing); use `checked_*` / `saturating_*` arithmetic where values come
-   from outside; never divide by a value that can be zero (frame rates, timescales, sample rates, sizes);
-   don't call `clamp` with bounds that can cross; bound recursion and loop counts.
-3. **All input is untrusted:** media files, project and interchange files, presets, fonts, command
-   parameters from the CLI / MCP / control channel, and UI state. A malformed or hostile input must give an
-   error, never a panic, a hang, or an allocation sized by the input without a sane limit.
-4. **Background work catches panics.** Every thread or job (export, previews, proxies, decoding workers…)
-   runs its body under `catch_unwind` and reports a failure as an error: a dead worker leaves monitors
-   blank or jobs "running" forever.
-5. **Lock poisoning is not fatal:** use `lock().unwrap_or_else(|e| e.into_inner())`.
-6. **Enforced:** crates deny `clippy::unwrap_used`, `clippy::expect_used`, `clippy::panic` and
-   `clippy::unreachable` outside tests. Where an invariant truly cannot be violated and restructuring is
-   unreasonable, a single-item `#[allow(...)]` with a one-line justification comment is acceptable; keep
-   these rare and reviewable.
-7. **Test the failure paths:** parsers and decoders get mutation-fuzz tests (truncation, bit flips,
-   corrupt sizes) run under `catch_unwind`; new commands get hostile-parameter tests. Fix every panic a
-   fuzzer finds and keep its reproducer as a test.
+See [§0](#0-never-crash). It outranks every other engineering rule.
 
 ### 3.2 The rest
 
