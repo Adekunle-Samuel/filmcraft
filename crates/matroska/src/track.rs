@@ -96,9 +96,34 @@ pub struct VideoInfo {
     /// `ColourSpace` FourCC (uncompressed video).
     pub colour_space: Option<[u8; 4]>,
     pub colour: Option<Colour>,
+    pub projection: Option<Projection>,
+}
+
+/// `Projection` element (RFC 9559 §5.1.4.1.28.41): pose angles in degrees.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Projection {
+    /// 0 rectangular, 1 equirectangular, 2 cubemap, 3 mesh.
+    pub projection_type: u64,
+    /// Clockwise around the up vector.
+    pub yaw: f64,
+    /// Counter-clockwise around the right vector.
+    pub pitch: f64,
+    /// Counter-clockwise around the forward vector.
+    pub roll: f64,
 }
 
 impl VideoInfo {
+    /// Clockwise quarter turns (0–3) to display a rectangular video, from `ProjectionPoseRoll`
+    /// (a counter-clockwise angle, so −90 is a quarter turn clockwise). None for other
+    /// projections, flips (non-zero yaw / pitch) or angles that are not a multiple of 90°.
+    pub fn display_rotation(&self) -> Option<u8> {
+        let Some(p) = &self.projection else { return Some(0) };
+        if p.projection_type != 0 || p.yaw != 0.0 || p.pitch != 0.0 || p.roll % 90.0 != 0.0 {
+            return None;
+        }
+        Some((-(p.roll / 90.0) as i64).rem_euclid(4) as u8)
+    }
+
     /// Pixel aspect ratio derived from the display size (pixels or aspect-ratio units), reduced.
     pub fn pixel_aspect(&self) -> (u32, u32) {
         let (pw, ph) = (self.pixel_width.saturating_sub(self.crop.2 + self.crop.3) as u64, self.pixel_height.saturating_sub(self.crop.0 + self.crop.1) as u64);
@@ -291,5 +316,32 @@ impl Track {
             Err(0) => 0,
             Err(i) => self.sync[i - 1] as usize,
         }
+    }
+}
+
+#[cfg(test)]
+mod rotation_tests {
+    use super::{Projection, VideoInfo};
+
+    fn with_roll(projection_type: u64, yaw: f64, pitch: f64, roll: f64) -> VideoInfo {
+        VideoInfo { projection: Some(Projection { projection_type, yaw, pitch, roll }), ..Default::default() }
+    }
+
+    #[test]
+    fn display_rotation_maps_rectangular_roll_to_clockwise_quarter_turns() {
+        assert_eq!(VideoInfo::default().display_rotation(), Some(0), "no Projection: as stored");
+        // ProjectionPoseRoll is counter-clockwise: -90 is a quarter turn clockwise
+        for (roll, turns) in [(0.0, 0), (-90.0, 1), (180.0, 2), (-180.0, 2), (90.0, 3), (-270.0, 3), (270.0, 1), (360.0, 0)] {
+            assert_eq!(with_roll(0, 0.0, 0.0, roll).display_rotation(), Some(turns), "roll {roll}");
+        }
+    }
+
+    #[test]
+    fn display_rotation_leaves_non_rectangular_flipped_and_odd_angles_alone() {
+        assert_eq!(with_roll(1, 0.0, 0.0, -90.0).display_rotation(), None, "equirectangular");
+        assert_eq!(with_roll(0, 180.0, 0.0, 0.0).display_rotation(), None, "yaw flip");
+        assert_eq!(with_roll(0, 0.0, 180.0, 0.0).display_rotation(), None, "pitch flip");
+        assert_eq!(with_roll(0, 0.0, 0.0, 45.0).display_rotation(), None, "not a quarter turn");
+        assert_eq!(with_roll(0, 0.0, 0.0, f64::NAN).display_rotation(), None, "malformed angle");
     }
 }
