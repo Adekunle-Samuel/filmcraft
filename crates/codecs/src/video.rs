@@ -386,7 +386,8 @@ impl Vp9Decoder {
         }
     }
 
-    fn convert(&self, p: filmcraft_vp9::Picture) -> DecodedFrame {
+    /// `None` for a picture whose planes mix sample types (never produced by the decoder).
+    fn convert(&self, p: filmcraft_vp9::Picture) -> Option<DecodedFrame> {
         use filmcraft_color::{Matrix, Primaries, Range};
         use filmcraft_frame::{Chroma, PixelData};
         use filmcraft_vp9::Plane;
@@ -423,7 +424,7 @@ impl Vp9Decoder {
             }
             let mut frame = VideoFrame::rgba8(p.width, p.height, rgba);
             frame.color = filmcraft_color::ColorInfo { range: Range::Full, transfer: filmcraft_color::Transfer::Srgb, ..color };
-            return DecodedFrame { pts, frame, draft };
+            return Some(DecodedFrame { pts, frame, draft });
         }
         // 4:4:0 has no frame format of its own: chroma rows are repeated to 4:4:4.
         let (chroma, rows_440) = match (p.subsampling_x, p.subsampling_y) {
@@ -455,22 +456,22 @@ impl Vp9Decoder {
                 bits: p.bit_depth,
                 alpha: None,
             },
-            _ => unreachable!("VP9 planes share one sample type"),
+            _ => return None,
         };
         // render_size (the intended display size) is not applied: the container's display
         // dimensions / pixel aspect describe the presentation.
         let par = (1, 1);
-        DecodedFrame { pts, frame: VideoFrame { width: p.width, height: p.height, data, color, par, pts: filmcraft_time::Tick::ZERO }, draft }
+        Some(DecodedFrame { pts, frame: VideoFrame { width: p.width, height: p.height, data, color, par, pts: filmcraft_time::Tick::ZERO }, draft })
     }
 }
 
 impl VideoDecoder for Vp9Decoder {
     fn decode(&mut self, sample: &[u8], pts: i64) -> Result<Vec<DecodedFrame>> {
         let pics = self.dec.decode(sample, pts).map_err(|e| CodecError::Decode(e.to_string()))?;
-        Ok(pics.into_iter().map(|p| self.convert(p)).collect())
+        Ok(pics.into_iter().filter_map(|p| self.convert(p)).collect())
     }
     fn flush(&mut self) -> Vec<DecodedFrame> {
-        self.dec.flush().into_iter().map(|p| self.convert(p)).collect()
+        self.dec.flush().into_iter().filter_map(|p| self.convert(p)).collect()
     }
     fn reset(&mut self) {
         self.dec.reset();

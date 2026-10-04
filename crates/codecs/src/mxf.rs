@@ -333,7 +333,7 @@ impl MxfSource {
             let mut channels = 0;
             for &ai in &atracks {
                 let t = &file.tracks[ai];
-                let si = t.sound.as_ref().expect("sound info");
+                let Some(si) = t.sound.as_ref() else { continue };
                 if si.sample_rate != rate {
                     continue;
                 }
@@ -424,7 +424,7 @@ impl VideoSamples for MxfVideo<'_> {
             return Err(CodecError::Unsupported(why.clone()));
         }
         let t = &self.src.file.tracks[self.track];
-        let v = self.src.info.video.as_ref().expect("video info");
+        let v = self.src.info.video.as_ref().ok_or_else(|| CodecError::Unsupported("no video track".into()))?;
         let (w, h) = (v.width.min(u16::MAX as u32) as u16, v.height.min(u16::MAX as u32) as u16);
         match t.codec {
             Codec::Avc { .. } => Ok(Box::new(crate::video::H264Decoder::annexb())),
