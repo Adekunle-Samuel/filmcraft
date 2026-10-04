@@ -501,10 +501,9 @@ fn sao_edge_run(cur: &[u16], na: &[u16], nb: &[u16], out: &mut [u16], by_sum: &[
     let n = cur.len();
     let full = n - n % SAO_LANES;
     for i in (0..full).step_by(SAO_LANES) {
-        let c: &[u16; SAO_LANES] = cur[i..i + SAO_LANES].try_into().expect("lanes");
-        let a: &[u16; SAO_LANES] = na[i..i + SAO_LANES].try_into().expect("lanes");
-        let b: &[u16; SAO_LANES] = nb[i..i + SAO_LANES].try_into().expect("lanes");
-        let d: &mut [u16; SAO_LANES] = (&mut out[i..i + SAO_LANES]).try_into().expect("lanes");
+        let (Some(c), Some(a), Some(b), Some(d)) = (lanes(cur, i), lanes(na, i), lanes(nb, i), lanes_mut(out, i)) else {
+            return;
+        };
         for l in 0..SAO_LANES {
             d[l] = lane(c[l] as i16, a[l] as i16, b[l] as i16);
         }
@@ -512,6 +511,17 @@ fn sao_edge_run(cur: &[u16], na: &[u16], nb: &[u16], out: &mut [u16], by_sum: &[
     for i in full..n {
         out[i] = lane(cur[i] as i16, na[i] as i16, nb[i] as i16);
     }
+}
+
+/// `SAO_LANES` samples from `i`, if all present.
+#[inline(always)]
+fn lanes(s: &[u16], i: usize) -> Option<&[u16; SAO_LANES]> {
+    s.get(i..)?.first_chunk()
+}
+
+#[inline(always)]
+fn lanes_mut(s: &mut [u16], i: usize) -> Option<&mut [u16; SAO_LANES]> {
+    s.get_mut(i..)?.first_chunk_mut()
 }
 
 /// Band offset of a run of samples: the band index relative to `band_pos` selects one of the
@@ -529,8 +539,9 @@ fn sao_band_run(src: &[u16], out: &mut [u16], shift: u32, (band_pos, offs): (i32
     let n = src.len();
     let full = n - n % SAO_LANES;
     for i in (0..full).step_by(SAO_LANES) {
-        let c: &[u16; SAO_LANES] = src[i..i + SAO_LANES].try_into().expect("lanes");
-        let d: &mut [u16; SAO_LANES] = (&mut out[i..i + SAO_LANES]).try_into().expect("lanes");
+        let (Some(c), Some(d)) = (lanes(src, i), lanes_mut(out, i)) else {
+            return;
+        };
         for l in 0..SAO_LANES {
             d[l] = lane(c[l] as i16);
         }

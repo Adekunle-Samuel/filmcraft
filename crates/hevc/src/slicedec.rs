@@ -1464,15 +1464,14 @@ impl<'a> SliceDecoder<'a> {
             }
             let stride = if c == 0 { self.pic.width } else { self.pic.cwidth };
             let dst = &mut self.pic.planes[c][y as usize * stride + x as usize..];
-            if !weighted {
+            let Some(pwt) = self.sh.pwt.as_ref().filter(|_| weighted) else {
                 if bi {
                     inter::put_bi(&self.pred0, &self.pred1, bw, bh, bd, dst, stride);
                 } else {
                     inter::put_uni(&self.pred0, bw, bh, bd, dst, stride);
                 }
                 continue;
-            }
-            let pwt = self.sh.pwt.as_ref().expect("weighted prediction table");
+            };
             let shift1 = 14 - bd;
             let log2wd = if c == 0 { pwt.luma_log2_denom } else { pwt.chroma_log2_denom } + shift1;
             let get = |l: usize| -> (i32, i32) {

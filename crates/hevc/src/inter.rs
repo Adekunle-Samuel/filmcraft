@@ -25,12 +25,16 @@ fn filt_w<const T: usize, const W: usize>(src: &[i16], step: usize, f: &[i8; T],
     let mut acc = [0i32; W];
     for k in 0..T {
         let c = f[k] as i32;
-        let p: &[i16; W] = src[k * step..k * step + W].try_into().expect("taps");
+        let Some(p) = src.get(k * step..).and_then(|s| s.first_chunk::<W>()) else {
+            return;
+        };
         for j in 0..W {
             acc[j] += c * p[j] as i32;
         }
     }
-    let o: &mut [i16; W] = (&mut out[..W]).try_into().expect("row");
+    let Some(o) = out.first_chunk_mut::<W>() else {
+        return;
+    };
     for j in 0..W {
         o[j] = (acc[j] >> shift) as i16;
     }

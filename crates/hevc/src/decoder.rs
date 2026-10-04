@@ -208,7 +208,7 @@ impl Decoder {
             if !o.frame.is_complete() && self.out_queue.len() <= max_queue {
                 break;
             }
-            let o = self.out_queue.pop_front().expect("front exists");
+            let Some(o) = self.out_queue.pop_front() else { break };
             pics.push(make_picture(&o));
         }
         Ok(pics)
@@ -346,7 +346,9 @@ impl Decoder {
             let Some(p) = &self.pending else { return invalid("slice segment without the first slice of its picture") };
             ensure!(Arc::ptr_eq(&p.pps, &pps), "PPS changed within a picture");
         }
-        let pending = self.pending.as_mut().expect("picture started");
+        let Some(pending) = self.pending.as_mut() else {
+            return invalid("slice segment without the first slice of its picture");
+        };
         let refs = build_ref_lists(&sh, &pending.rps)?;
         if !sh.dependent {
             pending.last_sh = sh.clone();
