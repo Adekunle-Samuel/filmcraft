@@ -14,6 +14,8 @@
 //!
 //! Layer L0: no dependencies beyond `std`, no `unsafe`, builds for `wasm32-unknown-unknown`.
 
+#![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable))]
+
 use std::collections::HashMap;
 use std::fmt;
 use std::io;
@@ -289,8 +291,9 @@ pub fn open(src: &(impl ByteSource + ?Sized)) -> Result<OggFile> {
                     let need = 2usize.saturating_sub(p.prefix.len()).min(n as usize);
                     p.prefix.extend_from_slice(&page[s..s + need]);
                 }
-                if l < 255 {
-                    let p = partial.remove(&serial).expect("partial");
+                if l < 255
+                    && let Some(p) = partial.remove(&serial)
+                {
                     let mut prefix = [0u8; 2];
                     prefix[..p.prefix.len().min(2)].copy_from_slice(&p.prefix[..p.prefix.len().min(2)]);
                     completed.push(Packet { parts: p.parts, size: p.size, granule: None, page: page_index, eos: flags & 0x04 != 0, prefix });
@@ -427,7 +430,7 @@ impl OpusTiming {
                 }
                 break;
             }
-            let g = stream.packets[j].granule.expect("granule");
+            let Some(g) = stream.packets[j].granule else { break };
             let sum: i64 = durations[i..=j].iter().map(|&d| d as i64).sum();
             let forward = cursor.map(|c| c + sum);
             let end = match forward {

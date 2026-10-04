@@ -317,15 +317,15 @@ impl Splitter {
         let at = self.es_pos;
         self.close(at);
         // the chunk of this position arrives with the next feed: resolved there
-        self.open = Some(Open { start: at, pos: u64::MAX, offset: 0, pts: None, dts: None, key: false, disposable: false, vcl: false, picture: None });
+        let mut o = Open { start: at, pos: u64::MAX, offset: 0, pts: None, dts: None, key: false, disposable: false, vcl: false, picture: None };
         if let Some((pts, dts)) = self.timestamps_at(at) {
-            let o = self.open.as_mut().expect("open");
             o.pts = pts;
             o.dts = dts;
         }
         if self.mode == Mode::Pes {
-            self.open.as_mut().expect("open").key = true;
+            o.key = true;
         }
+        self.open = Some(o);
     }
 
     /// The unused timestamps of the PES packet holding `at` (consumed).

@@ -218,7 +218,7 @@ pub(crate) fn scan<S: ByteSource + ?Sized>(src: &S, mpeg1: bool) -> Result<File>
     }
     let mut out = Vec::new();
     for key in order {
-        let mut e = streams.remove(&key).expect("stream");
+        let Some(mut e) = streams.remove(&key) else { continue };
         e.split.finish();
         e.stream.units = std::mem::take(&mut e.split.units);
         e.stream.skipped_bytes = e.split.skipped;

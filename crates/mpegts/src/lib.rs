@@ -18,6 +18,8 @@
 //!
 //! The crate does no decoding; `filmcraft-codecs` pairs the streams with decoders.
 
+#![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable))]
+
 mod es;
 pub use es::{FrameInfo, frame_info};
 mod pes;
