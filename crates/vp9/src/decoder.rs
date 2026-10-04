@@ -331,8 +331,10 @@ impl Decoder {
                 let sz = if last {
                     data.len() - pos
                 } else {
-                    ensure!(pos + 4 <= data.len(), "tile size beyond frame data");
-                    let s = u32::from_be_bytes(data[pos..pos + 4].try_into().expect("4 bytes")) as usize;
+                    let Some(&b) = data.get(pos..).and_then(|d| d.first_chunk::<4>()) else {
+                        return Err(Error::Invalid("tile size beyond frame data".into()));
+                    };
+                    let s = u32::from_be_bytes(b) as usize;
                     pos += 4;
                     ensure!(s <= data.len() - pos, "tile size {s} beyond frame data");
                     s
@@ -456,7 +458,7 @@ impl Decoder {
     /// per band for the samples they read), else right here.
     fn run_post(&mut self, job: PostJob) {
         #[cfg(all(feature = "threads", not(target_arch = "wasm32")))]
-        if self.frame_threads() {
+        let job = if self.frame_threads() {
             // Bound the post stages in flight (each is one thread).
             while self.jobs.front().is_some_and(|j| j.is_finished()) {
                 let _ = self.jobs.pop_front().map(|j| j.join());
@@ -467,26 +469,34 @@ impl Decoder {
             }
             let shown = job.out.is_some();
             let (tx, rx) = std::sync::mpsc::channel();
+            // The job reaches the thread over a channel, so it is still here if no thread can
+            // be spawned and then runs inline below.
+            let (job_tx, job_rx) = std::sync::mpsc::channel::<PostJob>();
             let spawned = std::thread::Builder::new().name("vp9-post".into()).spawn(move || {
-                if let Some(p) = job.run() {
+                if let Ok(job) = job_rx.recv()
+                    && let Some(p) = job.run()
+                {
                     let _ = tx.send(p);
                 }
             });
             match spawned {
-                Ok(handle) => {
-                    self.jobs.push_back(handle);
-                    if shown {
-                        self.pending.push_back(Pending::Job(rx));
+                Ok(handle) => match job_tx.send(job) {
+                    Ok(()) => {
+                        self.jobs.push_back(handle);
+                        if shown {
+                            self.pending.push_back(Pending::Job(rx));
+                        }
+                        return;
                     }
-                    return;
-                }
-                Err(e) => {
-                    // No thread available: the job (moved into the failed closure) is gone,
-                    // which cannot happen in practice; report as a decoding failure.
-                    panic!("cannot spawn VP9 post-processing thread: {e}");
-                }
+                    // The thread is gone already: take the job back and run it here.
+                    Err(std::sync::mpsc::SendError(back)) => back,
+                },
+                // No thread available: run it here.
+                Err(_) => job,
             }
-        }
+        } else {
+            job
+        };
         if let Some(p) = job.run() {
             self.pending.push_back(Pending::Ready(p));
         }

@@ -141,12 +141,16 @@ fn filter_h(s: &[u16], f: &[i16], max: i32, o: &mut [u16]) {
 
 #[inline(always)]
 fn filter_h_n<const W: usize>(s: &[u16], f: &[i16], max: i32, o: &mut [u16]) {
-    let o: &mut [u16; W] = (&mut o[..W]).try_into().expect("row");
+    let Some(o) = o.first_chunk_mut::<W>() else {
+        return;
+    };
     if max == 255 {
         let mut acc = [64u16; W];
         for t in 0..8 {
             let c = f[t] as u16;
-            let p: &[u16; W] = s[t..t + W].try_into().expect("row");
+            let Some(p) = s.get(t..).and_then(|s| s.first_chunk::<W>()) else {
+                return;
+            };
             for j in 0..W {
                 acc[j] = acc[j].wrapping_add(c.wrapping_mul(p[j]));
             }
@@ -157,7 +161,9 @@ fn filter_h_n<const W: usize>(s: &[u16], f: &[i16], max: i32, o: &mut [u16]) {
     let mut acc = [64i32; W];
     for t in 0..8 {
         let c = f[t] as i32;
-        let p: &[u16; W] = s[t..t + W].try_into().expect("row");
+        let Some(p) = s.get(t..).and_then(|s| s.first_chunk::<W>()) else {
+            return;
+        };
         for j in 0..W {
             acc[j] += c * p[j] as i32;
         }
@@ -199,12 +205,16 @@ fn filter_v(s: &[u16], ss: usize, f: &[i16], max: i32, o: &mut [u16]) {
 
 #[inline(always)]
 fn filter_v_n<const W: usize>(s: &[u16], ss: usize, f: &[i16], max: i32, o: &mut [u16]) {
-    let o: &mut [u16; W] = (&mut o[..W]).try_into().expect("row");
+    let Some(o) = o.first_chunk_mut::<W>() else {
+        return;
+    };
     if max == 255 {
         let mut acc = [64u16; W];
         for t in 0..8 {
             let c = f[t] as u16;
-            let p: &[u16; W] = s[t * ss..t * ss + W].try_into().expect("row");
+            let Some(p) = s.get(t * ss..).and_then(|s| s.first_chunk::<W>()) else {
+                return;
+            };
             for j in 0..W {
                 acc[j] = acc[j].wrapping_add(c.wrapping_mul(p[j]));
             }
@@ -215,7 +225,9 @@ fn filter_v_n<const W: usize>(s: &[u16], ss: usize, f: &[i16], max: i32, o: &mut
     let mut acc = [64i32; W];
     for t in 0..8 {
         let c = f[t] as i32;
-        let p: &[u16; W] = s[t * ss..t * ss + W].try_into().expect("row");
+        let Some(p) = s.get(t * ss..).and_then(|s| s.first_chunk::<W>()) else {
+            return;
+        };
         for j in 0..W {
             acc[j] += c * p[j] as i32;
         }
