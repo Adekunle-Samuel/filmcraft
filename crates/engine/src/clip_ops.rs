@@ -1097,7 +1097,7 @@ fn subclip_plan(s: &Session, p: &Value) -> Result<(ItemId, TimeRange, String, La
     } else {
         let item = item_p(p, "item").or_else(|| subclip_source(s)).ok_or_else(|| bad("clip.makeSubclip", "open a clip in the Source monitor"))?;
         let (root, m, sub) = media_root(&s.project, item).ok_or_else(|| bad("clip.makeSubclip", "only media clips can be subclipped"))?;
-        let pi = s.project.item(item).expect("resolved");
+        let pi = s.project.item(item).ok_or_else(|| EngineError::Other("no such item".into()))?;
         let rate = m.frame_rate();
         let still = s.prefs.timeline.still_duration(rate);
         let is_still = matches!(m.info.kind, filmcraft_media::MediaKind::Still);
@@ -1246,7 +1246,7 @@ fn audio_channels(s: &mut Session, p: &Value) -> Result<Value> {
     let mut out = Vec::new();
     let mut maps = Vec::new();
     for i in &items {
-        let m = s.project.item(*i).and_then(|it| it.as_media()).expect("filtered");
+        let Some(m) = s.project.item(*i).and_then(|it| it.as_media()) else { continue };
         let n = m.info.audio.as_ref().map_or(2, |a| a.channels) as u16;
         let fmt = format.unwrap_or_else(|| m.interpret.audio_channels.as_ref().map_or(AudioChannels::Stereo, |a| a.format));
         let map = match &custom {
@@ -1603,7 +1603,7 @@ fn extract_audio(s: &mut Session, p: &Value) -> Result<Value> {
                 })
                 .ok_or_else(|| EngineError::Other("save the project first: extracted audio is written next to it".into()))?,
         };
-        let pi = s.project.item(item).expect("resolved");
+        let pi = s.project.item(item).ok_or_else(|| EngineError::Other("no such item".into()))?;
         let name = pi.name.clone();
         let stem = std::path::Path::new(&name).file_stem().map(|x| x.to_string_lossy().into_owned()).unwrap_or_else(|| name.clone());
         let src = s.media.full_res_source(&s.project, root, &*s.services).ok_or_else(|| EngineError::Other(format!("{name}: media is offline")))?;

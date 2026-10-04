@@ -381,7 +381,10 @@ fn make_subsequence(s: &mut Session, p: &Value) -> Result<Value> {
     let offset = range.map(|r| r.start).unwrap_or_else(|| items.iter().map(|i| i.2.start).min().unwrap_or_default());
     let name = match str_p(p, "name") {
         Some(n) => n.to_string(),
-        None => (1..).map(|k| format!("{seq_name}_Sub_{k:02}")).find(|n| !s.project.items.values().any(|i| &i.name == n)).expect("free name"),
+        None => (1..)
+            .map(|k| format!("{seq_name}_Sub_{k:02}"))
+            .find(|n| !s.project.items.values().any(|i| &i.name == n))
+            .unwrap_or_else(|| format!("{seq_name}_Sub")),
     };
     let id = s.edit("Make Subsequence", |pr, st| {
         let nid = pr.new_sequence(&name, q.settings.clone(), q.video_tracks.len(), q.audio_tracks.len(), None);

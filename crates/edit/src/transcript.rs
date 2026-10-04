@@ -344,7 +344,9 @@ pub fn caption_blocks(words: &[SeqWord], rules: &CaptionRules, rate: FrameRate) 
                 continue;
             }
             if fits_line {
-                *lines.last_mut().expect("non-empty") += 1 + len;
+                if let Some(l) = lines.last_mut() {
+                    *l += 1 + len;
+                }
             } else {
                 lines.push(len);
             }
@@ -362,7 +364,7 @@ pub fn caption_blocks(words: &[SeqWord], rules: &CaptionRules, rate: FrameRate) 
     for g in groups {
         let mut text_lines: Vec<String> = vec![String::new()];
         for w in &words[g.clone()] {
-            let l = text_lines.last_mut().expect("non-empty");
+            let Some(l) = text_lines.last_mut() else { break };
             if l.is_empty() {
                 l.push_str(&w.text);
             } else if l.chars().count() + 1 + w.text.chars().count() <= max_chars {

@@ -554,7 +554,7 @@ fn merge_clips(s: &mut Session, p: &Value) -> Result<Value> {
             a.link = Some(link);
             a_items.push(a);
         }
-        let q = pr.sequence_mut(sid).expect("new sequence");
+        let q = pr.sequence_mut(sid).ok_or(EngineError::NoSequence)?;
         for (t, it) in q.video_tracks.iter_mut().zip(v_items) {
             t.items.push(it);
         }
@@ -616,7 +616,7 @@ fn create_multicam(s: &mut Session, p: &Value) -> Result<Value> {
         let (mut vi, mut ai) = (0usize, 0usize);
         let mut placed: Vec<(TrackKind, usize, TrackItem)> = Vec::new();
         let (vtracks, atracks): (Vec<TrackId>, Vec<TrackId>) = {
-            let q = pr.sequence(sid).expect("new sequence");
+            let q = pr.sequence(sid).ok_or(EngineError::NoSequence)?;
             (q.video_tracks.iter().map(|t| t.id).collect(), q.audio_tracks.iter().map(|t| t.id).collect())
         };
         for (k, c) in clips.iter().enumerate() {
@@ -640,7 +640,7 @@ fn create_multicam(s: &mut Session, p: &Value) -> Result<Value> {
             cameras.push(cam);
         }
         {
-            let q = pr.sequence_mut(sid).expect("new sequence");
+            let q = pr.sequence_mut(sid).ok_or(EngineError::NoSequence)?;
             for (kind, idx, it) in placed {
                 q.tracks_mut(kind)[idx].items.push(it);
             }
@@ -892,10 +892,14 @@ fn record_start(s: &mut Session, p: &Value) -> Result<Value> {
 fn apply_pass(s: &mut Session, end: Tick) -> Result<usize> {
     let Some(seq_id) = s.mcrec.seq else { return Ok(0) };
     let merging = s.history.merge_key.as_deref() == Some(s.mcrec.key.as_str()) && s.history.undo.last().is_some_and(|u| u.0 == RECORD_LABEL);
-    if !merging || s.mcrec.base.is_none() {
-        s.mcrec.base = Some(s.project.clone());
-    }
-    let base = s.mcrec.base.clone().expect("set above");
+    let base = match s.mcrec.base.clone() {
+        Some(b) if merging => b,
+        _ => {
+            let b = s.project.clone();
+            s.mcrec.base = Some(b.clone());
+            b
+        }
+    };
     let (tracks, cuts, key) = (s.mcrec.tracks.clone(), s.mcrec.cuts.clone(), s.mcrec.key.clone());
     let Some(source) = s.mcrec.source else { return Ok(0) };
     let media = s.media.clone();

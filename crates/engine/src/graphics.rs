@@ -551,11 +551,11 @@ macro_rules! arrange_cmd {
 fn new_shape_cmd(s: &mut Session, p: &Value, shape: &str) -> Result<Value> {
     let mut q = p.clone();
     q["shape"] = json!(shape);
-    (find_spec("graphics.newShape").run)(s, &q)
+    (find_spec("graphics.newShape")?.run)(s, &q)
 }
 
-fn find_spec(id: &str) -> CommandSpec {
-    commands().into_iter().find(|c| c.id == id).expect("graphics command")
+fn find_spec(id: &str) -> Result<CommandSpec> {
+    commands().into_iter().find(|c| c.id == id).ok_or_else(|| EngineError::UnknownCommand(id.to_string()))
 }
 
 /// Graphics menu commands (New Layer shapes, Align/Distribute/Arrange/Select submenus, resets).
@@ -576,7 +576,7 @@ fn menu_commands() -> Vec<CommandSpec> {
             |s, p| {
                 let mut p = if p.is_object() { p.clone() } else { json!({}) };
                 p["vertical"] = json!(true);
-                (find_spec("graphics.newText").run)(s, &p)
+                (find_spec("graphics.newText")?.run)(s, &p)
             },
         ),
         spec(
@@ -731,7 +731,7 @@ fn menu_commands() -> Vec<CommandSpec> {
                     let rate = q.settings.frame_rate;
                     let want = rate.snap_nearest(Tick::from_seconds_f64(seconds)).max(rate.frame_duration());
                     let tr = q.video_tracks.iter_mut().find(|tr| tr.items.iter().any(|i| i.id == clip)).ok_or(filmcraft_edit::EditError::NoItem(clip))?;
-                    let i = tr.items.iter().position(|i| i.id == clip).expect("found");
+                    let i = tr.items.iter().position(|i| i.id == clip).ok_or(filmcraft_edit::EditError::NoItem(clip))?;
                     let start = tr.items[i].start;
                     let limit = tr.items.get(i + 1).map_or(want, |n| n.start - start);
                     let d = want.min(limit).max(rate.frame_duration());
