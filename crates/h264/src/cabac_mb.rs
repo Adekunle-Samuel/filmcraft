@@ -527,7 +527,9 @@ impl SliceDecoder<'_> {
             let pos = c.bit_pos().div_ceil(8);
             let data = c.data();
             ensure!(data.len() >= pos + 384, "truncated I_PCM macroblock");
-            let samples: [u8; 384] = data[pos..pos + 384].try_into().unwrap();
+            let Some(&samples) = data.get(pos..).and_then(|d| d.first_chunk::<384>()) else {
+                return invalid("truncated I_PCM macroblock");
+            };
             c.set_bit_pos((pos + 384) * 8);
             c.init_engine()?;
             self.finish_pcm();

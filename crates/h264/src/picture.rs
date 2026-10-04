@@ -277,9 +277,11 @@ impl Frame {
 /// bytes is copied instead (cheaper than a variable-length copy; `out` must then have room for `N`).
 #[inline(always)]
 fn copy_line<const N: usize>(line: &[u8], x0: i32, out: &mut [u8], w: usize) {
-    if w <= N && x0 >= 0 && x0 as usize + N <= line.len() && out.len() >= N {
-        let src: &[u8; N] = line[x0 as usize..x0 as usize + N].try_into().unwrap();
-        let dst: &mut [u8; N] = (&mut out[..N]).try_into().unwrap();
+    if w <= N
+        && x0 >= 0
+        && let Some(src) = line.get(x0 as usize..).and_then(|l| l.first_chunk::<N>())
+        && let Some(dst) = out.first_chunk_mut::<N>()
+    {
         *dst = *src;
     } else {
         copy_clamped(line, x0, &mut out[..w]);

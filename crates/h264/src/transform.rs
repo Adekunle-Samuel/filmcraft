@@ -113,7 +113,9 @@ pub fn idct4_add(d: &[i32; 16], dst: &mut [u8], stride: usize) {
         o[3][j] = e - h;
     }
     for (i, row) in o.iter().enumerate() {
-        let line: &mut [u8; 4] = (&mut dst[i * stride..i * stride + 4]).try_into().unwrap();
+        let Some(line) = dst.get_mut(i * stride..).and_then(|d| d.first_chunk_mut::<4>()) else {
+            return;
+        };
         for (p, &v) in line.iter_mut().zip(row) {
             *p = clip_u8(*p as i32 + ((v + 32) >> 6));
         }
@@ -156,8 +158,8 @@ fn idct8_1d(d: [i32; 8]) -> [i32; 8] {
 /// the column pass and reconstruction across all columns at once (they vectorise).
 pub fn idct8_add(d: &[i32; 64], dst: &mut [u8], stride: usize) {
     let mut t = [[0i32; 8]; 8];
-    for (i, row) in t.iter_mut().enumerate() {
-        *row = idct8_1d(d[i * 8..i * 8 + 8].try_into().unwrap());
+    for (row, src) in t.iter_mut().zip(d.as_chunks::<8>().0) {
+        *row = idct8_1d(*src);
     }
     let mut o = [[0i32; 8]; 8];
     for j in 0..8 {
@@ -167,7 +169,9 @@ pub fn idct8_add(d: &[i32; 64], dst: &mut [u8], stride: usize) {
         }
     }
     for (i, row) in o.iter().enumerate() {
-        let line: &mut [u8; 8] = (&mut dst[i * stride..i * stride + 8]).try_into().unwrap();
+        let Some(line) = dst.get_mut(i * stride..).and_then(|d| d.first_chunk_mut::<8>()) else {
+            return;
+        };
         for (p, &v) in line.iter_mut().zip(row) {
             *p = clip_u8(*p as i32 + ((v + 32) >> 6));
         }

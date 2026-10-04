@@ -232,7 +232,10 @@ fn filter_vertical<const N: usize>(pix: &mut [u8], stride: usize, x: usize, y: u
     let mut w = [0u64; N];
     for (i, w) in w.iter_mut().enumerate() {
         let o = (y + i) * stride + x - 4;
-        *w = u64::from_le_bytes(pix[o..o + 8].try_into().unwrap());
+        let Some(&b) = pix.get(o..).and_then(|p| p.first_chunk::<8>()) else {
+            return;
+        };
+        *w = u64::from_le_bytes(b);
     }
     let mut s = [[0i16; N]; 8];
     for (k, row) in s.iter_mut().enumerate() {
@@ -256,7 +259,9 @@ fn filter_horizontal<const N: usize>(pix: &mut [u8], stride: usize, x: usize, y:
     let base = (y - 4) * stride + x;
     let mut s = [[0i16; N]; 8];
     for (k, row) in s.iter_mut().enumerate() {
-        let src: &[u8; N] = pix[base + k * stride..base + k * stride + N].try_into().unwrap();
+        let Some(src) = pix.get(base + k * stride..).and_then(|p| p.first_chunk::<N>()) else {
+            return;
+        };
         for i in 0..N {
             row[i] = src[i] as i16;
         }
@@ -264,7 +269,9 @@ fn filter_horizontal<const N: usize>(pix: &mut [u8], stride: usize, x: usize, y:
     filter_lanes(&mut s, ep, chroma);
     let (k0, k1) = if chroma { (3, 5) } else { (1, 7) };
     for (k, row) in s.iter().enumerate().take(k1).skip(k0) {
-        let dst: &mut [u8; N] = (&mut pix[base + k * stride..base + k * stride + N]).try_into().unwrap();
+        let Some(dst) = pix.get_mut(base + k * stride..).and_then(|p| p.first_chunk_mut::<N>()) else {
+            return;
+        };
         for i in 0..N {
             dst[i] = row[i] as u8;
         }
