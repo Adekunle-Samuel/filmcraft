@@ -34,6 +34,8 @@
 //!   per-character text styles (`TrackItem::graphic`, `EffectInstance::layer`) and source graphics
 //!   (`Project::source_graphics`). No-op step; older builds would drop these fields when saving.
 
+#![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable))]
+
 pub mod atomic;
 pub mod autosave;
 

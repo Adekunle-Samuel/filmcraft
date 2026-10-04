@@ -5,6 +5,8 @@
 //! The compositor works in **linear-light, premultiplied RGBA f32** in the sequence working space
 //! (Rec.709 primaries by default). Decoded frames carry [`ColorInfo`] so conversions are explicit.
 
+#![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable))]
+
 use serde::{Deserialize, Serialize};
 use std::sync::OnceLock;
 

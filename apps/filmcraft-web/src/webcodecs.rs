@@ -463,7 +463,7 @@ impl WcSource {
             c.frames.insert(pts, Arc::new(f));
         }
         while c.frames.len() > CACHE_FRAMES {
-            let far = c.frames.keys().copied().max_by_key(|p| (p - want).abs()).expect("non-empty");
+            let Some(far) = c.frames.keys().copied().max_by_key(|p| (p - want).abs()) else { break };
             c.frames.remove(&far);
         }
         // the session's own frame came out: other requests may restart it now
