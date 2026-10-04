@@ -211,6 +211,53 @@ fn roll_slip_slide() {
 }
 
 #[test]
+fn transitions_stay_on_their_cuts() {
+    let mut fx = Fx::new();
+    let v1 = fx.v(0);
+    let a = fx.put(v1, 0, 10, 10);
+    let b = fx.put(v1, 10, 10, 10);
+    let c = fx.put(v1, 20, 10, 10);
+    let cross = |id, start, from, to| Transition {
+        id: TransitionId(id),
+        effect: filmcraft_project::find_effect("cross_dissolve").unwrap().instance(),
+        start: f(start),
+        duration: f(4),
+        from,
+        to,
+        align: Default::default(),
+        reverse: false,
+    };
+    let t = fx.seq.track_mut(v1).unwrap();
+    t.transitions = vec![cross(1, 8, Some(a), Some(b)), cross(2, 18, Some(b), Some(c)), cross(3, 26, Some(c), None)];
+    // every transition is centred on its cut (or ends with the clip it fades out)
+    let check = |fx: &Fx, what: &str| {
+        let t = fx.seq.track(v1).unwrap();
+        for tr in &t.transitions {
+            let cut = match tr.to {
+                Some(to) => t.item(to).unwrap().start,
+                None => t.item(tr.from.unwrap()).unwrap().end() - f(2),
+            };
+            assert_eq!(tr.start + f(2), cut, "{what}: transition {:?} left its cut", tr.id);
+        }
+        assert_eq!(t.transitions.len(), 3, "{what}");
+    };
+    let mut n = fx.next;
+    trim(&mut fx.seq, a, Edge::Out, TrimMode::Ripple, f(4), &mut Fx::ctx(&mut n)).unwrap();
+    check(&fx, "ripple trim out");
+    trim(&mut fx.seq, b, Edge::In, TrimMode::Ripple, f(3), &mut Fx::ctx(&mut n)).unwrap();
+    check(&fx, "ripple trim in");
+    ripple_trim_group(&mut fx.seq, &[b], Edge::Out, -f(2), &mut Fx::ctx(&mut n)).unwrap();
+    check(&fx, "ripple trim group");
+    roll(&mut fx.seq, b, c, f(2), &mut Fx::ctx(&mut n)).unwrap();
+    check(&fx, "roll");
+    slide(&mut fx.seq, b, -f(3), &mut Fx::ctx(&mut n)).unwrap();
+    check(&fx, "slide");
+    set_speed(&mut fx.seq, b, 0.5, false, true, &mut Fx::ctx(&mut n)).unwrap();
+    check(&fx, "ripple speed change");
+    fx.seq.check().unwrap();
+}
+
+#[test]
 fn rate_stretch_and_speed() {
     let mut fx = Fx::new();
     let v1 = fx.v(0);
