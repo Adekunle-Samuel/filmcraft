@@ -84,6 +84,17 @@ fn trim_linked_and_ripple_delete() {
 }
 
 #[test]
+fn zero_fps_is_refused() {
+    let mut s = demo();
+    let rate = s.sequence_rate();
+    assert!(s.execute("file.newSequence", json!({"name": "z", "fps": 0})).is_err());
+    assert!(s.execute("sequence.settings", json!({"fps": 0})).is_err());
+    assert!(s.execute("sequence.settings", json!({"fps": -24})).is_err());
+    assert_eq!(s.sequence_rate(), rate, "the active sequence keeps its rate");
+    s.execute("markers.markIn", json!({"time": 0})).unwrap();
+}
+
+#[test]
 fn effects_and_keyframes() {
     let mut s = demo();
     let c = s.active_sequence().unwrap().video_tracks[0].items[1].id.0;
@@ -338,4 +349,24 @@ fn move_items_to_bin_and_back_with_undo() {
     assert!(s.execute("project.moveToBin", json!({"items": [item.0], "bin": 999_999})).is_err());
     s.state.project_selection.clear();
     assert!(s.execute("project.moveToBin", json!({})).is_err());
+}
+
+#[test]
+fn fps_validation_keeps_real_rates_and_refuses_degenerate_ones() {
+    let mut s = demo();
+    // real rates still work, through both commands
+    for fps in [23.976, 25.0, 29.97, 59.94, 120.0] {
+        s.execute("file.newSequence", json!({"name": format!("r{fps}"), "fps": fps})).unwrap_or_else(|e| panic!("{fps}: {e}"));
+        let r = s.sequence_rate();
+        assert!((r.as_f64() - fps).abs() < 0.01, "{fps} -> {}", r.as_f64());
+        s.execute("sequence.settings", json!({"fps": 24})).unwrap();
+        assert!((s.sequence_rate().as_f64() - 24.0).abs() < 1e-9);
+    }
+    // a rate that rounds to nothing is refused, and nothing changes
+    let before = s.sequence_rate();
+    let n = s.execute("project.inspect", json!({})).unwrap().to_string().len();
+    assert!(s.execute("file.newSequence", json!({"name": "tiny", "fps": 1e-12})).is_err());
+    assert!(s.execute("sequence.settings", json!({"fps": -0.0})).is_err());
+    assert_eq!(s.sequence_rate(), before);
+    assert_eq!(s.execute("project.inspect", json!({})).unwrap().to_string().len(), n, "no sequence was created");
 }
