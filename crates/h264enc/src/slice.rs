@@ -236,7 +236,7 @@ impl<'a, 'b> SliceEnc<'a, 'b> {
         let rbsp = if let Some(c) = self.cabac.take() {
             c.finish()
         } else {
-            let mut w = self.cavlc.take().unwrap();
+            let mut w = self.cavlc.take().unwrap_or_default();
             if self.skip_run > 0 {
                 w.write_ue(self.skip_run);
             }
@@ -1489,7 +1489,8 @@ impl<'a, 'b> SliceEnc<'a, 'b> {
 
     fn analyse_p(&self, mx: usize, my: usize, qp: u8, av: Avail, e: &MbEdges, src: &Src) -> Box<Cand> {
         let f = self.f;
-        let r = f.l0.expect("P slice without reference");
+        // P slices always have a reference; without one the macroblock is coded intra.
+        let Some(r) = f.l0 else { return self.analyse_intra(mx, my, qp, av, e, src, u64::MAX) };
         let lam = f.lam.sad[qp as usize];
         let (px, py) = (mx * 16, my * 16);
         let skip_mv = self.pskip_mv(mx, my);
@@ -1640,7 +1641,8 @@ impl<'a, 'b> SliceEnc<'a, 'b> {
                 }
             }
         }
-        let col = &self.f.l1.unwrap().mbs[my * self.f.p.mbw + mx];
+        let Some(l1) = self.f.l1 else { return ([[0; 4]; 2], [[Mv::ZERO; 4]; 2]) };
+        let col = &l1.mbs[my * self.f.p.mbw + mx];
         let mut out_ref = [[-1i8; 4]; 2];
         let mut out_mv = [[Mv::ZERO; 4]; 2];
         for q in 0..4 {
@@ -1751,7 +1753,8 @@ impl<'a, 'b> SliceEnc<'a, 'b> {
 
     fn analyse_b(&self, mx: usize, my: usize, qp: u8, av: Avail, e: &MbEdges, src: &Src) -> Box<Cand> {
         let f = self.f;
-        let (r0, r1) = (f.l0.unwrap(), f.l1.unwrap());
+        // B slices always have both references; without them the macroblock is coded intra.
+        let (Some(r0), Some(r1)) = (f.l0, f.l1) else { return self.analyse_intra(mx, my, qp, av, e, src, u64::MAX) };
         let lam = f.lam.sad[qp as usize];
         let (px, py) = (mx * 16, my * 16);
         // --- direct
@@ -1837,7 +1840,7 @@ impl<'a, 'b> SliceEnc<'a, 'b> {
             res[1].2 as u64 + ((lam * 3) >> 8) as u64,
             satd(&src.y, 16, &bi.0, 16, 16, 16) as u64 + ((lam * (bits(0) + bits(1) + 5)) >> 8) as u64,
         ];
-        let dir = (0..3).min_by_key(|&d| costs[d]).unwrap();
+        let dir = (0..3).min_by_key(|&d| costs[d]).unwrap_or(0);
         let mut ci = Cand::new();
         ci.code.kind = MbKind::BInter;
         ci.code.part = Part::P16x16;
@@ -1870,7 +1873,7 @@ impl<'a, 'b> SliceEnc<'a, 'b> {
                 }
             });
         }
-        let mut best = best.unwrap();
+        let mut best = best.unwrap_or_else(|| self.analyse_intra(mx, my, qp, av, e, src, u64::MAX));
         // --- 16x8 / 8x16 partitions with a per-partition prediction direction
         if f.p.partitions && best.cost > 256 * 4 {
             for part in [Part::P16x8, Part::P8x16] {

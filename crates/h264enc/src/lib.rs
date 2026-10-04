@@ -13,9 +13,11 @@
 //! let mut enc = Encoder::new(cfg).unwrap();
 //! let (y, u, v) = (vec![128u8; 1280 * 720], vec![128u8; 640 * 360], vec![128u8; 640 * 360]);
 //! let frame = YuvFrame { y: &y, u: &u, v: &v, y_stride: 1280, uv_stride: 640 };
-//! let mut packets = enc.encode(&frame, 0);
+//! let mut packets = enc.encode(&frame, 0).unwrap();
 //! packets.extend(enc.flush());
 //! ```
+
+#![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable))]
 
 mod cabac;
 mod cabac_mb;
@@ -504,12 +506,11 @@ impl Encoder {
         Some(PassStats { frames: self.rc.pass1.clone(), fps: self.cfg.fps_num as f64 / self.cfg.fps_den as f64 })
     }
 
-    /// Encode one picture. Returns zero or more packets in decoding order.
-    ///
-    /// # Panics
-    /// If the planes are smaller than the configured size (see [`Encoder::try_encode`]).
-    pub fn encode(&mut self, frame: &YuvFrame, pts: i64) -> Vec<Packet> {
-        self.try_encode(frame, pts).expect("invalid input frame")
+    /// Encode one picture. Returns zero or more packets in decoding order, or
+    /// [`Error::BadFrame`] if the planes are smaller than the configured size (same as
+    /// [`Encoder::try_encode`]).
+    pub fn encode(&mut self, frame: &YuvFrame, pts: i64) -> Result<Vec<Packet>, Error> {
+        self.try_encode(frame, pts)
     }
 
     pub fn try_encode(&mut self, frame: &YuvFrame, pts: i64) -> Result<Vec<Packet>, Error> {
@@ -722,7 +723,8 @@ impl Encoder {
         let bounds: Vec<(usize, usize)> = (0..n).map(|s| (s * mbh / n, (s + 1) * mbh / n)).filter(|(a, b)| b > a).collect();
         let capture = self.recon.is_some();
         let mut slice_results: Vec<Vec<SliceOut>> = (0..jobs.len()).map(|_| Vec::new()).collect();
-        let mut bufs: Vec<(Frame, Vec<MbInfo>)> = jobs.iter_mut().map(|j| (j.rec.take().unwrap(), std::mem::take(&mut j.mbs))).collect();
+        // Every job carries its reconstruction buffer (`rec: Some(..)` above).
+        let mut bufs: Vec<(Frame, Vec<MbInfo>)> = jobs.iter_mut().filter_map(|j| Some((j.rec.take()?, std::mem::take(&mut j.mbs)))).collect();
         {
             let this = &*self;
             let fencs: Vec<FrameEnc> = jobs
@@ -810,7 +812,7 @@ impl Encoder {
         // ---- finalise each picture in coding order
         for job in jobs {
             let Job { input, st, idr, qpf, qp, cplx, hdr: _, nal_ref_idc: _, l0: _, l1: _, poc, rec, mbs, results, aq: _ } = job;
-            let mut rec = rec.unwrap();
+            let Some(mut rec) = rec else { continue };
             let is_ref = st != SliceType::B;
             let annexb = self.cfg.format == PacketFormat::AnnexB;
             let mut nals: Vec<Vec<u8>> = Vec::new();
@@ -871,9 +873,10 @@ impl Encoder {
                 let rp = RefPic { frame: rec, hpel, mbs, poc, id: self.ref_uid };
                 if self.dpb.len() >= self.max_refs {
                     // sliding window: drop the oldest
-                    let oldest = self.dpb.iter().enumerate().min_by_key(|(_, r)| r.id).map(|(i, _)| i).unwrap();
-                    let r = self.dpb.remove(oldest);
-                    self.recycle_ref(r);
+                    if let Some(oldest) = self.dpb.iter().enumerate().min_by_key(|(_, r)| r.id).map(|(i, _)| i) {
+                        let r = self.dpb.remove(oldest);
+                        self.recycle_ref(r);
+                    }
                 }
                 self.dpb.push(rp);
                 self.next_frame_num = (self.next_frame_num + 1) % (1 << LOG2_MAX_FRAME_NUM);
@@ -884,8 +887,9 @@ impl Encoder {
                 self.idr_count += 1;
             }
             // decoding timestamp base: the k-th smallest presentation time (offset applied in `release`)
-            let pos = self.display_pts.iter().enumerate().min_by_key(|(_, p)| **p).map(|(i, _)| i).unwrap();
-            let dts_base = self.display_pts.remove(pos).unwrap();
+            // One display time is queued per input picture, so the queue is never empty here.
+            let pos = self.display_pts.iter().enumerate().min_by_key(|(_, p)| **p).map(|(i, _)| i);
+            let dts_base = pos.and_then(|p| self.display_pts.remove(p)).unwrap_or(input.pts);
             self.coded_count += 1;
             let frame_type = if idr {
                 FrameType::Idr

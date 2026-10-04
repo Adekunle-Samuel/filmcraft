@@ -91,8 +91,8 @@ fn fdct8_1d(s: [i32; 8]) -> [i32; 8] {
 /// Forward 8x8 transform X = A x A^T (unnormalised; rows of A are the H.264 8x8 basis scaled by 8).
 pub fn fdct8(d: &[i32; 64]) -> [i32; 64] {
     let mut t = [0i32; 64];
-    for y in 0..8 {
-        let o = fdct8_1d(d[y * 8..y * 8 + 8].try_into().unwrap());
+    for (y, row) in d.as_chunks::<8>().0.iter().enumerate() {
+        let o = fdct8_1d(*row);
         t[y * 8..y * 8 + 8].copy_from_slice(&o);
     }
     let mut out = [0i32; 64];
@@ -140,9 +140,8 @@ pub fn idct8(d: &[i32; 64]) -> [i32; 64] {
         [b0 + b7, b2 + b5, b4 + b3, b6 + b1, b6 - b1, b4 - b3, b2 - b5, b0 - b7]
     }
     let mut g = [0i32; 64];
-    for i in 0..8 {
-        let row: [i32; 8] = d[i * 8..i * 8 + 8].try_into().unwrap();
-        let o = one(row);
+    for (i, row) in d.as_chunks::<8>().0.iter().enumerate() {
+        let o = one(*row);
         g[i * 8..i * 8 + 8].copy_from_slice(&o);
     }
     let mut r = [0i32; 64];

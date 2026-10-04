@@ -151,7 +151,8 @@ pub fn write_mb(w: &mut BitWriter, nb: &NbCtx, c: &MbCode) {
             Part::P8x8 => 3,
         }),
         MbKind::BDirect | MbKind::BInter => w.write_ue(c.b_type_number()),
-        _ => unreachable!(),
+        // Skip / none macroblocks are not written with write_mb.
+        _ => debug_assert!(false, "write_mb on a skipped macroblock"),
     }
     if c.kind == MbKind::PInter && c.part == Part::P8x8 {
         for _ in 0..4 {

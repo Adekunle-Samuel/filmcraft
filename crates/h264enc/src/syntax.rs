@@ -61,7 +61,7 @@ impl MbCode {
                 Part::P16x16 => 1 + self.bdir[0] as u32,
                 Part::P16x8 | Part::P8x16 => {
                     const PAIRS: [(u8, u8); 9] = [(0, 0), (1, 1), (0, 1), (1, 0), (0, 2), (1, 2), (2, 0), (2, 1), (2, 2)];
-                    let k = PAIRS.iter().position(|&p| p == (self.bdir[0], self.bdir[1])).unwrap() as u32;
+                    let k = PAIRS.iter().position(|&p| p == (self.bdir[0], self.bdir[1])).unwrap_or(0) as u32;
                     4 + 2 * k + (self.part == Part::P8x16) as u32
                 }
                 Part::P8x8 => 22,

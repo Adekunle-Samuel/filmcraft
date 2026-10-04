@@ -175,12 +175,12 @@ impl RateControl {
                 let s_here = self.coef[ti] * cplx.powf(QCOMP) / type_factor(t);
                 // Virtual history of one second of P frames (inter cost ~ 40% of the first frame's) so the first
                 // I frame gets a realistic share of the budget instead of a single frame's worth.
-                if self.prior.is_none() {
-                    let n = self.fps.max(1.0);
+                let (fps, coef1) = (self.fps, self.coef[1]);
+                let (pn0, ps0) = *self.prior.get_or_insert_with(|| {
+                    let n = fps.max(1.0);
                     let c0 = if t == SliceType::I { 0.4 * cplx } else { cplx };
-                    self.prior = Some((n, n * self.coef[1] * c0.powf(QCOMP)));
-                }
-                let (pn0, ps0) = self.prior.unwrap();
+                    (n, n * coef1 * c0.powf(QCOMP))
+                });
                 let fade = (1.0 - self.frames as f64 / pn0).max(0.0);
                 let (pn, ps) = (pn0 * fade, ps0 * fade);
                 let s = self.sum_s + s_here + ps;
