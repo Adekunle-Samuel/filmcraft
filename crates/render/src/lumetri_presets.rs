@@ -28,7 +28,19 @@ pub struct LumetriPreset {
 impl LumetriPreset {
     /// A Lumetri Color effect instance configured as the preset.
     pub fn instance(&self) -> EffectInstance {
-        let mut e = find_effect("lumetri").expect("lumetri is defined").instance();
+        let mut e = match find_effect("lumetri") {
+            Some(def) => def.instance(),
+            // A bare instance named after the effect; the preset's parameters are added below.
+            None => EffectInstance {
+                effect: "lumetri".into(),
+                enabled: true,
+                params: Default::default(),
+                masks: Vec::new(),
+                post_fader: false,
+                essential: false,
+                layer: None,
+            },
+        };
         for (k, v) in &self.params {
             if let Some(p) = e.params.get_mut(*k) {
                 p.value = v.clone();

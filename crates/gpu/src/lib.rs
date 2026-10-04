@@ -13,6 +13,8 @@
 //!
 //! The CPU plan executor (`filmcraft_render::plan::execute_cpu`) is the oracle; tests compare.
 
+#![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable))]
+
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -279,9 +281,9 @@ impl GpuCompositor {
         h: u32,
         format: wgpu::TextureFormat,
         extra: wgpu::TextureUsages,
-    ) {
-        if slot.as_ref().is_some_and(|s| s.2 == (w, h)) {
-            return;
+    ) -> wgpu::TextureView {
+        if let Some(s) = slot.as_ref().filter(|s| s.2 == (w, h)) {
+            return s.1.clone();
         }
         let t = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("filmcraft-target"),
@@ -294,7 +296,8 @@ impl GpuCompositor {
             view_formats: &[],
         });
         let v = t.create_view(&Default::default());
-        *slot = Some((t, v, (w, h)));
+        *slot = Some((t, v.clone(), (w, h)));
+        v
     }
 
     fn plane_texture(&mut self, w: u32, h: u32, format: wgpu::TextureFormat, bytes: &[u8], bpp: u32) -> wgpu::TextureView {
@@ -443,13 +446,13 @@ impl GpuCompositor {
     }
 
     /// Composite a plan; returns the output view (sRGB, over black) and its size.
-    pub fn composite(&mut self, plan: &FramePlan) -> (&wgpu::TextureView, (u32, u32)) {
+    pub fn composite(&mut self, plan: &FramePlan) -> (wgpu::TextureView, (u32, u32)) {
         self.composite_prepared(plan, None)
     }
 
     /// [`composite`](Self::composite) with texel conversions already done by [`prepare`] (the
     /// result is identical; only the upload work on this thread differs).
-    pub fn composite_prepared(&mut self, plan: &FramePlan, prep: Option<&PreparedPlan>) -> (&wgpu::TextureView, (u32, u32)) {
+    pub fn composite_prepared(&mut self, plan: &FramePlan, prep: Option<&PreparedPlan>) -> (wgpu::TextureView, (u32, u32)) {
         let owned;
         let (w, h, layers): (u32, u32, &[PlanLayer]) = match plan {
             FramePlan::Layers { width, height, layers } => (*width as u32, *height as u32, layers.as_slice()),
@@ -469,8 +472,8 @@ impl GpuCompositor {
             }
         };
         let (w, h) = (w.max(1), h.max(1));
-        Self::target(&self.device, &mut self.accum, w, h, ACCUM_FORMAT, wgpu::TextureUsages::empty());
-        Self::target(&self.device, &mut self.output, w, h, OUTPUT_FORMAT, wgpu::TextureUsages::COPY_SRC);
+        let accum_view = Self::target(&self.device, &mut self.accum, w, h, ACCUM_FORMAT, wgpu::TextureUsages::empty());
+        let out_view = Self::target(&self.device, &mut self.output, w, h, OUTPUT_FORMAT, wgpu::TextureUsages::COPY_SRC);
         let keys: Vec<(usize, u32, u32)> = layers
             .iter()
             .enumerate()
@@ -503,19 +506,17 @@ impl GpuCompositor {
             });
             bind_groups.push(bg);
         }
-        let accum_view = &self.accum.as_ref().expect("accum").1;
-        let out_view = &self.output.as_ref().expect("output").1;
         let final_bg = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("final"),
             layout: &self.final_bgl,
-            entries: &[wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(accum_view) }],
+            entries: &[wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&accum_view) }],
         });
         let mut enc = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("filmcraft-composite") });
         {
             let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("layers"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: accum_view,
+                    view: &accum_view,
                     depth_slice: None,
                     resolve_target: None,
                     ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT), store: wgpu::StoreOp::Store },
@@ -535,7 +536,7 @@ impl GpuCompositor {
             let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("resolve"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: out_view,
+                    view: &out_view,
                     depth_slice: None,
                     resolve_target: None,
                     ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::BLACK), store: wgpu::StoreOp::Store },
@@ -550,7 +551,7 @@ impl GpuCompositor {
             pass.draw(0..3, 0..1);
         }
         self.queue.submit([enc.finish()]);
-        (&self.output.as_ref().expect("output").1, (w, h))
+        (out_view, (w, h))
     }
 
     /// Read the output back as RGBA8 (tests / screenshots / thumbnails).

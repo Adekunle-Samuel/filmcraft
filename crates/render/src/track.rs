@@ -93,7 +93,7 @@ impl Gray {
     fn pyramid(&self) -> Vec<Gray> {
         let mut v = vec![self.clone()];
         while v.len() < LEVELS && v.last().is_some_and(|g| g.w >= 32 && g.h >= 32) {
-            let n = v.last().map(Gray::down).expect("level");
+            let Some(n) = v.last().map(Gray::down) else { break };
             v.push(n);
         }
         v

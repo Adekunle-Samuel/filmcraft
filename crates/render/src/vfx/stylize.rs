@@ -482,7 +482,9 @@ fn bolt(a: (f32, f32), b: (f32, f32), segs: usize, amp: f32, levels: usize, deta
             np.push(p);
             np.push(((p.0 + q.0) / 2.0 - ey / l * o, (p.1 + q.1) / 2.0 + ex / l * o));
         }
-        np.push(*pts.last().expect("bolt"));
+        if let Some(&last) = pts.last() {
+            np.push(last);
+        }
         pts = np;
         a2 *= 0.5;
     }

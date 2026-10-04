@@ -88,7 +88,9 @@ fn insert_dotted(m: &mut Map<String, Value>, key: &str, v: Value) {
             if !e.is_object() {
                 *e = Value::Object(Map::new());
             }
-            insert_dotted(e.as_object_mut().expect("object"), tail, v);
+            if let Value::Object(child) = e {
+                insert_dotted(child, tail, v);
+            }
         }
     }
 }
