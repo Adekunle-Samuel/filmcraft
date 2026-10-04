@@ -154,7 +154,9 @@ impl Frame {
         }
         #[cfg(not(feature = "threads"))]
         {
-            self.bands[r].get().expect("reference band decoded before use")
+            // Bands are decoded in order before use; an unpublished one reads as empty.
+            static EMPTY: Band = Band { planes: [Vec::new(), Vec::new(), Vec::new()] };
+            self.bands[r].get().unwrap_or(&EMPTY)
         }
     }
 
@@ -246,7 +248,7 @@ impl<T: Clone> Pool<T> {
     /// `fill` only initialises fresh memory).
     pub fn take_any(&self, len: usize, fill: T) -> Vec<T> {
         let found = {
-            let mut b = self.bufs.lock().expect("buffer pool");
+            let mut b = self.bufs.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
             b.iter().position(|v| v.len() >= len).map(|i| b.swap_remove(i))
         };
         match found {
@@ -261,7 +263,7 @@ impl<T: Clone> Pool<T> {
     /// A buffer of `len` copies of `fill` (recycled memory when available).
     pub fn take(&self, len: usize, fill: T) -> Vec<T> {
         let found = {
-            let mut b = self.bufs.lock().expect("buffer pool");
+            let mut b = self.bufs.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
             b.iter().position(|v| v.capacity() >= len).map(|i| b.swap_remove(i))
         };
         match found {
@@ -278,7 +280,7 @@ impl<T: Clone> Pool<T> {
         if v.capacity() == 0 {
             return;
         }
-        let mut b = self.bufs.lock().expect("buffer pool");
+        let mut b = self.bufs.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         if b.len() < self.max {
             b.push(v);
         }

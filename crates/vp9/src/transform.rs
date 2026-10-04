@@ -57,32 +57,39 @@ fn iwht4(x: [i32; 4], shift: u32) -> [i32; 4] {
 fn tx1d_narrow(buf: &mut [i32], n: usize, adst: bool) {
     match (n, adst) {
         (4, false) => {
-            let r = narrow::idct4(buf[..4].try_into().unwrap());
-            buf[..4].copy_from_slice(&r);
+            if let Some(a) = buf.first_chunk_mut::<4>() {
+                *a = narrow::idct4(*a);
+            }
         }
         (4, true) => {
-            let r = iadst4_narrow(buf[..4].try_into().unwrap());
-            buf[..4].copy_from_slice(&r);
+            if let Some(a) = buf.first_chunk_mut::<4>() {
+                *a = iadst4_narrow(*a);
+            }
         }
         (8, false) => {
-            let r = narrow::idct8(buf[..8].try_into().unwrap());
-            buf[..8].copy_from_slice(&r);
+            if let Some(a) = buf.first_chunk_mut::<8>() {
+                *a = narrow::idct8(*a);
+            }
         }
         (8, true) => {
-            let r = narrow::iadst8(buf[..8].try_into().unwrap());
-            buf[..8].copy_from_slice(&r);
+            if let Some(a) = buf.first_chunk_mut::<8>() {
+                *a = narrow::iadst8(*a);
+            }
         }
         (16, false) => {
-            let r = narrow::idct16(buf[..16].try_into().unwrap());
-            buf[..16].copy_from_slice(&r);
+            if let Some(a) = buf.first_chunk_mut::<16>() {
+                *a = narrow::idct16(*a);
+            }
         }
         (16, true) => {
-            let r = narrow::iadst16(buf[..16].try_into().unwrap());
-            buf[..16].copy_from_slice(&r);
+            if let Some(a) = buf.first_chunk_mut::<16>() {
+                *a = narrow::iadst16(*a);
+            }
         }
         _ => {
-            let r = narrow::idct32(buf[..32].try_into().unwrap());
-            buf[..32].copy_from_slice(&r);
+            if let Some(a) = buf.first_chunk_mut::<32>() {
+                *a = narrow::idct32(*a);
+            }
         }
     }
 }
@@ -91,32 +98,39 @@ fn tx1d_narrow(buf: &mut [i32], n: usize, adst: bool) {
 fn tx1d_wide(buf: &mut [i64], n: usize, adst: bool) {
     match (n, adst) {
         (4, false) => {
-            let r = wide::idct4(buf[..4].try_into().unwrap());
-            buf[..4].copy_from_slice(&r);
+            if let Some(a) = buf.first_chunk_mut::<4>() {
+                *a = wide::idct4(*a);
+            }
         }
         (4, true) => {
-            let r = iadst4_wide(buf[..4].try_into().unwrap());
-            buf[..4].copy_from_slice(&r);
+            if let Some(a) = buf.first_chunk_mut::<4>() {
+                *a = iadst4_wide(*a);
+            }
         }
         (8, false) => {
-            let r = wide::idct8(buf[..8].try_into().unwrap());
-            buf[..8].copy_from_slice(&r);
+            if let Some(a) = buf.first_chunk_mut::<8>() {
+                *a = wide::idct8(*a);
+            }
         }
         (8, true) => {
-            let r = wide::iadst8(buf[..8].try_into().unwrap());
-            buf[..8].copy_from_slice(&r);
+            if let Some(a) = buf.first_chunk_mut::<8>() {
+                *a = wide::iadst8(*a);
+            }
         }
         (16, false) => {
-            let r = wide::idct16(buf[..16].try_into().unwrap());
-            buf[..16].copy_from_slice(&r);
+            if let Some(a) = buf.first_chunk_mut::<16>() {
+                *a = wide::idct16(*a);
+            }
         }
         (16, true) => {
-            let r = wide::iadst16(buf[..16].try_into().unwrap());
-            buf[..16].copy_from_slice(&r);
+            if let Some(a) = buf.first_chunk_mut::<16>() {
+                *a = wide::iadst16(*a);
+            }
         }
         _ => {
-            let r = wide::idct32(buf[..32].try_into().unwrap());
-            buf[..32].copy_from_slice(&r);
+            if let Some(a) = buf.first_chunk_mut::<32>() {
+                *a = wide::idct32(*a);
+            }
         }
     }
 }
@@ -137,7 +151,8 @@ pub fn inverse_transform_add(coefs: &[i32], tx_size: u8, tx_type: u8, lossless: 
     if lossless {
         let mut t = [0i32; 16];
         for i in 0..4 {
-            let r = iwht4(coefs[i * 4..i * 4 + 4].try_into().unwrap(), 2);
+            let c = coefs.get(i * 4..).and_then(|c| c.first_chunk::<4>()).copied().unwrap_or_default();
+            let r = iwht4(c, 2);
             t[i * 4..i * 4 + 4].copy_from_slice(&r);
         }
         for j in 0..4 {
@@ -205,12 +220,12 @@ fn itx_narrow<const N: usize>(coefs: &[i32], p: &TxParams, dst: &mut [u16], stri
     // Column pass across 4 / 8 columns at once (the same butterflies on lane vectors), then
     // the rounding, residual add and clipping per row of lanes.
     if N == 4 {
-        let x: [Cols<4>; N] = std::array::from_fn(|i| Cols(t[i][..4].try_into().expect("4 columns")));
+        let x: [Cols<4>; N] = std::array::from_fn(|i| Cols(t[i].first_chunk::<4>().copied().unwrap_or_default()));
         let y = col_tx4(x, p.col_adst);
         add_cols(&y, 0, p, dst, stride);
     } else {
         for c0 in (0..N).step_by(8) {
-            let x: [Cols<8>; N] = std::array::from_fn(|i| Cols(t[i][c0..c0 + 8].try_into().expect("8 columns")));
+            let x: [Cols<8>; N] = std::array::from_fn(|i| Cols(t[i].get(c0..).and_then(|r| r.first_chunk::<8>()).copied().unwrap_or_default()));
             let y = col_tx8(x, p.col_adst);
             add_cols(&y, c0, p, dst, stride);
         }
@@ -221,7 +236,9 @@ fn itx_narrow<const N: usize>(coefs: &[i32], p: &TxParams, dst: &mut [u16], stri
 #[inline(always)]
 fn add_cols<const N: usize, const W: usize>(y: &[Cols<W>; N], c0: usize, p: &TxParams, dst: &mut [u16], stride: usize) {
     for (i, v) in y.iter().enumerate() {
-        let d: &mut [u16; W] = (&mut dst[i * stride + c0..i * stride + c0 + W]).try_into().expect("row");
+        let Some(d) = dst.get_mut(i * stride + c0..).and_then(|d| d.first_chunk_mut::<W>()) else {
+            return;
+        };
         for j in 0..W {
             let r = (v.0[j].wrapping_add(p.round) >> p.shift).clamp(-(1 << 20), 1 << 20);
             d[j] = (d[j] as i32 + r).max(0).min(p.max) as u16;
@@ -295,8 +312,8 @@ fn col_tx8<const N: usize>(x: [Cols<8>; N], adst: bool) -> [Cols<8>; N] {
 
 /// A slice of known length as an array.
 #[inline(always)]
-fn fixed<T: Copy, const M: usize>(x: &[T]) -> [T; M] {
-    x[..M].try_into().expect("transform size")
+fn fixed<T: Copy + From<i32>, const M: usize>(x: &[T]) -> [T; M] {
+    x.first_chunk::<M>().copied().unwrap_or([T::from(0); M])
 }
 
 /// ADST4 (8.7.1.6) on 4 columns.

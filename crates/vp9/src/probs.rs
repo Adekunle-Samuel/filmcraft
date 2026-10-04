@@ -34,7 +34,7 @@ pub struct FrameContext {
 }
 
 fn arr<const N: usize>(s: &[u8]) -> [u8; N] {
-    s.try_into().expect("table size")
+    s.first_chunk::<N>().copied().unwrap_or([128; N])
 }
 
 impl Default for FrameContext {
