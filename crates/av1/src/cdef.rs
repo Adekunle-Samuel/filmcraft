@@ -237,12 +237,16 @@ fn filter_rows<const W: usize>(buf: &[i32; PAD_STRIDE * PAD_STRIDE], taps: &[(is
     }
     for i in 0..h {
         let ci = ((i + 2) * PAD_STRIDE + 2) as isize;
-        let x: [i16; W] = b16[ci as usize..ci as usize + W].try_into().expect("centre row");
+        let Some(&x) = b16.get(ci as usize..).and_then(|r| r.first_chunk::<W>()) else {
+            return;
+        };
         let (mut sum, mut max, mut min) = ([0i16; W], x, x);
         for &(off, weight, thr, adj) in taps {
             let (weight, thr) = (weight as i16, thr as i16);
             let start = (ci + off) as usize;
-            let p: &[i16; W] = b16[start..start + W].try_into().expect("tap row");
+            let Some(p) = b16.get(start..).and_then(|r| r.first_chunk::<W>()) else {
+                return;
+            };
             for j in 0..W {
                 // constrain(): .max / .min instead of clamp (whose bound check panics), and
                 // the sign applied branch-free, so the loop vectorises.

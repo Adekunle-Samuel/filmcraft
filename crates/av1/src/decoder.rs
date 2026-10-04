@@ -72,10 +72,12 @@ impl<T: Clone> Slot<T> {
 
     fn wait(&self) -> Result<T> {
         let mut g = self.value.lock().unwrap_or_else(|e| e.into_inner());
-        while g.is_none() {
+        loop {
+            if let Some(v) = g.as_ref() {
+                return v.clone();
+            }
             g = self.cv.wait(g).unwrap_or_else(|e| e.into_inner());
         }
-        g.as_ref().expect("slot value").clone()
     }
 }
 
@@ -308,7 +310,7 @@ impl Decoder {
             if !o.is_ready() && self.out.len() <= max_queue {
                 break;
             }
-            let o = self.out.pop_front().expect("front");
+            let Some(o) = self.out.pop_front() else { break };
             pics.push(o.take()?);
         }
         parsed?;
@@ -358,7 +360,9 @@ impl Decoder {
                 match last {
                     Some((lt, lsid)) if lt == t => {
                         if sid >= lsid {
-                            *sel.last_mut().expect("picture") = o;
+                            if let Some(l) = sel.last_mut() {
+                                *l = o;
+                            }
                             last = Some((t, sid));
                         }
                     }
@@ -612,7 +616,7 @@ impl Decoder {
                     self.in_flight.push_back(slot);
                     // Bound the frames in flight (memory): wait for the oldest.
                     while self.in_flight.len() > self.max_in_flight {
-                        let s = self.in_flight.pop_front().expect("in flight");
+                        let Some(s) = self.in_flight.pop_front() else { break };
                         let _ = s.wait();
                     }
                     self.in_flight.retain(|s| !s.is_set());

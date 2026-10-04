@@ -5,6 +5,7 @@
 
 // Items used only by stages still being written (inter prediction, post filters).
 #![allow(dead_code)]
+#![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable))]
 
 mod bits;
 mod cdef;
