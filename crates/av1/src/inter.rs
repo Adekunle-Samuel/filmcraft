@@ -180,7 +180,11 @@ impl TileDecoder<'_, '_> {
     }
 
     fn ref_plane(&self, ref_idx: i32, plane: usize) -> &Plane {
-        if ref_idx < 0 { &self.t.cur.planes[plane] } else { &self.fs.refs[ref_idx as usize].as_ref().expect("reference frame").buf.planes[plane] }
+        // A missing reference (rejected earlier for valid streams) predicts from the current frame.
+        match usize::try_from(ref_idx).ok().and_then(|i| self.fs.refs.get(i)).and_then(|r| r.as_ref()) {
+            Some(r) => &r.buf.planes[plane],
+            None => &self.t.cur.planes[plane],
+        }
     }
 
     /// Block inter prediction process (7.11.3.4) into `pred` (stride PRED_STRIDE); `tmp` holds
@@ -672,12 +676,16 @@ fn hpass<const W: usize>(src: &[u16], hf: &[i16; 8], out: &mut [i32], half: i32,
     let mut acc = [half; W];
     for t in 0..8 {
         let f = hf[t] as i32;
-        let p: &[u16; W] = src[t..t + W].try_into().expect("row");
+        let Some(p) = src.get(t..).and_then(|s| s.first_chunk::<W>()) else {
+            return;
+        };
         for j in 0..W {
             acc[j] += f * p[j] as i32;
         }
     }
-    let o: &mut [i32; W] = (&mut out[..W]).try_into().expect("row");
+    let Some(o) = out.first_chunk_mut::<W>() else {
+        return;
+    };
     for j in 0..W {
         o[j] = acc[j] >> sh;
     }
@@ -689,12 +697,16 @@ fn vpass<const W: usize>(rows: &[i32], vf: &[i16; 8], out: &mut [i32], half: i32
     let mut acc = [half; W];
     for t in 0..8 {
         let f = vf[t] as i32;
-        let p: &[i32; W] = rows[t * W..t * W + W].try_into().expect("row");
+        let Some(p) = rows.get(t * W..).and_then(|s| s.first_chunk::<W>()) else {
+            return;
+        };
         for j in 0..W {
             acc[j] += f * p[j];
         }
     }
-    let o: &mut [i32; W] = (&mut out[..W]).try_into().expect("row");
+    let Some(o) = out.first_chunk_mut::<W>() else {
+        return;
+    };
     for j in 0..W {
         o[j] = acc[j] >> sh;
     }
