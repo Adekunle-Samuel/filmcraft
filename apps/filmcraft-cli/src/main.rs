@@ -2,6 +2,8 @@
 //!
 //! Run `filmcraft-cli help` for the full reference (also in docs/agents.md).
 
+#![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable))]
+
 mod args;
 mod probe;
 
@@ -339,7 +341,7 @@ async fn main() {
             if a.opt("--bridge").is_some() {
                 usage("render is headless; with --bridge use the MCP `render_frame` tool or `exec` ui commands");
             }
-            let Backend::Local(mut s) = Backend::open(&a) else { unreachable!() };
+            let Backend::Local(mut s) = Backend::open(&a) else { usage("render is headless") };
             let secs: f64 = a.opt("--seconds").and_then(|v| v.parse().ok()).unwrap_or(0.0);
             let scale: f32 = a.opt("--scale").and_then(|v| v.parse().ok()).unwrap_or(1.0);
             let out = a.opt("--out").unwrap_or("frame.png");
@@ -356,7 +358,7 @@ async fn main() {
                 Some(addr) => filmcraft_automation::FilmcraftMcp::bridge(addr).unwrap_or_else(|e| fail(e)),
                 None => match Backend::open(&a) {
                     Backend::Local(s) => filmcraft_automation::FilmcraftMcp::headless(*s),
-                    Backend::Bridge(_) => unreachable!(),
+                    Backend::Bridge(_) => usage("mcp: use --bridge ADDR to drive a running app"),
                 },
             };
             if let Err(e) = server.serve_stdio().await {

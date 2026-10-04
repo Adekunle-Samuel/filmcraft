@@ -7,6 +7,8 @@
 //!
 //! The same code renders monitors, thumbnails and exports, and is the oracle for the GPU path.
 
+#![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable))]
+
 pub mod audio;
 pub mod audio_fx;
 pub mod blend;
