@@ -411,6 +411,9 @@ fn ranges_resolve_and_sidecar_captions_are_written() {
     assert_eq!(frames(&mut s, json!({"preset": "PNG Sequence"})), io, "In/Out is the default");
     assert!(s.execute("export.resolve", json!({"range": "workArea"})).is_err(), "no work area");
     assert_eq!(frames(&mut s, json!({"preset": "Animated GIF 640×360", "range": "custom", "startSeconds": 0, "endSeconds": 2})), 30, "15 fps");
+    let bare = frames(&mut s, json!({"preset": "Animated GIF 640×360", "startSeconds": 0, "endSeconds": 2}));
+    assert_eq!(bare, 30, "start/end times without `range` are a custom range, not the In/Out or whole sequence");
+    assert!(s.execute("export.resolve", json!({"startSeconds": 1})).is_err(), "a start without an end is an error");
     let res = s.execute("export.resolve", json!({"preset": "YouTube 2160p 4K Ultra HD"})).unwrap();
     assert_eq!(res["output"]["width"], 3840);
     assert!(res["summary"]["video"].as_str().unwrap().contains("3840x2160"));

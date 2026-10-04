@@ -244,12 +244,14 @@ pub fn sequence_param(s: &Session, p: &Value, cmd: &str) -> Result<ItemId> {
 }
 
 /// Export ▸ Range: `entire` | `inOut` | `workArea` | `custom` (`start…` / `end…` times).
-/// None = the default (In/Out when set, else the whole sequence).
+/// None = the default (In/Out when set, else the whole sequence); bare `start…` / `end…` times
+/// without a `range` mean `custom`.
 pub fn range_param(s: &Session, project: &Project, seq: ItemId, v: Option<&Value>, p: &Value, cmd: &str) -> Result<Option<TimeRange>> {
     let q = project.sequence(seq).ok_or(EngineError::NoSequence)?;
     let fd = q.settings.frame_rate.frame_duration();
     let whole = TimeRange::from_bounds(Tick::ZERO, q.duration().max(fd));
     let mode = match v {
+        None | Some(Value::Null) if time_p(s, p, "start").is_some() || time_p(s, p, "end").is_some() => "custom".to_string(),
         None | Some(Value::Null) => return Ok(None),
         Some(Value::String(m)) => m.to_ascii_lowercase().replace(['-', '_', ' ', '/'], ""),
         Some(o @ Value::Object(_)) => return range_param(s, project, seq, o.get("mode").or(Some(&json!("custom"))), o, cmd),
