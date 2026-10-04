@@ -157,15 +157,15 @@ pub fn thumbnail(t: &GraphicsTemplate, w: u32) -> (u32, u32, Vec<u8>) {
     let mut p = Project::new("thumb");
     let rate = filmcraft_time::FrameRate::FPS_30;
     let g = p.add_item("G", Label::Rose, ItemKind::Graphic { width: t.canvas[0], height: t.canvas[1], rate }, None);
-    let mut it = p
-        .make_track_item(
-            g,
-            filmcraft_project::TrackKind::Video,
-            Tick::ZERO,
-            filmcraft_time::TimeRange::new(Tick::ZERO, t.duration.max(rate.frame_duration())),
-            rate,
-        )
-        .expect("item");
+    let Some(mut it) = p.make_track_item(
+        g,
+        filmcraft_project::TrackKind::Video,
+        Tick::ZERO,
+        filmcraft_time::TimeRange::new(Tick::ZERO, t.duration.max(rate.frame_duration())),
+        rate,
+    ) else {
+        return (w, h, vec![0; w as usize * h as usize * 4]);
+    };
     it.effects.extend(t.layers.iter().cloned());
     it.graphic = Some(Box::new(meta));
     // a moment into the clip, so intro animations have settled a little

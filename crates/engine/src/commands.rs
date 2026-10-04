@@ -362,7 +362,7 @@ pub(crate) fn place_item(
         let frame = (seq.settings.width, seq.settings.height);
         let mut placements = Vec::new();
         let link = if has_v && has_a { Some(p.alloc_id()) } else { None };
-        if has_v {
+        if let Some(vdest) = vdest.filter(|_| has_v) {
             let mut v = p.make_track_item(item, TrackKind::Video, at, range, rate).ok_or_else(|| bad(label, "bad item"))?;
             v.link = link;
             for e in &mut v.effects {
@@ -371,10 +371,9 @@ pub(crate) fn place_item(
             if is_media && src_size != frame {
                 crate::settings::apply_media_scaling(&mut v, &scaling, frame, src_size);
             }
-            placements.push((vdest.expect("checked"), v));
+            placements.push((vdest, v));
         }
-        if has_a {
-            let adest = adest.expect("checked");
+        if let Some(adest) = adest.filter(|_| has_a) {
             let (arange, aat) = audio_split.unwrap_or((range, at));
             let mut a = p.make_track_item(item, TrackKind::Audio, aat, arange, rate).ok_or_else(|| bad(label, "bad item"))?;
             // Modify ▸ Audio Channels with several audio clips: one per clip, on the tracks below
@@ -675,27 +674,27 @@ fn build() -> Vec<CommandSpec> {
                         Ok(id) => ids.push(id.0),
                         Err(e) => errors.push(format!("{path}: {e}")),
                     },
-                    Ok(b) if crate::captions::detect(&path, &b).is_some() => {
-                        let fmt = crate::captions::detect(&path, &b).expect("detected");
-                        match crate::captions::import(s, &path, &b, fmt, None) {
-                            Ok(r) => reports.push(r),
-                            Err(e) => errors.push(format!("{path}: {e}")),
-                        }
-                    }
-                    Ok(b) if crate::interchange::detect(&path, &b).is_some() => {
-                        let fmt = crate::interchange::detect(&path, &b).expect("detected");
-                        match crate::interchange::import(s, &path, &b, fmt) {
-                            Ok(r) => {
-                                sequences.extend(r["sequences"].as_array().cloned().unwrap_or_default());
-                                reports.push(r);
+                    Ok(b) => {
+                        if let Some(fmt) = crate::captions::detect(&path, &b) {
+                            match crate::captions::import(s, &path, &b, fmt, None) {
+                                Ok(r) => reports.push(r),
+                                Err(e) => errors.push(format!("{path}: {e}")),
                             }
-                            Err(e) => errors.push(format!("{path}: {e}")),
+                        } else if let Some(fmt) = crate::interchange::detect(&path, &b) {
+                            match crate::interchange::import(s, &path, &b, fmt) {
+                                Ok(r) => {
+                                    sequences.extend(r["sequences"].as_array().cloned().unwrap_or_default());
+                                    reports.push(r);
+                                }
+                                Err(e) => errors.push(format!("{path}: {e}")),
+                            }
+                        } else {
+                            match import_bytes(s, &path, b.into(), bin) {
+                                Ok(id) => ids.push(id.0),
+                                Err(e) => errors.push(format!("{path}: {e}")),
+                            }
                         }
                     }
-                    Ok(b) => match import_bytes(s, &path, b.into(), bin) {
-                        Ok(id) => ids.push(id.0),
-                        Err(e) => errors.push(format!("{path}: {e}")),
-                    },
                     Err(e) => errors.push(format!("{path}: {e}")),
                 }
             }
@@ -1280,7 +1279,7 @@ fn build() -> Vec<CommandSpec> {
                 let p = p.clone();
                 s.edit("Sequence Settings", |pr, _| {
                     if let Some(n) = str_p(&p, "name") {
-                        pr.item_mut(id).expect("seq").name = n.to_string();
+                        pr.item_mut(id).ok_or(EngineError::NoSequence)?.name = n.to_string();
                     }
                     let q = pr.sequence_mut(id).ok_or(EngineError::NoSequence)?;
                     if let Some(w) = u64_p(&p, "width") {
@@ -2454,7 +2453,7 @@ fn nest(s: &mut Session, p: &Value) -> Result<Value> {
     s.edit("Nest", |pr, st| {
         let nid = pr.new_sequence(&name, q.settings.clone(), q.video_tracks.len(), q.audio_tracks.len(), None);
         {
-            let nq = pr.sequence_mut(nid).expect("new");
+            let nq = pr.sequence_mut(nid).ok_or(EngineError::NoSequence)?;
             for (k, ti, it) in &items {
                 let mut it = it.clone();
                 it.start -= start;
@@ -2465,11 +2464,15 @@ fn nest(s: &mut Session, p: &Value) -> Result<Value> {
             }
         }
         let rate = q.settings.frame_rate;
-        let mut v = pr.make_track_item(nid, TrackKind::Video, start, TimeRange::new(Tick::ZERO, end - start), rate).expect("item");
+        let mut v = pr
+            .make_track_item(nid, TrackKind::Video, start, TimeRange::new(Tick::ZERO, end - start), rate)
+            .ok_or_else(|| EngineError::Other("cannot place the nested sequence".into()))?;
         for e in &mut v.effects {
             resolve_auto_points(e, (q.settings.width, q.settings.height), (q.settings.width, q.settings.height));
         }
-        let a = pr.make_track_item(nid, TrackKind::Audio, start, TimeRange::new(Tick::ZERO, end - start), rate).expect("item");
+        let a = pr
+            .make_track_item(nid, TrackKind::Audio, start, TimeRange::new(Tick::ZERO, end - start), rate)
+            .ok_or_else(|| EngineError::Other("cannot place the nested sequence".into()))?;
         let link = pr.alloc_id();
         let seq = pr.sequence_mut(seq_id).ok_or(EngineError::NoSequence)?;
         edit::delete_items(seq, &sel);

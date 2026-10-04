@@ -433,7 +433,7 @@ pub fn shuttle(s: &mut Session, p: &Value) -> Result<Value> {
         tick(s, clock)?;
     }
     let rate = s.sequence_rate();
-    let d = s.trim_play.dynamic.as_mut().expect("dynamic trim");
+    let d = s.trim_play.dynamic.as_mut().ok_or_else(|| EngineError::Other("dynamic trimming is not active".into()))?;
     let speed = if slow {
         0.25 * dir
     } else if d.speed * dir > 0.0 && !d.at_limit {

@@ -44,6 +44,15 @@ pub fn add_generator(p: &mut Project, pool: &MediaPool, src: GeneratorSource, na
 
 /// Build the demo project. Returns (project, main sequence).
 pub fn demo_project(pool: &MediaPool) -> (Project, ItemId) {
+    build_demo(pool).unwrap_or_else(|| {
+        // Only reachable if the built-in items could not be placed: an empty demo, not a crash.
+        let mut p = Project::new("FilmCraft Demo");
+        let seq = p.new_sequence("Main Edit", SequenceSettings::default(), 3, 3, None);
+        (p, seq)
+    })
+}
+
+fn build_demo(pool: &MediaPool) -> Option<(Project, ItemId)> {
     let mut p = Project::new("FilmCraft Demo");
     let footage = p.add_bin("Footage", None);
     let audio_bin = p.add_bin("Audio", None);
@@ -108,8 +117,8 @@ pub fn demo_project(pool: &MediaPool) -> (Project, ItemId) {
     for (ci, sin, dur) in cuts {
         let src_range = TimeRange::new(r.snap(Tick::from_seconds_f64(sin)), r.snap(Tick::from_seconds_f64(dur)));
         let link = p.alloc_id();
-        let mut v = p.make_track_item(clips[ci], TrackKind::Video, t, src_range, r).expect("item");
-        let mut a = p.make_track_item(clips[ci], TrackKind::Audio, t, src_range, r).expect("item");
+        let mut v = p.make_track_item(clips[ci], TrackKind::Video, t, src_range, r)?;
+        let mut a = p.make_track_item(clips[ci], TrackKind::Audio, t, src_range, r)?;
         v.link = Some(link);
         a.link = Some(link);
         for e in &mut v.effects {
@@ -118,14 +127,14 @@ pub fn demo_project(pool: &MediaPool) -> (Project, ItemId) {
         a.effect_mut("volume").map(|e| e.params.get_mut("level").map(|l| l.value = ParamValue::Float(-8.0)));
         let dur_t = v.duration;
         placed.push((v.id, a.id, t, dur_t));
-        let s = p.sequence_mut(seq).expect("seq");
+        let s = p.sequence_mut(seq)?;
         s.video_tracks[0].items.push(v);
         s.audio_tracks[0].items.push(a);
         t += dur_t;
     }
     // A lower-third-ish overlay on V2: the plasma clip scaled down in the corner with a drop shadow.
     let ov_range = TimeRange::new(Tick::ZERO, r.snap(Tick::from_seconds_f64(4.0)));
-    let mut ov = p.make_track_item(clips[4], TrackKind::Video, r.snap(Tick::from_seconds_f64(6.0)), ov_range, r).expect("item");
+    let mut ov = p.make_track_item(clips[4], TrackKind::Video, r.snap(Tick::from_seconds_f64(6.0)), ov_range, r)?;
     for e in &mut ov.effects {
         resolve_auto_points(e, (1920, 1080), (1920, 1080));
     }
@@ -152,18 +161,18 @@ pub fn demo_project(pool: &MediaPool) -> (Project, ItemId) {
         lum.params.get_mut("temperature").map(|v| v.value = ParamValue::Float(18.0));
         lum.params.get_mut("contrast").map(|v| v.value = ParamValue::Float(22.0));
         lum.params.get_mut("vignette_amount").map(|v| v.value = ParamValue::Float(-1.4));
-        let s = p.sequence_mut(seq).expect("seq");
+        let s = p.sequence_mut(seq)?;
         if let Some(it) = s.video_tracks[0].items.get_mut(3) {
             it.effects.insert(0, lum);
         }
     }
-    let s = p.sequence_mut(seq).expect("seq");
+    let s = p.sequence_mut(seq)?;
     s.video_tracks[1].items.push(ov);
     // Transitions: cross dissolve between shots 1-2, dip to black 3-4, push 5-6, fade in at start.
     let tr_len = r.tick_of(24);
     let mk = |id: u64, eff: &str, from: Option<filmcraft_project::ClipId>, to: Option<filmcraft_project::ClipId>, start: Tick| Transition {
         id: TransitionId(id),
-        effect: find_effect(eff).expect("fx").instance(),
+        effect: crate::presets::effect_instance(eff),
         start,
         duration: tr_len,
         from,
@@ -181,7 +190,7 @@ pub fn demo_project(pool: &MediaPool) -> (Project, ItemId) {
     s.video_tracks[0].transitions = trs;
     s.audio_tracks[0].transitions.push(Transition {
         id: TransitionId(900_010),
-        effect: find_effect("constant_power").expect("fx").instance(),
+        effect: crate::presets::effect_instance("constant_power"),
         start: cut(1) - tr_len.mul_ratio(1, 2),
         duration: tr_len,
         from: Some(placed[0].1),
@@ -207,13 +216,13 @@ pub fn demo_project(pool: &MediaPool) -> (Project, ItemId) {
         });
     }
     // Music on A2 (under the whole edit), ducked -14 dB.
-    let mut m = p.make_track_item(music, TrackKind::Audio, Tick::ZERO, TimeRange::new(Tick::ZERO, end), r).expect("music");
+    let mut m = p.make_track_item(music, TrackKind::Audio, Tick::ZERO, TimeRange::new(Tick::ZERO, end), r)?;
     m.effect_mut("volume").map(|e| e.params.get_mut("level").map(|l| l.value = ParamValue::Float(-14.0)));
     m.label = Label::Caribbean;
-    let s = p.sequence_mut(seq).expect("seq");
+    let s = p.sequence_mut(seq)?;
     s.audio_tracks[1].items.push(m);
     for tr in s.all_tracks_mut() {
         tr.sort();
     }
-    (p, seq)
+    Some((p, seq))
 }

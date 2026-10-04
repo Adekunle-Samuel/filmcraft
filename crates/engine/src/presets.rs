@@ -151,8 +151,22 @@ fn kf(t_secs: f64, v: ParamValue) -> Keyframe {
     Keyframe::new(Tick((t_secs * TICKS_PER_SECOND as f64).round() as i64), v)
 }
 
+/// A fresh instance of a built-in effect (a bare instance named `id` if the registry lacks it,
+/// which the preset tests rule out).
+pub(crate) fn effect_instance(id: &str) -> EffectInstance {
+    filmcraft_project::find_effect(id).map(|d| d.instance()).unwrap_or_else(|| EffectInstance {
+        effect: id.to_string(),
+        enabled: true,
+        params: Default::default(),
+        masks: Vec::new(),
+        post_fader: false,
+        essential: false,
+        layer: None,
+    })
+}
+
 fn effect(id: &str, params: &[(&str, ParamValue)]) -> EffectInstance {
-    let mut e = filmcraft_project::find_effect(id).unwrap_or_else(|| panic!("built-in preset uses unknown effect {id}")).instance();
+    let mut e = effect_instance(id);
     for (k, v) in params {
         if let Some(p) = e.params.get_mut(*k) {
             p.value = v.clone();

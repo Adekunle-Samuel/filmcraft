@@ -8,6 +8,8 @@
 //! The project is an `Arc<Project>` edited copy-on-write; undo keeps whole-project snapshots (cheap
 //! thanks to structural sharing of untouched items).
 
+#![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable))]
+
 pub mod aaf_omf;
 pub mod autosave;
 pub mod captions;

@@ -441,7 +441,9 @@ fn bindable(c: &CommandSpec) -> bool {
             }
             _ => {}
         }
-        fields.last_mut().expect("field").push(ch);
+        if let Some(f) = fields.last_mut() {
+            f.push(ch);
+        }
     }
     fields.iter().all(|f| f.contains('?') || f.contains('='))
 }
@@ -505,7 +507,7 @@ impl Shortcuts {
             dir: None,
             session_start: None,
         };
-        s.bindings = s.builtin(DEFAULT_PRESET).expect("default preset");
+        s.bindings = s.builtin(DEFAULT_PRESET).unwrap_or_default();
         s
     }
 

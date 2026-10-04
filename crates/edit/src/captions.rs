@@ -105,8 +105,9 @@ pub fn merge_captions(seq: &mut Sequence, ids: &[ClipId]) -> Result<ClipId> {
     if idx.windows(2).any(|w| w[1] != w[0] + 1) {
         return Err(EditError::Other("captions to merge must be next to each other".into()));
     }
-    let first = idx[0];
-    let last = *idx.last().expect("non-empty");
+    let (Some(&first), Some(&last)) = (idx.first(), idx.last()) else {
+        return Err(EditError::Nothing);
+    };
     let end = tr.captions[last].end();
     let text: Vec<String> = idx.iter().map(|&i| tr.captions[i].text.trim().to_string()).filter(|t| !t.is_empty()).collect();
     let keep = tr.captions[first].id;
@@ -205,7 +206,7 @@ pub fn move_captions(seq: &mut Sequence, ids: &[ClipId], delta: Tick) -> Result<
         return Err(EditError::Nothing);
     }
     for tid in tracks {
-        let tr = seq.caption_track_mut(tid).expect("checked");
+        let Some(tr) = seq.caption_track_mut(tid) else { continue };
         for c in tr.captions.iter_mut().filter(|c| ids.contains(&c.id)) {
             c.start += d;
         }
