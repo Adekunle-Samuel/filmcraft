@@ -58,14 +58,16 @@ Every commit must pass all of these:
 
 `cargo xtask` is an alias in `.cargo/config.toml` for `cargo run -p xtask --`.
 
-### No panics
+### Never crash
 
-Production code must never panic (rules in [AGENTS.md](../AGENTS.md) §3.1). In short: return
-`Result<T, E>` instead of `unwrap()` / `expect()` / `panic!` / `unreachable!`; use `get()`,
-`checked_*` / `saturating_*` and validated bounds on anything that came from a file, a command parameter
-or the UI; catch panics in background threads and report them as errors. Clippy denies `unwrap_used`,
-`expect_used`, `panic` and `unreachable` outside tests. Parsers, decoders and commands get fuzz /
-hostile-input tests run under `catch_unwind`.
+Production code must never crash: a crash loses someone's work, so this outranks feature work. The rules
+are in [AGENTS.md](../AGENTS.md) §0. In short: return `Result<T, E>` instead of `unwrap()` / `expect()` /
+`panic!` / `unreachable!` / `todo!` / `unimplemented!`; no `unsafe`; use `get()`, `checked_*` /
+`saturating_*` and validated bounds on anything that came from a file, a command parameter or the UI;
+bound recursion; tolerate lock poisoning; catch panics in background threads and report them as errors.
+Clean crates deny the panicking lints outside tests (`clippy.toml` allows them in tests). Every crash fix
+comes with a regression test; parsers, decoders and commands get fuzz / hostile-input tests run under
+`catch_unwind`.
 
 ## 4. Commits
 
