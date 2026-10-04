@@ -277,7 +277,7 @@ pub fn parse(bytes: &[u8]) -> Result<Document> {
             }
         }
     };
-    for blk in bytes[GSI..].chunks_exact(TTI) {
+    for blk in bytes[GSI..].as_chunks::<TTI>().0 {
         let sn = u16::from_le_bytes([blk[1], blk[2]]);
         let ebn = blk[3];
         let cf = blk[15];

@@ -238,7 +238,7 @@ fn written_files_have_the_required_structure() {
         assert_eq!(a1[1].strong(pid::OPERATION_GROUP).unwrap().weak_key(pid::OPERATION), Some(&def::MONO_AUDIO_DISSOLVE[..]));
         // weak reference paths are registered
         let rp = cf.read_path("referenced properties").unwrap();
-        let pids: Vec<u16> = rp[7..].chunks_exact(2).map(|c| u16::from_le_bytes([c[0], c[1]])).collect();
+        let pids: Vec<u16> = rp[7..].as_chunks::<2>().0.iter().map(|c| u16::from_le_bytes([c[0], c[1]])).collect();
         assert!(pids.windows(3).any(|w| w == path::DATA_DEFS));
     }
 }

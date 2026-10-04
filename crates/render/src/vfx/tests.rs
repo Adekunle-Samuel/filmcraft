@@ -182,7 +182,7 @@ fn every_effect_is_finite_in_range_and_deterministic() {
             let b = run(id, &e, &img, &c);
             assert_eq!(a.px, b.px, "{id} not deterministic");
             assert_eq!((a.w, a.h), (img.w, img.h), "{id} changed size");
-            for p in a.px.chunks_exact(4) {
+            for p in a.px.as_chunks::<4>().0 {
                 assert!(p.iter().all(|v| v.is_finite()), "{id}: {p:?}");
                 assert!(p[3] >= -1e-4 && p[3] <= 1.0 + 1e-3, "{id}: alpha {}", p[3]);
                 assert!(p[..3].iter().all(|v| *v >= -1e-3), "{id}: negative {p:?}");
@@ -550,7 +550,7 @@ fn lights_add_light_around_highlights() {
             img.px[(y * 48 + x) * 4..(y * 48 + x) * 4 + 4].copy_from_slice(&[1.0, 1.0, 1.0, 1.0]);
         }
     }
-    let total = |i: &Image| i.px.chunks_exact(4).map(|p| p[0] as f64).sum::<f64>();
+    let total = |i: &Image| i.px.as_chunks::<4>().0.iter().map(|p| p[0] as f64).sum::<f64>();
     for id in ["echo_glow", "glint", "wonder_glow", "volumetric_rays", "edge_glow"] {
         let o = run(id, &inst(id), &img, &cx());
         let added = total(&o) - total(&img);
@@ -628,7 +628,7 @@ fn generators_known_values() {
     assert!(o.get(28, 10)[3] > 0.8 && o.get(20, 10)[3] < 0.01, "{:?} {:?}", o.get(28, 10), o.get(20, 10));
     // Cell Pattern is opaque grey in 0..1
     let o = run("cell_pattern", &inst("cell_pattern"), &img, &cx());
-    assert!(o.px.chunks_exact(4).all(|p| p[3] == 1.0 && p[0] >= 0.0 && p[0] <= 1.0 && p[0] == p[1]));
+    assert!(o.px.as_chunks::<4>().0.iter().all(|p| p[3] == 1.0 && p[0] >= 0.0 && p[0] <= 1.0 && p[0] == p[1]));
     // Lightning: deterministic per seed, different across seeds and strikes
     let a = run("lightning", &inst("lightning"), &img, &cx());
     let mut e = inst("lightning");
@@ -1015,7 +1015,7 @@ fn warp_stabilizer_removes_camera_jitter() {
     let env = mk(9.0 / 24.0);
     let mut st = env.render(9.0 / 24.0, 1.0);
     crate::effects::apply(&mut st, &e, &FxCtx { seconds: 9.0 / 24.0, env: Some(&env), ..cx() });
-    assert!(st.px.chunks_exact(4).all(|p| p[3] > 0.99), "auto-scale leaves no border");
+    assert!(st.px.as_chunks::<4>().0.iter().all(|p| p[3] > 0.99), "auto-scale leaves no border");
     // the path cache is reused
     assert!(stabilizer_path(&env, 0.0, filmcraft_project::TrackMethod::Position, false).is_some());
 }

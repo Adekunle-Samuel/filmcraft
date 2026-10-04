@@ -283,7 +283,7 @@ pub(crate) fn scan<S: ByteSource + ?Sized>(src: &S, packet_size: usize, sync_off
                         continue;
                     }
                     let body = &sec[8..sec.len() - 4];
-                    for e in body.chunks_exact(4) {
+                    for e in body.as_chunks::<4>().0 {
                         let num = u16::from_be_bytes([e[0], e[1]]);
                         let pid = (((e[2] & 0x1F) as u16) << 8) | e[3] as u16;
                         if num != 0 && pmt_pid.is_none() {

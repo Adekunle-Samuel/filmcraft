@@ -293,9 +293,9 @@ pub fn render(g: &Generator, w: u32, h: u32, t: f32, frame: i64, rate: FrameRate
         Generator::BarsAndTone => bars(&mut px, wu, hu),
         Generator::ColorMatte { color } => {
             let c = [(color[0] * 255.0) as u8, (color[1] * 255.0) as u8, (color[2] * 255.0) as u8, (color[3] * 255.0) as u8];
-            px.chunks_exact_mut(4).for_each(|p| p.copy_from_slice(&c));
+            px.as_chunks_mut::<4>().0.iter_mut().for_each(|p| p.copy_from_slice(&c));
         }
-        Generator::BlackVideo => px.chunks_exact_mut(4).for_each(|p| p.copy_from_slice(&[0, 0, 0, 255])),
+        Generator::BlackVideo => px.as_chunks_mut::<4>().0.iter_mut().for_each(|p| p.copy_from_slice(&[0, 0, 0, 255])),
         Generator::TransparentVideo | Generator::Tone { .. } => {}
         Generator::CountingLeader => leader(&mut px, wu, hu, t, frame, rate),
         Generator::Demo(scene) => {
@@ -573,7 +573,7 @@ mod tests {
     fn all_scenes_render() {
         for s in DemoScene::ALL {
             let px = render(&Generator::Demo(s), 64, 36, 1.5, 36, FrameRate::FPS_24);
-            assert!(px.chunks_exact(4).any(|p| p[0] > 20 || p[1] > 20 || p[2] > 20));
+            assert!(px.as_chunks::<4>().0.iter().any(|p| p[0] > 20 || p[1] > 20 || p[2] > 20));
         }
         let px = render(&Generator::CountingLeader, 64, 36, 1.5, 36, FrameRate::FPS_24);
         assert_eq!(px.len(), 64 * 36 * 4);

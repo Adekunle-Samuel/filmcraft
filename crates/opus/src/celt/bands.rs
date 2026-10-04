@@ -442,14 +442,13 @@ impl BandCtx<'_, '_, '_> {
                 x[..n].fill(0.0);
                 0
             } else {
-                let cm;
-                match lowband {
+                let cm = match lowband {
                     None => {
                         for v in x[..n].iter_mut() {
                             self.seed = lcg_rand(self.seed);
                             *v = ((self.seed as i32) >> 20) as f32;
                         }
-                        cm = cm_mask;
+                        cm_mask
                     }
                     Some(lb) => {
                         for j in 0..n {
@@ -457,9 +456,9 @@ impl BandCtx<'_, '_, '_> {
                             let tmp = if self.seed & 0x8000 != 0 { 1.0 / 256.0 } else { -1.0 / 256.0 };
                             x[j] = lb[j] + tmp;
                         }
-                        cm = fill;
+                        fill
                     }
-                }
+                };
                 renormalise_vector(&mut x[..n], gain);
                 cm
             }

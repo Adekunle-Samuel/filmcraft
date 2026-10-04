@@ -99,7 +99,7 @@ fn ffmpeg_encoded_streams_decode() {
             }
         }
         let o = Command::new(&ff).args(["-v", "error", "-i"]).arg(&f).args(["-f", "f32le", "-"]).output().unwrap();
-        let want: Vec<f32> = o.stdout.chunks_exact(4).map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]])).collect();
+        let want: Vec<f32> = o.stdout.as_chunks::<4>().0.iter().map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]])).collect();
         let ch = s.channels as usize;
         let n = want.len() / ch;
         assert_eq!(n, ours[0].len(), "{}: sample count", s.name);

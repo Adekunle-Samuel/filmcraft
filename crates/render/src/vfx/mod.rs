@@ -374,7 +374,7 @@ pub(crate) fn blur_plane(plane: &[f32], w: usize, h: usize, sigma: f32) -> Vec<f
     }
     let mut im = Image { w, h, px: plane.iter().flat_map(|&v| [v, 0.0, 0.0, 0.0]).collect() };
     crate::effects::gaussian(&mut im, sigma, sigma, false);
-    im.px.chunks_exact(4).map(|p| p[0]).collect()
+    im.px.as_chunks::<4>().0.iter().map(|p| p[0]).collect()
 }
 
 /// Bright parts of an image above `threshold` (display luma), premultiplied linear, for glows.

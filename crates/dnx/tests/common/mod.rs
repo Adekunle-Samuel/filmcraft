@@ -91,7 +91,7 @@ pub fn reference(ff: &Path, mov: &Path, pix_fmt: &str) -> Vec<u16> {
         .expect("run ffmpeg");
     assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
     if pix_fmt.ends_with("le") {
-        out.stdout.chunks_exact(2).map(|c| u16::from_le_bytes([c[0], c[1]])).collect()
+        out.stdout.as_chunks::<2>().0.iter().map(|c| u16::from_le_bytes([c[0], c[1]])).collect()
     } else {
         out.stdout.iter().map(|&b| b as u16).collect()
     }
@@ -247,7 +247,7 @@ pub fn ffmpeg_decode(ff: &Path, mov: &Path, pix_fmt: &str) -> Vec<u16> {
     let err = String::from_utf8_lossy(&out.stderr).to_string();
     assert!(out.status.success() && err.trim().is_empty(), "ffmpeg failed: {err}");
     if pix_fmt.ends_with("le") {
-        out.stdout.chunks_exact(2).map(|c| u16::from_le_bytes([c[0], c[1]])).collect()
+        out.stdout.as_chunks::<2>().0.iter().map(|c| u16::from_le_bytes([c[0], c[1]])).collect()
     } else {
         out.stdout.iter().map(|&b| b as u16).collect()
     }
@@ -270,8 +270,11 @@ pub fn source_frames(ff: &Path, name: &str, lavfi: &str, frames: u32, w: u32, h:
         std::fs::rename(&tmp, &path).unwrap();
     }
     let bytes = std::fs::read(&path).unwrap();
-    let s: Vec<u16> =
-        if depth == 8 { bytes.iter().map(|&b| b as u16).collect() } else { bytes.chunks_exact(2).map(|c| u16::from_le_bytes([c[0], c[1]])).collect() };
+    let s: Vec<u16> = if depth == 8 {
+        bytes.iter().map(|&b| b as u16).collect()
+    } else {
+        bytes.as_chunks::<2>().0.iter().map(|c| u16::from_le_bytes([c[0], c[1]])).collect()
+    };
     let proto = Frame::new(w, h, chroma, depth, false);
     let per = frame_samples(&proto);
     assert_eq!(s.len(), per * frames as usize);

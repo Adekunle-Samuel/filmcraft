@@ -225,7 +225,7 @@ fn ffmpeg_oracle_op1a_and_op_atom() {
         let at = mx.track_of_kind(filmcraft_mxf::TrackKind::Sound).unwrap();
         let ours = mx.read_pcm(&bytes, at, 0, 48_000).unwrap();
         assert_eq!(pcm.len(), 48_000 * 2 * 4, "{codec:?}");
-        for (i, c) in pcm.chunks_exact(4).enumerate() {
+        for (i, c) in pcm.as_chunks::<4>().0.iter().enumerate() {
             let s = i32::from_le_bytes([c[0], c[1], c[2], c[3]]) >> 8;
             assert_eq!(s as f32 / 8_388_608.0, ours[i % 2][i / 2], "{codec:?}: sample {i}");
         }
@@ -255,7 +255,7 @@ fn ffmpeg_oracle_op1a_and_op_atom() {
         assert_eq!((s["codec_name"].as_str(), s["channels"].as_u64(), s["sample_rate"].as_str()), (Some("pcm_s24le"), Some(1), Some("48000")), "{a}");
         let mono = ffmpeg_raw(&ffmpeg, a, "0:a:0", &["-f", "s32le", "-acodec", "pcm_s32le"]);
         assert_eq!(mono.len(), 48_000 * 4, "{a}");
-        let want: Vec<u8> = stereo.chunks_exact(8).flat_map(|f| f[k * 4..k * 4 + 4].to_vec()).collect();
+        let want: Vec<u8> = stereo.as_chunks::<8>().0.iter().flat_map(|f| f[k * 4..k * 4 + 4].to_vec()).collect();
         assert!(mono == want, "{a}: channel {k} differs from the WAV export");
     }
 }

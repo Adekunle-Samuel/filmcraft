@@ -102,11 +102,11 @@ fn name_string(b: &[u8], id: u16) -> Option<String> {
         let raw = b.get(storage + off..storage + off + len)?;
         let (rank, s) = match plat {
             3 if enc == 1 || enc == 10 => {
-                let u: Vec<u16> = raw.chunks_exact(2).map(|c| u16::from_be_bytes([c[0], c[1]])).collect();
+                let u: Vec<u16> = raw.as_chunks::<2>().0.iter().map(|c| u16::from_be_bytes([c[0], c[1]])).collect();
                 (if lang == 0x409 { 0 } else { 1 }, String::from_utf16_lossy(&u))
             }
             0 => {
-                let u: Vec<u16> = raw.chunks_exact(2).map(|c| u16::from_be_bytes([c[0], c[1]])).collect();
+                let u: Vec<u16> = raw.as_chunks::<2>().0.iter().map(|c| u16::from_be_bytes([c[0], c[1]])).collect();
                 (2, String::from_utf16_lossy(&u))
             }
             1 if enc == 0 => (3, raw.iter().map(|&c| if c < 128 { c as char } else { '?' }).collect()),

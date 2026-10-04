@@ -92,7 +92,7 @@ fn decode_both(ff: &Path, file: &Path, decoder: &[&str]) -> (OggSource, Vec<f32>
     let ch = a.channels as usize;
     let mut args: Vec<&str> = decoder.to_vec();
     args.extend_from_slice(&["-i", file.to_str().unwrap(), "-map", "0:a:0", "-f", "f32le", "-"]);
-    let want: Vec<f32> = ffmpeg_out(ff, &args).chunks_exact(4).map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]])).collect();
+    let want: Vec<f32> = ffmpeg_out(ff, &args).as_chunks::<4>().0.iter().map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]])).collect();
     let n = want.len() / ch;
     let frames = src.info().duration.to_units_floor(a.sample_rate as i64) as usize;
     assert_eq!(frames, n, "{}: our length = ffmpeg's ({} samples)", file.display(), n);

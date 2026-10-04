@@ -680,7 +680,7 @@ pub fn read_wav_f32(b: &[u8]) -> Option<Vec<f32>> {
             if !float_stereo {
                 return None;
             }
-            return Some(body.chunks_exact(4).map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]])).collect());
+            return Some(body.as_chunks::<4>().0.iter().map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]])).collect());
         }
         i += 8 + len + (len & 1);
     }

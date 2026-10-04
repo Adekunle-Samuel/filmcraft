@@ -33,7 +33,7 @@ fn lumetri_text(s: &Session, clip: ClipId, p: &str) -> String {
 fn mean(img: &filmcraft_render::Image) -> [f32; 3] {
     assert!(img.px.iter().any(|v| *v > 0.01), "blank render");
     let mut m = [0f64; 3];
-    for p in img.px.chunks_exact(4) {
+    for p in img.px.as_chunks::<4>().0 {
         for k in 0..3 {
             m[k] += p[k] as f64;
         }
@@ -213,7 +213,7 @@ fn lumetri_presets_list_apply_and_thumbnails() {
     assert!(it.effects[k + 1..].iter().all(|e| e.def().is_some_and(|d| d.intrinsic)) || k + 1 == it.effects.len());
     assert_eq!(it.effects[k].param("saturation").unwrap().value, ParamValue::Float(0.0));
     let img = s.render_program(0.25).unwrap();
-    let grey = img.px.chunks_exact(4).filter(|p| p[3] > 0.5).all(|p| (p[0] - p[1]).abs() < 0.01 && (p[1] - p[2]).abs() < 0.01);
+    let grey = img.px.as_chunks::<4>().0.iter().filter(|p| p[3] > 0.5).all(|p| (p[0] - p[1]).abs() < 0.01 && (p[1] - p[2]).abs() < 0.01);
     assert!(grey, "the program is black and white");
     s.execute("edit.undo", json!({})).unwrap();
     assert_eq!(s.active_sequence().unwrap().find_item(clip).unwrap().1.effects.len(), before);
@@ -242,7 +242,7 @@ fn hdr_lumetri_and_mastering_metadata_through_commands() {
     for k in 0..3 {
         assert!((m1[k] / m0[k] - 2.0).abs() < 0.08, "channel {k}: {m0:?} → {m1:?}");
     }
-    assert!(up.px.chunks_exact(4).any(|p| p[1] > 1.2), "values above reference white survive");
+    assert!(up.px.as_chunks::<4>().0.iter().any(|p| p[1] > 1.2), "values above reference white survive");
     // HDR White / HDR Specular / HDR Range are ordinary Lumetri parameters
     s.execute("effects.setParam", json!({"clip": clip.0, "effect": idx, "param": "hdr_white", "value": 2000.0})).unwrap();
     s.execute("effects.setParam", json!({"clip": clip.0, "effect": idx, "param": "hdr_specular", "value": -50.0})).unwrap();

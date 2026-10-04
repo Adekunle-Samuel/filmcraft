@@ -162,7 +162,7 @@ pub(crate) fn utf16z(s: &str) -> Vec<u8> {
 }
 
 pub(crate) fn utf16_of(d: &[u8]) -> String {
-    let u: Vec<u16> = d.chunks_exact(2).map(|c| u16::from_le_bytes([c[0], c[1]])).take_while(|&c| c != 0).collect();
+    let u: Vec<u16> = d.as_chunks::<2>().0.iter().map(|c| u16::from_le_bytes([c[0], c[1]])).take_while(|&c| c != 0).collect();
     String::from_utf16_lossy(&u)
 }
 
@@ -361,7 +361,7 @@ pub(crate) fn read(bytes: &[u8]) -> Result<Obj, String> {
     {
         let count = u16::from_le_bytes([rp[1], rp[2]]) as usize;
         let mut cur = Vec::new();
-        for c in rp[7..].chunks_exact(2) {
+        for c in rp[7..].as_chunks::<2>().0 {
             let pid = u16::from_le_bytes([c[0], c[1]]);
             if pid == 0 {
                 paths.push(std::mem::take(&mut cur));

@@ -221,7 +221,7 @@ pub fn batch_of(v: &[u8]) -> Vec<&[u8]> {
 
 /// A UTF-16BE string property (trailing NULs removed).
 pub fn utf16_of(v: &[u8]) -> String {
-    let units: Vec<u16> = v.chunks_exact(2).map(|c| u16::from_be_bytes([c[0], c[1]])).take_while(|&u| u != 0).collect();
+    let units: Vec<u16> = v.as_chunks::<2>().0.iter().map(|c| u16::from_be_bytes([c[0], c[1]])).take_while(|&u| u != 0).collect();
     String::from_utf16_lossy(&units)
 }
 

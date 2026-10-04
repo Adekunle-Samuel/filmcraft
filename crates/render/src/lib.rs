@@ -162,7 +162,7 @@ pub(crate) fn render_seq_tracks(project: &Project, seq: &Sequence, t: Tick, opts
             mask::apply_opacity_masks(&mut adj, item, mt, opts.scale);
             // Motion moves / scales the adjustment layer's frame: it only applies inside it.
             if let Some(region) = adjustment_region(seq, item, project, mt, opts.scale, w, h) {
-                let cov: Vec<f32> = region.px.chunks_exact(4).map(|p| p[3]).collect();
+                let cov: Vec<f32> = region.px.as_chunks::<4>().0.iter().map(|p| p[3]).collect();
                 mask::scale_by(&mut adj, &cov);
             }
             blend::composite(&mut out, &adj, 1.0, bl);

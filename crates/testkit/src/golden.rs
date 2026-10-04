@@ -32,7 +32,7 @@ impl Rgba8 {
         [self.px[i], self.px[i + 1], self.px[i + 2], self.px[i + 3]]
     }
     fn opaque(&self) -> bool {
-        self.px.chunks_exact(4).all(|p| p[3] == 255)
+        self.px.as_chunks::<4>().0.iter().all(|p| p[3] == 255)
     }
 }
 
@@ -47,7 +47,7 @@ pub fn encode_png(img: &Rgba8) -> Result<Vec<u8>, String> {
         enc.set_compression(png::Compression::High);
         let mut w = enc.write_header().map_err(|e| e.to_string())?;
         if opaque {
-            let rgb: Vec<u8> = img.px.chunks_exact(4).flat_map(|p| [p[0], p[1], p[2]]).collect();
+            let rgb: Vec<u8> = img.px.as_chunks::<4>().0.iter().flat_map(|p| [p[0], p[1], p[2]]).collect();
             w.write_image_data(&rgb).map_err(|e| e.to_string())?;
         } else {
             w.write_image_data(&img.px).map_err(|e| e.to_string())?;
@@ -68,8 +68,8 @@ pub fn decode_png(bytes: &[u8]) -> Result<Rgba8, String> {
     let n = w as usize * h as usize;
     let px = match info.color_type {
         png::ColorType::Rgba => buf[..n * 4].to_vec(),
-        png::ColorType::Rgb => buf[..n * 3].chunks_exact(3).flat_map(|p| [p[0], p[1], p[2], 255]).collect(),
-        png::ColorType::GrayscaleAlpha => buf[..n * 2].chunks_exact(2).flat_map(|p| [p[0], p[0], p[0], p[1]]).collect(),
+        png::ColorType::Rgb => buf[..n * 3].as_chunks::<3>().0.iter().flat_map(|p| [p[0], p[1], p[2], 255]).collect(),
+        png::ColorType::GrayscaleAlpha => buf[..n * 2].as_chunks::<2>().0.iter().flat_map(|p| [p[0], p[0], p[0], p[1]]).collect(),
         png::ColorType::Grayscale => buf[..n].iter().flat_map(|&g| [g, g, g, 255]).collect(),
         png::ColorType::Indexed => return Err("unexpanded palette PNG".into()),
     };
@@ -118,7 +118,7 @@ pub fn diff(a: &Rgba8, b: &Rgba8) -> Result<Diff, String> {
     }
     let mut hist = [0usize; 256];
     let (mut sum, mut sq, mut max, mut differing) = (0u64, 0u64, 0u8, 0usize);
-    for (p, q) in a.px.chunks_exact(4).zip(b.px.chunks_exact(4)) {
+    for (p, q) in a.px.as_chunks::<4>().0.iter().zip(b.px.as_chunks::<4>().0) {
         let mut m = 0u8;
         for k in 0..4 {
             let d = p[k].abs_diff(q[k]);
@@ -180,8 +180,10 @@ pub fn failures_dir() -> PathBuf {
 /// Difference image: |a − b| per channel ×8, opaque.
 pub fn diff_image(a: &Rgba8, b: &Rgba8) -> Rgba8 {
     let px =
-        a.px.chunks_exact(4)
-            .zip(b.px.chunks_exact(4))
+        a.px.as_chunks::<4>()
+            .0
+            .iter()
+            .zip(b.px.as_chunks::<4>().0)
             .flat_map(|(p, q)| {
                 let d = |k: usize| (p[k].abs_diff(q[k]) as u32 * 8).min(255) as u8;
                 let al = d(3);

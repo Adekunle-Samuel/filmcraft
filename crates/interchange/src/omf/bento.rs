@@ -346,7 +346,7 @@ impl<'a> Container<'a> {
         if let Some(p) = self.objects.get(&obj).and_then(|v| v.iter().find(|p| p.prop == OBJ_REFERENCES))
             && let Ok(v) = self.value(p)
         {
-            for pair in v.chunks_exact(8) {
+            for pair in v.as_chunks::<8>().0 {
                 if be32(pair, 0) == Some(key) {
                     return be32(pair, 4).unwrap_or(key);
                 }

@@ -186,7 +186,7 @@ impl MediaSource for OfflineSource {
         let s = req.scale.clamp(0.02, 1.0);
         let (w, h) = (((v.width as f32 * s) as u32).max(2), ((v.height as f32 * s) as u32).max(2));
         let mut px = vec![0u8; (w * h * 4) as usize];
-        for p in px.chunks_exact_mut(4) {
+        for p in px.as_chunks_mut::<4>().0 {
             p.copy_from_slice(&[140, 16, 16, 255]);
         }
         Ok(Arc::new(VideoFrame::rgba8(w, h, px).with_pts(req.time)))

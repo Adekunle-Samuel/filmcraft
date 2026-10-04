@@ -76,7 +76,7 @@ pub fn reference(ff: &Path, path: &Path, pix_fmt: &str) -> Vec<u16> {
         .expect("run ffmpeg");
     assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
     if pix_fmt.ends_with("le") {
-        out.stdout.chunks_exact(2).map(|c| u16::from_le_bytes([c[0], c[1]])).collect()
+        out.stdout.as_chunks::<2>().0.iter().map(|c| u16::from_le_bytes([c[0], c[1]])).collect()
     } else {
         out.stdout.iter().map(|&b| b as u16).collect()
     }

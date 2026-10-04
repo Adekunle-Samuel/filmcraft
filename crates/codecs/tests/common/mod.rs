@@ -48,7 +48,7 @@ pub fn ffmpeg_audio_f32(ff: &Path, file: &Path, extra: &[&str]) -> Vec<f32> {
     let mut args = vec!["-i", file.to_str().unwrap()];
     args.extend_from_slice(extra);
     args.extend_from_slice(&["-map", "0:a:0", "-f", "f32le", "-"]);
-    ffmpeg_out(ff, &args).chunks_exact(4).map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]])).collect()
+    ffmpeg_out(ff, &args).as_chunks::<4>().0.iter().map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]])).collect()
 }
 
 /// Our frame's three planes widened to u16 (and their sizes).
@@ -63,7 +63,7 @@ pub fn planes(f: &VideoFrame) -> Vec<Vec<u16>> {
 /// Split one raw frame of `ffmpeg_frames` into planes (`bps` bytes per sample, chroma `cw`×`ch`).
 pub fn raw_planes(raw: &[u8], w: usize, h: usize, cw: usize, ch: usize, bps: usize) -> Vec<Vec<u16>> {
     let get = |b: &[u8]| -> Vec<u16> {
-        if bps == 1 { b.iter().map(|&v| v as u16).collect() } else { b.chunks_exact(2).map(|c| u16::from_le_bytes([c[0], c[1]])).collect() }
+        if bps == 1 { b.iter().map(|&v| v as u16).collect() } else { b.as_chunks::<2>().0.iter().map(|c| u16::from_le_bytes([c[0], c[1]])).collect() }
     };
     let y = w * h * bps;
     let c = cw * ch * bps;

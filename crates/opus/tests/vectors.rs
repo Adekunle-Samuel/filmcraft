@@ -36,7 +36,7 @@ fn read_bit(path: &PathBuf) -> Vec<(Vec<u8>, u32)> {
 }
 
 fn read_pcm(path: &PathBuf) -> Vec<f32> {
-    std::fs::read(path).unwrap().chunks_exact(2).map(|c| i16::from_le_bytes([c[0], c[1]]) as f32 / 32768.0).collect()
+    std::fs::read(path).unwrap().as_chunks::<2>().0.iter().map(|c| i16::from_le_bytes([c[0], c[1]]) as f32 / 32768.0).collect()
 }
 
 /// Decodes a vector; returns (interleaved output, index of first range mismatch).
@@ -75,7 +75,7 @@ fn rfc8251_test_vectors() {
             let mut reference = read_pcm(&dir.join(format!("{name}{suffix}.dec")));
             if channels == 1 {
                 // Mono output is compared against the downmix of the phase-inversion-free reference.
-                reference = reference.chunks_exact(2).map(|c| 0.5 * (c[0] + c[1])).collect();
+                reference = reference.as_chunks::<2>().0.iter().map(|c| 0.5 * (c[0] + c[1])).collect();
             }
             let q = common::opus_quality(&reference, &out, channels, 48000);
             let snr = common::snr_db(&reference, &out);

@@ -85,7 +85,7 @@ fn blur_channel(img: &mut Image, ch: usize, sx: f32, sy: f32, repeat: bool) {
     if sx <= 0.3 && sy <= 0.3 {
         return;
     }
-    let mut plane = Image { w: img.w, h: img.h, px: img.px.chunks_exact(4).flat_map(|p| [p[ch], 0.0, 0.0, 0.0]).collect() };
+    let mut plane = Image { w: img.w, h: img.h, px: img.px.as_chunks::<4>().0.iter().flat_map(|p| [p[ch], 0.0, 0.0, 0.0]).collect() };
     gaussian(&mut plane, sx, sy, repeat);
     img.px.par_chunks_mut(4).zip(plane.px.par_chunks(4)).for_each(|(p, q)| p[ch] = q[0]);
 }

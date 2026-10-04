@@ -111,7 +111,7 @@ impl Pipeline {
         if let Some(tf) = self.out_tf.as_ref().filter(|_| self.hdr_out) {
             let mut out = vec![0f32; img.w * img.h * 3];
             out.par_chunks_mut(img.w * 3).zip(img.px.par_chunks(img.w * 4)).for_each(|(o, s)| {
-                for (o, p) in o.chunks_exact_mut(3).zip(s.chunks_exact(4)) {
+                for (o, p) in o.as_chunks_mut::<3>().0.iter_mut().zip(s.as_chunks::<4>().0) {
                     o.copy_from_slice(&tf.encode([p[0], p[1], p[2]]));
                 }
             });
@@ -239,7 +239,7 @@ fn load_overlay(path: &str, width: f32) -> Result<Image> {
     let rgba = image::load_from_memory(&bytes).map_err(|e| ExportError::Unsupported(format!("image overlay {path}: {e}")))?.to_rgba8();
     let (iw, ih) = (rgba.width() as usize, rgba.height() as usize);
     let mut img = Image::new(iw, ih);
-    for (o, p) in img.px.chunks_exact_mut(4).zip(rgba.as_raw().chunks_exact(4)) {
+    for (o, p) in img.px.as_chunks_mut::<4>().0.iter_mut().zip(rgba.as_raw().as_chunks::<4>().0) {
         let a = p[3] as f32 / 255.0;
         for c in 0..3 {
             o[c] = filmcraft_color::srgb_to_linear(p[c] as f32 / 255.0) * a;
@@ -310,7 +310,7 @@ fn resample_axis(src: &Image, n: usize, horizontal: bool) -> Image {
 pub fn limit_rgba8(rgba: &mut [u8], min_percent: f32, max_percent: f32) {
     let (lo, hi) = (min_percent.clamp(0.0, 100.0) / 100.0, max_percent.clamp(0.0, 100.0) / 100.0);
     rgba.par_chunks_mut(4 * 1024).for_each(|chunk| {
-        for p in chunk.chunks_exact_mut(4) {
+        for p in chunk.as_chunks_mut::<4>().0 {
             let mut c = [p[0] as f32 / 255.0, p[1] as f32 / 255.0, p[2] as f32 / 255.0];
             limit_px(&mut c, lo, hi);
             for i in 0..3 {
@@ -323,7 +323,7 @@ pub fn limit_rgba8(rgba: &mut [u8], min_percent: f32, max_percent: f32) {
 fn limit_f32(rgb: &mut [f32], min_percent: f32, max_percent: f32) {
     let (lo, hi) = (min_percent.clamp(0.0, 100.0) / 100.0, max_percent.clamp(0.0, 100.0) / 100.0);
     rgb.par_chunks_mut(3 * 1024).for_each(|chunk| {
-        for p in chunk.chunks_exact_mut(3) {
+        for p in chunk.as_chunks_mut::<3>().0 {
             let mut c = [p[0], p[1], p[2]];
             limit_px(&mut c, lo, hi);
             p.copy_from_slice(&c);

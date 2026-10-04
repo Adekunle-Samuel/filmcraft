@@ -137,7 +137,7 @@ fn written_files_have_the_required_structure() {
     let refs = |o: u32, p: &str| -> Vec<u32> {
         let v = c.get(o, p).unwrap();
         let n = u16::from_be_bytes([v[0], v[1]]) as usize;
-        v[2..].chunks_exact(4).take(n).map(|k| c.resolve(o, u32::from_be_bytes([k[0], k[1], k[2], k[3]]))).collect()
+        v[2..].as_chunks::<4>().0.iter().take(n).map(|k| c.resolve(o, u32::from_be_bytes([k[0], k[1], k[2], k[3]]))).collect()
     };
     let one = |o: u32, p: &str| -> u32 { c.resolve(o, u32::from_be_bytes(c.get(o, p).unwrap()[..4].try_into().unwrap())) };
     for m in refs(head, "OMFI:HEAD:Mobs") {

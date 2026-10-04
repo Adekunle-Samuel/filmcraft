@@ -43,7 +43,7 @@ pub fn grids(layers: &[(&Grid, [f32; 3])], reference: f32, gain: f32) -> (usize,
             }
         }
     }
-    for (o, a) in out.chunks_exact_mut(4).zip(&acc) {
+    for (o, a) in out.as_chunks_mut::<4>().0.iter_mut().zip(&acc) {
         let m = a[0].max(a[1]).max(a[2]);
         if m <= 0.0 {
             continue;
@@ -101,7 +101,7 @@ pub fn vectorscope(v: &Vectorscope, col: [f32; 3], gain: f32, colorize: bool) ->
         }
     }
     let mut out = vec![0u8; n * n * 4];
-    for ((o, l), t) in out.chunks_exact_mut(4).zip(&level).zip(&tint) {
+    for ((o, l), t) in out.as_chunks_mut::<4>().0.iter_mut().zip(&level).zip(&tint) {
         if *l > 0.0 {
             o.copy_from_slice(&[
                 (t[0] * l * 255.0).round() as u8,

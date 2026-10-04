@@ -58,7 +58,7 @@ fn samples() -> Vec<(PathBuf, String)> {
 }
 
 fn read_f32(p: &Path) -> Vec<f32> {
-    std::fs::read(p).unwrap().chunks_exact(4).map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]])).collect()
+    std::fs::read(p).unwrap().as_chunks::<4>().0.iter().map(|b| f32::from_le_bytes(*b)).collect()
 }
 
 #[test]

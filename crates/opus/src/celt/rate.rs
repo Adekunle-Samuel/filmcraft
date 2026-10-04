@@ -216,9 +216,8 @@ fn compute_caps(m: &Mode) -> Vec<u8> {
         for c in 1..=2i32 {
             for j in 0..nb {
                 let mut n0 = EBANDS[j + 1] - EBANDS[j];
-                let max_bits;
-                if n0 << i == 1 {
-                    max_bits = c * (1 + MAX_FINE_BITS) << BITRES;
+                let max_bits = if n0 << i == 1 {
+                    c * (1 + MAX_FINE_BITS) << BITRES
                 } else {
                     let mut lm0 = 0;
                     if n0 > 2 {
@@ -259,8 +258,8 @@ fn compute_caps(m: &Mode) -> Vec<u8> {
                     let den = (ndof - 1) << BITRES;
                     let qb = ((num + (den >> 1)) / den).min(MAX_FINE_BITS);
                     mb += c * qb << BITRES;
-                    max_bits = mb;
-                }
+                    mb
+                };
                 let w = c * ((EBANDS[j + 1] - EBANDS[j]) << i);
                 let v = (4 * max_bits / w) - 64;
                 caps[((i * 2 + c - 1) as usize) * nb + j] = v.clamp(0, 255) as u8;

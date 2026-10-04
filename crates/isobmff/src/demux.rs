@@ -449,7 +449,7 @@ fn parse_trak(p: &[u8], file: &Mp4File, file_len: u64) -> Result<Track> {
             }
             b"tref" => {
                 for r in boxes(b.payload).map_while(|b| b.ok()) {
-                    let ids = r.payload.chunks_exact(4).map(|c| u32::from_be_bytes([c[0], c[1], c[2], c[3]])).collect();
+                    let ids = r.payload.as_chunks::<4>().0.iter().map(|c| u32::from_be_bytes([c[0], c[1], c[2], c[3]])).collect();
                     t.references.push((r.kind, ids));
                 }
             }

@@ -181,7 +181,12 @@ impl MaskPath {
     /// Inverse of [`MaskPath::components`] (`closed` is taken from `self`).
     pub fn with_components(&self, c: &[f64]) -> Self {
         Self {
-            vertices: c.chunks_exact(6).map(|k| MaskVertex { p: Vec2::new(k[0], k[1]), t_in: Vec2::new(k[2], k[3]), t_out: Vec2::new(k[4], k[5]) }).collect(),
+            vertices: c
+                .as_chunks::<6>()
+                .0
+                .iter()
+                .map(|k| MaskVertex { p: Vec2::new(k[0], k[1]), t_in: Vec2::new(k[2], k[3]), t_out: Vec2::new(k[4], k[5]) })
+                .collect(),
             closed: self.closed,
         }
     }

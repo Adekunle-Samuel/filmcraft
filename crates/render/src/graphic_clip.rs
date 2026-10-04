@@ -179,7 +179,7 @@ fn over_mask(px: &mut [f32], m: &Mask, c: [f32; 4]) {
         return;
     }
     px.par_chunks_mut(4 * m.w).zip(m.a.par_chunks(m.w)).for_each(|(row, mrow)| {
-        for (p, &a) in row.chunks_exact_mut(4).zip(mrow) {
+        for (p, &a) in row.as_chunks_mut::<4>().0.iter_mut().zip(mrow) {
             if a > 0.0 {
                 let k = 1.0 - c[3] * a;
                 for i in 0..4 {

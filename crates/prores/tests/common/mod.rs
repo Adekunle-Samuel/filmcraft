@@ -85,7 +85,7 @@ pub fn reference(ff: &Path, mov: &Path, pix_fmt: &str) -> Vec<u16> {
         .output()
         .expect("run ffmpeg");
     assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
-    out.stdout.chunks_exact(2).map(|c| u16::from_le_bytes([c[0], c[1]])).collect()
+    out.stdout.as_chunks::<2>().0.iter().map(|c| u16::from_le_bytes([c[0], c[1]])).collect()
 }
 
 /// Number of u16 samples per frame of a raw planar image.
@@ -242,7 +242,7 @@ pub fn ffmpeg_decode(ff: &Path, mov: &Path, pix_fmt: &str) -> (Vec<u16>, String)
         .expect("run ffmpeg");
     let err = String::from_utf8_lossy(&out.stderr).to_string();
     assert!(out.status.success(), "ffmpeg failed: {err}");
-    (out.stdout.chunks_exact(2).map(|c| u16::from_le_bytes([c[0], c[1]])).collect(), err)
+    (out.stdout.as_chunks::<2>().0.iter().map(|c| u16::from_le_bytes([c[0], c[1]])).collect(), err)
 }
 
 /// Render a lavfi source to raw 10-bit planar frames with ffmpeg and load them as [`Frame`]s.
@@ -260,7 +260,7 @@ pub fn source_frames(ff: &Path, name: &str, lavfi: &str, frames: u32, w: u32, h:
         std::fs::rename(&tmp, &path).unwrap();
     }
     let bytes = std::fs::read(&path).unwrap();
-    let s: Vec<u16> = bytes.chunks_exact(2).map(|c| u16::from_le_bytes([c[0], c[1]])).collect();
+    let s: Vec<u16> = bytes.as_chunks::<2>().0.iter().map(|c| u16::from_le_bytes([c[0], c[1]])).collect();
     let (w, h) = (w as usize, h as usize);
     let per = frame_samples(w, h, chroma, alpha);
     assert_eq!(s.len(), per * frames as usize);

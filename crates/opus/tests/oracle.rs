@@ -65,7 +65,7 @@ fn run(case: &Case, rate: u32) -> (f64, f64, Vec<Mode>) {
         .status()
         .unwrap();
     assert!(st.success());
-    let reference: Vec<f32> = std::fs::read(&dec).unwrap().chunks_exact(4).map(|c| f32::from_le_bytes(c.try_into().unwrap())).collect();
+    let reference: Vec<f32> = std::fs::read(&dec).unwrap().as_chunks::<4>().0.iter().map(|c| f32::from_le_bytes(*c)).collect();
 
     let (packets, granule) = common::ogg_packets(&std::fs::read(&opus).unwrap());
     let mut d = Decoder::from_head(OpusHead::parse(&packets[0]).unwrap(), rate).unwrap();

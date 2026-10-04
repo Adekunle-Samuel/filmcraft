@@ -185,7 +185,9 @@ impl MediaSource for Encoded {
         let m = filmcraft_color::spaces::to_f32(&filmcraft_color::spaces::gamut_matrix(Gamut::Bt709, self.target.gamut()));
         let curve = self.target.curve();
         let out: Vec<u8> = rgba
-            .chunks_exact(4)
+            .as_chunks::<4>()
+            .0
+            .iter()
             .flat_map(|p| {
                 let lin = [0, 1, 2].map(|k| filmcraft_color::srgb_to_linear(p[k] as f32 / 255.0) * self.gain);
                 let c = filmcraft_color::spaces::apply3(&m, lin);
@@ -723,7 +725,7 @@ fn lumetri_presets_grid() {
 fn scenes_are_distinct() {
     let imgs: Vec<(&str, Rgba8)> = scenes().into_iter().map(|(n, _, f)| (n, render_cpu(&f()))).collect();
     for (n, img) in &imgs {
-        let lit = img.px.chunks_exact(4).filter(|p| p[0] as u32 + p[1] as u32 + p[2] as u32 > 30).count();
+        let lit = img.px.as_chunks::<4>().0.iter().filter(|p| p[0] as u32 + p[1] as u32 + p[2] as u32 > 30).count();
         assert!(lit > img.px.len() / 4 / 4, "{n}: mostly black");
     }
     for i in 0..imgs.len() {
@@ -758,7 +760,7 @@ fn gpu_matches_cpu_on_golden_scenes() {
         let kind = if matches!(plan, filmcraft_render::plan::FramePlan::Layers { .. }) { "layers" } else { "cpu image" };
         c.composite(&plan);
         let (gw, gh, mut px) = c.read_output().expect("GPU readback");
-        px.chunks_exact_mut(4).for_each(|p| p[3] = 255);
+        px.as_chunks_mut::<4>().0.iter_mut().for_each(|p| p[3] = 255);
         let gpu = Rgba8::new(gw, gh, px);
         let d = diff(&cpu, &gpu).unwrap();
         // mean over RGB only (alpha is equal by construction)

@@ -143,7 +143,7 @@ impl<'a> CompoundFile<'a> {
         // Mini FAT and mini stream.
         if first_minifat <= MAXREGSECT {
             let mf = cf.read_chain(first_minifat, None)?;
-            cf.minifat = mf.chunks_exact(4).map(|c| u32::from_le_bytes([c[0], c[1], c[2], c[3]])).collect();
+            cf.minifat = mf.as_chunks::<4>().0.iter().map(|c| u32::from_le_bytes([c[0], c[1], c[2], c[3]])).collect();
         }
         let root = &cf.entries[0];
         if root.start <= MAXREGSECT && root.size > 0 {

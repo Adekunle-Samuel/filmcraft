@@ -47,7 +47,7 @@ impl Gray {
     }
     /// Luma of 8-bit RGBA (Rec. 709 weights on the encoded values).
     pub fn from_rgba8(w: usize, h: usize, rgba: &[u8]) -> Self {
-        let px = rgba.chunks_exact(4).map(|p| (0.2126 * p[0] as f32 + 0.7152 * p[1] as f32 + 0.0722 * p[2] as f32) / 255.0).collect();
+        let px = rgba.as_chunks::<4>().0.iter().map(|p| (0.2126 * p[0] as f32 + 0.7152 * p[1] as f32 + 0.0722 * p[2] as f32) / 255.0).collect();
         Self { w, h, px }
     }
     #[inline]

@@ -204,7 +204,7 @@ fn read_wav16(path: &str) -> Vec<Vec<f32>> {
     let ch = u16::from_le_bytes([b[22], b[23]]) as usize;
     let data = &b[44..];
     let mut out = vec![Vec::new(); ch];
-    for (i, s) in data.chunks_exact(2).enumerate() {
+    for (i, s) in data.as_chunks::<2>().0.iter().enumerate() {
         out[i % ch].push(i16::from_le_bytes([s[0], s[1]]) as f32 / 32768.0);
     }
     out

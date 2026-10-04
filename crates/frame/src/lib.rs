@@ -383,14 +383,14 @@ impl VideoFrame {
     pub fn luma8(&self) -> Vec<u8> {
         match &self.data {
             PixelData::Yuv8 { planes, .. } => planes[0].as_ref().clone(),
-            _ => self.to_rgba8().chunks_exact(4).map(|p| (0.2126 * p[0] as f32 + 0.7152 * p[1] as f32 + 0.0722 * p[2] as f32) as u8).collect(),
+            _ => self.to_rgba8().as_chunks::<4>().0.iter().map(|p| (0.2126 * p[0] as f32 + 0.7152 * p[1] as f32 + 0.0722 * p[2] as f32) as u8).collect(),
         }
     }
 }
 
 /// Convert a row of premultiplied linear f32 RGBA into straight sRGB RGBA8.
 pub fn linear_premul_to_srgb8(src: &[f32], dst: &mut [u8]) {
-    for (s, o) in src.chunks_exact(4).zip(dst.chunks_exact_mut(4)) {
+    for (s, o) in src.as_chunks::<4>().0.iter().zip(dst.as_chunks_mut::<4>().0) {
         let a = s[3].clamp(0.0, 1.0);
         if a <= 0.0 {
             o.copy_from_slice(&[0, 0, 0, 0]);

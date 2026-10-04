@@ -172,7 +172,7 @@ fn gpu_lut_matches_cpu_tetrahedral() {
         }
         let gpu = g.apply(&lut, &px).expect("gpu lut");
         let mut worst = 0f32;
-        for (i, p) in px.chunks_exact(4).enumerate() {
+        for (i, p) in px.as_chunks::<4>().0.iter().enumerate() {
             let c = lut.apply([p[0], p[1], p[2]]);
             for k in 0..3 {
                 worst = worst.max((c[k] - gpu[i * 4 + k]).abs());

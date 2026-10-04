@@ -650,7 +650,7 @@ impl Encoder {
         let mut jobs: Vec<Job> = Vec::with_capacity(pics.len());
         for (input, mut st, idr) in pics {
             if idr {
-                let old: Vec<RefPic> = self.dpb.drain(..).collect();
+                let old: Vec<RefPic> = std::mem::take(&mut self.dpb);
                 for r in old {
                     self.recycle_ref(r);
                 }

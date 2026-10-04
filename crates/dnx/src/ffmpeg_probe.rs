@@ -127,7 +127,7 @@ fn probe_weights() {
             let px: Vec<f64> = if depth == 8 {
                 out.stdout.iter().map(|&b| b as f64).collect()
             } else {
-                out.stdout.chunks_exact(2).map(|c| u16::from_le_bytes([c[0], c[1]]) as f64).collect()
+                out.stdout.as_chunks::<2>().0.iter().map(|c| u16::from_le_bytes([c[0], c[1]]) as f64).collect()
             };
             let (off, stride) = if blk == 0 { (0, w as usize) } else { ((w * h) as usize, w as usize / 2) };
             let mid = (1 << (depth - 1)) as f64;
@@ -224,7 +224,7 @@ fn probe_reconstruction() {
             let px: Vec<f64> = if depth == 8 {
                 out.stdout.iter().map(|&b| b as f64).collect()
             } else {
-                out.stdout.chunks_exact(2).map(|c| u16::from_le_bytes([c[0], c[1]]) as f64).collect()
+                out.stdout.as_chunks::<2>().0.iter().map(|c| u16::from_le_bytes([c[0], c[1]]) as f64).collect()
             };
             let mid = (1 << (depth - 1)) as f64;
             let mut sum = 0f64;

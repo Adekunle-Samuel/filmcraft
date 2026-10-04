@@ -113,7 +113,7 @@ impl R<'_, '_> {
             return Vec::new();
         }
         let n = u16::from_be_bytes([v[0], v[1]]) as usize;
-        v[2..].chunks_exact(4).take(n).map(|k| self.c.resolve(o, u32::from_be_bytes([k[0], k[1], k[2], k[3]]))).collect()
+        v[2..].as_chunks::<4>().0.iter().take(n).map(|k| self.c.resolve(o, u32::from_be_bytes([k[0], k[1], k[2], k[3]]))).collect()
     }
     fn data_kind(&self, o: u32) -> String {
         self.r#ref(o, "OMFI:CPNT:DataKind").and_then(|d| self.string(d, "OMFI:DDEF:DataKindID")).unwrap_or_default()

@@ -359,8 +359,7 @@ fn bit_allocation(exp: &[u8; 256], p: &AllocParams, g: &Globals, bap: &mut [u8; 
     let bndend = tables::MASKTAB[end - 1] as usize + 1;
     let mut excite = [0i32; 50];
     let (mut fastleak, mut slowleak) = p.leak.unwrap_or((0, 0));
-    let begin;
-    if bndstrt == 0 {
+    let begin = if bndstrt == 0 {
         // the last band of the LFE channel (bndend 7) has no band above it
         let lfe_last = |bin: usize| !(bndend == 7 && bin == 6);
         let mut lowcomp = 0;
@@ -391,10 +390,10 @@ fn bit_allocation(exp: &[u8; 256], p: &AllocParams, g: &Globals, bap: &mut [u8; 
             slowleak = slowleak.max(bndpsd[bin] - sgain);
             excite[bin] = (fastleak - lowcomp).max(slowleak);
         }
-        begin = 22;
+        22
     } else {
-        begin = bndstrt;
-    }
+        bndstrt
+    };
     for bin in begin..bndend {
         fastleak -= fdecay;
         fastleak = fastleak.max(bndpsd[bin] - p.fgain);

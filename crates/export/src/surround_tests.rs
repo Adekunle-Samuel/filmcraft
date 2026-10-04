@@ -110,7 +110,7 @@ fn decode(path: &str) -> Option<Vec<Vec<f64>>> {
     let out =
         std::process::Command::new(ffmpeg).args(["-v", "error", "-i", path, "-map", "0:a:0", "-f", "s32le", "-acodec", "pcm_s32le", "-"]).output().unwrap();
     assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
-    let ints: Vec<i32> = out.stdout.chunks_exact(4).map(|b| i32::from_le_bytes([b[0], b[1], b[2], b[3]])).collect();
+    let ints: Vec<i32> = out.stdout.as_chunks::<4>().0.iter().map(|b| i32::from_le_bytes([b[0], b[1], b[2], b[3]])).collect();
     let n = ints.len() / 6;
     Some((0..6).map(|c| (0..n).map(|i| ints[i * 6 + c] as f64).collect()).collect())
 }

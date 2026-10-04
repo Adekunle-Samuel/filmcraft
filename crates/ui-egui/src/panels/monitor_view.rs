@@ -313,7 +313,7 @@ pub fn enabled(app: &FilmcraftApp, id: &str) -> bool {
 /// shown premultiplied, so transparent areas are black.
 pub fn channel_view(img: &Rgba, mode: DisplayMode) -> Rgba {
     let mut px = Vec::with_capacity(img.px.len());
-    for p in img.px.chunks_exact(4) {
+    for p in img.px.as_chunks::<4>().0 {
         let a = p[3] as u32;
         let v = match mode {
             DisplayMode::Alpha => p[3],

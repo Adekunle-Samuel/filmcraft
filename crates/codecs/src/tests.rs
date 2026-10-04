@@ -472,7 +472,7 @@ fn opus_reference(name: &str) -> Option<Vec<f32>> {
     if !st.success() {
         return None;
     }
-    Some(std::fs::read(out).ok()?.chunks_exact(4).map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]])).collect())
+    Some(std::fs::read(out).ok()?.as_chunks::<4>().0.iter().map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]])).collect())
 }
 
 fn snr_db(reference: &[f32], test: &[f32]) -> f64 {

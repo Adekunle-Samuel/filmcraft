@@ -260,7 +260,7 @@ fn paint_adds_traces_and_leaves_empty_cells_transparent() {
     let (n, _, vp) = paint::vectorscope(&v, [1.0; 3], 1.0, true);
     assert_eq!(vp.len(), n * n * 4);
     // seven spots of 3 × 3 texels each (none touch)
-    assert_eq!(vp.chunks_exact(4).filter(|p| p[3] > 0).count(), 7 * 9);
+    assert_eq!(vp.as_chunks::<4>().0.iter().filter(|p| p[3] > 0).count(), 7 * 9);
 }
 
 #[test]

@@ -24,7 +24,7 @@ fn main() {
             "--diarize" => diarize = true,
             l if l.starts_with("--lang=") => language = Some(l[7..].to_string()),
             p => {
-                let audio: Vec<f32> = std::fs::read(p).expect("read").chunks_exact(4).map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]])).collect();
+                let audio: Vec<f32> = std::fs::read(p).expect("read").as_chunks::<4>().0.iter().map(|b| f32::from_le_bytes(*b)).collect();
                 let t1 = std::time::Instant::now();
                 let opts = Options { language: language.clone(), diarize, ..Default::default() };
                 let t = w.transcribe(&audio, &opts, &mut |_, _| true).expect("transcribe");

@@ -35,12 +35,11 @@ pub fn fingerprint(size: u64, head: &[u8], tail: &[u8]) -> u64 {
         h ^= h >> 29;
     };
     for part in [head, tail] {
-        let mut chunks = part.chunks_exact(8);
-        for c in &mut chunks {
-            mix(u64::from_le_bytes([c[0], c[1], c[2], c[3], c[4], c[5], c[6], c[7]]));
+        let (chunks, r) = part.as_chunks::<8>();
+        for c in chunks {
+            mix(u64::from_le_bytes(*c));
         }
         let mut last = [0u8; 8];
-        let r = chunks.remainder();
         last[..r.len()].copy_from_slice(r);
         mix(u64::from_le_bytes(last) ^ (r.len() as u64) << 56);
         mix(part.len() as u64);

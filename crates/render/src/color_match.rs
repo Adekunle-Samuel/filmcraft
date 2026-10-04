@@ -88,7 +88,7 @@ pub fn stats(img: &Image, skin_protect: bool) -> Stats {
     let mut acc = [[0f64; 4]; 3];
     let mut chroma = (0f64, 0f64);
     let mut skin = [0f64; 3];
-    for p in img.px.chunks_exact(4) {
+    for p in img.px.as_chunks::<4>().0 {
         if p[3] <= 1e-3 {
             continue;
         }
@@ -112,7 +112,7 @@ pub fn stats(img: &Image, skin_protect: bool) -> Stats {
     }
     // colour weights per band for normalisation
     let mut cwsum = [0f64; 3];
-    for p in img.px.chunks_exact(4) {
+    for p in img.px.as_chunks::<4>().0 {
         if p[3] <= 1e-3 {
             continue;
         }

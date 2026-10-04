@@ -135,7 +135,7 @@ const CHUNK: usize = 1 << 15;
 fn f32_to_f16_bytes(v: &[f32]) -> Vec<u8> {
     let mut out = vec![0u8; v.len() * 2];
     out.par_chunks_mut(CHUNK * 2).zip(v.par_chunks(CHUNK)).for_each(|(o, s)| {
-        for (o, x) in o.chunks_exact_mut(2).zip(s) {
+        for (o, x) in o.as_chunks_mut::<2>().0.iter_mut().zip(s) {
             o.copy_from_slice(&f32_to_f16(*x).to_le_bytes());
         }
     });
@@ -157,7 +157,7 @@ fn codes_to_f16_bytes(v: &[u16], bits: u32) -> Vec<u8> {
     let table = code_table(bits);
     let mut out = vec![0u8; v.len() * 2];
     out.par_chunks_mut(CHUNK * 2).zip(v.par_chunks(CHUNK)).for_each(|(o, s)| {
-        for (o, c) in o.chunks_exact_mut(2).zip(s) {
+        for (o, c) in o.as_chunks_mut::<2>().0.iter_mut().zip(s) {
             o.copy_from_slice(&table[*c as usize]);
         }
     });
