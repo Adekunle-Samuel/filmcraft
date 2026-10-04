@@ -89,6 +89,33 @@ fn mp3_file_decodes() {
 }
 
 #[test]
+fn aiff_file_decodes() {
+    // 0.1 s of 48 kHz 16-bit stereo PCM: left a ramp, right silent (AIFF, big-endian samples)
+    let frames = 4800u32;
+    let mut b = b"FORM".to_vec();
+    b.extend((4 + 26 + 16 + frames * 4).to_be_bytes());
+    b.extend(b"AIFFCOMM");
+    b.extend(18u32.to_be_bytes());
+    b.extend(2u16.to_be_bytes());
+    b.extend(frames.to_be_bytes());
+    b.extend(16u16.to_be_bytes());
+    b.extend([0x40, 0x0E, 0xBB, 0x80, 0, 0, 0, 0, 0, 0]); // 48000 as an 80-bit extended float
+    b.extend(b"SSND");
+    b.extend((8 + frames * 4).to_be_bytes());
+    b.extend([0; 8]);
+    for i in 0..frames {
+        b.extend(((i as i16) * 4).to_be_bytes());
+        b.extend(0i16.to_be_bytes());
+    }
+    let src = crate::open_bytes("tone.aif", b.into()).unwrap();
+    assert!((src.info().duration.seconds() - 0.1).abs() < 1e-3, "{}", src.info().duration.seconds());
+    let a = src.audio(0, 4800, 48_000).unwrap();
+    assert_eq!(a.channels.len(), 2);
+    assert!((a.channels[0][1000] - 4000.0 / 32768.0).abs() < 1e-4, "{}", a.channels[0][1000]);
+    assert_eq!(a.channels[1][1000], 0.0);
+}
+
+#[test]
 fn seek_backwards_and_forwards_mjpeg() {
     let Some(b) = fixture("counter_mjpeg.mov", &["-f", "lavfi", "-i", "testsrc2=s=160x120:r=25:d=3", "-c:v", "mjpeg"]) else { return };
     let src = crate::open_bytes("counter_mjpeg.mov", b).unwrap();
