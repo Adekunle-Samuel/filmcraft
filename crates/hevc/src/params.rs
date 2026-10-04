@@ -869,12 +869,16 @@ impl Layout {
             rowh.push(h - sh as u32);
         }
         let mut col_bd = vec![0];
+        let mut acc = 0;
         for c in &colw {
-            col_bd.push(col_bd.last().unwrap() + c);
+            acc += c;
+            col_bd.push(acc);
         }
         let mut row_bd = vec![0];
+        let mut acc = 0;
         for r in &rowh {
-            row_bd.push(row_bd.last().unwrap() + r);
+            acc += r;
+            row_bd.push(acc);
         }
         let n = (w * h) as usize;
         let mut rs_to_ts = vec![0u32; n];
