@@ -387,6 +387,7 @@ pub fn spawn_export(s: &mut Session, project: Arc<Project>, seq: ItemId, mut set
         }
         *res.lock().unwrap_or_else(|x| x.into_inner()) = Some(r);
     };
+    let run = crate::export_tools::guard_job(job.progress.clone(), job.result.clone(), run);
     s.jobs.push(job);
     if wait || cfg!(target_arch = "wasm32") {
         run();
@@ -394,6 +395,24 @@ pub fn spawn_export(s: &mut Session, project: Arc<Project>, seq: ItemId, mut set
         std::thread::Builder::new().name("filmcraft-export".into()).spawn(run).map_err(|e| EngineError::Other(e.to_string()))?;
     }
     Ok(id)
+}
+
+/// Last-resort guard for a background job body (export, previews, proxies, …): a panic marks the
+/// job failed with an error instead of killing its thread and leaving the job "running" forever.
+/// The panic hook has already logged where it happened.
+pub(crate) fn guard_job(
+    progress: Arc<filmcraft_export::Progress>,
+    result: Arc<std::sync::Mutex<Option<std::result::Result<filmcraft_export::Report, String>>>>,
+    run: impl FnOnce() + Send + 'static,
+) -> impl FnOnce() + Send + 'static {
+    move || {
+        if std::panic::catch_unwind(std::panic::AssertUnwindSafe(run)).is_err() {
+            let msg = "internal error (see the crash log); the job was stopped".to_string();
+            *progress.error.lock().unwrap_or_else(|x| x.into_inner()) = Some(msg.clone());
+            progress.finished.store(true, Ordering::Relaxed);
+            *result.lock().unwrap_or_else(|x| x.into_inner()) = Some(Err(msg));
+        }
+    }
 }
 
 fn file_name(path: &str) -> String {
@@ -1009,4 +1028,21 @@ pub(crate) fn commands() -> Vec<CommandSpec> {
         spec("export.queue.clear", "Clear Finished Exports", r#"{"all":bool=false}"#, always, queue_clear, true),
         spec("export.quick", "Quick Export", r#"{"preset":str?,"path":str?,"wait":bool?, …settings params}"#, has_seq, quick, true),
     ]
+}
+
+#[cfg(test)]
+mod guard_tests {
+    use super::*;
+
+    /// A panicking job body must leave the job finished with an error, not "running" forever.
+    #[test]
+    fn panicking_job_is_reported_as_failed() {
+        let progress: Arc<filmcraft_export::Progress> = Arc::default();
+        let result: Arc<std::sync::Mutex<Option<std::result::Result<filmcraft_export::Report, String>>>> = Arc::default();
+        let run = guard_job(progress.clone(), result.clone(), || panic!("job bug"));
+        std::thread::spawn(run).join().expect("the guard catches the panic");
+        assert!(progress.finished.load(Ordering::Relaxed));
+        assert!(progress.error.lock().unwrap().is_some());
+        assert!(matches!(&*result.lock().unwrap(), Some(Err(_))));
+    }
 }

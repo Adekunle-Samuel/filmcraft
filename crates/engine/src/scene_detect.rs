@@ -206,6 +206,7 @@ fn detect(s: &mut Session, p: &Value) -> Result<Value> {
         *lock(&res) = Some(r);
         prog.finished.store(true, Ordering::Relaxed);
     };
+    let run = crate::export_tools::guard_job(job.progress.clone(), job.result.clone(), run);
     s.jobs.push(job);
     s.scene_jobs.push(PendingScene { job: id, seq: seq_id, apply, results: results.clone() });
     let wait = bool_p(p, "wait").unwrap_or(false);

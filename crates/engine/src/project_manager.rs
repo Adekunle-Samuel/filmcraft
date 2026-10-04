@@ -229,6 +229,7 @@ pub fn run(s: &mut Session, p: &Value) -> Result<Value> {
         prog.finished.store(true, Ordering::Relaxed);
         *res.lock().unwrap_or_else(|x| x.into_inner()) = Some(r);
     };
+    let run = crate::export_tools::guard_job(job.progress.clone(), job.result.clone(), run);
     s.jobs.push(job);
     if bool_p(p, "wait").unwrap_or(false) || cfg!(target_arch = "wasm32") {
         run();

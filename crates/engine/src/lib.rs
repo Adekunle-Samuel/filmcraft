@@ -599,7 +599,11 @@ impl Session {
             return Err(e);
         }
         self.exec_depth += 1;
-        let r = (spec.run)(self, &params);
+        // Last-resort guard: a panic in a command (a bug that escaped the never-crash rules)
+        // becomes an error for the caller (UI, CLI, control channel, MCP) instead of taking the
+        // session and its unsaved project down. The panic hook has logged where it happened.
+        let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| (spec.run)(self, &params)))
+            .unwrap_or_else(|_| Err(EngineError::Other(format!("internal error in `{id}` (see the crash log); the command did not complete"))));
         self.exec_depth -= 1;
         // source graphics: an edited instance updates the shared layers and the other instances
         if r.is_ok() && spec.journal && id.starts_with("graphics.") && !self.project.source_graphics.is_empty() {
