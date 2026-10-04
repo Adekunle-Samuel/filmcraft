@@ -267,7 +267,7 @@ impl Decoder {
             if !o.frame.is_published(o.frame.mb_h() - 1) && self.out_queue.len() <= max_queue {
                 break;
             }
-            let o = self.out_queue.pop_front().expect("front exists");
+            let Some(o) = self.out_queue.pop_front() else { break };
             pics.push(make_picture(&o));
         }
         Ok(pics)
@@ -353,7 +353,9 @@ impl Decoder {
             found = Some((pps.clone(), sps.clone()));
             Ok((&**pps, &**sps))
         })?;
-        let (pps, sps) = found.expect("lookup succeeded");
+        let Some((pps, sps)) = found else {
+            return Err(Error::MissingParameterSet("PPS".into()));
+        };
         sps.check_supported()?;
         if pps.num_slice_groups > 1 {
             return unsupported("slice groups (FMO)");
@@ -379,7 +381,9 @@ impl Decoder {
             self.start_picture(&sh, &sps, pts)?;
         }
         let ls = self.level_scale(&pps);
-        let pending = self.pending.as_mut().expect("picture started");
+        let Some(pending) = self.pending.as_mut() else {
+            return invalid("slice without a started picture");
+        };
         let refs = self.dpb.build_ref_lists(&sh, pending.poc.frame(), sps.max_frame_num())?;
         if !sh.slice_type.is_intra() {
             ensure!(!refs[0].is_empty(), "no reference pictures available for inter slice");

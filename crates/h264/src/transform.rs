@@ -32,13 +32,13 @@ impl LevelScale {
 /// Scale one 4x4 AC coefficient (8.5.12.1, not the DC of Intra16x16 / chroma blocks).
 #[inline(always)]
 pub fn scale4(c: i32, ls: i32, qp: i32) -> i32 {
-    if qp >= 24 { (c * ls) << (qp / 6 - 4) } else { (c * ls + (1 << (3 - qp / 6))) >> (4 - qp / 6) }
+    if qp >= 24 { c.wrapping_mul(ls) << (qp / 6 - 4) } else { c.wrapping_mul(ls).wrapping_add(1 << (3 - qp / 6)) >> (4 - qp / 6) }
 }
 
 /// Scale one 8x8 coefficient (8.5.13.1).
 #[inline(always)]
 pub fn scale8(c: i32, ls: i32, qp: i32) -> i32 {
-    if qp >= 36 { (c * ls) << (qp / 6 - 6) } else { (c * ls + (1 << (5 - qp / 6))) >> (6 - qp / 6) }
+    if qp >= 36 { c.wrapping_mul(ls) << (qp / 6 - 6) } else { c.wrapping_mul(ls).wrapping_add(1 << (5 - qp / 6)) >> (6 - qp / 6) }
 }
 
 /// Intra16x16 luma DC: inverse Hadamard + scaling (8.5.10). `c` is raster order (row*4+col);
@@ -65,20 +65,21 @@ pub fn luma_dc_dequant(c: &mut [i32; 16], qp: i32, ls00: i32) {
         let d23 = t[8 + j] - t[12 + j];
         let f = [s01 + s23, s01 - s23, d01 - d23, d01 + d23];
         for i in 0..4 {
-            c[i * 4 + j] = if qp >= 36 { (f[i] * ls00) << (qp / 6 - 6) } else { (f[i] * ls00 + (1 << (5 - qp / 6))) >> (6 - qp / 6) };
+            c[i * 4 + j] =
+                if qp >= 36 { f[i].wrapping_mul(ls00) << (qp / 6 - 6) } else { f[i].wrapping_mul(ls00).wrapping_add(1 << (5 - qp / 6)) >> (6 - qp / 6) };
         }
     }
 }
 
 /// 4:2:0 chroma DC: 2x2 transform + scaling (8.5.11). `c` = [c00, c01, c10, c11].
 pub fn chroma_dc_dequant_420(c: &mut [i32; 4], qp: i32, ls00: i32) {
-    let s0 = c[0] + c[1];
-    let d0 = c[0] - c[1];
-    let s1 = c[2] + c[3];
-    let d1 = c[2] - c[3];
-    let f = [s0 + s1, d0 + d1, s0 - s1, d0 - d1];
+    let s0 = c[0].wrapping_add(c[1]);
+    let d0 = c[0].wrapping_sub(c[1]);
+    let s1 = c[2].wrapping_add(c[3]);
+    let d1 = c[2].wrapping_sub(c[3]);
+    let f = [s0.wrapping_add(s1), d0.wrapping_add(d1), s0.wrapping_sub(s1), d0.wrapping_sub(d1)];
     for k in 0..4 {
-        c[k] = ((f[k] * ls00) << (qp / 6)) >> 5;
+        c[k] = (f[k].wrapping_mul(ls00) << (qp / 6)) >> 5;
     }
 }
 
@@ -113,7 +114,9 @@ pub fn idct4_add(d: &[i32; 16], dst: &mut [u8], stride: usize) {
         o[3][j] = e - h;
     }
     for (i, row) in o.iter().enumerate() {
-        let line: &mut [u8; 4] = (&mut dst[i * stride..i * stride + 4]).try_into().unwrap();
+        let Some(line) = dst.get_mut(i * stride..).and_then(|d| d.first_chunk_mut::<4>()) else {
+            return;
+        };
         for (p, &v) in line.iter_mut().zip(row) {
             *p = clip_u8(*p as i32 + ((v + 32) >> 6));
         }
@@ -156,8 +159,8 @@ fn idct8_1d(d: [i32; 8]) -> [i32; 8] {
 /// the column pass and reconstruction across all columns at once (they vectorise).
 pub fn idct8_add(d: &[i32; 64], dst: &mut [u8], stride: usize) {
     let mut t = [[0i32; 8]; 8];
-    for (i, row) in t.iter_mut().enumerate() {
-        *row = idct8_1d(d[i * 8..i * 8 + 8].try_into().unwrap());
+    for (row, src) in t.iter_mut().zip(d.as_chunks::<8>().0) {
+        *row = idct8_1d(*src);
     }
     let mut o = [[0i32; 8]; 8];
     for j in 0..8 {
@@ -167,7 +170,9 @@ pub fn idct8_add(d: &[i32; 64], dst: &mut [u8], stride: usize) {
         }
     }
     for (i, row) in o.iter().enumerate() {
-        let line: &mut [u8; 8] = (&mut dst[i * stride..i * stride + 8]).try_into().unwrap();
+        let Some(line) = dst.get_mut(i * stride..).and_then(|d| d.first_chunk_mut::<8>()) else {
+            return;
+        };
         for (p, &v) in line.iter_mut().zip(row) {
             *p = clip_u8(*p as i32 + ((v + 32) >> 6));
         }
@@ -282,5 +287,18 @@ mod tests {
         assert_eq!(scale4(2, 160, 12), (2 * 160 + 2) >> 2);
         assert_eq!(scale8(1, 320, 36), 320);
         assert_eq!(scale8(1, 320, 30), (320 + 1) >> 1);
+    }
+
+    /// Corrupt streams can carry huge coefficient levels: dequantisation wraps (as release
+    /// builds always did) instead of panicking with "attempt to multiply with overflow" in
+    /// debug builds (found by mutation fuzzing an H.264 transport stream).
+    #[test]
+    fn huge_levels_dequantise_without_overflow_panics() {
+        let mut c = [i32::MAX / 2, i32::MAX / 3, -i32::MAX / 2, 7];
+        chroma_dc_dequant_420(&mut c, 51, 16 * 25);
+        let _ = scale4(i32::MAX, 16 * 25, 51);
+        let _ = scale4(i32::MAX, 16 * 25, 0);
+        let _ = scale8(i32::MIN, 16 * 25, 51);
+        let _ = scale8(i32::MIN, 16 * 25, 0);
     }
 }

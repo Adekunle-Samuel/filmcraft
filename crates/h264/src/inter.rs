@@ -54,9 +54,9 @@ fn clip1(v: i32) -> u8 {
 #[inline(always)]
 fn copy_n(dst: &mut [u8], src: &[u8], n: usize) {
     fn fixed<const N: usize>(dst: &mut [u8], src: &[u8]) {
-        let s: &[u8; N] = src[..N].try_into().unwrap();
-        let d: &mut [u8; N] = (&mut dst[..N]).try_into().unwrap();
-        *d = *s;
+        if let (Some(d), Some(s)) = (dst.first_chunk_mut::<N>(), src.first_chunk::<N>()) {
+            *d = *s;
+        }
     }
     match n {
         16 => fixed::<16>(dst, src),

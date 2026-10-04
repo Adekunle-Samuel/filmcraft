@@ -32,7 +32,7 @@ impl VlcTable {
             }
             let suffix = &code[lz + 1..];
             assert!(suffix.len() <= 5, "suffix too long in {code}");
-            let sbits = u32::from_str_radix(if suffix.is_empty() { "0" } else { suffix }, 2).unwrap();
+            let sbits = suffix.bytes().fold(0u32, |a, b| (a << 1) | u32::from(b == b'1'));
             let free = 5 - suffix.len();
             for ext in 0..(1u32 << free) {
                 let s = (sbits << free) | ext;
