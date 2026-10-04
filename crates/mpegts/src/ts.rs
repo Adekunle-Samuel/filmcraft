@@ -380,7 +380,7 @@ pub(crate) fn scan<S: ByteSource + ?Sized>(src: &S, packet_size: usize, sync_off
     }
     let mut streams = Vec::new();
     for pid in order {
-        let mut e = es.remove(&pid).expect("stream");
+        let Some(mut e) = es.remove(&pid) else { continue };
         e.split.finish();
         e.stream.units = std::mem::take(&mut e.split.units);
         e.stream.skipped_bytes = e.split.skipped;

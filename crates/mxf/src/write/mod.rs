@@ -864,7 +864,8 @@ impl<W: Write + Seek> MxfWriter<W> {
             desc_uids.push(uid);
             match t.kind {
                 TrackKind::Picture => {
-                    let p = cfg.picture.as_ref().expect("picture track");
+                    // Picture tracks exist only with a picture configuration.
+                    let Some(p) = cfg.picture.as_ref() else { continue };
                     let mut s = Set::new(0x28, uid);
                     if multiple {
                         s.u32(0x3006, t.id);

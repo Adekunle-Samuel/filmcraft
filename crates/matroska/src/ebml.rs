@@ -267,7 +267,7 @@ pub fn parse_lacing(lacing: Lacing, data: &[u8]) -> Result<Vec<(usize, usize)>> 
     let mut pos = 1usize;
     let mut sizes = Vec::with_capacity(count);
     match lacing {
-        Lacing::None => unreachable!(),
+        Lacing::None => return Ok(vec![(0, data.len())]),
         Lacing::Xiph => {
             for _ in 0..count - 1 {
                 let mut s = 0usize;
