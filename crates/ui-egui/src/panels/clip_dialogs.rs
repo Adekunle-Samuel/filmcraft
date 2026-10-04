@@ -156,10 +156,9 @@ fn defaults(app: &FilmcraftApp, id: &str) -> (Value, Value) {
             }
         }
         "clip.modifyTimecode" => {
-            let it = s.state.project_selection.iter().find_map(|i| s.project.item(*i).filter(|it| it.as_media().is_some()));
+            let it = s.state.project_selection.iter().find_map(|i| s.project.item(*i).and_then(|it| Some((it, it.as_media()?))));
             let (tc, tape) = it
-                .map(|it| {
-                    let m = it.as_media().expect("media");
+                .map(|(it, m)| {
                     let f = m.info.start_timecode.unwrap_or(0);
                     (filmcraft_time::format_timecode_frames(f, m.frame_rate(), false), it.metadata.get("Tape Name").cloned().unwrap_or_default())
                 })

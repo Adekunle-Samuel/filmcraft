@@ -34,7 +34,10 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         crate::dock::placeholder(ui, rect, &t, "(no clip selected)");
         return;
     };
-    let seq = app.session.active_sequence().expect("seq").clone();
+    let Some(seq) = app.session.active_sequence().cloned() else {
+        crate::dock::placeholder(ui, rect, &t, "(no sequences)");
+        return;
+    };
     let split = rect.min.x + (rect.width() * 0.58).max(260.0).min(rect.width() - 60.0);
     let head = Rect::from_min_size(rect.min + vec2(8.0, 4.0), vec2(split - rect.min.x - 12.0, 24.0));
     // Premiere: two pill tabs — "Source · clip" and "Sequence · clip" (active)
@@ -469,7 +472,7 @@ pub fn lumetri_panel(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         return;
     };
     let e = it.effects[idx].clone();
-    let def = e.def().expect("lumetri def");
+    let Some(def) = e.def() else { return };
     let ph = app.session.playhead();
     let mt = it.source_time_at(ph.clamp(it.start, it.end() - Tick(1)));
     let mut actions = Vec::new();

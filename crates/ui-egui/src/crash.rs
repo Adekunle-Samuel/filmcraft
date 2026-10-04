@@ -34,6 +34,13 @@ pub fn install(log_dir: Option<std::path::PathBuf>) {
     });
 }
 
+/// Deliberately panic: the fault-injection hooks (`ui.injectPanic` and the frame-job equivalent)
+/// use this to prove the guard above keeps the session alive.
+#[allow(clippy::panic)]
+pub fn injected_fault(what: &str) -> ! {
+    panic!("{what}")
+}
+
 /// Write a non-panic fatal error (e.g. the window could not be created) to the crash log.
 pub fn record(msg: &str) {
     write_log(msg);

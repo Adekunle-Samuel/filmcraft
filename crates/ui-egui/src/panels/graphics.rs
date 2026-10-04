@@ -256,8 +256,10 @@ pub fn monitor_overlay(app: &mut FilmcraftApp, ui: &mut egui::Ui, pic: Rect, fra
         let in_edit = edit_view.is_some_and(|v| v.hit(p));
         drag = None;
         if in_edit {
-            if let (Some(v), Some(mut ed)) = (edit_view, editing.clone()) {
-                let l = text_layout(text_of(&v.spec).expect("text"));
+            if let (Some(v), Some(mut ed)) = (edit_view, editing.clone())
+                && let Some(tp) = text_of(&v.spec)
+            {
+                let l = text_layout(tp);
                 if let Some((x, y)) = v.to_local(p) {
                     ed.caret = l.hit(x, y);
                     if !shift {
@@ -338,8 +340,10 @@ pub fn monitor_overlay(app: &mut FilmcraftApp, ui: &mut egui::Ui, pic: Rect, fra
                 }
             }
             DragKind::TextSelect => {
-                if let (Some(v), Some(mut ed)) = (v, app.ui.gfx_edit.clone()) {
-                    let l = text_layout(text_of(&v.spec).expect("text"));
+                if let (Some(v), Some(mut ed)) = (v, app.ui.gfx_edit.clone())
+                    && let Some(tp) = text_of(&v.spec)
+                {
+                    let l = text_layout(tp);
                     if let Some((x, y)) = v.to_local(cur) {
                         ed.caret = l.hit(x, y);
                         app.ui.gfx_edit = Some(ed);

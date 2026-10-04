@@ -35,7 +35,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         return;
     };
     let Some(frame) = frame(app) else { return };
-    let q = app.session.active_sequence().expect("active").clone();
+    let Some(q) = app.session.active_sequence().cloned() else { return };
     let rate = q.settings.frame_rate;
     let bar_h = 34.0;
     let area = Rect::from_min_max(rect.min + vec2(4.0, 4.0), pos2(rect.max.x - 4.0, rect.max.y - bar_h));
