@@ -177,6 +177,34 @@ pub fn remove_orphan_transitions(track: &mut Track) {
     });
 }
 
+/// Where a transition sits: the incoming clip's start, or the outgoing clip's end for a fade to nothing.
+fn transition_anchor(track: &Track, tr: &Transition) -> Option<Tick> {
+    match (tr.from, tr.to) {
+        (_, Some(to)) => track.item(to).map(|i| i.start),
+        (Some(from), None) => track.item(from).map(|i| i.end()),
+        (None, None) => None,
+    }
+}
+
+/// Keep transitions on their edit points after an edit moved cuts (ripple trim, roll, slide, ripple
+/// speed change): each transition shifts by as much as its anchor clip edge moved.
+fn transitions_follow_cuts(before: &Sequence, after: &mut Sequence) {
+    for track in after.all_tracks_mut() {
+        let Some(old) = before.track(track.id) else { continue };
+        let shifts: Vec<Tick> = track
+            .transitions
+            .iter()
+            .map(|tr| match (transition_anchor(old, tr), transition_anchor(track, tr)) {
+                (Some(a), Some(b)) => b - a,
+                _ => Tick::ZERO,
+            })
+            .collect();
+        for (tr, d) in track.transitions.iter_mut().zip(shifts) {
+            tr.start += d;
+        }
+    }
+}
+
 fn place(track: &mut Track, item: TrackItem) {
     let idx = track.items.partition_point(|i| i.start <= item.start);
     track.items.insert(idx, item);
@@ -508,6 +536,7 @@ pub fn trim(seq: &mut Sequence, clip: ClipId, edge: Edge, mode: TrimMode, delta:
                 tr.sort();
             }
         }
+        transitions_follow_cuts(seq, &mut work);
     }
     work.check().map_err(EditError::Other)?;
     *seq = work;
@@ -585,6 +614,7 @@ pub fn ripple_trim_group(seq: &mut Sequence, clips: &[ClipId], edge: Edge, delta
         }
         tr.sort();
     }
+    transitions_follow_cuts(seq, &mut work);
     work.check().map_err(EditError::Other)?;
     *seq = work;
     Ok(d)
@@ -608,6 +638,7 @@ pub fn roll(seq: &mut Sequence, left: ClipId, right: ClipId, delta: Tick, ctx: &
         return Ok(d);
     }
     let (ls, rs) = (l.speed.abs(), r.speed.abs());
+    let before = seq.clone();
     {
         let (_, l) = seq.find_item_mut(left).ok_or(EditError::NoItem(left))?;
         l.duration += d;
@@ -619,6 +650,7 @@ pub fn roll(seq: &mut Sequence, left: ClipId, right: ClipId, delta: Tick, ctx: &
         r.source_in += src_of(d, rs);
     }
     let _ = ls;
+    transitions_follow_cuts(&before, seq);
     Ok(d)
 }
 
@@ -660,6 +692,7 @@ pub fn slide(seq: &mut Sequence, clip: ClipId, delta: Tick, ctx: &mut EditCtx) -
     if d == Tick::ZERO {
         return Ok(d);
     }
+    let before = seq.clone();
     let t = seq.track_mut(tid).ok_or(EditError::NoTrack(tid))?;
     if let Some(p) = prev {
         let pi = t.item_mut(p.id).ok_or(EditError::NoItem(p.id))?;
@@ -673,6 +706,7 @@ pub fn slide(seq: &mut Sequence, clip: ClipId, delta: Tick, ctx: &mut EditCtx) -
     }
     let me = t.item_mut(clip).ok_or(EditError::NoItem(clip))?;
     me.start += d;
+    transitions_follow_cuts(&before, seq);
     Ok(d)
 }
 
@@ -715,6 +749,7 @@ pub fn set_speed(seq: &mut Sequence, clip: ClipId, speed: f64, reverse: bool, ri
         new_dur = new_dur.min(next_start - it.start);
     }
     let delta = new_dur - it.duration;
+    let before = ripple.then(|| seq.clone());
     {
         let (_, it) = seq.find_item_mut(clip).ok_or(EditError::NoItem(clip))?;
         it.speed = speed;
@@ -732,6 +767,9 @@ pub fn set_speed(seq: &mut Sequence, clip: ClipId, speed: f64, reverse: bool, ri
                 tr.sort();
             }
         }
+    }
+    if let Some(before) = before {
+        transitions_follow_cuts(&before, seq);
     }
     Ok(())
 }
