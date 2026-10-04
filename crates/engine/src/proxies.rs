@@ -241,6 +241,7 @@ pub fn start_job(s: &mut Session, label: String, work: Vec<(ItemId, String, &'st
         prog.finished.store(true, std::sync::atomic::Ordering::Relaxed);
         *res.lock().unwrap_or_else(|x| x.into_inner()) = Some(r);
     };
+    let run = crate::export_tools::guard_job(job.progress.clone(), job.result.clone(), run);
     s.jobs.push(job);
     s.media_jobs.push(PendingJob { job: id, on_done, outputs });
     if wait || cfg!(target_arch = "wasm32") {
