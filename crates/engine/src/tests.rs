@@ -84,6 +84,18 @@ fn trim_linked_and_ripple_delete() {
 }
 
 #[test]
+fn slide_moves_linked_audio_with_the_video() {
+    let mut s = demo();
+    let v = s.active_sequence().unwrap().video_tracks[0].items[1].clone();
+    s.execute("timeline.slide", json!({"clip": v.id.0, "deltaFrames": 5})).unwrap();
+    let q = s.active_sequence().unwrap();
+    let (_, nv) = q.find_item(v.id).unwrap();
+    let a = q.audio_tracks[0].items.iter().find(|i| i.link == v.link).unwrap();
+    assert_eq!(nv.start, v.start + s.sequence_rate().tick_of(5));
+    assert_eq!((a.start, a.source_in), (nv.start, nv.source_in), "linked audio slides too and stays in sync");
+}
+
+#[test]
 fn zero_fps_is_refused() {
     let mut s = demo();
     let rate = s.sequence_rate();
