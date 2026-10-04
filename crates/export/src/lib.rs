@@ -916,6 +916,13 @@ pub fn rgbf_to_yuv420_8(rgb: &[f32], w: usize, h: usize, kr: f32, kb: f32, y: &m
     });
 }
 
+/// Slices per H.264 picture: one per four macroblock rows. The encoder's default follows the core
+/// count, which would make the stream (and every decoded picture) depend on the machine; this is
+/// what it picks on a machine with enough cores.
+pub(crate) fn h264_slices(height: u32) -> usize {
+    (height.div_ceil(16) as usize).div_ceil(4).max(1)
+}
+
 fn h264_factory(format: Format, w: u32, h: u32, rate: FrameRate, s: &ExportSettings) -> Option<Result<Box<dyn VideoEncoder>>> {
     if format != Format::H264 {
         return None;
@@ -925,6 +932,7 @@ fn h264_factory(format: Format, w: u32, h: u32, rate: FrameRate, s: &ExportSetti
     cfg.format = if s.format.is_mxf() { filmcraft_h264enc::PacketFormat::AnnexB } else { filmcraft_h264enc::PacketFormat::LengthPrefixed };
     cfg.aud = s.format.is_mxf();
     cfg.keyint = s.keyframe_distance.filter(|k| *k > 0).unwrap_or_else(|| (rate.num as f64 / rate.den as f64 * 2.0).round().max(1.0) as u32);
+    cfg.slices = h264_slices(h);
     let kbps = s.bitrate_kbps.max(100);
     let max = s.max_bitrate_kbps.filter(|m| *m >= kbps).unwrap_or(kbps * 3 / 2);
     cfg.rate = match s.bitrate_mode {
@@ -1129,3 +1137,6 @@ mod surround_tests;
 
 #[cfg(test)]
 mod mxf_tests;
+
+#[cfg(test)]
+mod determinism_tests;
