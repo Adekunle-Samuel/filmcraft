@@ -103,7 +103,7 @@ fn inline(text: &str) -> String {
             rest = &after[end + 1..];
             continue;
         }
-        let ch = rest.chars().next().expect("non-empty");
+        let Some(ch) = rest.chars().next() else { break };
         if ch == '\n' {
             out.push_str("<br/>");
         } else {

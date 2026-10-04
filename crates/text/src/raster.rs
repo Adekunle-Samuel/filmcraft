@@ -63,8 +63,10 @@ impl Path {
         if !self.open {
             self.move_to(self.cur.0, self.cur.1);
         }
-        if (x, y) != self.cur {
-            self.contours.last_mut().expect("open contour").push((x, y));
+        if (x, y) != self.cur
+            && let Some(c) = self.contours.last_mut()
+        {
+            c.push((x, y));
         }
         self.cur = (x, y);
     }

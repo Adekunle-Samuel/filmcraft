@@ -7,6 +7,8 @@
 //!
 //! Time: timeline positions are sequence ticks; `source_in` is media time.
 
+#![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable))]
+
 pub mod caption;
 pub mod effect;
 pub mod essential;
@@ -1172,8 +1174,10 @@ impl Project {
             if !self.items.contains_key(&id) || !self.root.remove_item(id) {
                 continue;
             }
-            self.root.find_bin_mut(target).expect("checked above").children.push(BinEntry::Item(id));
-            moved += 1;
+            if let Some(b) = self.root.find_bin_mut(target) {
+                b.children.push(BinEntry::Item(id));
+                moved += 1;
+            }
         }
         Some(moved)
     }

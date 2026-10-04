@@ -715,7 +715,10 @@ impl Exp<'_, '_> {
         if let Some(r) = self.assets.get(&item) {
             return r.id.clone();
         }
-        let m = item_media(self.p, item).expect("media");
+        let Some(m) = item_media(self.p, item) else {
+            self.report.warn("clip without media skipped");
+            return String::new();
+        };
         let name = self.p.item(item).map(|i| i.name.clone()).unwrap_or_default();
         let fmt = m.info.video.as_ref().map(|v| self.format(m.interpret.frame_rate.unwrap_or(v.frame_rate), v.width, v.height));
         let id = self.rid();
@@ -748,7 +751,10 @@ impl Exp<'_, '_> {
         if let Some(r) = self.medias.get(&item) {
             return r.id.clone();
         }
-        let s = self.p.sequence(item).expect("sequence");
+        let Some(s) = self.p.sequence(item) else {
+            self.report.warn("missing nested sequence skipped");
+            return String::new();
+        };
         let fmt = self.format(s.settings.frame_rate, s.settings.width, s.settings.height);
         let id = self.rid();
         self.medias.insert(item, Res { id: id.clone() });
@@ -771,7 +777,7 @@ impl Exp<'_, '_> {
     }
 
     fn sequence_xml(&mut self, seq_id: ItemId, fmt: &str, indent: usize) -> String {
-        let seq = self.p.sequence(seq_id).expect("sequence");
+        let Some(seq) = self.p.sequence(seq_id) else { return String::new() };
         let rate = seq.settings.frame_rate;
         let df = seq.settings.drop_frame && rate.supports_drop_frame();
         let tc0 = rate.tick_of(seq.start_timecode);
@@ -963,8 +969,8 @@ impl Exp<'_, '_> {
             } else {
                 self.media(base)
             };
-            let s = self.p.sequence(base).unwrap();
-            ("ref-clip", r, s.settings.frame_rate.tick_of(s.start_timecode))
+            let origin = self.p.sequence(base).map(|s| s.settings.frame_rate.tick_of(s.start_timecode)).unwrap_or(Tick::ZERO);
+            ("ref-clip", r, origin)
         } else {
             let r = self.asset(base, rate);
             let m = item_media(self.p, base);

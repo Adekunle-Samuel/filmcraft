@@ -57,7 +57,7 @@ impl XmlWriter {
     }
 
     pub fn close(&mut self) {
-        let name = self.stack.pop().expect("close without open");
+        let Some(name) = self.stack.pop() else { return };
         self.indent();
         let _ = writeln!(self.out, "</{name}>");
     }

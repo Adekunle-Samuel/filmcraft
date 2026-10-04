@@ -293,7 +293,7 @@ impl Track {
             LANE_PAN => self.pan = v.clamp(-100.0, 100.0),
             LANE_MUTE => self.muted = v >= 0.5,
             k if PAN51_LANES.contains(&k) => {
-                let i = lane_info(k).expect("pan51 lanes have info");
+                let Some(i) = lane_info(k) else { return false };
                 let v = v.clamp(i.min, i.max);
                 self.mixer.lanes.entry(k.to_string()).or_insert_with(|| Param::new(ParamValue::Float(v))).value = ParamValue::Float(v);
             }

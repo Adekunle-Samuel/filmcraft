@@ -781,8 +781,10 @@ impl Exp<'_, '_> {
             self.w.empty("sequence", &[("id", &sid)]);
             return;
         }
-        let it = self.p.item(id).expect("sequence item");
-        let seq = it.as_sequence().expect("sequence");
+        let Some((it, seq)) = self.p.item(id).and_then(|it| Some((it, it.as_sequence()?))) else {
+            self.w.empty("sequence", &[("id", &sid)]);
+            return;
+        };
         self.writing.insert(id);
         let rate = seq.settings.frame_rate;
         let df = seq.settings.drop_frame && rate.supports_drop_frame();

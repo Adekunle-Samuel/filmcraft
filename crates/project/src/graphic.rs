@@ -360,9 +360,23 @@ fn set(e: &mut EffectInstance, id: &str, v: ParamValue) {
     e.params.insert(id.to_string(), Param::new(v));
 }
 
+/// A fresh instance of a built-in layer effect (bare, with no parameters, if it were ever
+/// missing from the registry; `set` adds the ones the constructors fill in).
+fn layer_instance(id: &str) -> EffectInstance {
+    crate::effect::find_effect(id).map(crate::effect::EffectDef::instance).unwrap_or_else(|| EffectInstance {
+        effect: id.to_string(),
+        enabled: true,
+        params: Default::default(),
+        masks: Vec::new(),
+        post_fader: false,
+        essential: false,
+        layer: None,
+    })
+}
+
 /// A new text layer at `position` (graphic canvas pixels).
 pub fn new_text_layer(text: &str, position: Vec2, size: f64) -> EffectInstance {
-    let mut e = crate::effect::find_effect(TEXT_LAYER).expect("registered").instance();
+    let mut e = layer_instance(TEXT_LAYER);
     set(&mut e, "text", ParamValue::Text(text.into()));
     set(&mut e, "position", ParamValue::Vec2(position));
     set(&mut e, "size", ParamValue::Float(size));
@@ -392,7 +406,7 @@ pub fn reset_layer_params(e: &mut EffectInstance) {
 
 /// A new shape layer centred at `position`.
 pub fn new_shape_layer(shape: u32, position: Vec2, size: Vec2, points: Vec<[f32; 2]>) -> EffectInstance {
-    let mut e = crate::effect::find_effect(SHAPE_LAYER).expect("registered").instance();
+    let mut e = layer_instance(SHAPE_LAYER);
     set(&mut e, "shape", ParamValue::Choice(shape.min(3)));
     set(&mut e, "position", ParamValue::Vec2(position));
     set(&mut e, "size", ParamValue::Vec2(size));

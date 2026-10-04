@@ -251,7 +251,9 @@ pub fn parse(bytes: &[u8]) -> Result<Document> {
     if !sniff(bytes) {
         return Err(Error::NotFormat("EBU STL"));
     }
-    let rate = rate_of(&bytes[3..11]).expect("sniffed");
+    let Some(rate) = bytes.get(3..11).and_then(rate_of) else {
+        return Err(Error::NotFormat("EBU STL"));
+    };
     let gsi = &bytes[..GSI];
     // start of programme (HHMMSSFF, ASCII)
     let tcp = ascii_field(&gsi[256..264]);
