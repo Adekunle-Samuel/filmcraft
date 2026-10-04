@@ -369,9 +369,9 @@ impl MkvSource {
         if let Some(p) = st.packets.get(&i) {
             return Ok(p.clone());
         }
-        let ti = self.atrack.expect("audio");
+        let ti = self.atrack.ok_or_else(|| CodecError::Unsupported("no audio track".into()))?;
         let track = &self.file.tracks[ti];
-        let ainfo = self.info.audio.as_ref().expect("audio info");
+        let ainfo = self.info.audio.as_ref().ok_or_else(|| CodecError::Unsupported("no audio track".into()))?;
         let data = self.read(ti, i)?;
         let decoded = match &track.codec {
             Codec::Pcm { float, big_endian, bits } => {
@@ -392,7 +392,7 @@ impl MkvSource {
                 // Non-sequential access: reset and prime with the preceding packets (codec pre-roll:
                 // one packet, or `SeekPreRoll` worth for Opus).
                 if st.last_decoded.is_none_or(|l| l + 1 != i) {
-                    let d = st.decoder.as_mut().expect("decoder");
+                    let d = st.decoder.as_mut().ok_or_else(|| CodecError::Decode("no audio decoder".into()))?;
                     d.reset();
                     let from = if self.audio_preroll > 0 {
                         self.audio_starts.partition_point(|&x| x <= self.audio_starts[i] - self.audio_preroll).saturating_sub(1)
@@ -405,7 +405,7 @@ impl MkvSource {
                         }
                     }
                 }
-                let r = st.decoder.as_mut().expect("decoder").decode(&data, self.audio_starts[i].max(0) as u64);
+                let r = st.decoder.as_mut().ok_or_else(|| CodecError::Decode("no audio decoder".into()))?.decode(&data, self.audio_starts[i].max(0) as u64);
                 st.last_decoded = Some(i);
                 r.unwrap_or_default()
             }

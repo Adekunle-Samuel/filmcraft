@@ -16,6 +16,8 @@
 //! - [`AudioFileSource`]: standalone compressed audio files (MP3, FLAC, AIFF, …).
 //! - [`openers`]: the openers to register with the engine's media pool.
 
+#![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable))]
+
 pub mod audio;
 pub mod gop;
 pub mod mkv;

@@ -123,6 +123,19 @@ fn audio_supported(c: &Codec) -> bool {
     matches!(c, Codec::MpegAudio | Codec::AacAdts | Codec::AacLatm | Codec::LpcmBluray | Codec::LpcmDvd | Codec::Ac3)
 }
 
+/// The coded rate unless the timestamps say otherwise (3:2 pulldown, field-rate coding). Never
+/// zero: damaged timestamps spread over a huge span give a rate that rounds to 0 fps, which the
+/// duration computation divided by.
+fn stream_rate(coded: Option<FrameRate>, from_pts: Option<f64>) -> FrameRate {
+    let rate = match (coded, from_pts) {
+        (Some(r), Some(p)) if (r.as_f64() - p).abs() / p > 0.01 => FrameRate::from_f64(p),
+        (Some(r), _) => r,
+        (None, Some(p)) => FrameRate::from_f64(p),
+        (None, None) => FrameRate::FPS_25,
+    };
+    if rate.num > 0 && rate.den > 0 { rate } else { FrameRate::FPS_25 }
+}
+
 /// Display-order keys of samples (decode order): the PTS when every unit has one, else (MPEG
 /// video) GOP start + temporal_reference, else the decode order.
 fn display_keys(units: &[&Unit], mpeg: bool) -> Vec<i64> {
@@ -242,8 +255,9 @@ impl MpegSource {
                     src.file = Some(file);
                     src.video = Some(track);
                     src.describe_video(rate_from_pts)?;
-                    let file = src.file.take().expect("file");
-                    src.setup_audio(file, astream, origin);
+                    if let Some(file) = src.file.take() {
+                        src.setup_audio(file, astream, origin);
+                    }
                 }
                 None => {
                     src.unsupported_video = Some(format!("{} video in {} (FilmCraft has no decoder for it)", st.codec.name(), file.format.name()));
@@ -369,14 +383,14 @@ impl MpegSource {
         if let Some((data, aus)) = &self.es {
             return Ok(data[aus[u].clone()].to_vec());
         }
-        let file = self.file.as_ref().expect("file");
+        let file = self.file.as_ref().ok_or_else(|| CodecError::Container("no stream file".into()))?;
         file.read_unit(&self.bytes, v.stream, u).map_err(|e| CodecError::Container(e.to_string()))
     }
 
     /// Fill in the video stream info from the first picture.
     fn describe_video(&mut self, rate_from_pts: Option<f64>) -> crate::Result<()> {
         let mut seq_header = None;
-        let v = self.video.as_ref().expect("video");
+        let v = self.video.as_ref().ok_or_else(|| CodecError::Unsupported("no video stream".into()))?;
         let first = self.read_unit(v, 0)?;
         let n = v.order.len();
         let (width, height, par, codec, pixel_format, mut color);
@@ -432,12 +446,7 @@ impl MpegSource {
             }
         }
         // the coded rate unless the timestamps say otherwise (3:2 pulldown, field-rate coding)
-        let rate = match (rate, rate_from_pts) {
-            (Some(r), Some(p)) if (r.as_f64() - p).abs() / p > 0.01 => FrameRate::from_f64(p),
-            (Some(r), _) => r,
-            (None, Some(p)) => FrameRate::from_f64(p),
-            (None, None) => FrameRate::FPS_25,
-        };
+        let rate = stream_rate(rate, rate_from_pts);
         let duration = rate.tick_of(n as i64);
         let total_bytes: u64 = match (&self.es, &self.file) {
             (Some((_, aus)), _) => v.units.iter().map(|&u| aus[u].len() as u64).sum(),
@@ -445,8 +454,10 @@ impl MpegSource {
             _ => 0,
         };
         let secs = duration.seconds();
-        if let Some(h) = seq_header {
-            self.video.as_mut().expect("video").header = h;
+        if let Some(h) = seq_header
+            && let Some(v) = self.video.as_mut()
+        {
+            v.header = h;
         }
         self.info.duration = duration;
         self.info.video = Some(VideoStreamInfo {
@@ -525,7 +536,7 @@ impl MpegSource {
                     return self.audio_unsupported(&codec_name, "DVD LPCM: no format header".into());
                 }
             },
-            _ => unreachable!("audio_supported"),
+            _ => return self.audio_unsupported(&codec_name, format!("{codec_name} audio")),
         };
         if codec_is_ac3_unsupported(codec) {
             return self.audio_unsupported(&codec_name, format!("{codec_name} audio (FilmCraft has no AC-3 decoder yet)"));
@@ -608,12 +619,12 @@ impl MpegSource {
         if let Some(p) = st.cache.get(&i) {
             return Ok(p.clone());
         }
-        let file = self.file.as_ref().expect("file");
+        let file = self.file.as_ref().ok_or_else(|| CodecError::Container("no stream file".into()))?;
         let read = |k: usize| file.read_unit(&self.bytes, a.stream, k).map_err(|e| CodecError::Container(e.to_string()));
         if st.dec.is_none() {
             st.dec = Some(AudioDecoder::new(a.codec, a.rate, a.channels, a.latm.clone())?);
         }
-        let dec = st.dec.as_mut().expect("decoder");
+        let dec = st.dec.as_mut().ok_or_else(|| CodecError::Decode("no audio decoder".into()))?;
         if st.last.is_none_or(|l| l + 1 != i) {
             dec.reset();
             if i > 0
@@ -839,6 +850,21 @@ pub fn reader_opener(name: &str, head: &[u8], reader: &filmcraft_media::SharedRe
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A mutated transport stream whose PTS span gave ~0 fps panicked on open with "attempt to
+    /// divide by zero" (`FrameRate::tick_of`).
+    #[test]
+    fn damaged_timestamps_never_give_a_zero_rate() {
+        for (coded, p) in
+            [(None, Some(1e-9)), (Some(FrameRate::FPS_25), Some(1e-9)), (Some(FrameRate::new(0, 0)), None), (None, Some(0.0)), (None, Some(f64::NAN))]
+        {
+            let r = stream_rate(coded, p);
+            assert!(r.num > 0 && r.den > 0, "{coded:?} {p:?} -> {r:?}");
+            let _ = r.tick_of(1000);
+        }
+        assert_eq!(stream_rate(Some(FrameRate::FPS_25), Some(25.0)), FrameRate::FPS_25);
+        assert_eq!(stream_rate(None, Some(50.0)), FrameRate::from_f64(50.0));
+    }
 
     #[test]
     fn presentation_drops_leading_pictures_and_orders_by_key() {

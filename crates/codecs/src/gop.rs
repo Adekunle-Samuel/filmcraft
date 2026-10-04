@@ -240,8 +240,7 @@ impl GopCache {
         }
         // evict frames far from the most recent (keep a window around the working position)
         while st.bytes > budget && st.frames.len() > 2 {
-            let first = *st.frames.keys().next().expect("non-empty");
-            let last = *st.frames.keys().next_back().expect("non-empty");
+            let (Some(&first), Some(&last)) = (st.frames.keys().next(), st.frames.keys().next_back()) else { break };
             let victim = if pts - first > last - pts { first } else { last };
             if let Some(v) = st.frames.remove(&victim) {
                 st.drafts.remove(&victim);
@@ -323,7 +322,7 @@ impl GopCache {
             // every sample): step back to a sample the decoder can start from.
             while key > 0 {
                 let data = s.read(key)?;
-                if st.decoder.as_ref().expect("decoder").is_random_access(&data) != Some(false) {
+                if st.decoder.as_ref().and_then(|d| d.is_random_access(&data)) != Some(false) {
                     break;
                 }
                 key = s.sync_before(key - 1);
@@ -337,7 +336,10 @@ impl GopCache {
         }
         let limit = (i.max(st.next) + 64).min(n);
         let late = late_before.unwrap_or(i64::MIN).min(want_pts);
-        st.decoder.as_mut().expect("decoder").set_draft(draft);
+        let Some(decoder) = st.decoder.as_mut() else {
+            return Err(CodecError::Decode("no video decoder".into()));
+        };
+        decoder.set_draft(draft);
         while st.next < limit {
             if filmcraft_media::cancel::cancelled() {
                 // The decoder state stays consistent (`next`, `out_max`): a later request continues.
@@ -345,12 +347,15 @@ impl GopCache {
             }
             let k = st.next;
             let data = s.read(k)?;
-            if k != i && s.pts(k) < late && st.decoder.as_ref().expect("decoder").is_disposable(&data) {
+            if k != i && s.pts(k) < late && st.decoder.as_ref().is_some_and(|d| d.is_disposable(&data)) {
                 st.next += 1;
                 SKIPPED.fetch_add(1, Ordering::Relaxed);
                 continue;
             }
-            let out = timed(|| st.decoder.as_mut().expect("decoder").decode(&data, s.pts(k)))?;
+            let Some(decoder) = st.decoder.as_mut() else {
+                return Err(CodecError::Decode("no video decoder".into()));
+            };
+            let out = timed(|| decoder.decode(&data, s.pts(k)))?;
             st.next += 1;
             DECODED.fetch_add(1, Ordering::Relaxed);
             self.store_output(&mut st, out);
@@ -359,7 +364,7 @@ impl GopCache {
             }
         }
         if st.cached(want_pts, draft).is_none() {
-            let out = timed(|| st.decoder.as_mut().expect("decoder").flush());
+            let out = st.decoder.as_mut().map(|d| timed(|| d.flush())).unwrap_or_default();
             self.store_output(&mut st, out);
             st.next = usize::MAX;
         }

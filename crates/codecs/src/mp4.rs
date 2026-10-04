@@ -107,8 +107,11 @@ impl Mp4Source {
     pub fn open_reader(name: &str, reader: filmcraft_media::SharedReader) -> crate::Result<Self> {
         let bytes = crate::Src(reader);
         let file = filmcraft_isobmff::open(&bytes).map_err(|e| CodecError::Container(e.to_string()))?;
-        let vtrack = file.tracks.iter().position(|t| t.kind == TrackKind::Video && !t.samples.is_empty());
-        let atrack = file.tracks.iter().position(|t| t.kind == TrackKind::Audio && !t.samples.is_empty());
+        // A track needs samples, a sample description and a timescale to be playable (damaged
+        // files can lack them: indexing `entries[0]` or dividing by the timescale used to panic).
+        let playable = |t: &&filmcraft_isobmff::Track, kind| t.kind == kind && !t.samples.is_empty() && !t.entries.is_empty() && t.timescale > 0;
+        let vtrack = file.tracks.iter().position(|t| playable(&t, TrackKind::Video));
+        let atrack = file.tracks.iter().position(|t| playable(&t, TrackKind::Audio));
         if vtrack.is_none() && atrack.is_none() {
             return Err(CodecError::Unsupported("no playable tracks".into()));
         }
@@ -126,6 +129,8 @@ impl Mp4Source {
             durs.sort_unstable();
             let d = durs.get(durs.len() / 2).copied().unwrap_or(1).max(1);
             let rate = FrameRate::from_f64(t.timescale as f64 / d as f64);
+            // A rate that rounds to zero (one sample per huge duration) can't be divided by.
+            let rate = if rate.num > 0 && rate.den > 0 { rate } else { FrameRate::default() };
             color = color_from(entry, w, h);
             if entry
                 .video
@@ -264,9 +269,9 @@ impl Mp4Source {
         if let Some(p) = st.packets.get(&i) {
             return Ok(p.clone());
         }
-        let ti = self.atrack.expect("audio");
+        let ti = self.atrack.ok_or_else(|| CodecError::Unsupported("no audio track".into()))?;
         let track = &self.file.tracks[ti];
-        let entry = &track.entries[0];
+        let entry = track.entries.first().ok_or_else(|| CodecError::Container("audio track without a sample description".into()))?;
         let data = self.read(ti, i)?;
         let decoded = match &entry.codec {
             CodecConfig::Pcm(p) => decode_pcm(&data, p),
@@ -277,7 +282,7 @@ impl Mp4Source {
                 // Non-sequential access: reset and prime with the preceding packets (codec pre-roll:
                 // one packet, or `OPUS_PRE_ROLL` worth for Opus).
                 if st.last_decoded.is_none_or(|l| l + 1 != i) {
-                    let d = st.decoder.as_mut().expect("decoder");
+                    let d = st.decoder.as_mut().ok_or_else(|| CodecError::Decode("no audio decoder".into()))?;
                     d.reset();
                     let from = if self.audio_preroll > 0 {
                         self.audio_starts.partition_point(|&x| x <= self.audio_starts[i] - self.audio_preroll).saturating_sub(1)
@@ -290,7 +295,7 @@ impl Mp4Source {
                         }
                     }
                 }
-                let r = st.decoder.as_mut().expect("decoder").decode(&data, self.audio_starts[i].max(0) as u64);
+                let r = st.decoder.as_mut().ok_or_else(|| CodecError::Decode("no audio decoder".into()))?.decode(&data, self.audio_starts[i].max(0) as u64);
                 st.last_decoded = Some(i);
                 match r {
                     Ok(v) => v,
@@ -511,6 +516,33 @@ mod tests {
             b[m + j * 4..m + j * 4 + 4].copy_from_slice(&v.to_be_bytes());
         }
         b.into()
+    }
+
+    /// Overwrite the big-endian u32 `skip` bytes after the first `fourcc` box type.
+    fn patch_u32(b: &mut [u8], fourcc: &[u8; 4], skip: usize, v: u32) {
+        let k = b.windows(4).position(|x| x == fourcc).expect("box") + 4 + skip;
+        b[k..k + 4].copy_from_slice(&v.to_be_bytes());
+    }
+
+    /// Damaged MOVs found by mutation fuzzing panicked on import: a track with timescale 0
+    /// ("attempt to divide by zero" in the duration) and one whose sample description list is
+    /// empty ("index out of bounds" on `entries[0]`). Both must open as an error, or as media
+    /// that answers requests without panicking.
+    #[test]
+    fn damaged_track_headers_never_panic() {
+        let identity = [0x10000, 0, 0, 0, 0x10000, 0, 0, 0, 0x4000_0000];
+        // mdhd v0: version/flags, creation, modification, then timescale
+        let mut zero_timescale = rotated_mov(identity).to_vec();
+        patch_u32(&mut zero_timescale, b"mdhd", 12, 0);
+        // stsd: version/flags, then entry_count
+        let mut no_entries = rotated_mov(identity).to_vec();
+        patch_u32(&mut no_entries, b"stsd", 4, 0);
+        for (name, b) in [("ts0.mov", zero_timescale), ("stsd0.mov", no_entries)] {
+            if let Ok(s) = Mp4Source::open(name, b.into()) {
+                let _ = s.video_frame(FrameRequest::full(Tick::ZERO));
+                let _ = s.audio(0, 1024, 48_000);
+            }
+        }
     }
 
     /// Mean luma of the top and bottom halves of the decoded frame, and its size.

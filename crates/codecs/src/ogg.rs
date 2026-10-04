@@ -133,7 +133,7 @@ impl OggSource {
         }
         // Non-sequential access: reset and decode the pre-roll (RFC 7845 §4.6; see OPUS_PRE_ROLL).
         if st.last_decoded.is_none_or(|l| l + 1 != i) {
-            let d = st.decoder.as_mut().expect("decoder");
+            let d = st.decoder.as_mut().ok_or_else(|| CodecError::Decode("no audio decoder".into()))?;
             d.reset();
             let from = timing.starts.partition_point(|&x| x <= timing.starts[i] - OPUS_PRE_ROLL as i64).saturating_sub(1);
             for j in from..i {
@@ -143,7 +143,7 @@ impl OggSource {
             }
         }
         let data = read(i)?;
-        let r = st.decoder.as_mut().expect("decoder").decode(&data, 0);
+        let r = st.decoder.as_mut().ok_or_else(|| CodecError::Decode("no audio decoder".into()))?.decode(&data, 0);
         st.last_decoded = Some(i);
         let p = Arc::new(r.unwrap_or_default());
         st.packets.insert(i, p.clone());
