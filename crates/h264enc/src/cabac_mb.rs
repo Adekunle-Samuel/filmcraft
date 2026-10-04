@@ -296,7 +296,8 @@ pub fn write_mb<S: BinSink>(s: &mut S, nb: &NbCtx, c: &MbCode) {
             s.decision(if bins[1] != 1 { 16 } else { 17 }, bins[2]);
         }
         MbKind::BDirect | MbKind::BInter => write_b_bins(s, nb, B_BINS[c.b_type_number() as usize]),
-        _ => unreachable!("skip/none macroblocks are not written with write_mb"),
+        // Skip / none macroblocks are not written with write_mb.
+        _ => debug_assert!(false, "write_mb on a skipped macroblock"),
     }
     let is_inxn = c.kind.is_inxn();
     if c.kind == MbKind::PInter && c.part == Part::P8x8 {

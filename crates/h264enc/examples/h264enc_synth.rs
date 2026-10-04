@@ -64,7 +64,7 @@ fn main() {
         enc.set_recon_capture(false);
     }
     for (i, f) in frames.iter().enumerate() {
-        pk.extend(enc.encode(&f.frame(), i as i64));
+        pk.extend(enc.encode(&f.frame(), i as i64).unwrap());
     }
     pk.extend(enc.flush());
     let el = t0.elapsed().as_secs_f64();

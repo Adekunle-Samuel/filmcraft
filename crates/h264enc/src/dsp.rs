@@ -16,8 +16,9 @@ pub fn sad(a: &[u8], sa: usize, b: &[u8], sb: usize, w: usize, h: usize) -> u32 
 pub fn sad16(a: &[u8], sa: usize, b: &[u8], sb: usize, h: usize) -> u32 {
     let mut s = 0u32;
     for r in 0..h {
-        let ra: &[u8; 16] = a[r * sa..r * sa + 16].try_into().unwrap();
-        let rb: &[u8; 16] = b[r * sb..r * sb + 16].try_into().unwrap();
+        let (Some(ra), Some(rb)) = (a.get(r * sa..).and_then(|x| x.first_chunk::<16>()), b.get(r * sb..).and_then(|x| x.first_chunk::<16>())) else {
+            break;
+        };
         let mut acc = 0u16;
         for i in 0..16 {
             acc += ra[i].abs_diff(rb[i]) as u16;
