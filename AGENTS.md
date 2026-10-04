@@ -67,6 +67,35 @@ reproduce an image (for example, point lists traced from someone else's icon).
 
 ## 3. Engineering rules
 
+### 3.1 Never panic: fail with `Result`
+
+FilmCraft must not crash. A user losing unsaved work, or an agent's session dying, because of a bad file
+or an unexpected input is a bug as serious as wrong output.
+
+1. **No panics in production code.** Don't use `unwrap()`, `expect()`, `panic!`, `unreachable!`,
+   `todo!` or `unimplemented!` outside tests. Return `Result<T, E>` with the crate's error type and
+   propagate with `?`; in the UI, report the error (status bar, error dialog) and carry on.
+2. **Avoid implicit panics too.** Index and slice with `get()` (or validate the bounds once, up front,
+   where a hot loop needs plain indexing); use `checked_*` / `saturating_*` arithmetic where values come
+   from outside; never divide by a value that can be zero (frame rates, timescales, sample rates, sizes);
+   don't call `clamp` with bounds that can cross; bound recursion and loop counts.
+3. **All input is untrusted:** media files, project and interchange files, presets, fonts, command
+   parameters from the CLI / MCP / control channel, and UI state. A malformed or hostile input must give an
+   error, never a panic, a hang, or an allocation sized by the input without a sane limit.
+4. **Background work catches panics.** Every thread or job (export, previews, proxies, decoding workers…)
+   runs its body under `catch_unwind` and reports a failure as an error: a dead worker leaves monitors
+   blank or jobs "running" forever.
+5. **Lock poisoning is not fatal:** use `lock().unwrap_or_else(|e| e.into_inner())`.
+6. **Enforced:** crates deny `clippy::unwrap_used`, `clippy::expect_used`, `clippy::panic` and
+   `clippy::unreachable` outside tests. Where an invariant truly cannot be violated and restructuring is
+   unreasonable, a single-item `#[allow(...)]` with a one-line justification comment is acceptable; keep
+   these rare and reviewable.
+7. **Test the failure paths:** parsers and decoders get mutation-fuzz tests (truncation, bit flips,
+   corrupt sizes) run under `catch_unwind`; new commands get hostile-parameter tests. Fix every panic a
+   fuzzer finds and keep its reproducer as a test.
+
+### 3.2 The rest
+
 See `CLAUDE.md`: pure Rust, dependency layering (`cargo xtask layers`), exact `Tick` time, everything is
 a command, everything is agent-drivable, and the quality gates (`cargo xtask ci`) before every commit.
 
