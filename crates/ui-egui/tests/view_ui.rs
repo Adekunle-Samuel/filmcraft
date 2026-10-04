@@ -331,3 +331,32 @@ fn elements_wait_for_the_timeline_zoom_to_settle() {
         assert!((first[k] - settled[k]).abs() < 0.5, "rect read while zooming {first:?}, settled {settled:?}");
     }
 }
+
+/// Frames until `ui.elements` answers (it retries while the timeline is still zooming).
+fn elements_latency(d: &mut Driver) -> usize {
+    let (req, reply) = ControlRequest::new("ui.elements", json!({"prefix": "timeline."}));
+    d.tx.send(req).unwrap();
+    for n in 1..=600 {
+        d.frames(1);
+        if let Ok(v) = reply.try_recv() {
+            assert_eq!(v["ok"], true, "{v}");
+            return n;
+        }
+    }
+    panic!("ui.elements never answered");
+}
+
+#[test]
+fn elements_answer_promptly_once_the_timeline_is_at_rest() {
+    let mut d = Driver::demo();
+    d.frames(120);
+    // a timeline at rest must not keep `ui.elements` waiting (the animation snaps to its target)
+    assert!(elements_latency(&mut d) <= 3);
+    for pps in [40.0, 400.0, 7.5] {
+        d.ok("ui.set", json!({"timeline": {"pps": pps}}));
+        d.ok("ui.set", json!({"timeline": {"scroll": 1.5}}));
+        d.frames(120);
+        let n = elements_latency(&mut d);
+        assert!(n <= 3, "ui.elements took {n} frames at rest after zooming to {pps} px/s");
+    }
+}
