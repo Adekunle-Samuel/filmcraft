@@ -61,8 +61,9 @@ struct Prepared {
 }
 
 impl Encoder {
-    pub fn new(profile: Profile, width: u32, height: u32) -> Encoder {
-        Encoder::with_config(EncoderConfig::new(profile, width, height)).expect("valid default configuration")
+    /// An encoder with the default configuration; fails on rasters the profile can't code.
+    pub fn new(profile: Profile, width: u32, height: u32) -> Result<Encoder> {
+        Encoder::with_config(EncoderConfig::new(profile, width, height))
     }
 
     pub fn with_config(cfg: EncoderConfig) -> Result<Encoder> {
@@ -79,7 +80,7 @@ impl Encoder {
         if !ok_depth {
             return Err(Error::Input(format!("{} does not support {}-bit", cfg.profile.name(), cfg.bit_depth)));
         }
-        let info = cid_info(cfg.profile.cid()).expect("RI CID");
+        let info = cid_info(cfg.profile.cid()).ok_or_else(|| Error::Input(format!("no compression table for {}", cfg.profile.name())))?;
         let frame_size = cfg.profile.frame_size(cfg.width, cfg.height);
         let header_size = header::header_size_for(cfg.height);
         Ok(Encoder { cfg, info, frame_size, header_size, last_q: 8 })

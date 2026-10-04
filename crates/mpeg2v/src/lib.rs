@@ -23,6 +23,8 @@
 //! # Ok::<(), filmcraft_mpeg2v::Error>(())
 //! ```
 
+#![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable))]
+
 mod bits;
 pub mod headers;
 mod idct;

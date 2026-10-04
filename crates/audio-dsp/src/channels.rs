@@ -123,7 +123,7 @@ pub fn matrix(from: Layout, to: Layout, mixdown: Mixdown) -> Vec<Vec<f32>> {
     let (ni, no) = (from.channels(), to.channels());
     let mut m = vec![vec![0.0f32; ni]; no];
     match (from, to) {
-        (a, b) if a == b => {
+        (Layout::Mono, Layout::Mono) | (Layout::Stereo, Layout::Stereo) | (Layout::Surround51, Layout::Surround51) => {
             for (i, row) in m.iter_mut().enumerate() {
                 row[i] = 1.0;
             }
@@ -159,7 +159,6 @@ pub fn matrix(from: Layout, to: Layout, mixdown: Mixdown) -> Vec<Vec<f32>> {
                 m[1][LFE] = K;
             }
         }
-        _ => unreachable!("all layout pairs are covered"),
     }
     m
 }

@@ -211,8 +211,7 @@ impl Channel {
             (LostFlag::Lbrr, Some(_)) => self.lbrr_flags[self.n_frames_decoded],
             _ => false,
         };
-        if decode {
-            let dec = dec.expect("range decoder");
+        if decode && let Some(dec) = dec {
             self.decode_indices(dec, self.n_frames_decoded, lost == LostFlag::Lbrr, cond);
             let mut pulses = [0i32; MAX_FRAME + 16];
             decode_pulses(dec, &mut pulses, self.indices.signal_type, self.indices.quant_offset_type, l);

@@ -38,7 +38,7 @@ let f = decode_frame_with(&sample, &DecodeOptions { threads: false, ..Default::d
 let hdr: FrameHeader = probe(&sample)?;                  // cid, raster, depth, chroma…
 let name = cid_name(hdr.cid);                            // "DNxHR HQX", "DNxHD 1080i 8-bit (CID 1242)"
 
-let mut enc = Encoder::new(Profile::Hq, 1920, 1080);     // or Encoder::with_config(EncoderConfig { .. })
+let mut enc = Encoder::new(Profile::Hq, 1920, 1080)?;    // or Encoder::with_config(EncoderConfig { .. })
 let sample: Vec<u8> = enc.encode(&frame)?;               // exactly enc.frame_size() bytes (CBR)
 ```
 

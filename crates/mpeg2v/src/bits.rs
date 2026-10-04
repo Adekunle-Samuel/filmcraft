@@ -16,8 +16,8 @@ impl<'a> Bits<'a> {
     #[inline(always)]
     pub fn peek32(&self) -> u32 {
         let byte = self.pos >> 3;
-        let w = if byte + 8 <= self.data.len() {
-            u64::from_be_bytes(self.data[byte..byte + 8].try_into().expect("8 bytes"))
+        let w = if let Some(&b) = self.data.get(byte..).and_then(|d| d.first_chunk::<8>()) {
+            u64::from_be_bytes(b)
         } else {
             let mut b = [0u8; 8];
             if byte < self.data.len() {

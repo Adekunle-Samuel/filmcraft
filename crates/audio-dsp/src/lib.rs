@@ -16,6 +16,8 @@
 //! denormals never appear (no FTZ/DAZ CPU flags needed, which keeps the crate `unsafe`-free and
 //! portable to wasm).
 
+#![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable))]
+
 pub mod biquad;
 pub mod channels;
 pub mod design;
@@ -169,12 +171,11 @@ impl ParamValues {
     pub(crate) fn get(&self, id: &str) -> Option<f32> {
         self.index_of(id).map(|i| self.values[i])
     }
-    /// Value of a parameter that is known to exist (panics otherwise — programming error).
+    /// Value of a parameter that is known to exist (0 otherwise — a programming error caught by
+    /// debug builds).
     pub(crate) fn v(&self, id: &str) -> f32 {
-        match self.get(id) {
-            Some(v) => v,
-            None => panic!("unknown parameter {id}"),
-        }
+        debug_assert!(self.get(id).is_some(), "unknown parameter {id}");
+        self.get(id).unwrap_or(0.0)
     }
     pub(crate) fn on(&self, id: &str) -> bool {
         self.v(id) >= 0.5

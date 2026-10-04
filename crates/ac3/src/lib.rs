@@ -13,6 +13,8 @@
 //!
 //! E-AC-3 (bsid 11-16) is recognised and refused.
 
+#![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable))]
+
 mod tables;
 
 use std::sync::OnceLock;
@@ -1029,7 +1031,7 @@ impl Decoder {
 /// Coded channel order (Table 5.8) → WAV / SMPTE order: fronts L R C, LFE, surrounds.
 fn wav_order(mut pcm: Vec<Vec<f32>>, acmod: usize, lfeon: bool) -> Vec<Vec<f32>> {
     let nf = NFCHANS[acmod];
-    let lfe = lfeon.then(|| pcm.pop().expect("lfe"));
+    let lfe = if lfeon { pcm.pop() } else { None };
     let mut fbw = pcm;
     // acmod 3, 5, 7 code L C R …: move C after R
     if acmod & 1 == 1 && acmod != 1 {

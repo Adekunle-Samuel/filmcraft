@@ -19,8 +19,7 @@ pub(crate) fn idct8x8(block: &mut [f32; 64]) {
     let mut nz = [false; 8];
     let mut dc_only = true;
     // Horizontal pass: t[r][x] = Σ_u F[r][u] · B[u][x]
-    for r in 0..8 {
-        let c: &[f32; 8] = block[r * 8..r * 8 + 8].try_into().unwrap();
+    for (r, c) in block.as_chunks::<8>().0.iter().enumerate() {
         if c[1..].iter().all(|&v| v == 0.0) {
             if c[0] != 0.0 {
                 t[r] = [c[0] * BASIS[0][0]; 8];

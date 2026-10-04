@@ -152,7 +152,7 @@ pub fn parse(d: &[u8]) -> Result<FrameHeader> {
         2 => ColorVolume::Bt2020Cl,
         _ => ColorVolume::OutOfBand,
     };
-    let timecode = (d[0x30] & 0x80 != 0).then(|| d[0x31..0x39].try_into().unwrap());
+    let timecode = if d[0x30] & 0x80 != 0 { d.get(0x31..).and_then(|t| t.first_chunk::<8>()).copied() } else { None };
     let mb_rows = be16(d, 0x16C);
     if width == 0 || lines == 0 || width > 16384 || lines > 16384 {
         return Err(Error::Invalid("raster size"));
