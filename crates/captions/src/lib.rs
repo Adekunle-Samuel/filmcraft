@@ -15,6 +15,8 @@
 //! - **Burn-in:** [`burn`] lays a caption out with the track style and draws it with the
 //!   `filmcraft-text` engine (Inter SemiBold, shaped and kerned).
 
+#![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable))]
+
 pub mod burn;
 pub mod cea608;
 pub mod mcc;
@@ -212,7 +214,7 @@ pub fn parse(bytes: &[u8], format: Format) -> Result<Document> {
         Format::Scc => scc::parse(&text),
         Format::Mcc => mcc::parse(&text),
         Format::Ttml | Format::Dfxp => ttml::parse(&text),
-        Format::Stl => unreachable!("handled above"),
+        Format::Stl => stl::parse(bytes),
     }
 }
 

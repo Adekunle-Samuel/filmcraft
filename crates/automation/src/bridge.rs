@@ -42,7 +42,9 @@ impl BridgeClient {
                 *guard = Some((BufReader::new(r), w));
             }
             let id = self.next_id.fetch_add(1, Ordering::Relaxed);
-            let conn = guard.as_mut().expect("connected");
+            let Some(conn) = guard.as_mut() else {
+                return Err(AutomationError::Bridge(format!("not connected to {}", self.addr)));
+            };
             let line = format!("{}\n", json!({"id": id, "method": method, "params": params}));
             let res: Result<Value, AutomationError> = async {
                 conn.1.write_all(line.as_bytes()).await.map_err(|e| AutomationError::Bridge(e.to_string()))?;

@@ -411,10 +411,10 @@ impl Dec708 {
     }
     fn put(&mut self, c: char) {
         let w = self.w();
-        if w.rows.is_empty() {
-            w.rows.push(String::new());
+        match w.rows.last_mut() {
+            Some(row) => row.push(c),
+            None => w.rows.push(c.to_string()),
         }
-        w.rows.last_mut().expect("row").push(c);
     }
     fn bitmap(&mut self, m: u8, f: impl Fn(&mut Win)) {
         for (i, w) in self.win.iter_mut().enumerate() {

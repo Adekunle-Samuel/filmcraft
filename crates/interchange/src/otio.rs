@@ -138,8 +138,7 @@ pub(crate) fn export(p: &Project, seq_id: ItemId, opts: &ExportOptions, report: 
 
 impl Exp<'_, '_> {
     fn seq_meta(&self, id: ItemId) -> Value {
-        let it = self.p.item(id).unwrap();
-        let s = it.as_sequence().unwrap();
+        let Some((it, s)) = self.p.item(id).and_then(|it| Some((it, it.as_sequence()?))) else { return json!({}) };
         json!({
             "item": id.0,
             "label": it.label,
@@ -152,7 +151,10 @@ impl Exp<'_, '_> {
 
     /// The `Stack` for a sequence; `range` = (source in, duration) when nested in a track.
     fn stack_json(&mut self, id: ItemId, name: &str, range: Option<(Tick, Tick, FrameRate)>) -> Value {
-        let seq = self.p.sequence(id).unwrap();
+        let Some(seq) = self.p.sequence(id) else {
+            self.report.warn("missing nested sequence skipped");
+            return json!({"OTIO_SCHEMA": "Stack.1", "name": name, "children": [], "effects": [], "markers": [], "enabled": true, "metadata": {}});
+        };
         let rate = seq.settings.frame_rate;
         let mut tracks = Vec::new();
         for kind in [TrackKind::Video, TrackKind::Audio] {

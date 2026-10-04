@@ -16,13 +16,14 @@ pub fn wav_header(data_len: u32, channels: u16, sample_rate: u32, bits: u16) -> 
     let block = channels.max(1) * bits.div_ceil(8);
     let mut v = Vec::with_capacity(44);
     v.extend_from_slice(b"RIFF");
-    v.extend_from_slice(&(36 + data_len + (data_len & 1)).to_le_bytes());
+    // Saturating: a huge source (data_len saturated by the caller) must not overflow.
+    v.extend_from_slice(&36u32.saturating_add(data_len).saturating_add(data_len & 1).to_le_bytes());
     v.extend_from_slice(b"WAVEfmt ");
     v.extend_from_slice(&16u32.to_le_bytes());
     v.extend_from_slice(&1u16.to_le_bytes());
     v.extend_from_slice(&channels.max(1).to_le_bytes());
     v.extend_from_slice(&sample_rate.to_le_bytes());
-    v.extend_from_slice(&(sample_rate * block as u32).to_le_bytes());
+    v.extend_from_slice(&sample_rate.saturating_mul(block as u32).to_le_bytes());
     v.extend_from_slice(&block.to_le_bytes());
     v.extend_from_slice(&bits.to_le_bytes());
     v.extend_from_slice(b"data");
@@ -159,6 +160,14 @@ fn from_extended(b: [u8; 10]) -> f64 {
 
 #[cfg(test)]
 mod tests {
+    /// A mutated EDL whose clip ran for days produced an OMF descriptor for more than 4 GiB of
+    /// PCM: the RIFF size field overflowed ("attempt to add with overflow").
+    #[test]
+    fn huge_wav_header_saturates() {
+        let h = super::wav_header(u32::MAX, 2, u32::MAX, 24);
+        assert_eq!(&h[4..8], &u32::MAX.to_le_bytes());
+    }
+
     use super::*;
 
     #[test]

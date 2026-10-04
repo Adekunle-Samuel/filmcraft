@@ -224,9 +224,8 @@ fn parse(text: &str, report: &mut Report) -> Parsed {
                 p.max_ff = p.max_ff.max(tc.f);
                 p.any_df |= tc.df;
             }
-            let same = p.events.last().and_then(|e| e.lines.last()).is_some_and(|last| last.num == line.num);
-            if same {
-                p.events.last_mut().unwrap().lines.push(line);
+            if let Some(e) = p.events.last_mut().filter(|e| e.lines.last().is_some_and(|last| last.num == line.num)) {
+                e.lines.push(line);
             } else {
                 p.events.push(Event { lines: vec![line], df, ..Default::default() });
             }
@@ -944,8 +943,9 @@ pub(crate) fn export(p: &Project, seq_id: ItemId, opts: &ExportOptions, report: 
                 x.tc(x.rec_frames(l.rec.1)),
             ));
         }
-        if let Some((reel, fps, entry)) = &ev.m2 {
-            let l = ev.lines.last().unwrap();
+        if let Some((reel, fps, entry)) = &ev.m2
+            && let Some(l) = ev.lines.last()
+        {
             let sign = if *fps < 0.0 { "-" } else { "" };
             out.push_str(&format!("M2   {:<w$}       {sign}{:05.1}                {}\n", reel, fps.abs(), x.tc(src_tc(&x, l, *entry))));
         }
