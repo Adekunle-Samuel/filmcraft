@@ -81,6 +81,24 @@ driven one app can drive the others.
   2026-07-28 clients such as current Claude Code, list and read results carry the `ttlMs` and
   `cacheScope` hints that revision requires.
 
+### Long exports: progress and cancellation
+
+`command_run {"id": "file.exportMedia", "params": {…, "wait": true}}` in headless mode blocks until
+the file is written. It uses the MCP progress and cancellation utilities, so a client can show
+progress and stop it:
+
+- The export runs as the same background job `jobs.list` shows. The session is locked only for short
+  polls, so other requests (`ping`, `doc_inspect`, `jobs.list`, …) are answered while it encodes.
+- With `"_meta": {"progressToken": T}` on the `tools/call`, the server sends
+  `notifications/progress` `{progressToken: T, progress: <frames done>, total: <frames>, message:
+  <job status>}` at most every 100 ms while frames advance. Without a token it sends none.
+- `notifications/cancelled` for the request stops the encode at the next batch (`jobs.cancel`),
+  deletes the partial output (the movie, or the frames and caption sidecar written so far) and sends
+  no response, as the MCP cancellation utility asks.
+- Without `wait` the command returns `{job, path}` at once, as before: poll `jobs.list` and stop it
+  with `jobs.cancel`. Other exports (`file.exportFrame`, interchange formats, …) finish quickly and
+  ignore the token. Bridge mode forwards the call unchanged; the app shows its own progress.
+
 ## 2. Control channel
 
 `filmcraft --control 9876` (or `FILMCRAFT_CONTROL_PORT=9876`) listens on `127.0.0.1` only. Send one

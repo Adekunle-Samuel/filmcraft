@@ -9,6 +9,7 @@
 //!   and type in the live UI — every menu, panel, timeline gesture and keystroke.
 
 pub mod bridge;
+pub mod long_job;
 pub mod server;
 
 pub use bridge::BridgeClient;

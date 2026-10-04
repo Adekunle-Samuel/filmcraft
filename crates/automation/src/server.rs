@@ -564,7 +564,7 @@ impl ServerHandler for FilmcraftMcp {
             .with_instructions(INSTRUCTIONS.to_string())
     }
 
-    /// Strict arguments in front of the tool router.
+    /// Strict arguments and long exports in front of the tool router.
     async fn call_tool(
         &self,
         request: rmcp::model::CallToolRequestParams,
@@ -572,6 +572,17 @@ impl ServerHandler for FilmcraftMcp {
     ) -> Result<rmcp::model::CallToolResponse, McpError> {
         if let Some(m) = self.unknown_arg(&request.name, request.arguments.as_ref()) {
             return Err(McpError::invalid_params(m, None));
+        }
+        // A blocking export reports progress and can be cancelled (docs/agents.md § Long exports).
+        if request.name == "command_run"
+            && matches!(&*self.backend, Backend::Headless(_))
+            && let Some(a) = &request.arguments
+            && let Some(id) = a.get("id").and_then(Value::as_str)
+        {
+            let params = a.get("params").cloned().filter(Value::is_object).unwrap_or_else(|| json!({}));
+            if crate::long_job::is_long(id, &params) {
+                return Ok(self.run_long(id, params, &context).await.into());
+            }
         }
         let tcc = rmcp::handler::server::tool::ToolCallContext::new(self, request, context);
         self.tool_router.call(tcc).await
@@ -782,6 +793,83 @@ mod tests {
             let r = c.ask(json!({"jsonrpc":"2.0","id":id,"method":method,"params":params})).await;
             assert!(r["result"].is_object() && r["result"].get("resultType").is_none() && r["result"].get("ttlMs").is_none(), "{method}: {r}");
         }
+    }
+
+    /// docs/agents.md § Long exports: a blocking export reports `notifications/progress` for its
+    /// token (none without one), answers `ping` meanwhile, and `notifications/cancelled` stops
+    /// it, deletes the partial file and sends no response.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn export_progress_and_cancel() {
+        let dir = std::env::temp_dir().join(format!("filmcraft-mcp-progress-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut c = Client::start(demo());
+        c.init().await;
+        let export = |id: u64, name: &str, token: Option<Value>, seconds: f64| {
+            let path = dir.join(name).to_string_lossy().to_string();
+            let params = json!({"path": path, "format": "h264", "width": 640, "height": 360, "audio": false, "range": "custom", "startSeconds": 0, "endSeconds": seconds, "wait": true});
+            let mut call =
+                json!({"jsonrpc":"2.0","id":id,"method":"tools/call","params":{"name":"command_run","arguments":{"id":"file.exportMedia","params":params}}});
+            if let Some(t) = token {
+                call["params"]["_meta"] = json!({"progressToken": t});
+            }
+            call.to_string()
+        };
+        // no token: no notifications, the same response as before
+        c.send(&export(1, "quiet.mp4", None, 0.5)).await;
+        let m = c.next().await;
+        assert_eq!((m["id"].as_u64(), &m["result"]["isError"]), (Some(1), &json!(false)), "{m}");
+        // progress, strictly increasing, with a total; ping answered while the export runs
+        c.send(&export(2, "a.mp4", Some(json!("tok")), 1.0)).await;
+        let (mut last, mut notes, mut pinged, mut pong) = (-1.0, 0, false, false);
+        let done = loop {
+            let m = c.next().await;
+            if m["method"] == "notifications/progress" {
+                assert_eq!(m["params"]["progressToken"], "tok", "{m}");
+                let p = m["params"]["progress"].as_f64().unwrap();
+                assert!(p > last && m["params"]["total"].as_f64().unwrap() >= p, "{m}");
+                last = p;
+                notes += 1;
+                if !pinged {
+                    pinged = true;
+                    c.send(r#"{"jsonrpc":"2.0","id":3,"method":"ping"}"#).await;
+                }
+            } else if m["id"] == 3 {
+                pong = true;
+            } else if m["id"] == 2 {
+                break m;
+            }
+        };
+        assert_eq!(done["result"]["isError"], false, "{done}");
+        assert!(notes >= 2 && pong, "{notes} notifications, ping answered during the export: {pong}");
+        assert!(dir.join("a.mp4").exists());
+        // cancel after the first notification: no response, no partial file
+        c.send(&export(4, "b.mp4", Some(json!(7)), 8.0)).await;
+        loop {
+            let m = c.next().await;
+            assert_ne!(m["id"], 4, "finished before the cancel: {m}");
+            if m["method"] == "notifications/progress" {
+                break;
+            }
+        }
+        c.send(r#"{"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":4}}"#).await;
+        let t0 = std::time::Instant::now();
+        while dir.join("b.mp4").exists() || t0.elapsed() < std::time::Duration::from_millis(500) {
+            assert!(t0.elapsed().as_secs() < 30, "partial file still there");
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+        c.send(r#"{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"command_run","arguments":{"id":"jobs.list"}}}"#).await;
+        let m = loop {
+            let m = c.next().await;
+            assert_ne!(m["id"], 4, "no response for a cancelled request: {m}");
+            if m["id"] == 5 {
+                break m;
+            }
+        };
+        let jobs: Value = serde_json::from_str(m["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
+        let last = jobs.as_array().and_then(|a| a.last()).cloned().unwrap_or_default();
+        assert_eq!(last["result"]["error"], "cancelled", "{jobs}");
+        assert!(!dir.join("b.mp4").exists());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// A command that panicked used to poison the session lock, and every later call failed with
