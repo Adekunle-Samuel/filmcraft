@@ -201,3 +201,25 @@ fn new_empty_sequence_fits_its_first_clip() {
     let (x_in, x_out) = clip_span(&mut d, clip);
     assert!(((x_out - x_in) - (secs * 300.0 - 4.0)).abs() < 2.0, "zoom not kept: {} px for {secs} s at 300 px/s", x_out - x_in);
 }
+
+#[test]
+fn later_clips_keep_the_zoom_once_the_sequence_has_content() {
+    let mut d = Driver::demo();
+    let project = d.exec("project.inspect", json!({}));
+    let item = first_movie(&project).expect("a movie in the demo project");
+    d.exec("file.newSequence", json!({"name": "Grows"}));
+    d.frames(30);
+    d.exec("timeline.place", json!({"item": item, "track": "V1", "seconds": 0}));
+    d.frames(60);
+    // the editor zooms in; a second clip arriving must not re-fit (only the first clip into an
+    // empty sequence does)
+    d.ok("ui.set", json!({"timeline": {"pps": 300.0}}));
+    d.frames(30);
+    let end = d.exec("sequence.inspect", json!({}))["duration"].as_f64().expect("duration") / 254_016_000_000.0;
+    let clip = d.exec("timeline.place", json!({"item": item, "track": "V2", "seconds": end}))["clips"][0].as_u64().expect("clip");
+    d.frames(60);
+    let q = d.exec("sequence.inspect", json!({}));
+    let secs = q["video"][1]["items"][0]["duration"].as_f64().expect("duration") / 254_016_000_000.0;
+    let (x_in, x_out) = clip_span(&mut d, clip);
+    assert!(((x_out - x_in) - (secs * 300.0 - 4.0)).abs() < 2.0, "zoom changed: {} px for {secs} s at 300 px/s", x_out - x_in);
+}
