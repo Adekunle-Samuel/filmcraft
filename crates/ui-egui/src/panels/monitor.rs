@@ -36,7 +36,11 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, which: Which)
                 crate::dock::placeholder(ui, rect, &t, "(no sequences)");
                 return;
             };
-            let q = app.session.active_sequence().expect("active");
+            // A damaged project can name an active sequence that no longer exists.
+            let Some(q) = app.session.active_sequence() else {
+                crate::dock::placeholder(ui, rect, &t, "(no sequences)");
+                return;
+            };
             (
                 Target::Sequence(seq_id),
                 (q.settings.width, q.settings.height),

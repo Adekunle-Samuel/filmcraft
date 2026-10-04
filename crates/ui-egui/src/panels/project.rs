@@ -928,7 +928,7 @@ fn start_rename(app: &mut FilmcraftApp, params: &Value) -> Result<Value, String>
     let text = match (item, bin) {
         (Some(i), _) => app.session.project.item(ItemId(i)).map(|x| x.name.clone()).ok_or("no such item")?,
         (_, Some(b)) => app.session.project.root.find_bin(BinId(b)).map(|x| x.name.clone()).ok_or("no such bin")?,
-        _ => unreachable!(),
+        _ => return Err("rename needs an item or a bin".to_string()),
     };
     let panel = view_of(app, shown_inst(app)).prefix;
     app.ui.project_panel.rename = Some(Rename { item, bin, text, panel });

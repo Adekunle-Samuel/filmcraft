@@ -159,7 +159,11 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         empty_state(app, ui, rect);
         return;
     };
-    let seq = app.session.active_sequence().expect("active").clone();
+    // A damaged project can name an active sequence that no longer exists.
+    let Some(seq) = app.session.active_sequence().cloned() else {
+        empty_state(app, ui, rect);
+        return;
+    };
     let rate = seq.settings.frame_rate;
     let dt = ctx.input(|i| i.stable_dt).min(0.05) as f64;
     let header_w = app.ui.timeline.header_w;
@@ -289,7 +293,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let mut previews: HashMap<ClipId, (Tick, Tick, Option<TrackId>)> = HashMap::new(); // live drag preview: (start, dur, track)
     preview_drag(app, &seq, &layout, &mut previews);
     for r in &rows {
-        let tr = seq.track(r.track).expect("track");
+        let Some(tr) = seq.track(r.track) else { continue };
         let clip_rect = if r.kind == TrackKind::Video { vclip } else { aclip };
         let row = r.rect.intersect(clip_rect);
         if row.height() <= 0.0 {
@@ -779,7 +783,7 @@ fn draw_headers(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, rows:
     let mut actions: Vec<(String, Value)> = Vec::new();
     let mut vo_action = None;
     for r in rows {
-        let tr = seq.track(r.track).expect("track");
+        let Some(tr) = seq.track(r.track) else { continue };
         let clip_rect = if r.kind == TrackKind::Video { vclip } else { aclip };
         let hrect = Rect::from_min_max(pos2(rect.min.x, r.rect.min.y), pos2(rect.min.x + hw, r.rect.max.y));
         let visible = hrect.intersect(clip_rect);
@@ -1268,7 +1272,7 @@ pub fn hit(seq: &Sequence, layout: &Layout, pos: Pos2) -> Hit {
         return Hit::None;
     }
     let Some(row) = layout.row_at(pos.y) else { return Hit::None };
-    let tr = seq.track(row.track).expect("track");
+    let Some(tr) = seq.track(row.track) else { return Hit::None };
     for trn in &tr.transitions {
         let x0 = layout.x_of(trn.start);
         let x1 = layout.x_of(trn.end());
@@ -1504,7 +1508,7 @@ fn interact(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, layout: &
                 None
             }
             (Tool::Selection | Tool::Ripple | Tool::Rolling | Tool::RateStretch, Hit::Clip { clip, edge: Some(edge), track }) => {
-                let tr = seq.track(track).expect("track");
+                let Some(tr) = seq.track(track) else { return };
                 let sel_kind = if tool == Tool::Selection {
                     let (dist, neighbour) = edge_geometry(seq, layout, track, clip, edge, p.x);
                     selection_trim_kind(app.session.prefs.trim.selection_tool_roll_ripple, mods.command, mods.shift, dist, neighbour)
@@ -1514,7 +1518,7 @@ fn interact(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, layout: &
                 let mode = if tool == Tool::Ripple || sel_kind == "ripple" { filmcraft_edit::TrimMode::Ripple } else { filmcraft_edit::TrimMode::Regular };
                 if tool == Tool::Rolling || sel_kind == "roll" {
                     // roll the cut between this and its neighbour
-                    let it = tr.item(clip).expect("clip");
+                    let Some(it) = tr.item(clip) else { return };
                     let (l, r) = match edge {
                         filmcraft_edit::Edge::Out => (Some(clip), tr.items.iter().find(|x| x.start == it.end()).map(|x| x.id)),
                         filmcraft_edit::Edge::In => (tr.items.iter().find(|x| x.end() == it.start).map(|x| x.id), Some(clip)),
@@ -1615,29 +1619,25 @@ fn interact(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, layout: &
                 };
                 Some(Drag::Move { clips, grab_tick, start_track, offset, track_delta })
             }
-            Drag::Trim { clip, edge, mode, .. } => {
-                let (_, it) = seq.find_item(clip).expect("clip");
+            Drag::Trim { clip, edge, mode, .. } => seq.find_item(clip).map(|(_, it)| {
                 let base = if edge == filmcraft_edit::Edge::In { it.start } else { it.end() };
                 let target = snap(app, seq, layout, rate.snap_nearest(t_here), &[clip]);
                 let delta = target - base;
-                Some(Drag::Trim { clip, edge, mode, delta })
-            }
-            Drag::Remix { clip, .. } => {
-                let (_, it) = seq.find_item(clip).expect("clip");
+                Drag::Trim { clip, edge, mode, delta }
+            }),
+            Drag::Remix { clip, .. } => seq.find_item(clip).map(|(_, it)| {
                 let target = rate.snap_nearest(t_here).max(it.start + rate.frame_duration());
-                Some(Drag::Remix { clip, delta: target - it.end() })
-            }
-            Drag::Stretch { clip, edge, .. } => {
-                let (_, it) = seq.find_item(clip).expect("clip");
+                Drag::Remix { clip, delta: target - it.end() }
+            }),
+            Drag::Stretch { clip, edge, .. } => seq.find_item(clip).map(|(_, it)| {
                 let base = if edge == filmcraft_edit::Edge::In { it.start } else { it.end() };
                 let target = snap(app, seq, layout, rate.snap_nearest(t_here), &[clip]);
-                Some(Drag::Stretch { clip, edge, delta: target - base })
-            }
-            Drag::Roll { left, right, .. } => {
-                let (_, l) = seq.find_item(left).expect("clip");
+                Drag::Stretch { clip, edge, delta: target - base }
+            }),
+            Drag::Roll { left, right, .. } => seq.find_item(left).map(|(_, l)| {
                 let target = snap(app, seq, layout, rate.snap_nearest(t_here), &[left, right]);
-                Some(Drag::Roll { left, right, delta: target - l.end() })
-            }
+                Drag::Roll { left, right, delta: target - l.end() }
+            }),
             Drag::Slip { clip, .. } => {
                 let start = resp.interact_pointer_pos().map(|_| ()).and(ctx.input(|i| i.pointer.press_origin()));
                 let origin = start.map(|o| layout.tick_at(o.x)).unwrap_or(t_here);

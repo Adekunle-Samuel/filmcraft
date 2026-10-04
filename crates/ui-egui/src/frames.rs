@@ -636,7 +636,10 @@ impl FrameServer {
                     break;
                 }
                 let best = q.iter().enumerate().min_by_key(|(i, j)| (j.prio, *i)).map(|(i, _)| i).unwrap_or(0);
-                q.remove(best).expect("index valid")
+                match q.remove(best) {
+                    Some(job) => job,
+                    None => break,
+                }
             };
             if run_job(&self.shared, &job, &self.pool, &self.services, &self.previews) {
                 done += 1;
@@ -744,7 +747,9 @@ fn worker(
                 if !q.is_empty() {
                     // highest priority (lowest number) first; FIFO among equals
                     let best = q.iter().enumerate().min_by_key(|(i, j)| (j.prio, *i)).map(|(i, _)| i).unwrap_or(0);
-                    break q.remove(best).expect("index valid");
+                    if let Some(job) = q.remove(best) {
+                        break job;
+                    }
                 }
                 q = sh.cv.wait(q).unwrap_or_else(|e| e.into_inner());
             }
@@ -777,7 +782,7 @@ static INJECT_PANICS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU3
 fn run_job(sh: &Shared, job: &Job, pool: &Arc<MediaPool>, services: &Arc<dyn Services>, previews: &PreviewStore) -> bool {
     sh.in_flight.lock().unwrap_or_else(|e| e.into_inner()).push((job.key, job.cancel.clone(), job.prefetch));
     if INJECT_PANICS.load(Ordering::Relaxed) > 0 && INJECT_PANICS.fetch_sub(1, Ordering::Relaxed) > 0 {
-        panic!("injected frame-job fault");
+        crate::crash::injected_fault("injected frame-job fault");
     }
     let profiling = sh.profiling.load(Ordering::Relaxed);
     let (started, cpu0) = (Instant::now(), if profiling { thread_cpu_time().unwrap_or_default() } else { Duration::ZERO });

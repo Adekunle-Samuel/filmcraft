@@ -4,6 +4,8 @@
 //! owns only presentation state ([`state::UiState`]), GPU textures, the playback clock and the
 //! control-channel handlers. Swap it for another toolkit without touching the engine.
 
+#![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable))]
+
 pub mod automation;
 pub mod brand;
 pub mod control;
@@ -1003,7 +1005,7 @@ impl FilmcraftApp {
 
     fn frame(&mut self, ui: &mut egui::Ui) {
         if std::mem::take(&mut self.panic_next_frame) {
-            panic!("injected UI fault");
+            crash::injected_fault("injected UI fault");
         }
         let ctx = ui.ctx().clone();
         self.auto.begin_frame();

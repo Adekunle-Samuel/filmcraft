@@ -828,7 +828,7 @@ const RANGES: [(&str, &str); 4] = [("entire", "Entire Source"), ("inOut", "Sourc
 fn preview_column(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, seq_id: filmcraft_engine::project::ItemId) {
     let t = app.tokens;
     let mut reg = Reg::default();
-    let q = app.session.active_sequence().expect("seq").clone();
+    let Some(q) = app.session.active_sequence().cloned() else { return };
     let rate = q.settings.frame_rate;
     // preview (aspect of the output frame)
     let r = app.ui.export.settings.resolve(q.settings.width, q.settings.height, rate, q.settings.sample_rate);
