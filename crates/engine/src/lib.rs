@@ -63,6 +63,12 @@ pub use filmcraft_render as render;
 pub use filmcraft_time as time;
 pub use media_pool::MediaPool;
 
+/// The OS temp folder; `/tmp` on wasm32, where `std::env::temp_dir()` panics ("no filesystem on
+/// this platform"). Use this instead of `std::env::temp_dir()` in any code the web build runs.
+pub fn temp_dir() -> std::path::PathBuf {
+    if cfg!(target_arch = "wasm32") { std::path::PathBuf::from("/tmp") } else { std::env::temp_dir() }
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum EngineError {
     #[error("unknown command `{0}`")]

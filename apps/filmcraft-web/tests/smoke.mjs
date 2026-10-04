@@ -6,8 +6,9 @@
 //
 // Steps: load (timing), demo project, play 2 s (frames shown/dropped), import the media through
 // `filmcraft.importUrl`, put it on a new sequence, export H.264 (download), screenshots of each
-// step. `--media` must be reachable from the page (copy it next to index.html). Prints a JSON
-// report; exits non-zero on failure.
+// step; then every mode and a tiny window. `--media` must be reachable from the page (copy it next
+// to index.html). Prints a JSON report; exits non-zero on failure, including any Rust panic or
+// uncaught exception in the console.
 import { spawn } from "node:child_process";
 import { mkdirSync, writeFileSync, readdirSync, statSync, mkdtempSync } from "node:fs";
 import { join } from "node:path";
@@ -148,6 +149,24 @@ try {
   await sleep(1000);
   report.steps.export.downloads = readdirSync(downloads).filter((f) => !f.endsWith(".crdownload")).map((f) => ({ f, bytes: statSync(join(downloads, f)).size }));
   report.steps.export.screenshot = await shot("04-exported");
+
+  // every top-level mode and a tiny window: these used to panic (temp_dir in Export mode, a dock
+  // clamp below 40 points) and freeze the canvas
+  for (const mode of ["import", "export", "edit"]) {
+    await js(`filmcraft.request('ui.set', {mode: ${JSON.stringify(mode)}})`);
+    await sleep(500);
+  }
+  await send("Emulation.setDeviceMetricsOverride", { width: 120, height: 80, deviceScaleFactor: 1, mobile: false });
+  await sleep(500);
+  await send("Emulation.setDeviceMetricsOverride", { width: 1600, height: 1000, deviceScaleFactor: 2, mobile: false });
+  await sleep(500);
+  await send("Emulation.setDeviceMetricsOverride", { width: 1600, height: 1000, deviceScaleFactor: 1, mobile: false });
+  report.steps.modes = { screenshot: await shot("05-modes") };
+  // still alive? (a panicked app never answers)
+  await Promise.race([js("filmcraft.inspect().then(() => true)"), sleep(5000).then(() => { throw new Error("app stopped answering"); })]);
+  const fatal = logs.filter((l) => /panicked at|RuntimeError|EXCEPTION/.test(l));
+  if (fatal.length) throw new Error("panic / uncaught exception:\n" + fatal.join("\n").slice(0, 4000));
+  if (await js("window.filmcraftLoad.fatal || null")) throw new Error("fatal overlay shown");
   report.ok = true;
 } catch (e) {
   report.ok = false;

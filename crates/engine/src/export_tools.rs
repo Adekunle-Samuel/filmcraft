@@ -281,11 +281,15 @@ pub fn default_export_dir(s: &Session) -> PathBuf {
     if let Some(d) = s.path.as_deref().and_then(|p| Path::new(p).parent()).filter(|d| !d.as_os_str().is_empty()) {
         return d.to_path_buf();
     }
+    if cfg!(target_arch = "wasm32") {
+        // the web build's virtual file table: written files are offered as downloads
+        return PathBuf::from("/exports");
+    }
     if let Ok(h) = std::env::var("HOME").or_else(|_| std::env::var("USERPROFILE")) {
         let movies = Path::new(&h).join("Movies");
         return if movies.is_dir() { movies } else { PathBuf::from(h) };
     }
-    std::env::temp_dir()
+    crate::temp_dir()
 }
 
 fn file_safe(n: &str) -> String {
@@ -672,9 +676,9 @@ fn queue_cancel(s: &mut Session, p: &Value) -> Result<Value> {
             cancel_item(s, i);
         }
     }
-    if bool_p(p, "wait").unwrap_or(false) {
-        // wait for a cancelled encode to stop
-        let t0 = std::time::Instant::now();
+    // wait for a cancelled encode to stop (there is no encode thread, clock or sleep on wasm32)
+    if bool_p(p, "wait").unwrap_or(false) && !cfg!(target_arch = "wasm32") {
+        let t0 = web_time::Instant::now();
         while s.export_queue.items.iter().any(|i| i.status == QueueStatus::Encoding) && t0.elapsed() < std::time::Duration::from_secs(60) {
             let running = s.export_queue.running;
             s.export_queue.running = false;

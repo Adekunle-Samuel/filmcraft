@@ -103,6 +103,8 @@ struct Shared {
 pub struct FrameStats {
     /// Jobs finished (including cancelled ones).
     pub jobs: u64,
+    /// Jobs whose decode/render panicked (the worker survives; the frame is not cached).
+    pub failed: u64,
     pub cancelled: u64,
     /// Jobs served from a render preview.
     pub preview: u64,
@@ -136,7 +138,7 @@ impl FrameStats {
         let n = self.jobs.max(1) as f64;
         let req = self.request_hits + self.request_misses;
         serde_json::json!({
-            "jobs": self.jobs, "cancelled": self.cancelled, "previewJobs": self.preview, "prefetchJobs": self.prefetch,
+            "jobs": self.jobs, "cancelled": self.cancelled, "failedJobs": self.failed, "previewJobs": self.preview, "prefetchJobs": self.prefetch,
             "requestHitRate": if req == 0 { 0.0 } else { self.request_hits as f64 / req as f64 },
             "decodeMs": {"mean": self.source_ms / n, "p50": pct(&|r| r.0, 0.5), "p95": pct(&|r| r.0, 0.95)},
             "renderMs": {"mean": self.render_ms / n, "p50": pct(&|r| r.1, 0.5), "p95": pct(&|r| r.1, 0.95)},
@@ -747,7 +749,15 @@ fn worker(
                 q = sh.cv.wait(q).unwrap_or_else(|e| e.into_inner());
             }
         };
-        run_job(&sh, &job, &pool, &services, &previews);
+        // A panic while decoding or rendering one frame (bad media, a decoder bug) must not take
+        // the worker down with it: a dead worker leaves its frame "in flight" forever and the
+        // monitors blank. Log it, forget the job and keep serving.
+        let ran = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run_job(&sh, &job, &pool, &services, &previews)));
+        if ran.is_err() {
+            sh.in_flight.lock().unwrap_or_else(|e| e.into_inner()).retain(|(k, c, _)| !(*k == job.key && Arc::ptr_eq(c, &job.cancel)));
+            sh.stats.lock().unwrap_or_else(|e| e.into_inner()).failed += 1;
+            log::error!("frame job {:?} panicked; the worker continues", job.key);
+        }
         if let Some(f) = repaint.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
             f();
         }
@@ -756,8 +766,19 @@ fn worker(
 
 /// Run one job and cache its result. Returns false when the job's media was still loading (an
 /// asynchronous web read): nothing was cached and the job should be retried.
+/// Fault injection for robustness tests (and agents checking recovery): the next `n` frame jobs
+/// panic as if a decoder had hit a bug.
+#[doc(hidden)]
+pub fn inject_job_panics(n: u32) {
+    INJECT_PANICS.store(n, Ordering::Relaxed);
+}
+static INJECT_PANICS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
 fn run_job(sh: &Shared, job: &Job, pool: &Arc<MediaPool>, services: &Arc<dyn Services>, previews: &PreviewStore) -> bool {
     sh.in_flight.lock().unwrap_or_else(|e| e.into_inner()).push((job.key, job.cancel.clone(), job.prefetch));
+    if INJECT_PANICS.load(Ordering::Relaxed) > 0 && INJECT_PANICS.fetch_sub(1, Ordering::Relaxed) > 0 {
+        panic!("injected frame-job fault");
+    }
     let profiling = sh.profiling.load(Ordering::Relaxed);
     let (started, cpu0) = (Instant::now(), if profiling { thread_cpu_time().unwrap_or_default() } else { Duration::ZERO });
     SOURCE_TIME.with(|s| s.set((Duration::ZERO, Duration::ZERO)));

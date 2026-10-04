@@ -6,18 +6,19 @@ static site in `filmcraft-web-<version>/`:
 | File | What it is |
 |---|---|
 | `index.html` | The page. It loads everything through relative URLs. |
-| `filmcraft-web-<hash>.js` | wasm-bindgen glue (generated, ES module) |
-| `filmcraft-web-<hash>_bg.wasm` | The app, about 13 MB, or 5 MB with compression |
+| `filmcraft_web.js` | wasm-bindgen glue (generated, ES module) |
+| `filmcraft_web_bg.wasm` | The app, about 13 MB, or 5 MB with compression |
 | `_headers`, `.htaccess` | Sample header rules for Netlify/Cloudflare Pages and Apache |
 
 There is no server-side code. Upload the folder's contents anywhere that serves static files.
 
 ## Any path works
 
-All URLs in `index.html` are relative (`public_url = "./"` in `apps/filmcraft-web/Trunk.toml`),
-so the site works at a domain root (`https://example.com/`), under a prefix
-(`https://example.com/tools/filmcraft/`) and from a CDN bucket. The asset names carry a content
-hash, so they can be cached forever. Only `index.html` needs revalidation.
+All URLs in `index.html` are relative, so the site works at a domain root
+(`https://example.com/`), under a prefix (`https://example.com/tools/filmcraft/`) and from a CDN
+bucket. The assets carry a content
+hash in their URL (`index.html` loads them with `?v=<build hash>`), so they can be cached
+forever. Only `index.html` needs revalidation.
 
 ## Required server settings
 
@@ -27,8 +28,9 @@ hash, so they can be cached forever. Only `index.html` needs revalidation.
 - **Compression:** turn on gzip or Brotli for `.wasm`, `.js` and `.html`. That takes the
   download from about 13 MB to about 5 MB. You can also precompress (`brotli -k *.wasm`) and let
   the server send `Content-Encoding: br`.
-- **Caching:** `Cache-Control: public, max-age=31536000, immutable` on the hashed `.wasm` and
-  `.js` files, and `no-cache` on `index.html`.
+- **Caching:** `Cache-Control: public, max-age=31536000, immutable` on the `.wasm` and `.js`
+  files (their URLs carry the build hash), and `no-cache` on `index.html`. `index.html` must not
+  be cached, or a browser can pair an old page with new files.
 - **HTTPS:** WebGPU (and the clipboard) only work in a secure context, which means `https://`
   or `http://localhost`. Over plain HTTP elsewhere, the app falls back to WebGL2.
 - **No special isolation headers:** FilmCraft doesn't use `SharedArrayBuffer`, so it doesn't
@@ -81,7 +83,7 @@ FilmCraft renders with wgpu. It uses **WebGPU** when the browser has it and fall
 | Flag | Effect |
 |---|---|
 | *(none)* | WebGPU if available, otherwise WebGL2 |
-| `?webgl` | Force the WebGL2 backend (useful when a WebGPU driver misbehaves) |
+| `?webgl` | Force the WebGL2 backend (useful when a WebGPU driver misbehaves). The page reloads with it by itself when WebGPU is present but fails to start |
 | `?cpu` | Force the CPU canvas path (slowest, most compatible) |
 
 For example: `<iframe src="https://example.com/filmcraft/?webgl" ...>`.
