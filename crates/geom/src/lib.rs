@@ -1,5 +1,7 @@
 //! 2D geometry for FilmCraft: vectors, rectangles and affine transforms (Motion effect math).
 
+#![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable))]
+
 use serde::{Deserialize, Serialize};
 use std::ops::{Add, Mul, Sub};
 

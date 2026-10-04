@@ -289,20 +289,25 @@ impl ByteReader for BlobReader {
             }
             return Err(filmcraft_media::pending::would_block());
         }
-        FS.with(|fs| {
+        let complete = FS.with(|fs| {
             let mut fs = fs.borrow_mut();
             fs.clock += 1;
             let t = fs.clock;
             let mut pos = 0usize;
             for c in c0..=c1 {
-                let (d, used) = fs.chunks.get_mut(&(self.id, c)).expect("checked above");
+                // Present (checked above); evicted in between would be a bug, reported as an error.
+                let Some((d, used)) = fs.chunks.get_mut(&(self.id, c)) else { return false };
                 *used = t;
                 let a = if c == c0 { (offset - c * CHUNK) as usize } else { 0 };
                 let n = (d.len() - a).min(buf.len() - pos);
                 buf[pos..pos + n].copy_from_slice(&d[a..a + n]);
                 pos += n;
             }
+            true
         });
+        if !complete {
+            return Err(filmcraft_media::pending::would_block());
+        }
         // read-ahead for sequential access
         for c in c1 + 1..=(c1 + READ_AHEAD).min(last) {
             request(self.id, c);

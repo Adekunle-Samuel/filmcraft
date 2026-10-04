@@ -31,6 +31,8 @@
 //! # Ok::<(), filmcraft_aac::Error>(())
 //! ```
 
+#![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable))]
+
 mod config;
 mod decoder;
 mod encoder;

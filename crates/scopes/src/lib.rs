@@ -20,6 +20,8 @@
 //! `[-0.1, 1.1]` without (values outside are dropped). With 256 rows over `[0, 1]`, an 8-bit code
 //! value `c` lands exactly on row `c`.
 
+#![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable))]
+
 pub mod paint;
 pub mod summary;
 #[cfg(test)]

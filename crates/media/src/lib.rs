@@ -7,6 +7,8 @@
 //!
 //! Time passed to a source is **media time** (0 = first frame of the media), in ticks.
 
+#![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable))]
+
 pub mod cache;
 pub mod cancel;
 pub mod digits;
