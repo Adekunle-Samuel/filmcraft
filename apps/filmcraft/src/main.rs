@@ -68,6 +68,9 @@ fn main() -> eframe::Result {
             _ => files.push(a),
         }
     }
+    // Panics anywhere go to <data dir>/Logs/crash-<day>.log with a backtrace; the UI pass and
+    // frame workers catch them and keep running (see filmcraft_ui_egui::crash).
+    filmcraft_ui_egui::crash::install(data_dir.clone().or_else(default_data_dir).map(|d| d.join("Logs")));
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("FilmCraft")
@@ -85,7 +88,7 @@ fn main() -> eframe::Result {
         event_loop_builder: agent_event_loop(control_port.is_some()),
         ..Default::default()
     };
-    eframe::run_native(
+    let started = eframe::run_native(
         "FilmCraft",
         options,
         Box::new(move |cc| {
@@ -178,7 +181,16 @@ fn main() -> eframe::Result {
             }
             Ok(Box::new(app))
         }),
-    )
+    );
+    // The window could not be created (no usable GPU / graphics driver, no display): say so
+    // instead of exiting silently, and keep the reason in the crash log.
+    if let Err(e) = &started {
+        let msg = format!("FilmCraft could not start its window: {e}\n\nUpdating the graphics driver usually fixes this.");
+        eprintln!("filmcraft: {msg}");
+        filmcraft_ui_egui::crash::record(&msg);
+        let _ = rfd::MessageDialog::new().set_title("FilmCraft").set_description(&msg).set_level(rfd::MessageLevel::Error).show();
+    }
+    started
 }
 
 /// Open a file in its default application, or reveal it in the file manager (Edit Original,

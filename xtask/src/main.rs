@@ -304,10 +304,24 @@ fn web(args: &[String]) -> Result<(), String> {
             .arg(&opt))?;
         std::fs::rename(&opt, &bg).map_err(|e| e.to_string())?;
     }
+    // index.html loads the glue and the wasm with `?v=<hash of this build>`: hosts cache them as
+    // immutable (packaging/web/_headers), so a new build must change their URLs.
+    let build = {
+        let mut h: u64 = 0xcbf2_9ce4_8422_2325; // FNV-1a
+        for f in ["filmcraft_web.js", "filmcraft_web_bg.wasm"] {
+            for b in std::fs::read(dist.join(f)).map_err(|e| format!("{f}: {e}"))? {
+                h = (h ^ b as u64).wrapping_mul(0x100_0000_01b3);
+            }
+        }
+        format!("{h:016x}")
+    };
     let web = std::path::Path::new("apps/filmcraft-web/web");
     for e in std::fs::read_dir(web).map_err(|e| e.to_string())?.flatten() {
         let name = e.file_name().to_string_lossy().to_string();
-        if !name.ends_with(".attribution") {
+        if name == "index.html" {
+            let html = std::fs::read_to_string(e.path()).map_err(|e| format!("{name}: {e}"))?;
+            std::fs::write(dist.join(&name), html.replace("__FC_BUILD__", &build)).map_err(|e| format!("{name}: {e}"))?;
+        } else if !name.ends_with(".attribution") {
             std::fs::copy(e.path(), dist.join(&name)).map_err(|e| format!("{name}: {e}"))?;
         }
     }

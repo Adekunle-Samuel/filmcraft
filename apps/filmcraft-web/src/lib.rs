@@ -135,7 +135,14 @@ pub async fn start(canvas_id: String) -> Result<(), JsValue> {
     import::install_drop_handlers()?;
 
     let demo = !query_flag("empty");
-    let web_options = eframe::WebOptions::default();
+    let mut web_options = eframe::WebOptions::default();
+    // `?webgl`: WebGL2 only. The page reloads with it when starting on WebGPU fails (an adapter
+    // whose device can't be created, a driver the browser rejects…); see `index.html`.
+    if query_flag("webgl")
+        && let eframe::egui_wgpu::WgpuSetup::CreateNew(c) = &mut web_options.wgpu_options.wgpu_setup
+    {
+        c.instance_descriptor.backends = eframe::wgpu::Backends::GL;
+    }
     let runner = eframe::WebRunner::new();
     runner
         .start(

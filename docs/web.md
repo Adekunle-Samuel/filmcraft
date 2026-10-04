@@ -29,8 +29,15 @@ unaffected; `cargo xtask wasm` (part of `cargo xtask ci`) checks it, with `filmc
 `wasm32-unknown-unknown`.
 
 URL flags: `?empty` (no demo project), `?norecover` (don't reopen the auto-saved project),
-`?fresh` (also don't restore media kept in OPFS), `?cpu` (CPU compositor), `?nowebcodecs`
-(decode with FilmCraft's own decoders only).
+`?fresh` (also don't restore media kept in OPFS), `?cpu` (CPU compositor), `?webgl` (WebGL2 only;
+the page reloads with it when WebGPU is present but fails to start), `?nowebcodecs` (decode with
+FilmCraft's own decoders only).
+
+If the app panics after start-up (or runs out of memory), `index.html` shows a "FilmCraft stopped
+working" overlay with the panic message and a Reload button instead of a frozen canvas, and sets
+`window.filmcraftLoad.fatal`. Code the web build runs must not call `std::env::temp_dir`,
+`std::time::{Instant, SystemTime}::now`, `std::thread::sleep`/`spawn` or `std::process::id`: they
+panic on `wasm32-unknown-unknown` (use `filmcraft_engine::temp_dir`, `web_time`, or a `cfg`).
 
 ## How the desktop pieces map to the browser
 

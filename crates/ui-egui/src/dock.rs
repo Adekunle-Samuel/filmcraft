@@ -335,6 +335,20 @@ pub enum DockAction {
     PanelMenu(PanelKind, egui::Pos2),
 }
 
+/// Size of a split's first child in `avail` points: the requested size, keeping both children at
+/// least 20 points when there is room (and never more than `avail`). Must not panic for any size:
+/// a tiny window (or browser canvas) gives splits less than 40 points.
+fn split_first(size: SplitSize, avail: f32) -> f32 {
+    let want = match size {
+        SplitSize::Ratio(r) => avail * r,
+        SplitSize::FixedA(px) => px,
+        SplitSize::FixedB(px) => avail - px,
+    };
+    let lo = 20.0_f32.min(avail * 0.5);
+    let hi = (avail - 20.0).max(lo);
+    want.clamp(lo, hi)
+}
+
 /// Lay out the tree into group rects (with `gap` gutters) and handle gutter dragging.
 pub fn layout(ui: &mut egui::Ui, node: &mut DockNode, rect: Rect, t: &Tokens, path: &str, out: &mut Vec<Group>, reg: &mut crate::automation::Registry) {
     match node {
@@ -347,12 +361,7 @@ pub fn layout(ui: &mut egui::Ui, node: &mut DockNode, rect: Rect, t: &Tokens, pa
             let g = t.gap;
             let total = if *vertical { rect.height() } else { rect.width() };
             let avail = (total - g).max(0.0);
-            let first = match *size {
-                SplitSize::Ratio(r) => avail * r,
-                SplitSize::FixedA(px) => px.min(avail - 20.0),
-                SplitSize::FixedB(px) => avail - px.min(avail - 20.0),
-            }
-            .clamp(20.0_f32.min(avail), (avail - 20.0).max(0.0));
+            let first = split_first(*size, avail);
             let (ra, gutter, rb) = if *vertical {
                 (
                     Rect::from_min_max(rect.min, pos2(rect.max.x, rect.min.y + first)),
@@ -479,6 +488,26 @@ pub fn placeholder(ui: &mut egui::Ui, rect: Rect, t: &Tokens, text: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn split_first_never_panics_on_tiny_areas() {
+        for avail in [0.0, 1.0, 15.0, 20.0, 35.0, 39.9, 40.0, 100.0, 2000.0] {
+            for size in [
+                SplitSize::Ratio(0.0),
+                SplitSize::Ratio(0.5),
+                SplitSize::Ratio(1.0),
+                SplitSize::FixedA(300.0),
+                SplitSize::FixedB(300.0),
+                SplitSize::FixedA(0.0),
+            ] {
+                let f = split_first(size, avail);
+                assert!((0.0..=avail).contains(&f), "{size:?} in {avail}: {f}");
+            }
+        }
+        assert_eq!(split_first(SplitSize::FixedA(300.0), 1000.0), 300.0);
+        assert_eq!(split_first(SplitSize::FixedB(300.0), 1000.0), 700.0);
+        assert_eq!(split_first(SplitSize::Ratio(0.0), 1000.0), 20.0);
+    }
 
     #[test]
     fn workspaces_contain_core_panels() {

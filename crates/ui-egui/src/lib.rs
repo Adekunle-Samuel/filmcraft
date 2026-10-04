@@ -7,6 +7,7 @@
 pub mod automation;
 pub mod brand;
 pub mod control;
+pub mod crash;
 pub mod dock;
 pub mod frames;
 pub mod header;
@@ -157,6 +158,11 @@ pub struct FilmcraftApp {
     input_waiters: Vec<Sender<Value>>,
     next_token: u64,
     styled: bool,
+    /// A panic in the UI pass, shown in an error window until dismissed (see [`crash`]).
+    pub ui_error: Option<String>,
+    /// Fault injection for robustness tests: the next UI pass panics.
+    #[doc(hidden)]
+    pub panic_next_frame: bool,
     fonts_ready: bool,
     pub integrated_titlebar: bool,
     pub last_timeline_width: f32,
@@ -187,26 +193,107 @@ pub struct GpuState {
     pub size: (u32, u32),
     /// Composite time of the last frame (ms).
     pub last_ms: f32,
+    /// Set by the device's uncaptured-error handler: the GPU path failed (validation, lost
+    /// device, out of memory). The app then drops it and composites on the CPU.
+    pub broken: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    /// Largest texture side the device accepts.
+    pub max_texture: u32,
+}
+
+/// Largest texture side a plan needs on the GPU (output and every layer).
+fn plan_side(plan: &filmcraft_render::plan::FramePlan) -> usize {
+    use filmcraft_render::plan::FramePlan;
+    match plan {
+        FramePlan::Layers { width, height, layers } => {
+            layers.iter().map(|l| l.frame.width.max(l.frame.height) as usize).fold((*width).max(*height), usize::max)
+        }
+        FramePlan::Image(img) => img.w.max(img.h),
+    }
+}
+
+/// Whether the GPU compositor can run on this adapter: it renders and blends Rgba16Float
+/// targets and uploads whole frames as textures. Older or OpenGL-backed GPUs (some Intel Macs,
+/// VMs, Linux without Vulkan, WebGL) can't; those use the CPU compositor, which renders the same
+/// frames. Returns the reason when unsupported.
+pub fn gpu_compositor_unsupported(adapter: &eframe::wgpu::Adapter) -> Option<String> {
+    use eframe::wgpu::{TextureFormat, TextureFormatFeatureFlags as F, TextureUsages as U};
+    let f = adapter.get_texture_format_features(TextureFormat::Rgba16Float);
+    if !f.allowed_usages.contains(U::RENDER_ATTACHMENT | U::TEXTURE_BINDING) {
+        return Some("Rgba16Float is not renderable".into());
+    }
+    if !f.flags.contains(F::BLENDABLE | F::FILTERABLE) {
+        return Some("Rgba16Float is not blendable/filterable".into());
+    }
+    let max = adapter.limits().max_texture_dimension_2d;
+    if max < 4096 {
+        return Some(format!("max texture size {max} < 4096"));
+    }
+    None
 }
 
 impl FilmcraftApp {
     /// Enable the GPU compositor on the eframe wgpu device.
     pub fn set_wgpu(&mut self, rs: eframe::egui_wgpu::RenderState) {
-        let compositor = filmcraft_gpu::GpuCompositor::new(&rs.device, &rs.queue);
-        self.gpu = Some(GpuState { render_state: rs, compositor, texture: None, last_key: None, size: (0, 0), last_ms: 0.0 });
+        if let Some(why) = gpu_compositor_unsupported(&rs.adapter) {
+            log::warn!("GPU compositor disabled ({why}); compositing on the CPU");
+            return;
+        }
+        // wgpu's default reaction to a validation error or lost device is to panic, which closed
+        // the app (or left the monitors blank) on GPUs the compositor doesn't suit. Log instead and
+        // fall back to the CPU compositor.
+        let broken = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let flag = broken.clone();
+        rs.device.on_uncaptured_error(std::sync::Arc::new(move |e: eframe::wgpu::Error| {
+            log::error!("GPU error, switching to the CPU compositor: {e}");
+            flag.store(true, std::sync::atomic::Ordering::Relaxed);
+        }));
+        let made = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| filmcraft_gpu::GpuCompositor::new(&rs.device, &rs.queue)));
+        match made {
+            Ok(compositor) if !broken.load(std::sync::atomic::Ordering::Relaxed) => {
+                let max_texture = rs.device.limits().max_texture_dimension_2d;
+                self.gpu = Some(GpuState { render_state: rs, compositor, texture: None, last_key: None, size: (0, 0), last_ms: 0.0, broken, max_texture });
+            }
+            _ => log::error!("GPU compositor failed to initialise; compositing on the CPU"),
+        }
+    }
+
+    /// Drop the GPU compositor after a GPU error; the monitors composite on the CPU from then on.
+    fn disable_gpu(&mut self, why: &str) {
+        log::error!("GPU compositor disabled: {why}");
+        if let Some(g) = self.gpu.take()
+            && let Some(id) = g.texture
+        {
+            g.render_state.renderer.write().free_texture(&id);
+        }
+        self.ui.status = "Graphics problem: switched to software compositing".into();
     }
 
     /// Composite a plan on the GPU and return the egui texture showing it.
     pub fn gpu_present(&mut self, key: FrameKey, plan: &frames::GpuPlan) -> Option<(egui::TextureId, (u32, u32))> {
+        if self.gpu.as_ref()?.broken.load(std::sync::atomic::Ordering::Relaxed) {
+            self.disable_gpu("device error");
+            return None;
+        }
         let g = self.gpu.as_mut()?;
         if g.last_key == Some(key)
             && let Some(t) = g.texture
         {
             return Some((t, g.size));
         }
+        if plan_side(&plan.plan) > g.max_texture as usize {
+            self.disable_gpu("frame larger than the GPU's maximum texture size");
+            return None;
+        }
         let t0 = web_time::Instant::now();
-        let (view, size) = g.compositor.composite_prepared(&plan.plan, Some(&plan.prepared));
-        let view = view.clone();
+        let ran = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let (view, size) = g.compositor.composite_prepared(&plan.plan, Some(&plan.prepared));
+            (view.clone(), size)
+        }));
+        let Ok((view, size)) = ran else {
+            self.disable_gpu("compositor panicked");
+            return None;
+        };
+        let g = self.gpu.as_mut()?;
         g.last_ms = t0.elapsed().as_secs_f32() * 1000.0;
         let mut renderer = g.render_state.renderer.write();
         let id = match g.texture {
@@ -252,6 +339,8 @@ impl FilmcraftApp {
             input_waiters: Vec::new(),
             next_token: 1,
             styled: false,
+            ui_error: None,
+            panic_next_frame: false,
             fonts_ready: false,
             integrated_titlebar: false,
             last_timeline_width: 1000.0,
@@ -899,6 +988,9 @@ impl FilmcraftApp {
     // ---------------------------------------------------------------- frame
 
     fn frame(&mut self, ui: &mut egui::Ui) {
+        if std::mem::take(&mut self.panic_next_frame) {
+            panic!("injected UI fault");
+        }
         let ctx = ui.ctx().clone();
         self.auto.begin_frame();
         self.frames.set_context(&ctx);
@@ -1074,6 +1166,38 @@ impl FilmcraftApp {
     }
 }
 
+impl FilmcraftApp {
+    /// The "FilmCraft hit an error" window after a caught UI panic. Automation ids:
+    /// `error.dismiss`, `error.save`.
+    fn error_window(&mut self, ctx: &egui::Context) {
+        let Some(msg) = self.ui_error.clone() else { return };
+        let mut close = false;
+        egui::Window::new("FilmCraft hit an error").collapsible(false).resizable(false).anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0]).show(ctx, |ui| {
+            ui.set_max_width(460.0);
+            ui.label("Something went wrong while drawing the window. Your project is still open; save it to be safe.");
+            ui.add_space(6.0);
+            ui.label(egui::RichText::new(&msg).monospace().small());
+            if let Some(p) = crash::log_path() {
+                ui.label(egui::RichText::new(format!("Details: {}", p.display())).small());
+            }
+            ui.add_space(8.0);
+            ui.horizontal(|ui| {
+                let s = ui.button("Save Project");
+                self.auto.add("error.save", s.rect, "Save Project");
+                if s.clicked() {
+                    let _ = crate::menus::invoke(self, ctx, "file.save", serde_json::json!({}));
+                }
+                let d = ui.button("Continue");
+                self.auto.add("error.dismiss", d.rect, "Continue");
+                close |= d.clicked();
+            });
+        });
+        if close {
+            self.ui_error = None;
+        }
+    }
+}
+
 impl eframe::App for FilmcraftApp {
     fn raw_input_hook(&mut self, _ctx: &egui::Context, raw_input: &mut egui::RawInput) {
         if !self.synthetic.is_empty() {
@@ -1142,7 +1266,13 @@ impl eframe::App for FilmcraftApp {
         // No frame worker threads on the web: render queued frames here, within a time budget
         // that leaves room for the UI pass (a no-op where workers run).
         self.frames.pump(std::time::Duration::from_millis(if self.playback.playing { 24 } else { 40 }));
-        self.frame(ui);
+        // A panic in one panel must not close the app (losing unsaved work) or leave a blank
+        // window: catch it, keep the session, and say what happened.
+        if std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| self.frame(ui))).is_err() {
+            self.ui_error = Some(crash::take_last().unwrap_or_else(|| "unknown error".into()));
+            self.playback.playing = false;
+        }
+        self.error_window(ui.ctx());
         let ctx = ui.ctx().clone();
         self.last_ui_time = ctx.input(|i| i.time);
         if !self.synthetic.is_empty() {
@@ -1156,5 +1286,23 @@ impl eframe::App for FilmcraftApp {
         if self.frames.queue_len() > 0 {
             ctx.request_repaint_after(std::time::Duration::from_millis(16));
         }
+    }
+}
+
+#[cfg(test)]
+mod gpu_fallback_tests {
+    use filmcraft_render::plan::{FramePlan, PlanLayer};
+
+    #[test]
+    fn plan_side_covers_output_and_every_layer() {
+        let frame = |w: u32, h: u32| std::sync::Arc::new(filmcraft_frame::VideoFrame::rgba_f32(w, h, vec![0.0; (w * h * 4) as usize]));
+        let layer = |w, h| PlanLayer { frame: frame(w, h), matrix: filmcraft_geom::Affine::IDENTITY, opacity: 1.0 };
+        // a 4K source in an HD sequence still needs a 3840-wide texture on the GPU
+        let p = FramePlan::Layers { width: 1920, height: 1080, layers: vec![layer(64, 64), layer(3840, 2160)] };
+        assert_eq!(super::plan_side(&p), 3840);
+        let p = FramePlan::Layers { width: 1920, height: 1080, layers: vec![] };
+        assert_eq!(super::plan_side(&p), 1920);
+        let p = FramePlan::Image(filmcraft_render::Image::new(800, 4000));
+        assert_eq!(super::plan_side(&p), 4000);
     }
 }

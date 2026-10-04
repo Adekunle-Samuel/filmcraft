@@ -153,7 +153,7 @@ impl PreviewStore {
             return;
         }
         if let Some(old) = &old
-            && (old.starts_with(std::env::temp_dir()) || self.temp_root().is_some_and(|r| old.starts_with(r)))
+            && (old.starts_with(crate::temp_dir()) || self.temp_root().is_some_and(|r| old.starts_with(r)))
         {
             let _ = std::fs::create_dir_all(&dir);
             for name in self.files.read().unwrap_or_else(|e| e.into_inner()).iter() {
@@ -410,7 +410,7 @@ fn default_temp_dir() -> Option<PathBuf> {
     if cfg!(target_arch = "wasm32") {
         return None;
     }
-    Some(untitled_dir(&std::env::temp_dir().join("FilmCraft Previews")))
+    Some(untitled_dir(&crate::temp_dir().join("FilmCraft Previews")))
 }
 
 /// A fresh per-process folder for an unsaved project's previews under `root`.

@@ -205,7 +205,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let split = Rect::from_min_max(pos2(tree_r.max.x, body.min.y), pos2(tree_r.max.x + 4.0, body.max.y));
     let sresp = ui.interact(split, egui::Id::new("mb-split"), Sense::drag()).on_hover_cursor(egui::CursorIcon::ResizeHorizontal);
     if sresp.dragged() {
-        app.ui.media_browser.tree_width = (tw + sresp.drag_delta().x).clamp(100.0, rect.width() * 0.7);
+        app.ui.media_browser.tree_width = (tw + sresp.drag_delta().x).clamp(100.0, (rect.width() * 0.7).max(100.0));
     }
     ui.painter().line_segment([split.center_top(), split.center_bottom()], Stroke::new(1.0, t.separator));
     tree(app, ui, tree_r, &dir);

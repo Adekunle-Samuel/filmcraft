@@ -193,7 +193,7 @@ pub fn reader_opener(name: &str, head: &[u8], reader: &SharedReader) -> Option<R
         Err(_) => return Some(Ok(inner)),
     };
     let Some(track) = file.tracks.iter().position(|t| t.kind == TrackKind::Video && !t.samples.is_empty()) else { return Some(Ok(inner)) };
-    let entry = &file.tracks[track].entries[0];
+    let Some(entry) = file.tracks[track].entries.first() else { return Some(Ok(inner)) };
     let fourcc = entry.format.to_string();
     let Some((family, codec, description)) = codec_string(&entry.codec, &fourcc) else { return Some(Ok(inner)) };
     if !SUPPORTED.with(|s| s.borrow().contains(&family)) {

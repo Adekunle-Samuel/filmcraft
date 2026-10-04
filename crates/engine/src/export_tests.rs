@@ -427,3 +427,18 @@ fn ranges_resolve_and_sidecar_captions_are_written() {
     // a bad preset name is a clean error
     assert!(s.execute("file.exportMedia", json!({"preset": "Nope", "path": out})).is_err());
 }
+
+/// Export mode asks for a default folder as soon as it opens. With no saved project and no
+/// HOME (the web build) this used to reach `std::env::temp_dir()`, which panics on wasm32 and
+/// killed the web app whenever the Export tab was clicked.
+#[test]
+fn default_export_dir_never_needs_a_real_filesystem() {
+    let s = Session::default();
+    let d = crate::export_tools::default_export_dir(&s);
+    assert!(!d.as_os_str().is_empty());
+    // the shared temp-dir helper is what every former `std::env::temp_dir()` call goes through
+    assert!(!crate::temp_dir().as_os_str().is_empty());
+    // a saved project exports next to itself
+    let s = Session { path: Some("/projects/show/edit.fcproj".into()), ..Default::default() };
+    assert_eq!(crate::export_tools::default_export_dir(&s), std::path::PathBuf::from("/projects/show"));
+}
