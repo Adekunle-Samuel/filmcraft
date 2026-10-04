@@ -68,17 +68,20 @@ fn roundtrip_all_profiles() {
 
 #[test]
 fn rejects_bad_input() {
-    let mut enc = Encoder::new(Profile::Hq, 64, 64);
+    let mut enc = Encoder::new(Profile::Hq, 64, 64).unwrap();
     assert!(enc.encode(&Frame::new(32, 64, ChromaFormat::Yuv422, 8, false)).is_err());
     assert!(enc.encode(&Frame::new(64, 64, ChromaFormat::Yuv444, 8, false)).is_err());
     assert!(Encoder::with_config(EncoderConfig { bit_depth: 10, ..EncoderConfig::new(Profile::Hq, 64, 64) }).is_err());
     assert!(decode_frame(&[0u8; 100]).is_err());
     assert!(decode_frame(&[0u8; 1000]).is_err());
+    // An unsupported raster is an error, not a panic.
+    assert!(Encoder::new(Profile::Hq, 0, 0).is_err());
+    assert!(Encoder::new(Profile::Hq, 20_000, 64).is_err());
 }
 
 #[test]
 fn corrupt_streams_never_panic() {
-    let mut enc = Encoder::new(Profile::Hq, 256, 128);
+    let mut enc = Encoder::new(Profile::Hq, 256, 128).unwrap();
     let good = enc.encode(&picture(256, 128, ChromaFormat::Yuv422, 8, 1)).unwrap();
     let mut seed = 0x1234_5678u32;
     let mut rnd = || {

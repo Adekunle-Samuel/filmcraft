@@ -429,7 +429,7 @@ fn write_slice(sd: &SliceData, q: u8) -> Vec<u8> {
 
 /// Encode the slice's alpha samples (16-bit coding) in raster order over its 16 lines.
 fn encode_alpha_slice(src: &Source, x0: usize, y0: usize, mbs: usize) -> Vec<u8> {
-    let a = src.frame.alpha.as_ref().expect("alpha checked");
+    let Some(a) = src.frame.alpha.as_ref() else { return Vec::new() };
     let d = src.frame.bit_depth as u32;
     let to16 = |v: u16| -> u32 {
         let v = v as u32 & ((1 << d) - 1);

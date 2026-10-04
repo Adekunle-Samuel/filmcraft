@@ -32,7 +32,8 @@ fn parse_code(s: &str) -> (u32, u32) {
                 n += 1;
             }
             ' ' => {}
-            _ => panic!("bad code {s}"),
+            // Codes are literals in this crate; the table tests cover them.
+            _ => debug_assert!(false, "bad code {s}"),
         }
     }
     (v, n)

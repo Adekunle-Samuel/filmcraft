@@ -784,8 +784,8 @@ pub fn quant_all_bands(
         }
         let out_off = xo - norm_offset;
         let x = &mut x_buf[xo..xo + n];
-        if dual_stereo {
-            let y = &mut y_buf.as_deref_mut().expect("stereo")[xo..xo + n];
+        if dual_stereo && let Some(y_buf) = y_buf.as_deref_mut() {
+            let y = &mut y_buf[xo..xo + n];
             let lb = effective_lowband.map(|e| {
                 scratch[..n].copy_from_slice(&norm[e..e + n]);
                 &mut scratch[..n]
