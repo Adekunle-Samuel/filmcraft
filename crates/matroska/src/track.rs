@@ -318,3 +318,30 @@ impl Track {
         }
     }
 }
+
+#[cfg(test)]
+mod rotation_tests {
+    use super::{Projection, VideoInfo};
+
+    fn with_roll(projection_type: u64, yaw: f64, pitch: f64, roll: f64) -> VideoInfo {
+        VideoInfo { projection: Some(Projection { projection_type, yaw, pitch, roll }), ..Default::default() }
+    }
+
+    #[test]
+    fn display_rotation_maps_rectangular_roll_to_clockwise_quarter_turns() {
+        assert_eq!(VideoInfo::default().display_rotation(), Some(0), "no Projection: as stored");
+        // ProjectionPoseRoll is counter-clockwise: -90 is a quarter turn clockwise
+        for (roll, turns) in [(0.0, 0), (-90.0, 1), (180.0, 2), (-180.0, 2), (90.0, 3), (-270.0, 3), (270.0, 1), (360.0, 0)] {
+            assert_eq!(with_roll(0, 0.0, 0.0, roll).display_rotation(), Some(turns), "roll {roll}");
+        }
+    }
+
+    #[test]
+    fn display_rotation_leaves_non_rectangular_flipped_and_odd_angles_alone() {
+        assert_eq!(with_roll(1, 0.0, 0.0, -90.0).display_rotation(), None, "equirectangular");
+        assert_eq!(with_roll(0, 180.0, 0.0, 0.0).display_rotation(), None, "yaw flip");
+        assert_eq!(with_roll(0, 0.0, 180.0, 0.0).display_rotation(), None, "pitch flip");
+        assert_eq!(with_roll(0, 0.0, 0.0, 45.0).display_rotation(), None, "not a quarter turn");
+        assert_eq!(with_roll(0, 0.0, 0.0, f64::NAN).display_rotation(), None, "malformed angle");
+    }
+}

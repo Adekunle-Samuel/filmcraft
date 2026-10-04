@@ -552,4 +552,21 @@ mod tests {
         let s = Mp4Source::open("180.mov", rotated_mov([-ONE, 0, 0, 0, -ONE, 0, 64 * ONE, 32 * ONE, W])).expect("open");
         assert_eq!(s.info().video.as_ref().map(|v| (v.width, v.height)), Some((64, 32)));
     }
+
+    #[test]
+    fn mirrored_or_scaled_matrices_are_not_mistaken_for_rotations() {
+        const ONE: i32 = 0x10000;
+        const W: i32 = 0x4000_0000;
+        // horizontal mirror: not a pure rotation, so the frame is left as stored
+        let s = Mp4Source::open("mirror.mov", rotated_mov([-ONE, 0, 0, 0, ONE, 0, 64 * ONE, 0, W])).expect("open");
+        let (w, h, top, bottom) = halves(&s);
+        assert_eq!((w, h), (64, 32));
+        assert!(top.abs_diff(bottom) < 4);
+        // a 2× scaled identity is still upright (only the signs decide the rotation)
+        let s = Mp4Source::open("scaled.mov", rotated_mov([2 * ONE, 0, 0, 0, 2 * ONE, 0, 0, 0, W])).expect("open");
+        assert_eq!(s.info().video.as_ref().map(|v| (v.width, v.height)), Some((64, 32)));
+        // a scaled quarter turn is still a quarter turn
+        let s = Mp4Source::open("cw2.mov", rotated_mov([0, 2 * ONE, 0, -2 * ONE, 0, 0, 64 * ONE, 0, W])).expect("open");
+        assert_eq!(s.info().video.as_ref().map(|v| (v.width, v.height)), Some((32, 64)));
+    }
 }
