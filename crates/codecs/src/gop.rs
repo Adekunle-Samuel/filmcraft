@@ -33,6 +33,9 @@ pub struct GopStats {
     pub skipped: u64,
     /// Frames decoded in draft mode (reduced-resolution playback, [`VideoDecoder::set_draft`]).
     pub draft: u64,
+    /// Pictures decoders output (hardware and software; [`crate::hw::hw_stats`] counts the
+    /// hardware ones).
+    pub frames: u64,
 }
 
 impl GopStats {
@@ -56,6 +59,12 @@ static EVICTED: AtomicU64 = AtomicU64::new(0);
 static DECODE_NS: AtomicU64 = AtomicU64::new(0);
 static SKIPPED: AtomicU64 = AtomicU64::new(0);
 static DRAFT: AtomicU64 = AtomicU64::new(0);
+static FRAMES: AtomicU64 = AtomicU64::new(0);
+
+/// Count pictures a decoder call output.
+fn count_frames<T>(out: &[T]) {
+    FRAMES.fetch_add(out.len() as u64, Ordering::Relaxed);
+}
 
 /// Run a decoder call, adding its wall time to the process-wide counter.
 fn timed<R>(f: impl FnOnce() -> R) -> R {
@@ -76,6 +85,7 @@ pub fn gop_stats() -> GopStats {
         decode_ns: DECODE_NS.load(Ordering::Relaxed),
         skipped: SKIPPED.load(Ordering::Relaxed),
         draft: DRAFT.load(Ordering::Relaxed),
+        frames: FRAMES.load(Ordering::Relaxed),
     }
 }
 
@@ -91,6 +101,7 @@ impl std::ops::Sub for GopStats {
             decode_ns: self.decode_ns - o.decode_ns,
             skipped: self.skipped - o.skipped,
             draft: self.draft - o.draft,
+            frames: self.frames - o.frames,
         }
     }
 }
@@ -252,6 +263,7 @@ impl GopCache {
 
     /// Store decoder output (in presentation order) and advance `out_max`.
     fn store_output(&self, st: &mut State, out: Vec<crate::video::DecodedFrame>) {
+        count_frames(&out);
         for d in out {
             st.out_max = st.out_max.max(d.pts);
             self.store(st, d.pts, d.frame, d.draft);
@@ -419,6 +431,7 @@ impl GopCache {
             let k = *next;
             let data = s.read(k)?;
             let pics = timed(|| d.decode(&data, s.pts(k)))?;
+            count_frames(&pics);
             *next += 1;
             found |= pics.iter().any(|p| p.pts == want_pts);
             out.extend(pics);
@@ -427,7 +440,9 @@ impl GopCache {
             }
         }
         if !found {
-            out.extend(timed(|| d.flush()));
+            let pics = timed(|| d.flush());
+            count_frames(&pics);
+            out.extend(pics);
             *next = usize::MAX;
         }
         Ok(out)
@@ -451,7 +466,9 @@ impl GopCache {
         if st.spare.len() < 16 {
             st.spare.push(dec);
         }
-        for d in res? {
+        let res = res?;
+        count_frames(&res);
+        for d in res {
             self.store(&mut st, d.pts, d.frame, d.draft);
         }
         st.at_or_before(want_pts, true).ok_or_else(|| CodecError::Decode("frame not produced".into()))

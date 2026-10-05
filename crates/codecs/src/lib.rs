@@ -20,6 +20,7 @@
 
 pub mod audio;
 pub mod gop;
+pub mod hw;
 pub mod mkv;
 pub mod mp4;
 pub mod mpeg;
@@ -63,20 +64,21 @@ impl From<CodecError> for filmcraft_media::MediaError {
     }
 }
 
+/// Our own (pure-Rust) decoders, in the order they are tried.
+const BUILTIN_FACTORIES: [VideoDecoderFactory; 8] = [
+    video::h264_factory,
+    video::hevc_factory,
+    video::vp9_factory,
+    video::av1_factory,
+    video::prores_factory,
+    video::dnx_factory,
+    video::mjpeg_factory,
+    video::mpeg2_factory,
+];
+
 fn factories() -> &'static RwLock<Vec<VideoDecoderFactory>> {
     static F: std::sync::OnceLock<RwLock<Vec<VideoDecoderFactory>>> = std::sync::OnceLock::new();
-    F.get_or_init(|| {
-        RwLock::new(vec![
-            video::h264_factory,
-            video::hevc_factory,
-            video::vp9_factory,
-            video::av1_factory,
-            video::prores_factory,
-            video::dnx_factory,
-            video::mjpeg_factory,
-            video::mpeg2_factory,
-        ])
-    })
+    F.get_or_init(|| RwLock::new(BUILTIN_FACTORIES.to_vec()))
 }
 
 /// Register a video decoder factory (tried before previously registered ones).
@@ -91,6 +93,17 @@ pub fn register_video_decoder(f: VideoDecoderFactory) {
 pub fn make_video_decoder(entry: &filmcraft_isobmff::SampleEntry) -> Result<Box<dyn VideoDecoder>> {
     let g = factories().read().unwrap_or_else(|e| e.into_inner());
     for f in g.iter() {
+        if let Some(r) = f(entry) {
+            return r;
+        }
+    }
+    Err(CodecError::Unsupported(format!("no decoder for {} video", entry.codec.name())))
+}
+
+/// Create one of our own (software) decoders for a sample entry, skipping registered factories:
+/// what a hardware decoder falls back to when it fails mid-stream.
+pub fn software_video_decoder(entry: &filmcraft_isobmff::SampleEntry) -> Result<Box<dyn VideoDecoder>> {
+    for f in BUILTIN_FACTORIES {
         if let Some(r) = f(entry) {
             return r;
         }

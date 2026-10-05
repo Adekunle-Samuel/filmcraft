@@ -13,6 +13,48 @@ the before/after comparison relies on. Each milestone below alternated base / af
 each); the most load-independent figure is the decoder's own cycle count (`proc_pid_rusage`
 instructions and cycles of a process, all threads summed).
 
+## Results (HW1: VideoToolbox hardware decoding, Off → Auto)
+
+Same commit, Settings ▸ Playback ▸ Hardware decoding switched with the bench flag `--hw off` /
+`--hw auto` (`cargo xtask bench --sections decode --only dec_h --repeat 3 --hw …`, then
+`--sections playback --only h264` and `--only hevc-2160`), 2026-10-05, Apple M4 Pro, load average
+**150–190** throughout (shared with other agent builds). The decoded pictures are identical either
+way (bit-exact parity tests, `crates/platform/tests/videotoolbox.rs`); only who decodes changes.
+
+### Decode (every frame through the media stack)
+
+| codec | size | CPU ms/frame Off → **Auto** | fps Off → **Auto** (best of 3) |
+|---|---|---|---|
+| H.264 | 1080p | 31.8 → **1.2** | 153 → **389** |
+| H.264 | 2160p | 119.3 → **4.2** | 35 → **107** |
+| HEVC | 1080p | 22.2 → **1.1** | 185 → **708** |
+| HEVC | 2160p | 85.7 → **3.7** | 49 → **217** |
+
+CPU time per frame is what is left on the CPU: the sample copy into a `CMSampleBuffer`, copying
+the decoded biplanar picture out into planar Y'CbCr (chroma deinterleaved; 10-bit shifted down),
+and the GOP cache. An earlier synchronous version (one picture decoding at a time) reached only
+155 / 51 / 449 / 149 fps; asynchronous decompression with two access units in flight overlaps
+decoding with the copy-out.
+
+### Program-monitor playback (8 s, GPU path)
+
+| case | shown/dropped Off → **Auto** | CPU ms/frame Off → **Auto** |
+|---|---|---|
+| H.264 1080p Full | 192/0 → **192/0** | 38.1 → **3.8** |
+| H.264 2160p Full | 104/88 → **192/0** | 119.8 → **9.2** |
+| H.264 2160p 1/2 | 1/191 → **192/0** | 95.5 → **9.0** |
+| H.264 2160p 1/4 | 0/192 → **192/0** | 94.3 → **8.8** |
+| HEVC 2160p Full | 175/17 → **192/0** | 105.6 → **9.1** |
+| HEVC 2160p 1/2 | 190/2 → **192/0** | 97.4 → **8.8** |
+| HEVC 2160p 1/2 draft | 190/2 → **191/1** | 107.0 → **22.3** |
+
+At this load the software decoders drop most 4K H.264 frames; with hardware decoding every case
+plays in real time at a tenth of the CPU. Draft playback costs more CPU than full-quality
+playback with hardware decoding: the hardware ignores draft mode (`set_draft` is a no-op) and
+the draft plan's box decimation of the planes, cheap next to software decoding, is now the main
+CPU cost. Zero-copy upload of the decoded `CVPixelBuffer` into wgpu (no copy-out at all) is the
+next step (issue #30).
+
 ## Results (GPU1: blend modes on the GPU compositor, #30, before → after)
 
 Before = this change with the old whole-frame CPU fallback for non-Normal blend modes put back

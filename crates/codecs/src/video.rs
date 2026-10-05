@@ -128,6 +128,42 @@ pub(crate) fn tight_plane<T: Copy>(src: Vec<T>, stride: usize, w: usize, h: usiz
     out
 }
 
+/// Colour of an H.264 / HEVC picture from its VUI code points (ITU-T H.273), as the decoders
+/// report it: BT.709 by default with the matrix guessed from the size, the signalled matrix and
+/// transfer when known, and full range when flagged. Shared by the software and hardware
+/// decoders so the two are interchangeable.
+pub fn vui_color(width: u32, height: u32, matrix: u8, transfer: u8, full_range: bool) -> filmcraft_color::ColorInfo {
+    let mut color = filmcraft_color::ColorInfo { matrix: filmcraft_frame::default_matrix(width, height), ..filmcraft_color::ColorInfo::REC709 };
+    if let Some(m) = filmcraft_color::Matrix::from_code(matrix) {
+        color.matrix = m;
+    }
+    if let Some(t) = filmcraft_color::Transfer::from_code(transfer) {
+        color.transfer = t;
+    }
+    if full_range {
+        color.range = filmcraft_color::Range::Full;
+    }
+    color
+}
+
+/// Pixel aspect ratio from a VUI sample aspect ratio ((0, 0) = unspecified = square).
+pub fn sar_par(sar: (u16, u16)) -> (u32, u32) {
+    if sar.0 > 0 && sar.1 > 0 { (sar.0 as u32, sar.1 as u32) } else { (1, 1) }
+}
+
+/// NAL length-prefix size of an `avcC` record (byte 4: lengthSizeMinusOne).
+pub fn avcc_length_size(avcc: &[u8]) -> usize {
+    avcc.get(4).map_or(4, |b| (b & 3) as usize + 1)
+}
+
+/// NAL length-prefix size and highest TemporalId of an `hvcC` record.
+pub fn hvcc_length_size_and_tid(hvcc: &[u8]) -> (usize, Option<u8>) {
+    // hvcC byte 21: constantFrameRate(2) numTemporalLayers(3) temporalIdNested(1) lengthSizeMinusOne(2)
+    let length_size = hvcc.get(21).map_or(4, |b| (b & 3) as usize + 1);
+    let highest_tid = hvcc.get(21).map(|b| (b >> 3) & 7).filter(|&n| n > 0).map(|n| n - 1);
+    (length_size, highest_tid)
+}
+
 /// A factory returns `None` when it does not handle the entry.
 pub type VideoDecoderFactory = fn(&SampleEntry) -> Option<Result<Box<dyn VideoDecoder>>>;
 
@@ -169,7 +205,7 @@ pub struct H264Decoder {
 impl H264Decoder {
     pub fn new(avcc: Vec<u8>) -> Result<Self> {
         let dec = filmcraft_h264::Decoder::from_avcc(&avcc).map_err(|e| CodecError::Decode(e.to_string()))?;
-        let length_size = avcc.get(4).map_or(4, |b| (b & 3) as usize + 1);
+        let length_size = avcc_length_size(&avcc);
         Ok(Self { avcc, dec, length_size, draft: false })
     }
     /// A decoder for Annex B byte-stream samples (start codes, in-band parameter sets: MXF, TS).
@@ -184,17 +220,8 @@ impl H264Decoder {
         let y = tight_plane(p.y, p.y_stride, w, h);
         let u = tight_plane(p.u, p.uv_stride, cw, ch);
         let v = tight_plane(p.v, p.uv_stride, cw, ch);
-        let mut color = filmcraft_color::ColorInfo { matrix: filmcraft_frame::default_matrix(p.width, p.height), ..filmcraft_color::ColorInfo::REC709 };
-        if let Some(m) = filmcraft_color::Matrix::from_code(p.color.matrix) {
-            color.matrix = m;
-        }
-        if let Some(t) = filmcraft_color::Transfer::from_code(p.color.transfer) {
-            color.transfer = t;
-        }
-        if p.color.full_range {
-            color.range = filmcraft_color::Range::Full;
-        }
-        let par = if p.sar.0 > 0 && p.sar.1 > 0 { (p.sar.0 as u32, p.sar.1 as u32) } else { (1, 1) };
+        let color = vui_color(p.width, p.height, p.color.matrix, p.color.transfer, p.color.full_range);
+        let par = sar_par(p.sar);
         let frame = VideoFrame {
             width: p.width,
             height: p.height,
@@ -265,9 +292,7 @@ pub struct HevcDecoder {
 impl HevcDecoder {
     pub fn new(hvcc: Vec<u8>) -> Result<Self> {
         let dec = filmcraft_hevc::Decoder::from_hvcc(&hvcc).map_err(|e| CodecError::Decode(e.to_string()))?;
-        // hvcC byte 21: constantFrameRate(2) numTemporalLayers(3) temporalIdNested(1) lengthSizeMinusOne(2)
-        let length_size = hvcc.get(21).map_or(4, |b| (b & 3) as usize + 1);
-        let highest_tid = hvcc.get(21).map(|b| (b >> 3) & 7).filter(|&n| n > 0).map(|n| n - 1);
+        let (length_size, highest_tid) = hvcc_length_size_and_tid(&hvcc);
         Ok(Self { hvcc, dec, length_size, highest_tid })
     }
     /// A decoder for Annex B byte-stream samples (start codes, in-band parameter sets: TS).
@@ -299,17 +324,8 @@ impl HevcDecoder {
                 alpha: None,
             },
         };
-        let mut color = filmcraft_color::ColorInfo { matrix: filmcraft_frame::default_matrix(p.width, p.height), ..filmcraft_color::ColorInfo::REC709 };
-        if let Some(m) = filmcraft_color::Matrix::from_code(p.color.matrix) {
-            color.matrix = m;
-        }
-        if let Some(t) = filmcraft_color::Transfer::from_code(p.color.transfer) {
-            color.transfer = t;
-        }
-        if p.color.full_range {
-            color.range = filmcraft_color::Range::Full;
-        }
-        let par = if p.sar.0 > 0 && p.sar.1 > 0 { (p.sar.0 as u32, p.sar.1 as u32) } else { (1, 1) };
+        let color = vui_color(p.width, p.height, p.color.matrix, p.color.transfer, p.color.full_range);
+        let par = sar_par(p.sar);
         let frame = VideoFrame { width: p.width, height: p.height, data, color, par, pts: filmcraft_time::Tick::ZERO };
         DecodedFrame { pts: p.pts, frame, draft: p.draft }
     }

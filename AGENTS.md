@@ -19,7 +19,12 @@ panic path, and fix a crash before building on top of it. The cross-app standard
    fallback that is truly correct (never one that silently corrupts a project). An unfinished feature
    returns an "unsupported" error. The only exception is a call that is provably infallible from local
    code alone (a literal that always parses): a single-item `#[allow(clippy::expect_used)]` with the reason.
-3. **No `unsafe`** (`unsafe_code = "forbid"` for the workspace).
+3. **No `unsafe`** (`unsafe_code = "forbid"` for the workspace). The single exception is
+   `crates/platform`, which needs `unsafe` to call the operating system's media APIs (hardware
+   video decoding through VideoToolbox; later encoding and other OSes) and does nothing else. It
+   uses `unsafe_code = "deny"` with `#[allow(unsafe_code)]` only on its FFI modules, a
+   `// SAFETY:` comment on every `unsafe` block, a safe `Result`-returning public API, and the
+   pure-Rust decoder as the tested fallback ([ADR 0001](docs/adr/0001-platform-ffi.md)).
 4. **Every input-derived number is hostile.** Media files, project and interchange files, presets, fonts,
    CLI / MCP / control-channel parameters and UI state are untrusted. Index and slice with `get()` (or
    validate bounds once, up front, for a hot loop); slice strings only at char boundaries; use

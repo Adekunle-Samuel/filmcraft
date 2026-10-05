@@ -480,3 +480,15 @@ fn auto_transcribe_on_import_and_transcription_defaults() {
     set(&mut s, "mediaAnalysis.whisperModel", json!("whisper-tiny"));
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn hardware_decoding_setting_drives_the_decoder_switch() {
+    let mut s = Session::default();
+    assert_eq!(s.prefs.playback.hardware_decoding, "auto", "Auto by default");
+    set(&mut s, "playback.hardwareDecoding", json!("off"));
+    assert!(!filmcraft_codecs::hw::hardware_decoding(), "Off reaches the decoder registry");
+    assert!(s.execute("prefs.set", json!({"key": "playback.hardwareDecoding", "value": "gpu"})).is_err());
+    set(&mut s, "playback.hardwareDecoding", json!("auto"));
+    assert!(filmcraft_codecs::hw::hardware_decoding());
+    assert!(settings::field("playback.hardwareDecoding").is_some_and(|f| f.wired && matches!(f.kind, Kind::Choice(_))));
+}

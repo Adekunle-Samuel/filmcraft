@@ -653,6 +653,7 @@ const CACHE_MGMT: &[(&str, &str)] = &[
 ];
 const AUTO_SCROLL: &[(&str, &str)] = &[("noScroll", "No Scroll"), ("pageScroll", "Page Scroll"), ("smoothScroll", "Smooth Scroll")];
 const MOUSE_SCROLL: &[(&str, &str)] = &[("vertical", "Vertical"), ("horizontal", "Horizontal")];
+const HW_DECODE: &[(&str, &str)] = &[("auto", "Auto"), ("off", "Off")];
 const TRACKS: &[(&str, &str)] = &[("useFile", "Use File"), ("mono", "Mono"), ("stereo", "Stereo"), ("5.1", "5.1"), ("adaptive", "Adaptive")];
 pub const DURATION_UNITS: &[(&str, &str)] = &[("frames", "Frames"), ("seconds", "Seconds")];
 
@@ -952,6 +953,10 @@ static CATEGORIES: &[Category] = &[
             b("playback.enableTransmit", "Enable Mercury Transmit", false),
             b("playback.disableVideoInBackground", "Disable video output when in the background", false),
             b("playback.draftDecode", "Draft decoding at reduced playback resolution (H.264: faster, some frames less filtered)", true),
+            f("playback.hardwareDecoding", "Hardware decoding", Kind::Choice(HW_DECODE), true),
+            Row::Note(
+                "Hardware decoding: Auto uses the system's video decoder (VideoToolbox on macOS) for the H.264 and HEVC streams it supports, and FilmCraft's own decoder for everything else or if the hardware fails. Media that is already open keeps its decoder until it is reopened.",
+            ),
         ],
     },
     Category {
@@ -1122,6 +1127,12 @@ pub fn migrate(v: &mut Value) {
 }
 
 impl crate::autosave::Preferences {
+    /// Settings ▸ Playback ▸ Hardware decoding as the process-wide switch the hardware decoder
+    /// factories consult (new decoders only).
+    pub fn apply_hardware_decoding(&self) {
+        filmcraft_codecs::hw::set_hardware_decoding(self.playback.hardware_decoding != "off");
+    }
+
     /// Values of one category as a JSON object.
     pub fn category_value(&self, id: &str) -> Option<Value> {
         self.to_value().get(id).cloned()

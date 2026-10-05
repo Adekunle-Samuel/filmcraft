@@ -5,6 +5,7 @@
 //! ```sh
 //! cargo xtask bench                                   # every section, writes target/bench/bench-<label>.{json,md}
 //! cargo xtask bench --sections decode,scrub --repeat 3 --label after
+//! cargo xtask bench --sections decode --hw off --label hw-off   # FilmCraft's own decoders only
 //! cargo run --release -p filmcraft-ui-egui --example bench -- --section timeline   # one section, this process
 //! ```
 //!
@@ -33,6 +34,8 @@ pub struct Opts {
     pub gpu: bool,
     /// Only cases whose name contains this (decode fixtures, playback / scrub scenarios).
     pub only: Option<String>,
+    /// Settings ▸ Playback ▸ Hardware decoding: `auto` (default, as the app) or `off`.
+    pub hw: String,
 }
 
 impl Opts {
@@ -49,7 +52,7 @@ fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.iter().any(|a| a == "--help" || a == "-h") {
         println!(
-            "bench [--sections {}] [--repeat N] [--quick] [--cpu] [--only SUBSTRING] [--label NAME] [--out DIR]\n       bench --section NAME [--json FILE]   (one section in this process)",
+            "bench [--sections {}] [--repeat N] [--quick] [--cpu] [--only SUBSTRING] [--hw auto|off] [--label NAME] [--out DIR]\n       bench --section NAME [--json FILE]   (one section in this process)",
             SECTIONS.join(",")
         );
         return;
@@ -59,7 +62,11 @@ fn main() {
         quick: args.iter().any(|a| a == "--quick"),
         gpu: !args.iter().any(|a| a == "--cpu"),
         only: arg_value(&args, "--only"),
+        hw: arg_value(&args, "--hw").unwrap_or_else(|| "auto".into()),
     };
+    // as the desktop app: OS hardware decoders in front of ours, unless Hardware decoding is Off
+    filmcraft_platform::register();
+    filmcraft_codecs::hw::set_hardware_decoding(opts.hw != "off");
     if let Some(section) = arg_value(&args, "--section") {
         let v = run_section(&section, &opts);
         let text = serde_json::to_string_pretty(&v).unwrap_or_default();
@@ -113,6 +120,7 @@ fn orchestrate(args: &[String], o: &Opts) {
         if let Some(only) = &o.only {
             cmd.args(["--only", only]);
         }
+        cmd.args(["--hw", &o.hw]);
         eprintln!("== {name} (load {})", playback::load_avg());
         let output = cmd.stderr(std::process::Stdio::piped()).output().expect("run section");
         let stderr = String::from_utf8_lossy(&output.stderr).to_string();
@@ -131,7 +139,7 @@ fn orchestrate(args: &[String], o: &Opts) {
         println!("{}", section_markdown(&v));
         results.push(v);
     }
-    let doc = json!({"label": label, "machine": machine, "repeat": o.repeat, "quick": o.quick, "gpu": o.gpu, "sections": results});
+    let doc = json!({"label": label, "machine": machine, "repeat": o.repeat, "quick": o.quick, "gpu": o.gpu, "hw": o.hw, "sections": results});
     let jp = out.join(format!("bench-{label}.json"));
     let mp = out.join(format!("bench-{label}.md"));
     std::fs::write(&jp, serde_json::to_string_pretty(&doc).unwrap_or_default()).expect("write json");

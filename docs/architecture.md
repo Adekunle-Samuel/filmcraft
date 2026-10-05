@@ -21,7 +21,7 @@ Design principles:
 
 ```text
  L6  apps/filmcraft · apps/filmcraft-cli · apps/filmcraft-web
- L5  ui-egui · automation
+ L5  ui-egui · automation · platform
  L4  engine
  L3  render · gpu · export · golden (test-only)
  L2  edit · codecs · interchange · captions · speech
@@ -71,6 +71,7 @@ and `filmcraft-cli`.
 | `engine` | L4 | `Session`, command registry, undo history, media pool, jobs, interchange glue |
 | `ui-egui` | L5 | the egui frontend: docking, panels, timeline, monitors, playback, control-channel handlers |
 | `automation` | L5 | MCP server (`rmcp`, stdio), headless or bridged to the running app |
+| `platform` | L5 | OS media FFI only: hardware video decoding (VideoToolbox H.264 / HEVC on macOS; a no-op elsewhere) behind `codecs::VideoDecoder`, with transparent fallback to our decoders. The one crate allowed `unsafe` ([ADR 0001](adr/0001-platform-ffi.md), [README](../crates/platform/README.md)) |
 | `filmcraft` | L6 | desktop binary: eframe/wgpu window, cpal audio output, file dialogs, native macOS menu, TCP control server |
 | `filmcraft-cli` | L6 | headless CLI: `exec`, `run`, `inspect`, `describe`, `commands`, `import`, `export`, `render`, `probe`, `mcp`; `--bridge` targets the running app |
 | `filmcraft-web` | L6 | the browser app (wasm32): eframe web runner on WebGPU/WebGL2, Blob-backed services, OPFS recovery, WebAudio, WebCodecs, `window.filmcraft` API ([web.md](web.md)) |
@@ -91,7 +92,8 @@ are exempt):
 
 `cargo xtask wasm` runs `cargo check --target wasm32-unknown-unknown` on every L0–L4 crate, the
 egui UI and the web app, so everything up to the engine stays web-portable and the web app builds
-([web.md](web.md)). `unsafe_code = "deny"` applies workspace-wide.
+([web.md](web.md)). `unsafe_code = "forbid"` applies workspace-wide, except in `platform`
+(`deny`, allowed only on its FFI modules; [ADR 0001](adr/0001-platform-ffi.md)).
 
 ## 2. Time base
 
@@ -196,7 +198,8 @@ pub struct CommandSpec {
 
 ```text
 file ──► codecs (MP4/MOV, MKV, audio)        demux + decode, GOP-aware seek
-          │   decoder registry: h264, hevc, vp9, av1, prores, dnx, mjpeg (+ any registered first)
+          │   decoder registry: h264, hevc, vp9, av1, prores, dnx, mjpeg (+ any registered first:
+          │   platform's VideoToolbox H.264 / HEVC on macOS, falling back to ours)
           ▼
         media::MediaSource ──► frame cache (byte-budgeted LRU, shared)
           ▼
@@ -225,6 +228,24 @@ file ──► codecs (MP4/MOV, MKV, audio)        demux + decode, GOP-aware see
   every frame of the GOP. Sequential playback reuses the decoder. Decoders implement
   `codecs::VideoDecoder`. `register_video_decoder` puts a factory in front of the built-in ones, so a
   hardware decoder can take precedence. The GOP cache never holds its lock while decoding.
+- **Hardware decoding.** The apps (desktop, CLI / headless MCP, bench) call
+  `filmcraft_platform::register()` at startup, which on macOS registers a VideoToolbox factory for
+  `avcC` / `hvcC` streams (8 / 10-bit, 4:2:0 and 4:2:2; elsewhere it does nothing). The factory
+  declines (our decoder is used) when Settings ▸ Playback ▸ Hardware decoding is Off
+  (`codecs::hw::set_hardware_decoding`, applied by the engine whenever preferences change), for
+  formats it does not take, and when the OS cannot create a *hardware* session for the stream.
+  Its decoder is a `platform::HybridDecoder`: VideoToolbox decodes asynchronously (two access
+  units in flight), a reorder buffer of the stream's own depth (`max_num_reorder_frames` /
+  `sps_max_num_reorder_pics`, from `codecs::hw::NalStreamInfo`) restores presentation order, and
+  the decoded biplanar `CVPixelBuffer` is copied into planar `Yuv8` / `Yuv16`. Colour, pixel
+  aspect, random-access and disposable answers come from the same helpers as the software
+  decoders (`video::vui_color`, `sar_par`, `h264_disposable`, `hevc_disposable`), so the two are
+  interchangeable (bit-exact in the parity tests). If the hardware fails mid-stream (decode error,
+  session lost to a GPU change or sleep, changed in-band parameter sets), the hybrid builds
+  `codecs::software_video_decoder` (built-in factories only), replays the samples since the last
+  restart point and continues in software for that instance; it is logged and counted. A source
+  already open keeps its decoder when the setting changes, until it is reopened. `perf.stats`
+  `decode.hardware` reports hardware vs software frames, sessions, declines and fallbacks.
   Decoders run slices on rayon, so an export worker waiting inside a decode can pick up another
   frame of the same source. A request that finds the shared decoder busy decodes with a private
   decoder.
@@ -639,7 +660,8 @@ Protocol reference: [control-protocol.md](control-protocol.md). Agent guide: [ag
 ## 8. Not built yet
 
 The layer table reserves names for crates that don't exist yet: `riff`, `mjpeg`,
-`keyframe`, `effects`, `audio`, `playback` and `platform`.
+`keyframe`, `effects`, `audio` and `playback`. (`platform` exists but holds only OS media FFI;
+other OS integration stays in `apps/filmcraft`.)
 Until they exist, that work lives elsewhere: keyframes and effect definitions in `project`, effects
 and the audio mix in `render`, playback in `ui-egui`, and OS integration (cpal, rfd,
 native menus) in `apps/filmcraft`. [ROADMAP.md](../ROADMAP.md) has the milestone status.
