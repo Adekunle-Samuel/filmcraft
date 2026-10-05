@@ -206,7 +206,7 @@ file ──► codecs (MP4/MOV, MKV, audio)        demux + decode, GOP-aware see
           in linear-light premultiplied f32
           │
           └─ render::plan::plan_frame → gpu::GpuCompositor     GPU path
-               layers = decoded YUV/RGBA frames + matrix + opacity;
+               layers = decoded YUV/RGBA frames + matrix + opacity + blend mode;
                anything the shaders don't cover is pre-rendered on the CPU
           ▼
         ui-egui frames.rs worker pool ──► monitors (program/source), thumbnails, prefetch
@@ -229,9 +229,12 @@ file ──► codecs (MP4/MOV, MKV, audio)        demux + decode, GOP-aware see
   frame of the same source. A request that finds the shared decoder busy decodes with a private
   decoder.
 - **Compositor.** `render` is the reference for monitors, thumbnails and export. `render::plan`
-  turns a frame into GPU layers. Non-Normal blend modes, standard effects, adjustment layers, nested
-  sequences and non-dissolve transitions are rendered on the CPU for that layer or frame and handed to
-  the GPU as an image, so both paths give the same picture. Setting `FILMCRAFT_CPU_COMPOSITE=1`
+  turns a frame into GPU layers, each with its opacity and blend mode. All 27 blend modes run on the
+  GPU (`filmcraft-gpu`): Normal and Dissolve with fixed-function "over" blending, the others by
+  copying the accumulator under the layer into a backdrop texture and compositing in the fragment
+  shader with the CPU reference's formulas. Standard effects, adjustment layers, nested sequences
+  and non-dissolve transitions are rendered on the CPU for that layer or frame and handed to the
+  GPU as an image (a layer image keeps its clip's blend mode), so both paths give the same picture. Setting `FILMCRAFT_CPU_COMPOSITE=1`
   forces the CPU path in the desktop app.
 - **Frame scheduling.** `crates/ui-egui/src/frames.rs` runs a small pool of worker threads with
   prioritised jobs: the frame on screen first, then playback prefetch, then thumbnails. The UI never

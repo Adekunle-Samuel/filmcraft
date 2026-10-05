@@ -70,6 +70,15 @@ impl Blend {
         Blend::Color,
         Blend::Luminosity,
     ];
+    /// Position in [`Blend::ALL`] (= `filmcraft_project::effect::BLEND_MODES`).
+    pub fn index(self) -> u32 {
+        Self::ALL.iter().position(|b| *b == self).unwrap_or(0) as u32
+    }
+    /// Whether compositing needs the destination colour (every mode but Normal and Dissolve,
+    /// which are plain "over" per pixel).
+    pub fn reads_destination(self) -> bool {
+        !matches!(self, Blend::Normal | Blend::Dissolve)
+    }
     /// Index into `filmcraft_project::effect::BLEND_MODES`.
     pub fn from_index(i: u32) -> Blend {
         Self::ALL.get(i as usize).copied().unwrap_or(Blend::Normal)

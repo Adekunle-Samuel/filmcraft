@@ -775,3 +775,108 @@ fn gpu_matches_cpu_on_golden_scenes() {
     }
     assert!(failures.is_empty(), "GPU differs from the CPU reference:\n{}", failures.join("\n"));
 }
+
+/// Per-pixel max RGB difference (99th percentile, mean) over the pixels at least 1.5 px from every
+/// plan layer's quad outline: the CPU resampler fades a layer's edge over one more pixel than the
+/// GPU rasterises, and with blend modes those edge pixels are a visible share of a 320×180 frame.
+fn interior_diff(plan: &filmcraft_render::plan::FramePlan, a: &Rgba8, b: &Rgba8) -> (u32, f64) {
+    let filmcraft_render::plan::FramePlan::Layers { width, layers, .. } = plan else { return (u32::MAX, f64::MAX) };
+    let inv: Vec<_> = layers.iter().filter_map(|l| Some((l.matrix.inverse()?, l.frame.width as f64, l.frame.height as f64))).collect();
+    let mut d: Vec<u32> = Vec::new();
+    for (i, (pa, pb)) in a.px.chunks(4).zip(b.px.chunks(4)).enumerate() {
+        let (x, y) = ((i % width) as f64 + 0.5, (i / width) as f64 + 0.5);
+        let edge = inv.iter().any(|(m, fw, fh)| {
+            let c = [(-1.5, -1.5), (1.5, -1.5), (-1.5, 1.5), (1.5, 1.5)].map(|(dx, dy)| {
+                let p = m.apply(Vec2::new(x + dx, y + dy));
+                p.x >= 0.0 && p.y >= 0.0 && p.x <= *fw && p.y <= *fh
+            });
+            c.iter().any(|v| *v != c[0])
+        });
+        if !edge {
+            d.push((0..3).map(|k| (pa[k] as i32 - pb[k] as i32).unsigned_abs()).max().unwrap_or(0));
+        }
+    }
+    d.sort_unstable();
+    (d[d.len() * 99 / 100], d.iter().sum::<u32>() as f64 / d.len() as f64)
+}
+
+/// Every blend mode composited by the GPU from `plan_frame` (no CPU fallback): two overlapping
+/// transformed clips at partial opacity in the mode over footage, plus a clip with a standard
+/// effect (rendered on the CPU as a layer image) in the same mode, match the CPU render with the
+/// GPU parity tolerance (p99 ≤ 6, mean < 1.5) away from layer outlines; whole-frame numbers are
+/// printed too.
+#[test]
+fn gpu_blend_modes_match_cpu_render() {
+    let Some((dev, q)) = device() else {
+        eprintln!("SKIPPED (gpu blend parity): no GPU adapter");
+        return;
+    };
+    let mut c = filmcraft_gpu::GpuCompositor::new(&dev, &q);
+    let mut failures = Vec::new();
+    for mode in filmcraft_project::effect::BLEND_MODES {
+        let mut b = Builder::new(4);
+        let bg = b.demo(DemoScene::OceanSunset);
+        let (dunes, aurora, bars) = (b.demo(DemoScene::Dunes), b.demo(DemoScene::Aurora), b.media(Generator::BarsAndTone));
+        b.place(0, bg, 0, 48);
+        let v2 = b.place(1, dunes, 0, 48);
+        b.fixed(v2, "motion", &[("scale", fl(60.0)), ("rotation", fl(12.0)), ("position", pt(130.0, 80.0))]);
+        b.fixed(v2, "opacity", &[("opacity", fl(70.0)), ("blend", blend(mode))]);
+        let v3 = b.place(2, aurora, 0, 48);
+        b.fixed(v3, "motion", &[("scale", fl(45.0)), ("rotation", fl(-20.0)), ("position", pt(210.0, 110.0))]);
+        b.fixed(v3, "opacity", &[("opacity", fl(60.0)), ("blend", blend(mode))]);
+        let v4 = b.place(3, bars, 0, 48);
+        b.fixed(v4, "motion", &[("scale", fl(30.0)), ("position", pt(250.0, 50.0))]);
+        b.fixed(v4, "opacity", &[("opacity", fl(85.0)), ("blend", blend(mode))]);
+        b.effect(v4, "crop", &[("left", fl(10.0)), ("bottom", fl(20.0))]);
+        let s = b.at(12);
+        let t = RATE.tick_of(s.frame);
+        let cpu = render_cpu(&s);
+        let plan = filmcraft_render::plan::plan_frame(&s.project, s.seq, t, RenderOptions::default(), &s.sources);
+        let filmcraft_render::plan::FramePlan::Layers { layers, .. } = &plan else {
+            failures.push(format!("{mode}: planned as a CPU image"));
+            continue;
+        };
+        assert_eq!(layers.len(), 4, "{mode}");
+        c.composite(&plan);
+        let (gw, gh, mut px) = c.read_output().expect("GPU readback");
+        px.as_chunks_mut::<4>().0.iter_mut().for_each(|p| p[3] = 255);
+        let gpu = Rgba8::new(gw, gh, px);
+        let d = diff(&cpu, &gpu).unwrap();
+        let (p99, mean) = interior_diff(&plan, &cpu, &gpu);
+        eprintln!("{mode}: GPU vs CPU interior p99 {p99}, mean {mean:.3}; whole frame {d}");
+        if p99 > 6 || mean >= 1.5 {
+            failures.push(format!("{mode}: interior p99 {p99}, mean {mean}; {d}"));
+        }
+    }
+    assert!(failures.is_empty(), "GPU blend modes differ from the CPU render:\n{}", failures.join("\n"));
+}
+
+/// Inside a transition the CPU mixes the clips and composites the result Normal, ignoring their
+/// blend modes: the plan does the same (Screen clips cross-dissolving on V2 over V1).
+#[test]
+fn gpu_transition_of_blended_clips_matches_cpu_render() {
+    let Some((dev, q)) = device() else {
+        eprintln!("SKIPPED (gpu blend parity): no GPU adapter");
+        return;
+    };
+    let mut b = Builder::new(2);
+    let (bg, x, y) = (b.demo(DemoScene::OceanSunset), b.demo(DemoScene::Aurora), b.demo(DemoScene::Dunes));
+    b.place(0, bg, 0, 48);
+    let ca = b.place(1, x, 0, 24);
+    let cb = b.place(1, y, 24, 24);
+    for id in [ca, cb] {
+        b.fixed(id, "opacity", &[("blend", blend("Screen"))]);
+    }
+    b.transition(1, "cross_dissolve", ca, cb, 24, 12);
+    let s = b.at(22);
+    let plan = filmcraft_render::plan::plan_frame(&s.project, s.seq, RATE.tick_of(s.frame), RenderOptions::default(), &s.sources);
+    let filmcraft_render::plan::FramePlan::Layers { layers, .. } = &plan else { panic!("planned as a CPU image") };
+    assert!(layers.iter().all(|l| l.blend == filmcraft_render::Blend::Normal));
+    let mut c = filmcraft_gpu::GpuCompositor::new(&dev, &q);
+    c.composite(&plan);
+    let (gw, gh, mut px) = c.read_output().expect("GPU readback");
+    px.as_chunks_mut::<4>().0.iter_mut().for_each(|p| p[3] = 255);
+    let d = diff(&render_cpu(&s), &Rgba8::new(gw, gh, px)).unwrap();
+    eprintln!("Screen clips in a cross dissolve: GPU vs CPU {d}");
+    assert!(d.p99 <= 6 && d.mean_abs * 4.0 / 3.0 < 1.5, "{d}");
+}
