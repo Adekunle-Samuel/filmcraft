@@ -101,7 +101,7 @@ impl Image {
         let x0 = (b.x.floor().max(0.0) as usize).min(w);
         let x1 = (b.right().ceil().max(0.0) as usize).min(w);
         let axis_aligned = m.b == 0.0 && m.c == 0.0;
-        out.px.par_chunks_mut(w * 4).enumerate().skip(y0).take(y1 - y0).for_each(|(y, row)| {
+        out.px.par_chunks_mut(w * 4).enumerate().skip(y0).take(y1.saturating_sub(y0)).for_each(|(y, row)| {
             let py = y as f64 + 0.5;
             for x in x0..x1 {
                 let px = x as f64 + 0.5;

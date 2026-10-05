@@ -626,7 +626,7 @@ fn parse_args() -> Args {
             "--json" => a.json = it.next(),
             "--help" | "-h" => {
                 println!(
-                    "bench_playback [--scenario h264-1080,stack3,stack3-blend,h264-2160,hevc-2160,vp9-2160,av1-2160,demo,after-preview,seek-storm] [--res full,half] [--cpu|--gpu] [--seconds 8] [--refresh 60] [--workers N] [--repeat N] [--json out.json]"
+                    "bench_playback [--scenario h264-1080,stack3,stack3-blend,stack3-fx,h264-2160,hevc-2160,vp9-2160,av1-2160,demo,after-preview,seek-storm] [--res full,half] [--cpu|--gpu] [--seconds 8] [--refresh 60] [--workers N] [--repeat N] [--json out.json]"
                 );
                 std::process::exit(0);
             }
@@ -634,8 +634,10 @@ fn parse_args() -> Args {
         }
     }
     if a.scenarios.is_empty() {
-        a.scenarios =
-            ["h264-1080", "stack3", "stack3-blend", "h264-2160", "hevc-2160", "demo", "after-preview", "seek-storm"].iter().map(|s| s.to_string()).collect();
+        a.scenarios = ["h264-1080", "stack3", "stack3-blend", "stack3-fx", "h264-2160", "hevc-2160", "demo", "after-preview", "seek-storm"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
     }
     a
 }
@@ -648,7 +650,7 @@ pub fn scenario_session(name: &str) -> Option<(Session, ItemId)> {
             let a = import(&mut s, &fixture("a1080.mp4")?);
             build_sequence(&mut s, 1920, 1080, &[(a, 100.0, None, 0.0, 100.0)], &[], 20.0)
         }
-        "stack3" | "stack3-blend" => {
+        "stack3" | "stack3-blend" | "stack3-fx" => {
             let (a, b, c) = (fixture("a1080.mp4")?, fixture("b1080.mp4")?, fixture("c1080.mp4")?);
             let (a, b, c) = (import(&mut s, &a), import(&mut s, &b), import(&mut s, &c));
             let seq = build_sequence(
@@ -669,6 +671,30 @@ pub fn scenario_session(name: &str) -> Option<(Session, ItemId)> {
                             if let Some(b) = it.effect_mut("opacity").and_then(|o| o.params.get_mut("blend")) {
                                 b.value = ParamValue::Choice(i);
                             }
+                        }
+                    }
+                    Ok(())
+                })
+                .ok()?;
+            }
+            if name == "stack3-fx" {
+                // V2: Brightness & Contrast + Gaussian Blur; V3: Tint
+                s.edit("effects", |p, _| {
+                    let q = p.sequence_mut(seq).expect("seq");
+                    let fx: [(usize, &str, &[(&str, f64)]); 3] = [
+                        (1, "brightness_contrast", &[("brightness", 12.0), ("contrast", 25.0)]),
+                        (1, "gaussian_blur", &[("blurriness", 8.0)]),
+                        (2, "tint", &[("amount", 70.0)]),
+                    ];
+                    for (track, id, params) in fx {
+                        for it in &mut q.video_tracks[track].items {
+                            let mut e = find_effect(id).expect("effect").instance();
+                            for (k, v) in params {
+                                if let Some(x) = e.params.get_mut(*k) {
+                                    x.value = ParamValue::Float(*v);
+                                }
+                            }
+                            it.effects.push(e);
                         }
                     }
                     Ok(())

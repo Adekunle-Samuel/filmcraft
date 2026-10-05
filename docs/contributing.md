@@ -133,6 +133,10 @@ export CARGO_TARGET_DIR=target/agent-hevc     # separate build dir, no lock figh
    so reduced-resolution playback matches full resolution. Unknown ids are a no-op.
 3. Add a test in `crates/render/src/tests.rs`.
 4. The GPU path needs no change: `render::plan` pre-renders layers with standard effects on the CPU.
+   To run it on the GPU too, make it an `FxOp` in `crates/render/src/gpufx.rs` instead (parameter
+   evaluation in `FxOp::eval`, the CPU reference in `FxOp::apply`, the id in `GPU_EFFECTS`), add
+   its passes to `crates/gpu/src/fx.rs` and its math to `fx.wgsl`, and a parity case to
+   `crates/gpu/src/fx_tests.rs`.
 
 Audio effects implement `AudioEffect` in `crates/audio-dsp` and register in its `effects()`
 registry. Then add an `audio(…)` definition in `effect.rs` and a `Mapping` from project parameters

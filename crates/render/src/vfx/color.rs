@@ -99,16 +99,8 @@ pub fn lighting(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
     });
 }
 
-/// ASC CDL: out = clamp(in × slope + offset)^power per channel, then saturation (Rec. 709 luma),
-/// on display-encoded values (ASC CDL v1.2).
-pub fn asc_cdl(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
-    let s = [fv(e, "r_slope", cx), fv(e, "g_slope", cx), fv(e, "b_slope", cx)];
-    let o = [fv(e, "r_offset", cx), fv(e, "g_offset", cx), fv(e, "b_offset", cx)];
-    let pw = [fv(e, "r_power", cx), fv(e, "g_power", cx), fv(e, "b_power", cx)];
-    let sat = fv(e, "saturation", cx);
-    img.map_rgb(|c, _, _| dec(cdl(enc(c), s, o, pw, sat)));
-}
-
+/// ASC CDL (v1.2): clamp(in × slope + offset)^power per channel, then saturation (Rec. 709 luma),
+/// on display-encoded values (`gpufx::FxOp::AscCdl`).
 pub(crate) fn cdl(c: [f32; 3], s: [f32; 3], o: [f32; 3], p: [f32; 3], sat: f32) -> [f32; 3] {
     let mut v = [0.0; 3];
     for k in 0..3 {
@@ -222,64 +214,6 @@ pub fn vignette(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
         let d = (nx.abs().powf(p) + ny.abs().powf(p)).powf(1.0 / p) / 2f32.powf(1.0 / p);
         let edge = smoothstep(mid - feather * 0.5, mid + feather * 0.5, d);
         dec(lerp3(enc(c), target, edge * amt.abs()))
-    });
-}
-
-/// Channel Mix: each output channel = Σ input × weight / 100 + constant / 100 (display-encoded).
-pub fn channel_mix(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
-    let g = |k: &str| fv(e, k, cx) / 100.0;
-    let mut m = [[g("rr"), g("rg"), g("rb"), g("rc")], [g("gr"), g("gg"), g("gb"), g("gc")], [g("br"), g("bg"), g("bb"), g("bc")]];
-    if bv(e, "monochrome") {
-        m = [m[0]; 3];
-    }
-    img.map_rgb(|c, _, _| {
-        let v = enc(c);
-        dec([0, 1, 2].map(|k| (m[k][0] * v[0] + m[k][1] * v[1] + m[k][2] * v[2] + m[k][3]).clamp(0.0, 1.0)))
-    });
-}
-
-/// Color Replace: pixels within Similarity of Target take the Replace colour (keeping their
-/// lightness unless Solid Colors).
-pub fn color_replace(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
-    let sim = fv(e, "similarity", cx) / 100.0 * 1.2;
-    let solid = bv(e, "solid");
-    let t = cv(e, "target", cx);
-    let r = cv(e, "replace", cx);
-    let rh = rgb_to_hsl(r[0], r[1], r[2]);
-    img.map_rgb(|c, _, _| {
-        let v = enc(c);
-        let d = ((v[0] - t[0]).powi(2) + (v[1] - t[1]).powi(2) + (v[2] - t[2]).powi(2)).sqrt();
-        let k = 1.0 - smoothstep(sim * 0.85, sim.max(1e-4), d);
-        if k <= 0.0 {
-            return c;
-        }
-        let target = if solid {
-            [r[0], r[1], r[2]]
-        } else {
-            let l = rgb_to_hsl(v[0], v[1], v[2])[2];
-            hsl_to_rgb(rh[0], rh[1], l)
-        };
-        dec(lerp3(v, target, k))
-    });
-}
-
-/// Alpha Adjust: opacity, ignore / invert alpha, show the matte only.
-pub fn alpha_adjust(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
-    let op = fv(e, "opacity", cx) / 100.0;
-    let (ignore, invert, mask_only) = (bv(e, "ignore"), bv(e, "invert"), bv(e, "mask_only"));
-    img.px.par_chunks_mut(4).for_each(|p| {
-        let c = Image::unpremul([p[0], p[1], p[2], p[3]]);
-        let mut a = if ignore { 1.0 } else { p[3] };
-        if invert {
-            a = 1.0 - a;
-        }
-        a = (a * op).clamp(0.0, 1.0);
-        if mask_only {
-            let g = filmcraft_color::srgb_to_linear(a);
-            p.copy_from_slice(&[g, g, g, 1.0]);
-        } else {
-            p.copy_from_slice(&[c[0] * a, c[1] * a, c[2] * a, a]);
-        }
     });
 }
 

@@ -2,11 +2,14 @@
 //!
 //! [`plan_frame`] resolves what is visible at a time into a list of layers the GPU can draw
 //! directly: a decoded source frame (YUV planes or RGBA), the matrix from source pixels to output
-//! pixels, an opacity and a blend mode (all 27 of [`Blend`] are composited by the GPU). Anything
-//! the shaders don't cover yet — standard effects, adjustment layers, nested sequences,
-//! non-dissolve transitions — is rendered on the CPU for that layer (or the whole frame) and
-//! handed over as a pre-composited image, so the GPU path is always exact with respect to the CPU
-//! reference.
+//! pixels, an opacity and a blend mode (all 27 of [`Blend`] are composited by the GPU). A media
+//! clip whose enabled standard effects all have a GPU implementation ([`crate::gpufx`]) carries
+//! them as a [`LayerFx`]: their parameters evaluated at the frame's time, run by the GPU on the
+//! clip's working image before Motion places it, in the CPU's order (effects → Motion → Opacity /
+//! blend). Anything the shaders don't cover yet — other standard effects, masks, adjustment
+//! layers, nested sequences, non-dissolve transitions — is rendered on the CPU for that layer (or
+//! the whole frame) and handed over as a pre-composited image, so the GPU path is always exact
+//! with respect to the CPU reference.
 
 use std::sync::Arc;
 
@@ -16,17 +19,46 @@ use filmcraft_media::FrameRequest;
 use filmcraft_project::{ItemId, ItemKind, Project, Sequence, TrackItem};
 use filmcraft_time::Tick;
 
+use crate::gpufx::FxOp;
 use crate::{Blend, RenderOptions, SourceProvider, motion_matrix, output_size};
 
 /// One layer for the GPU, bottom to top.
 #[derive(Clone)]
 pub struct PlanLayer {
     pub frame: Arc<VideoFrame>,
-    /// Maps frame pixels (0..w, 0..h) to output pixels.
+    /// Maps frame pixels (0..w, 0..h) to output pixels — or, with [`fx`](Self::fx), working-image
+    /// pixels (0..fx.size).
     pub matrix: Affine,
     pub opacity: f32,
     /// How the layer combines with what is under it ([`crate::blend::composite`]).
     pub blend: Blend,
+    /// Standard effects to run on the frame before it is placed (None: draw the frame directly).
+    pub fx: Option<Arc<LayerFx>>,
+}
+
+/// The GPU effect stage of a layer: the frame is decoded into a working image of `size` (the
+/// frame box-decimated by `decimation`, as the CPU decodes it), `ops` run on it in order, and the
+/// result is placed with the layer's matrix, opacity and blend mode.
+#[derive(Clone, Debug, PartialEq)]
+pub struct LayerFx {
+    pub size: (u32, u32),
+    pub decimation: u32,
+    pub ops: Vec<FxOp>,
+}
+
+impl PlanLayer {
+    /// A layer drawing `frame` directly.
+    pub fn new(frame: Arc<VideoFrame>, matrix: Affine, opacity: f32, blend: Blend) -> Self {
+        Self { frame, matrix, opacity, blend, fx: None }
+    }
+
+    /// Size of the picture the matrix places: the working image with effects, else the frame.
+    pub fn size(&self) -> (u32, u32) {
+        match &self.fx {
+            Some(fx) => fx.size,
+            None => (self.frame.width, self.frame.height),
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -45,12 +77,29 @@ fn simple_transition(id: &str) -> bool {
     matches!(id, "cross_dissolve" | "dip_to_black" | "dip_to_white" | "morph_cut")
 }
 
-/// Whether a track item's source can be drawn by the GPU as-is (media without standard effects or
-/// opacity masks; any blend mode).
-fn gpu_simple(project: &Project, item: &TrackItem) -> bool {
+/// The standard effects of a media clip if the GPU can draw it (any blend mode, no opacity masks,
+/// every enabled standard effect unmasked and with a GPU implementation; empty without effects or
+/// with effects off). None: the clip is rendered on the CPU.
+fn gpu_chain<'a>(project: &Project, item: &'a TrackItem, opts: RenderOptions) -> Option<Vec<&'a filmcraft_project::EffectInstance>> {
     let is_media = project.item(item.item).is_some_and(|p| matches!(p.kind, ItemKind::Media(_) | ItemKind::Subclip { .. }));
-    let no_fx = !item.has_standard_effects() && !item.has_opacity_masks();
-    is_media && no_fx
+    if !is_media || item.has_opacity_masks() {
+        return None;
+    }
+    if !opts.effects {
+        return Some(Vec::new());
+    }
+    let mut chain = Vec::new();
+    for e in item.effects.iter().filter(|e| e.def().is_some_and(|d| !d.intrinsic) && !filmcraft_project::graphic::is_layer(e)) {
+        if !e.enabled {
+            continue;
+        }
+        let masked = e.masks.iter().any(|m| m.mode != filmcraft_project::MaskMode::None);
+        if masked || !crate::gpufx::GPU_EFFECTS.contains(&e.effect.as_str()) {
+            return None;
+        }
+        chain.push(e);
+    }
+    Some(chain)
 }
 
 /// Plan the frame at timeline `t`.
@@ -90,12 +139,7 @@ pub fn plan_frame(project: &Project, seq_id: ItemId, t: Tick, opts: RenderOption
             match trn.effect.effect.as_str() {
                 "dip_to_black" | "dip_to_white" => {
                     let col = if trn.effect.effect == "dip_to_black" { [0.0, 0.0, 0.0, 1.0] } else { [1.0, 1.0, 1.0, 1.0] };
-                    layers.push(PlanLayer {
-                        frame: Arc::new(VideoFrame::rgba_f32(1, 1, col.to_vec())),
-                        matrix: Affine::scale(w as f64, h as f64),
-                        opacity: 1.0,
-                        blend: Blend::Normal,
-                    });
+                    layers.push(PlanLayer::new(Arc::new(VideoFrame::rgba_f32(1, 1, col.to_vec())), Affine::scale(w as f64, h as f64), 1.0, Blend::Normal));
                     let (it, k) = if p < 0.5 { (a, 1.0 - p * 2.0) } else { (b, (p - 0.5) * 2.0) };
                     if let Some(it) = it {
                         push_item(project, seq, it, t, opts, sources, k, Some(Blend::Normal), &mut layers);
@@ -121,12 +165,12 @@ pub fn plan_frame(project: &Project, seq_id: ItemId, t: Tick, opts: RenderOption
     }
     if opts.captions {
         for o in crate::caption_overlays(seq, t, w, h) {
-            layers.push(PlanLayer {
-                frame: Arc::new(VideoFrame::rgba_f32(o.w as u32, o.h as u32, o.px)),
-                matrix: Affine::translate(o.x as f64, o.y as f64),
-                opacity: 1.0,
-                blend: Blend::Normal,
-            });
+            layers.push(PlanLayer::new(
+                Arc::new(VideoFrame::rgba_f32(o.w as u32, o.h as u32, o.px)),
+                Affine::translate(o.x as f64, o.y as f64),
+                1.0,
+                Blend::Normal,
+            ));
         }
     }
     FramePlan::Layers { width: w, height: h, layers }
@@ -179,11 +223,11 @@ fn push_item(
         let (w, h) = output_size(seq, opts.scale);
         let m = Affine::scale(opts.scale as f64, opts.scale as f64).then_apply(&motion_matrix(seq, item, size, mt));
         if let Some((img, x, y)) = crate::graphic_clip::render_graphic_tight(item, mt, size, &m, w, h) {
-            out.push(PlanLayer { frame: cpu_frame(img), matrix: Affine::translate(x as f64, y as f64), opacity: op * extra_opacity, blend: bl });
+            out.push(PlanLayer::new(cpu_frame(img), Affine::translate(x as f64, y as f64), op * extra_opacity, bl));
         }
         return;
     }
-    if gpu_simple(project, item) {
+    if let Some(chain) = gpu_chain(project, item, opts) {
         let Some(src) = sources.source(item.item) else { return };
         let Some(size) = crate::source_size(project, item.item) else { return };
         let motion = motion_matrix(seq, item, size, mt);
@@ -193,7 +237,35 @@ fn push_item(
         let cs = crate::colorman::source_space(project, item.item, &frame);
         // log / HDR / wide-gamut media is converted on the CPU (below), and so are blended
         // in-between frames (Frame Blending / Optical Flow on speed-changed clips)
-        if !crate::colorman::needs_management(&seq.settings.color, cs, &frame) && crate::interpolation_blend(item, t, src.info().frame_rate()).is_none() {
+        let plain =
+            !crate::colorman::needs_management(&seq.settings.color, cs, &frame) && crate::interpolation_blend(item, t, src.info().frame_rate()).is_none();
+        if plain && !chain.is_empty() {
+            // GPU effect stage: the working image the CPU would decode (`base_layer`), the
+            // effects evaluated for it, placed as `item_layer` places it
+            let n = crate::decimation(frame.width as f32, size.0 as f32 * want);
+            let (lw, lh) = ((frame.width as usize / n).max(1), (frame.height as usize / n).max(1));
+            let px_scale = lw as f32 / size.0.max(1) as f32;
+            let tc = "";
+            let cx = crate::effects::FxCtx {
+                t: mt,
+                px_scale,
+                seconds: (t - item.start).seconds(),
+                timecode: tc,
+                clip_name: &item.name,
+                project: Some(project),
+                env: None,
+                working: seq.settings.color.working,
+            };
+            let ops: Option<Vec<FxOp>> = chain.iter().map(|e| FxOp::eval(e, &cx, lw, lh).filter(FxOp::gpu_ok)).collect();
+            if let Some(ops) = ops {
+                let m = Affine::scale(opts.scale as f64, opts.scale as f64)
+                    .then_apply(&motion)
+                    .then_apply(&Affine::scale(1.0 / px_scale as f64, 1.0 / px_scale as f64));
+                let fx = LayerFx { size: (lw as u32, lh as u32), decimation: n as u32, ops };
+                out.push(PlanLayer { frame, matrix: m, opacity: op * extra_opacity, blend: bl, fx: Some(Arc::new(fx)) });
+                return;
+            }
+        } else if plain {
             // Draft playback at reduced resolution: hand over planes box-filtered to the size
             // drawn instead of the full picture (a quarter at 1/2, a sixteenth at 1/4 of the
             // upload and sampling). The mean is taken over Y'CbCr codes, not linear light as
@@ -205,19 +277,30 @@ fn push_item(
             };
             let px_scale = frame.width as f64 / size.0.max(1) as f64;
             let m = Affine::scale(opts.scale as f64, opts.scale as f64).then_apply(&motion).then_apply(&Affine::scale(1.0 / px_scale, 1.0 / px_scale));
-            out.push(PlanLayer { frame, matrix: m, opacity: op * extra_opacity, blend: bl });
+            out.push(PlanLayer::new(frame, m, op * extra_opacity, bl));
             return;
         }
     }
     // CPU-rendered layer (standard effects): drawn by the GPU as a pre-rendered canvas image.
     let tc = filmcraft_time::format_time(t, seq.settings.frame_rate, seq.settings.drop_frame, filmcraft_time::TimeDisplay::Timecode, 48_000);
     if let Some((img, op2, _)) = crate::item_layer(project, seq, item, t, opts, sources, &tc) {
-        out.push(PlanLayer { frame: cpu_frame(img), matrix: Affine::IDENTITY, opacity: op2 * extra_opacity, blend: bl });
+        out.push(PlanLayer::new(cpu_frame(img), Affine::IDENTITY, op2 * extra_opacity, bl));
     }
 }
 
 fn near_identity(m: &Affine) -> bool {
     (m.a - 1.0).abs() < 1e-9 && (m.d - 1.0).abs() < 1e-9 && m.b.abs() < 1e-9 && m.c.abs() < 1e-9 && m.e.abs() < 1e-6 && m.f.abs() < 1e-6
+}
+
+/// A layer's working image with its effects applied, on the CPU (the reference for the GPU
+/// effect stage).
+pub fn effect_image(frame: &VideoFrame, fx: &LayerFx) -> crate::Image {
+    let (w, h, px) = frame.to_linear_f32_decimated(fx.decimation.max(1) as usize);
+    let mut img = crate::Image { w, h, px };
+    for op in &fx.ops {
+        op.apply(&mut img);
+    }
+    img
 }
 
 /// Execute a plan on the CPU (reference for the GPU compositor).
@@ -227,7 +310,10 @@ pub fn execute_cpu(plan: &FramePlan) -> crate::Image {
         FramePlan::Layers { width, height, layers } => {
             let mut canvas = crate::Image::new(*width, *height);
             for l in layers {
-                let src = crate::Image { w: l.frame.width as usize, h: l.frame.height as usize, px: l.frame.to_linear_f32() };
+                let src = match &l.fx {
+                    Some(fx) => effect_image(&l.frame, fx),
+                    None => crate::Image { w: l.frame.width as usize, h: l.frame.height as usize, px: l.frame.to_linear_f32() },
+                };
                 let placed = if l.matrix == Affine::scale(*width as f64, *height as f64) && src.w == 1 && src.h == 1 {
                     crate::Image::filled(*width, *height, src.get(0, 0))
                 } else {
