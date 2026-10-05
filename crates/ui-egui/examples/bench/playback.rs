@@ -626,7 +626,7 @@ fn parse_args() -> Args {
             "--json" => a.json = it.next(),
             "--help" | "-h" => {
                 println!(
-                    "bench_playback [--scenario h264-1080,stack3,h264-2160,hevc-2160,vp9-2160,av1-2160,demo,after-preview,seek-storm] [--res full,half] [--cpu|--gpu] [--seconds 8] [--refresh 60] [--workers N] [--repeat N] [--json out.json]"
+                    "bench_playback [--scenario h264-1080,stack3,stack3-blend,h264-2160,hevc-2160,vp9-2160,av1-2160,demo,after-preview,seek-storm] [--res full,half] [--cpu|--gpu] [--seconds 8] [--refresh 60] [--workers N] [--repeat N] [--json out.json]"
                 );
                 std::process::exit(0);
             }
@@ -634,7 +634,8 @@ fn parse_args() -> Args {
         }
     }
     if a.scenarios.is_empty() {
-        a.scenarios = ["h264-1080", "stack3", "h264-2160", "hevc-2160", "demo", "after-preview", "seek-storm"].iter().map(|s| s.to_string()).collect();
+        a.scenarios =
+            ["h264-1080", "stack3", "stack3-blend", "h264-2160", "hevc-2160", "demo", "after-preview", "seek-storm"].iter().map(|s| s.to_string()).collect();
     }
     a
 }
@@ -647,17 +648,34 @@ pub fn scenario_session(name: &str) -> Option<(Session, ItemId)> {
             let a = import(&mut s, &fixture("a1080.mp4")?);
             build_sequence(&mut s, 1920, 1080, &[(a, 100.0, None, 0.0, 100.0)], &[], 20.0)
         }
-        "stack3" => {
+        "stack3" | "stack3-blend" => {
             let (a, b, c) = (fixture("a1080.mp4")?, fixture("b1080.mp4")?, fixture("c1080.mp4")?);
             let (a, b, c) = (import(&mut s, &a), import(&mut s, &b), import(&mut s, &c));
-            build_sequence(
+            let seq = build_sequence(
                 &mut s,
                 1920,
                 1080,
                 &[(a, 100.0, None, 0.0, 100.0), (b, 60.0, Some((700.0, 420.0)), 0.0, 70.0), (c, 40.0, Some((1450.0, 760.0)), 12.0, 85.0)],
                 &[],
                 20.0,
-            )
+            );
+            if name == "stack3-blend" {
+                // V2 in Screen, V3 in Overlay
+                s.edit("blend modes", |p, _| {
+                    let q = p.sequence_mut(seq).expect("seq");
+                    for (track, mode) in [(1, "Screen"), (2, "Overlay")] {
+                        let i = filmcraft_project::effect::BLEND_MODES.iter().position(|b| *b == mode).expect("blend mode") as u32;
+                        for it in &mut q.video_tracks[track].items {
+                            if let Some(b) = it.effect_mut("opacity").and_then(|o| o.params.get_mut("blend")) {
+                                b.value = ParamValue::Choice(i);
+                            }
+                        }
+                    }
+                    Ok(())
+                })
+                .ok()?;
+            }
+            seq
         }
         "h264-2160" | "seek-storm-2160" => {
             let a = import(&mut s, &fixture("a2160.mp4")?);

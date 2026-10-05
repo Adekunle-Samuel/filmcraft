@@ -241,7 +241,7 @@ Options: `--sections decode,scrub`, `--only <substring>` (fixture or scenario), 
 `--quick`, `--cpu`, `--label NAME` (output `target/bench/bench-<label>.{json,md}`),
 `--section NAME --json FILE` (one section in-process, e.g. under a profiler). Fixtures are made
 with ffmpeg in `target/fixtures/playback/` (or `$FILMCRAFT_FIXTURES/playback`). The suite's
-`playback` section plays `h264-1080` and `stack3` at Full, `h264-2160` at Full, 1/2 and 1/4 and with
+`playback` section plays `h264-1080`, `stack3` and `stack3-blend` at Full, `h264-2160` at Full, 1/2 and 1/4 and with
 draft decoding (Settings ▸ Playback ▸ Draft decoding) at 1/2 and 1/4, and `hevc-2160`, `vp9-2160`
 and `av1-2160` at Full, 1/2 and 1/2 draft; its `draft` column counts the frames decoded in draft
 mode.
@@ -268,6 +268,7 @@ cargo xtask bench-playback --json target/bench-playback.json # machine-readable 
 |---|---|
 | `h264-1080` | one 1080p23.976 H.264 clip (testsrc2 + grain, ~45 Mbit/s, 250-frame GOP) |
 | `stack3` | three 1080p H.264 clips on V1–V3; V2/V3 scaled, positioned, rotated, 70–85 % opacity |
+| `stack3-blend` | `stack3` with V2 in Screen and V3 in Overlay (blend modes on the GPU) |
 | `h264-2160` | one 2160p23.976 H.264 clip |
 | `demo` | the built-in demo project (procedural footage, transitions, effects) |
 | `after-preview` | 1080p H.264 + Lumetri/Sharpen/Levels/Tint: a live play, Render Effects In to Out, then two plays of the green segment |

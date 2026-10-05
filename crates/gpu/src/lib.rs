@@ -7,6 +7,13 @@
 //! registers as a native texture. Uploads are cached by pixel-buffer identity, so a paused frame or
 //! a still costs nothing.
 //!
+//! Every blend mode of [`filmcraft_render::Blend`] runs here. Normal and Dissolve (whose per-pixel
+//! pattern is the CPU's 64-bit hash, reproduced in WGSL) use fixed-function "over" blending. The
+//! other 25 modes need the colour under the layer: before such a layer is drawn, the accumulator
+//! region under its quad is copied into a backdrop texture, and the fragment shader composites
+//! with the CPU reference's math (`filmcraft_render::blend::composite`: sRGB-encoded straight
+//! colour, W3C formulas, back to linear) and writes the result. Only those layers pay the copy.
+//!
 //! Layers that need converting before upload (linear f32 RGBA from CPU-rendered layers, 16-bit
 //! YUV such as ProRes) are converted to half floats by [`prepare`], which frame workers run off the
 //! UI thread; [`GpuCompositor::composite_prepared`] then only copies bytes into textures.
@@ -22,6 +29,7 @@ use rayon::prelude::*;
 
 use filmcraft_color::{Matrix, Range, Transfer};
 use filmcraft_frame::{Chroma, PixelData, VideoFrame};
+use filmcraft_render::Blend;
 use filmcraft_render::plan::{FramePlan, PlanLayer};
 
 pub mod lut;
@@ -49,10 +57,15 @@ pub struct GpuCompositor {
     device: wgpu::Device,
     queue: wgpu::Queue,
     layer_pipeline: wgpu::RenderPipeline,
+    /// Blend modes that read the destination: `fs_blend`, no fixed-function blending.
+    blend_pipeline: wgpu::RenderPipeline,
     final_pipeline: wgpu::RenderPipeline,
     layer_bgl: wgpu::BindGroupLayout,
+    blend_bgl: wgpu::BindGroupLayout,
     final_bgl: wgpu::BindGroupLayout,
     accum: Option<(wgpu::Texture, wgpu::TextureView, (u32, u32))>,
+    /// Copy of the accumulator under a blend-mode layer (allocated on first use).
+    backdrop: Option<(wgpu::Texture, wgpu::TextureView, (u32, u32))>,
     output: Option<(wgpu::Texture, wgpu::TextureView, (u32, u32))>,
     uploads: HashMap<(usize, u32, u32), Uploaded>,
     clock: u64,
@@ -203,6 +216,21 @@ impl GpuCompositor {
                 tex_entry(3),
             ],
         });
+        let blend_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("blend-layer"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
+                    ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Uniform, has_dynamic_offset: false, min_binding_size: None },
+                    count: None,
+                },
+                tex_entry(1),
+                tex_entry(2),
+                tex_entry(3),
+                tex_entry(4),
+            ],
+        });
         let final_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("final"),
             entries: &[wgpu::BindGroupLayoutEntry { binding: 0, ..tex_entry(0) }],
@@ -225,6 +253,27 @@ impl GpuCompositor {
                     blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
                     write_mask: wgpu::ColorWrites::ALL,
                 })],
+            }),
+            multiview_mask: None,
+            cache: None,
+        });
+        let bpl = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("blend-layer"),
+            bind_group_layouts: &[Some(&blend_bgl)],
+            immediate_size: 0,
+        });
+        let blend_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("blend-layer"),
+            layout: Some(&bpl),
+            vertex: wgpu::VertexState { module: &shader, entry_point: Some("vs"), compilation_options: Default::default(), buffers: &[] },
+            primitive: wgpu::PrimitiveState::default(),
+            depth_stencil: None,
+            multisample: wgpu::MultisampleState::default(),
+            fragment: Some(wgpu::FragmentState {
+                module: &shader,
+                entry_point: Some("fs_blend"),
+                compilation_options: Default::default(),
+                targets: &[Some(wgpu::ColorTargetState { format: ACCUM_FORMAT, blend: None, write_mask: wgpu::ColorWrites::ALL })],
             }),
             multiview_mask: None,
             cache: None,
@@ -262,10 +311,13 @@ impl GpuCompositor {
             device: device.clone(),
             queue: queue.clone(),
             layer_pipeline,
+            blend_pipeline,
             final_pipeline,
             layer_bgl,
+            blend_bgl,
             final_bgl,
             accum: None,
+            backdrop: None,
             output: None,
             uploads: HashMap::new(),
             clock: 0,
@@ -394,7 +446,7 @@ impl GpuCompositor {
         key
     }
 
-    fn uniforms(&self, l: &PlanLayer, key: (usize, u32, u32), out: (u32, u32)) -> [f32; 24] {
+    fn uniforms(&self, l: &PlanLayer, key: (usize, u32, u32), out: (u32, u32)) -> [f32; 28] {
         let up = &self.uploads[&key];
         let f = &l.frame;
         let m = &l.matrix;
@@ -442,6 +494,10 @@ impl GpuCompositor {
             kb,
             up.code_scale,
             footprint.max(1.0),
+            l.blend.index() as f32,
+            0.0,
+            0.0,
+            0.0,
         ]
     }
 
@@ -467,12 +523,17 @@ impl GpuCompositor {
                     },
                     None => VideoFrame::rgba_f32(img.w as u32, img.h as u32, img.px.clone()),
                 };
-                owned = [PlanLayer { frame: Arc::new(frame), matrix: filmcraft_geom::Affine::IDENTITY, opacity: 1.0 }];
+                owned = [PlanLayer { frame: Arc::new(frame), matrix: filmcraft_geom::Affine::IDENTITY, opacity: 1.0, blend: Blend::Normal }];
                 (img.w as u32, img.h as u32, &owned[..])
             }
         };
         let (w, h) = (w.max(1), h.max(1));
-        let accum_view = Self::target(&self.device, &mut self.accum, w, h, ACCUM_FORMAT, wgpu::TextureUsages::empty());
+        let accum_view = Self::target(&self.device, &mut self.accum, w, h, ACCUM_FORMAT, wgpu::TextureUsages::COPY_SRC);
+        let backdrop_view = if layers.iter().any(|l| l.blend.reads_destination()) {
+            Some(Self::target(&self.device, &mut self.backdrop, w, h, ACCUM_FORMAT, wgpu::TextureUsages::COPY_DST))
+        } else {
+            None
+        };
         let out_view = Self::target(&self.device, &mut self.output, w, h, OUTPUT_FORMAT, wgpu::TextureUsages::COPY_SRC);
         let keys: Vec<(usize, u32, u32)> = layers
             .iter()
@@ -482,6 +543,8 @@ impl GpuCompositor {
                 self.upload(&l.frame, p)
             })
             .collect();
+        // (bind group, None for a fixed-function layer or Some(region of the accumulator to copy
+        // into the backdrop) for a layer that reads the destination; Some(None): off the output)
         let mut bind_groups = Vec::with_capacity(layers.len());
         for (l, k) in layers.iter().zip(&keys) {
             let u = self.uniforms(l, *k, (w, h));
@@ -494,17 +557,21 @@ impl GpuCompositor {
             });
             self.queue.write_buffer(&buf, 0, &bytes);
             let up = &self.uploads[k];
-            let bg = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("layer"),
-                layout: &self.layer_bgl,
-                entries: &[
-                    wgpu::BindGroupEntry { binding: 0, resource: buf.as_entire_binding() },
-                    wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(&up.views[0]) },
-                    wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(&up.views[1]) },
-                    wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::TextureView(&up.views[2]) },
-                ],
-            });
-            bind_groups.push(bg);
+            let mut entries = vec![
+                wgpu::BindGroupEntry { binding: 0, resource: buf.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(&up.views[0]) },
+                wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(&up.views[1]) },
+                wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::TextureView(&up.views[2]) },
+            ];
+            let (layout, region) = match (&backdrop_view, l.blend.reads_destination()) {
+                (Some(b), true) => {
+                    entries.push(wgpu::BindGroupEntry { binding: 4, resource: wgpu::BindingResource::TextureView(b) });
+                    (&self.blend_bgl, Some(quad_bounds(l, w, h)))
+                }
+                _ => (&self.layer_bgl, None),
+            };
+            let bg = self.device.create_bind_group(&wgpu::BindGroupDescriptor { label: Some("layer"), layout, entries: &entries });
+            bind_groups.push((bg, region));
         }
         let final_bg = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("final"),
@@ -512,25 +579,42 @@ impl GpuCompositor {
             entries: &[wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&accum_view) }],
         });
         let mut enc = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("filmcraft-composite") });
-        {
-            let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("layers"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &accum_view,
-                    depth_slice: None,
-                    resolve_target: None,
-                    ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT), store: wgpu::StoreOp::Store },
-                })],
-                depth_stencil_attachment: None,
-                timestamp_writes: None,
-                occlusion_query_set: None,
-                multiview_mask: None,
-            });
+        // Runs of fixed-function layers draw in one pass. A layer that reads the destination
+        // ends it, copies the accumulator under its quad into the backdrop and draws on its own.
+        let accum_tex = self.accum.as_ref().map(|a| a.0.clone());
+        let backdrop_tex = self.backdrop.as_ref().map(|b| b.0.clone());
+        let mut cleared = false;
+        let mut i = 0;
+        while i < bind_groups.len() || !cleared {
+            if let Some((bg, Some(region))) = bind_groups.get(i) {
+                i += 1;
+                let (Some(rect), Some(src), Some(dst)) = (region, &accum_tex, &backdrop_tex) else { continue };
+                if !cleared {
+                    accum_pass(&mut enc, &accum_view, wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT));
+                    cleared = true;
+                }
+                let origin = wgpu::Origin3d { x: rect.0, y: rect.1, z: 0 };
+                enc.copy_texture_to_texture(
+                    wgpu::TexelCopyTextureInfo { texture: src, mip_level: 0, origin, aspect: wgpu::TextureAspect::All },
+                    wgpu::TexelCopyTextureInfo { texture: dst, mip_level: 0, origin, aspect: wgpu::TextureAspect::All },
+                    wgpu::Extent3d { width: rect.2, height: rect.3, depth_or_array_layers: 1 },
+                );
+                let mut pass = accum_pass(&mut enc, &accum_view, wgpu::LoadOp::Load);
+                pass.set_pipeline(&self.blend_pipeline);
+                pass.set_bind_group(0, bg, &[]);
+                pass.draw(0..6, 0..1);
+                continue;
+            }
+            let end = bind_groups.iter().skip(i).position(|(_, r)| r.is_some()).map_or(bind_groups.len(), |n| i + n);
+            let load = if cleared { wgpu::LoadOp::Load } else { wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT) };
+            let mut pass = accum_pass(&mut enc, &accum_view, load);
+            cleared = true;
             pass.set_pipeline(&self.layer_pipeline);
-            for bg in &bind_groups {
+            for (bg, _) in bind_groups.get(i..end).unwrap_or_default() {
                 pass.set_bind_group(0, bg, &[]);
                 pass.draw(0..6, 0..1);
             }
+            i = end;
         }
         {
             let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -589,5 +673,44 @@ impl GpuCompositor {
     }
 }
 
+/// A render pass drawing into the accumulator.
+fn accum_pass<'e>(enc: &'e mut wgpu::CommandEncoder, view: &wgpu::TextureView, load: wgpu::LoadOp<wgpu::Color>) -> wgpu::RenderPass<'e> {
+    enc.begin_render_pass(&wgpu::RenderPassDescriptor {
+        label: Some("layers"),
+        color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+            view,
+            depth_slice: None,
+            resolve_target: None,
+            ops: wgpu::Operations { load, store: wgpu::StoreOp::Store },
+        })],
+        depth_stencil_attachment: None,
+        timestamp_writes: None,
+        occlusion_query_set: None,
+        multiview_mask: None,
+    })
+}
+
+/// The output pixels a layer's quad can touch, as (x, y, width, height) clamped to the `w`×`h`
+/// output with a one-pixel margin; None when it touches none. A non-finite matrix covers it all.
+fn quad_bounds(l: &PlanLayer, w: u32, h: u32) -> Option<(u32, u32, u32, u32)> {
+    let m = &l.matrix;
+    let (fw, fh) = (l.frame.width as f64, l.frame.height as f64);
+    let pts = [(0.0, 0.0), (fw, 0.0), (0.0, fh), (fw, fh)].map(|(x, y)| (m.a * x + m.c * y + m.e, m.b * x + m.d * y + m.f));
+    if pts.iter().any(|p| !p.0.is_finite() || !p.1.is_finite()) {
+        return Some((0, 0, w, h));
+    }
+    let (mut x0, mut y0, mut x1, mut y1) = (f64::INFINITY, f64::INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY);
+    for (x, y) in pts {
+        (x0, y0, x1, y1) = (x0.min(x), y0.min(y), x1.max(x), y1.max(y));
+    }
+    // in range before the cast (`as` saturates anyway; NaN is excluded above)
+    let px = |v: f64, hi: u32| v.max(0.0).min(hi as f64) as u32;
+    let (x0, y0) = (px(x0.floor() - 1.0, w), px(y0.floor() - 1.0, h));
+    let (x1, y1) = (px(x1.ceil() + 1.0, w), px(y1.ceil() + 1.0, h));
+    (x1 > x0 && y1 > y0).then(|| (x0, y0, x1 - x0, y1 - y0))
+}
+
+#[cfg(test)]
+mod blend_tests;
 #[cfg(test)]
 mod tests;

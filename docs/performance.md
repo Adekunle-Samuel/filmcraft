@@ -13,6 +13,27 @@ the before/after comparison relies on. Each milestone below alternated base / af
 each); the most load-independent figure is the decoder's own cycle count (`proc_pid_rusage`
 instructions and cycles of a process, all threads summed).
 
+## Results (GPU1: blend modes on the GPU compositor, #30, before → after)
+
+Before = this change with the old whole-frame CPU fallback for non-Normal blend modes put back
+in `render::plan` (same binary otherwise); after = GPU1. New `stack3-blend` scenario: `stack3`
+(three 1080p23.976 H.264 clips, V2/V3 scaled, positioned, rotated, 70–85 % opacity) with V2 in
+Screen and V3 in Overlay. `cargo xtask bench-playback --scenario stack3-blend,stack3 --res
+full,half`, GPU path, 8 s plays, two alternating rounds each on 2026-10-05 at load average
+33–63 (1-minute; 5-minute 67–81).
+
+| case | shown/dropped before (2 runs) | after (2 runs) | CPU ms/frame before → after | worker svc p50 before → after |
+|---|---|---|---|---|
+| stack3-blend Full | 19/173, 138/54 | **191/1, 192/0** | 168, 214 → **86, 87** | 258, 219 → 1.2, 1.2 ms |
+| stack3-blend 1/2 | 192/0, 192/0 | 191/1, 192/0 | 158, 151 → **89, 88** | 66, 99 → 1.1, 1.0 ms |
+| stack3 Full (control, Normal) | 192/0, 192/0 | 191/1, 192/0 | 88, 88 → 91, 88 | 1.3, 1.6 → 0.9, 1.5 ms |
+| stack3 1/2 (control, Normal) | 191/1, 192/0 | 192/0, 192/0 | 82, 90 → 90, 89 | |
+
+A stack with blend modes now costs what the same stack in Normal does: the frame workers only
+decode, and the UI-thread present (upload and draw, including the backdrop copies for the two
+blended layers) stays at 9–10 ms p50, as for `stack3`. Before, every frame was composited on the
+CPU (≈ 2 cores more at 23.976 fps) and Full resolution could not keep up at this load.
+
 ## Results (M4.10: 4K VP9, AV1 and HEVC, before → after)
 
 Baseline = commit `a814ff6` (decoders unchanged since M4.8); after = M4.10. Interleaved runs on
