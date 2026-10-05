@@ -53,6 +53,18 @@ pub fn register() -> Availability {
     }
 }
 
+/// Whether [`register`] has put a hardware decoder factory in front of our decoders.
+pub fn registered() -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        filmcraft_codecs::video_decoder_registered(videotoolbox_factory)
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        false
+    }
+}
+
 /// Whether this system's hardware decoder takes the stream of `entry` (whatever the Hardware
 /// decoding setting says): diagnostics and tests.
 pub fn hardware_decoder_for(entry: &filmcraft_isobmff::SampleEntry) -> bool {

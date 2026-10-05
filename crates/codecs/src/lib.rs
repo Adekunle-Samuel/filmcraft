@@ -89,6 +89,11 @@ pub fn register_video_decoder(f: VideoDecoderFactory) {
     }
 }
 
+/// Whether `f` is among the registered video decoder factories (startup diagnostics, tests).
+pub fn video_decoder_registered(f: VideoDecoderFactory) -> bool {
+    factories().read().unwrap_or_else(|e| e.into_inner()).iter().any(|x| std::ptr::fn_addr_eq(*x, f))
+}
+
 /// Create a decoder for a sample entry.
 pub fn make_video_decoder(entry: &filmcraft_isobmff::SampleEntry) -> Result<Box<dyn VideoDecoder>> {
     let g = factories().read().unwrap_or_else(|e| e.into_inner());
