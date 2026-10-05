@@ -168,7 +168,8 @@ impl<'a> PlaneView<'a> {
     }
 }
 
-fn plane<'a>(pb: &'a CVImageBuffer, _lock: &Locked<'a>, i: usize) -> std::result::Result<PlaneView<'a>, String> {
+/// The returned view borrows the lock guard, so it cannot outlive the locked base address.
+fn plane<'l>(pb: &CVImageBuffer, _lock: &'l Locked<'_>, i: usize) -> std::result::Result<PlaneView<'l>, String> {
     let base = CVPixelBufferGetBaseAddressOfPlane(pb, i) as *const u8;
     let stride = CVPixelBufferGetBytesPerRowOfPlane(pb, i);
     let (width, height) = (CVPixelBufferGetWidthOfPlane(pb, i), CVPixelBufferGetHeightOfPlane(pb, i));
@@ -176,8 +177,9 @@ fn plane<'a>(pb: &'a CVImageBuffer, _lock: &Locked<'a>, i: usize) -> std::result
         return Err(format!("decoded picture plane {i} is not mapped"));
     }
     let len = stride.checked_mul(height).ok_or("plane size overflows")?;
-    // SAFETY: the buffer's base address is locked (`_lock` borrows the same buffer for 'a), and
-    // CoreVideo maps `bytes_per_row * height` bytes from each plane's base address.
+    // SAFETY: the buffer's base address is locked while `_lock` lives, and the returned slice
+    // borrows `_lock` ('l), so it cannot be used after the unlock; CoreVideo maps
+    // `bytes_per_row * height` bytes from each plane's base address.
     let data = unsafe { std::slice::from_raw_parts(base, len) };
     Ok(PlaneView { data, stride, width, height })
 }
