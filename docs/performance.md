@@ -13,6 +13,20 @@ the before/after comparison relies on. Each milestone below alternated base / af
 each); the most load-independent figure is the decoder's own cycle count (`proc_pid_rusage`
 instructions and cycles of a process, all threads summed).
 
+## Memory of clips on a timeline (MEM1–MEM3)
+
+Measured on the desktop release build with `footprint`, `heap` and `malloc_history`
+(`MallocStackLogging=lite`), 2026-10-05: twelve H.264 clips dropped on a timeline took the process
+to a 12 GB footprint, 10.8 GB of it live heap in three piles.
+
+1. **Media files read whole (2.9 GB), MEM1.** The desktop host had no `Services::reader`, so
+   `MediaPool::open_file` fell back to `read_file` and every clip's bytes stayed in memory for as
+   long as its source was open. `FsServices::reader` now returns a
+   `filmcraft_media::reader::FileReader`: the file stays open and containers read their index and
+   then single samples with positional reads, as the web host already did through `BlobReader`
+   ([web.md](web.md)). Formats decoded in one go (stills, WAV, MPEG elementary streams) are still
+   read whole through the reader.
+
 ## Results (GPU2: standard effects on the GPU compositor, #30, before → after)
 
 Before = this change with clips that carry standard effects sent back to the CPU layer path in
