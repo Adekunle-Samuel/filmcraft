@@ -31,7 +31,7 @@ pub mod video;
 use std::sync::{Arc, RwLock};
 
 pub use audio::AudioFileSource;
-pub use gop::{GopStats, gop_stats};
+pub use gop::{GopStats, gop_stats, live_decoders};
 pub use mkv::MkvSource;
 pub use mp4::Mp4Source;
 pub use mpeg::MpegSource;

@@ -26,6 +26,14 @@ to a 12 GB footprint, 10.8 GB of it live heap in three piles.
    then single samples with positional reads, as the web host already did through `BlobReader`
    ([web.md](web.md)). Formats decoded in one go (stills, WAV, MPEG elementary streams) are still
    read whole through the reader.
+2. **A decoder per clip, for good (3.5 GB), MEM2.** Every source kept its decoder once it had
+   decoded a frame, with its reference pictures and the pictures its frame threads have in flight:
+   about 290 MB per clip here (`h264` `PicState`, `Frame::make_row`). The GOP caches now share a
+   pool (`crates/codecs/src/gop.rs`): beyond `MAX_LIVE_DECODERS` (4) the least recently used
+   caches that have been idle for 3 s drop their decoder and make a new one when asked again,
+   which costs what a seek costs. A cache in use (a layer of the frame being composited, the next
+   clip being prefetched) always keeps its decoder, so a composite of more than four clips does
+   not restart decoders on every frame. `perf.stats` reports `decode.liveDecoders`.
 
 ## Results (GPU2: standard effects on the GPU compositor, #30, before → after)
 
