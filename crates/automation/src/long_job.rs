@@ -106,21 +106,78 @@ impl FilmcraftMcp {
     }
 }
 
-/// Delete what an interrupted export wrote: the output file and, for image sequences and caption
-/// sidecars, the files next to it named `<stem>[digits].<ext>` — only those written since `since`.
+/// Delete what an interrupted export wrote, and nothing else: the output file itself, the numbered
+/// stills of an image sequence (`<stem><digits>.<same extension>`) and the caption sidecar
+/// (`<stem>.srt` / `<stem>.vtt`), each only if it was written since `since`. Other files that
+/// merely share the name's stem (`<stem>.aep`, `<stem>2.psd`, …) are never touched, even when they
+/// were saved during the export.
 pub fn remove_partial(path: &str, since: SystemTime) {
     let p = Path::new(path);
-    let (Some(dir), Some(stem)) = (p.parent(), p.file_stem().map(|s| s.to_string_lossy().to_string())) else { return };
+    let (Some(dir), Some(stem), Some(file)) = (p.parent(), p.file_stem().and_then(|s| s.to_str()), p.file_name().and_then(|s| s.to_str())) else {
+        return;
+    };
+    let ext = p.extension().and_then(|s| s.to_str()).unwrap_or_default();
     let dir = if dir.as_os_str().is_empty() { Path::new(".") } else { dir };
     let Ok(entries) = std::fs::read_dir(dir) else { return };
     // file times are coarser than the clock
     let since = since.checked_sub(Duration::from_secs(1)).unwrap_or(since);
     for e in entries.flatten() {
-        let name = e.file_name().to_string_lossy().to_string();
-        let sibling = name.strip_prefix(&stem).is_some_and(|rest| rest.trim_start_matches(|c: char| c.is_ascii_digit()).starts_with('.'));
-        let ours = sibling && e.metadata().is_ok_and(|m| m.is_file() && m.modified().is_ok_and(|t| t >= since));
-        if ours {
+        let name = e.file_name();
+        let Some(name) = name.to_str() else { continue };
+        if is_export_output(name, file, stem, ext) && e.metadata().is_ok_and(|m| m.is_file() && m.modified().is_ok_and(|t| t >= since)) {
             let _ = std::fs::remove_file(e.path());
         }
+    }
+}
+
+/// Whether `name` is a file an export to `file` (`stem` + `.ext`) writes.
+fn is_export_output(name: &str, file: &str, stem: &str, ext: &str) -> bool {
+    if name == file {
+        return true;
+    }
+    let Some(rest) = name.strip_prefix(stem) else { return false };
+    if let Some(sidecar) = rest.strip_prefix('.') {
+        return sidecar.eq_ignore_ascii_case("srt") || sidecar.eq_ignore_ascii_case("vtt");
+    }
+    // image sequence: one or more digits, then the output's own extension
+    let digits = rest.len() - rest.trim_start_matches(|c: char| c.is_ascii_digit()).len();
+    digits > 0 && !ext.is_empty() && rest.get(digits..).is_some_and(|r| r.strip_prefix('.').is_some_and(|x| x == ext))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_the_exports_own_files_are_removed() {
+        let dir = std::env::temp_dir().join(format!("fc-remove-partial-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let started = SystemTime::now();
+        let ours = ["trailer.png", "trailer000.png", "trailer123.png", "trailer.srt", "trailer.vtt"];
+        // same stem, written during the export, but not the export's
+        let theirs = ["trailer.aep", "trailer2.psd", "trailer.docx", "trailer000.jpg", "trailers.png", "trailer.png.bak", "other.png"];
+        for f in ours.iter().chain(theirs.iter()) {
+            std::fs::write(dir.join(f), b"x").unwrap();
+        }
+        remove_partial(&dir.join("trailer.png").to_string_lossy(), started);
+        for f in ours {
+            assert!(!dir.join(f).exists(), "{f} should be removed");
+        }
+        for f in theirs {
+            assert!(dir.join(f).exists(), "{f} must not be removed");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn files_older_than_the_export_are_kept() {
+        let dir = std::env::temp_dir().join(format!("fc-remove-partial-old-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("clip.mp4"), b"x").unwrap();
+        remove_partial(&dir.join("clip.mp4").to_string_lossy(), SystemTime::now() + Duration::from_secs(60));
+        assert!(dir.join("clip.mp4").exists());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
