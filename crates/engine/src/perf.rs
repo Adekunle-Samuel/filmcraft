@@ -23,6 +23,9 @@ pub fn decode_json() -> Value {
         "evicted": g.evicted,
         // sources that hold a decoder right now (idle ones give theirs up beyond a cap)
         "liveDecoders": filmcraft_codecs::live_decoders(),
+        // decoded frames all sources hold, and the budget idle sources are trimmed to
+        "cacheMB": filmcraft_codecs::cached_bytes() as f64 / 1e6,
+        "cacheBudgetMB": filmcraft_codecs::FRAME_BUDGET as f64 / 1e6,
         "decodeMs": g.decode_ns as f64 / 1e6,
         "decodeMsPerSample": g.decode_ms_per_sample(),
         "framesDecoded": g.frames,
@@ -74,6 +77,8 @@ mod tests {
             "decodeMsPerSample",
             "framesDecoded",
             "liveDecoders",
+            "cacheMB",
+            "cacheBudgetMB",
         ] {
             assert!(v["decode"][k].is_number(), "decode.{k} in {v}");
         }

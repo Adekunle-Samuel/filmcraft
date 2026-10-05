@@ -34,6 +34,18 @@ to a 12 GB footprint, 10.8 GB of it live heap in three piles.
    which costs what a seek costs. A cache in use (a layer of the frame being composited, the next
    clip being prefetched) always keeps its decoder, so a composite of more than four clips does
    not restart decoders on every frame. `perf.stats` reports `decode.liveDecoders`.
+3. **A frame budget per clip, none overall (3.8 GB), MEM3.** Each GOP cache keeps up to 384 MB
+   of decoded frames (at least 64 frames), which every clip on the timeline filled and kept. The
+   pool now counts the frames of all caches against `FRAME_BUDGET` (1 GiB): over it, caches idle
+   for 3 s give up frames, least recently used cache first, earliest frames first. Caches in use
+   keep their own budget, because a frame evicted before it is shown costs a re-decode from the
+   keyframe. `perf.stats` reports `decode.cacheMB` and `decode.cacheBudgetMB`; before, this
+   memory appeared in no counter (`frames.cache` covers the frame server's rendered images and
+   GPU plans only).
+
+What remains per live decoder is unchanged: the H.264 decoder publishes each macroblock row of a
+picture as its own allocations (`Frame::make_row`, five per row), which is where the 290 MB per
+decoder comes from.
 
 ## Results (GPU2: standard effects on the GPU compositor, #30, before → after)
 
