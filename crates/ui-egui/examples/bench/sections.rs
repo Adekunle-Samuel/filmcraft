@@ -87,6 +87,7 @@ pub fn decode(o: &Opts) -> Vec<Value> {
             "fps": best, "fps_min": fps.iter().cloned().fold(f64::MAX, f64::min), "fps_runs": fps,
             "cpu_ms_per_frame": median(&cpu), "first_frame_ms": median(&first), "realtime": best / rate.as_f64(),
             "decode_threads": rayon::current_num_threads(), "load": load_avg(),
+            "hw_frames": filmcraft_codecs::hw::hw_stats().frames,
         });
         eprintln!("decode {name}: {best:.1} fps");
         rows.push(row);

@@ -82,6 +82,11 @@ pub struct PlaybackPrefs {
     /// skip deblocking (faster; those frames are approximate). Never used for exports, renders or
     /// a paused frame. Off by default.
     pub draft_decode: bool,
+    /// "Hardware decoding": `auto` (default: the system's hardware decoder for streams it
+    /// supports, e.g. VideoToolbox H.264 / HEVC on macOS, falling back to FilmCraft's own decoder)
+    /// or `off` (always FilmCraft's own decoders). Media already open keeps its decoder until it
+    /// is reopened.
+    pub hardware_decoding: String,
 }
 
 impl Default for PlaybackPrefs {
@@ -94,6 +99,7 @@ impl Default for PlaybackPrefs {
             enable_transmit: false,
             disable_video_in_background: true,
             draft_decode: false,
+            hardware_decoding: "auto".into(),
         }
     }
 }

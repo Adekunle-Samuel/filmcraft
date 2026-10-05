@@ -73,6 +73,9 @@ fn main() -> eframe::Result {
     // Panics anywhere go to <data dir>/Logs/crash-<day>.log with a backtrace; the UI pass and
     // frame workers catch them and keep running (see filmcraft_ui_egui::crash).
     filmcraft_ui_egui::crash::install(data_dir.clone().or_else(default_data_dir).map(|d| d.join("Logs")));
+    // OS hardware video decoders (VideoToolbox on macOS) in front of our own; Settings ▸ Playback ▸
+    // Hardware decoding switches them off. Unsupported streams and failures use our decoders.
+    log::info!("hardware decoding: {:?}", filmcraft_platform::register());
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("FilmCraft")

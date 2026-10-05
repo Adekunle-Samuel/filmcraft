@@ -21,6 +21,7 @@ whisper = ["filmcraft-engine/whisper", "filmcraft-engine/speech-download"]
 filmcraft-engine = { workspace = true }
 filmcraft-media = { workspace = true }
 filmcraft-codecs = { workspace = true }
+filmcraft-platform = { workspace = true }
 filmcraft-mxf = { workspace = true }
 filmcraft-mpegts = { workspace = true }
 filmcraft-ogg = { workspace = true }

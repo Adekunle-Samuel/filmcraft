@@ -155,6 +155,8 @@ async fn main() {
         println!("filmcraft-cli {}", env!("CARGO_PKG_VERSION"));
         return;
     }
+    // OS hardware video decoders (VideoToolbox on macOS) in front of our own, as in the desktop app.
+    let _ = filmcraft_platform::register();
     let a = Args::parse(std::env::args().skip(1));
     let Some(cmd) = a.pos(0) else { usage("missing subcommand") };
     match cmd {
