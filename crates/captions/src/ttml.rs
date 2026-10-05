@@ -184,28 +184,45 @@ struct Timing {
     tick_rate: i64,
 }
 
+fn positive_integer(s: &str) -> Option<i64> {
+    let s = s.trim();
+    if s.is_empty() || !s.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    s.parse::<i64>().ok().filter(|v| *v > 0)
+}
+
 fn parse_ratio(s: &str) -> Option<(i64, i64)> {
-    let mut it = s.split_whitespace().map(|x| x.parse::<i64>().ok());
+    let mut it = s.split_whitespace().map(positive_integer);
     let a = it.next()??;
-    let b = it.next().flatten().unwrap_or(1);
-    (a > 0 && b > 0).then_some((a, b))
+    let b = it.next()??;
+    it.next().is_none().then_some((a, b))
 }
 
 fn attr<'a>(n: roxmltree::Node<'a, '_>, local: &str) -> Option<&'a str> {
     n.attributes().find(|a| a.name() == local).map(|a| a.value())
 }
 
-fn timing(root: roxmltree::Node) -> Timing {
-    let base = attr(root, "frameRate").and_then(|v| v.trim().parse::<i64>().ok()).filter(|v| *v > 0).unwrap_or(30);
-    let (mn, md) = attr(root, "frameRateMultiplier").and_then(parse_ratio).unwrap_or((1, 1));
-    let rate = FrameRate::new(base * mn, md);
-    let sub = attr(root, "subFrameRate").and_then(|v| v.trim().parse::<i64>().ok()).filter(|v| *v > 0).unwrap_or(1);
-    let tick_rate = attr(root, "tickRate").and_then(|v| v.trim().parse::<i64>().ok()).filter(|v| *v > 0).unwrap_or(if attr(root, "frameRate").is_some() {
-        base * sub
-    } else {
-        1
-    });
-    Timing { rate, base, sub_frame_rate: sub, tick_rate }
+fn timing(root: roxmltree::Node) -> Result<Timing> {
+    let invalid =
+        |name: &str| Error::Syntax { line: root.document().text_pos_at(root.range().start).row as usize, msg: format!("invalid TTML timing parameter {name}") };
+    let integer = |name: &str, default| match attr(root, name) {
+        Some(v) => positive_integer(v).ok_or_else(|| invalid(name)),
+        None => Ok(default),
+    };
+    let base = integer("frameRate", 30)?;
+    let (mn, md) = match attr(root, "frameRateMultiplier") {
+        Some(v) => parse_ratio(v).ok_or_else(|| invalid("frameRateMultiplier"))?,
+        None => (1, 1),
+    };
+    let rate = FrameRate::new(base.checked_mul(mn).ok_or_else(|| invalid("frameRateMultiplier"))?, md);
+    let sub = integer("subFrameRate", 1)?;
+    let tick_rate = match attr(root, "tickRate") {
+        Some(v) => positive_integer(v).ok_or_else(|| invalid("tickRate"))?,
+        None if attr(root, "frameRate").is_some() => base.checked_mul(sub).ok_or_else(|| invalid("subFrameRate"))?,
+        None => 1,
+    };
+    Ok(Timing { rate, base, sub_frame_rate: sub, tick_rate })
 }
 
 /// Seconds as an exact decimal string → ticks.
@@ -383,7 +400,7 @@ pub fn parse(text: &str) -> Result<Document> {
     if root.tag_name().name() != "tt" {
         return Err(Error::NotFormat("TTML"));
     }
-    let tm = timing(root);
+    let tm = timing(root)?;
     let mut styles = std::collections::HashMap::new();
     for s in root.descendants().filter(|n| n.is_element() && n.tag_name().name() == "style") {
         if let Some(id) = s.attributes().find(|a| a.name() == "id").map(|a| a.value()) {
@@ -476,6 +493,44 @@ mod tests {
 
     fn tm(rate: FrameRate) -> Timing {
         Timing { rate, base: rate.timecode_base(), sub_frame_rate: 1, tick_rate: 1 }
+    }
+
+    #[test]
+    fn invalid_timing_parameters_return_an_error() {
+        for params in [
+            r#"ttp:frameRate="0""#,
+            r#"ttp:frameRate="-25""#,
+            r#"ttp:frameRate="""#,
+            r#"ttp:subFrameRate="0""#,
+            r#"ttp:tickRate="-1""#,
+            r#"ttp:frameRateMultiplier="1 0""#,
+            r#"ttp:frameRateMultiplier="1""#,
+            r#"ttp:frameRateMultiplier="1 2 3""#,
+        ] {
+            let xml = format!(
+                r#"<tt xmlns="http://www.w3.org/ns/ttml" xmlns:ttp="http://www.w3.org/ns/ttml#parameter" {params}><body><div><p begin="1s" end="2s">Hello</p></div></body></tt>"#
+            );
+            assert!(crate::parse(xml.as_bytes(), crate::Format::Ttml).is_err(), "{params}");
+        }
+    }
+
+    #[test]
+    fn missing_timing_parameters_keep_defaults() {
+        for (params, begin, end) in [
+            ("", "1s", "2s"),
+            (r#"ttp:frameRate="25""#, "25f", "50f"),
+            (r#"ttp:frameRate="30" ttp:subFrameRate="2""#, "60t", "120t"),
+            (r#"ttp:frameRate="30" ttp:subFrameRate="2" ttp:tickRate="10""#, "10t", "20t"),
+            (r#"ttp:frameRate="25" ttp:frameRateMultiplier="2 1""#, "50f", "100f"),
+        ] {
+            let xml = format!(
+                r#"<tt xmlns="http://www.w3.org/ns/ttml" xmlns:ttp="http://www.w3.org/ns/ttml#parameter" {params}><body><div><p begin="{begin}" end="{end}">Hello</p></div></body></tt>"#
+            );
+            let doc = crate::parse(xml.as_bytes(), crate::Format::Ttml).unwrap();
+            assert_eq!(doc.cues.len(), 1, "{params}");
+            assert_eq!(doc.cues[0].start, Tick(TICKS_PER_SECOND), "{params}");
+            assert_eq!(doc.cues[0].end, Tick(2 * TICKS_PER_SECOND), "{params}");
+        }
     }
 
     #[test]
