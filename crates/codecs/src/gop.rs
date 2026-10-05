@@ -163,6 +163,7 @@ impl State {
             self.bytes = self.bytes.saturating_sub(f.byte_size());
             pool.bytes.fetch_sub(f.byte_size(), Ordering::Relaxed);
             EVICTED.fetch_add(1, Ordering::Relaxed);
+            filmcraft_frame::pool::recycle(f);
         }
     }
 
@@ -410,6 +411,7 @@ impl GopCache {
         st.bytes += f.byte_size();
         if let Some(old) = st.frames.insert(pts, Arc::new(f)) {
             st.bytes -= old.byte_size();
+            filmcraft_frame::pool::recycle(old);
         }
         // evict frames far from the most recent (keep a window around the working position)
         while st.bytes > budget && st.frames.len() > 2 {
@@ -419,6 +421,8 @@ impl GopCache {
                 st.drafts.remove(&victim);
                 st.bytes -= v.byte_size();
                 EVICTED.fetch_add(1, Ordering::Relaxed);
+                // its planes serve the next decoded pictures instead of going back to the allocator
+                filmcraft_frame::pool::recycle(v);
             }
         }
         let pool = &self.shared.pool;
@@ -983,5 +987,69 @@ mod tests {
         let decodes = a.decodes.load(Ordering::Relaxed);
         assert_eq!(index_of(&ca.frame(&a, 0).expect("cached")), 0);
         assert_eq!(a.decodes.load(Ordering::Relaxed), decodes);
+    }
+
+    /// Pictures big enough for the plane pool (its own size, so that parallel tests cannot take
+    /// the buffers), no reordering, one long GOP.
+    struct Big(usize);
+    const BIG: (u32, u32) = (200, 101);
+
+    impl VideoDecoder for Big {
+        fn decode(&mut self, _sample: &[u8], pts: i64) -> crate::Result<Vec<DecodedFrame>> {
+            let mut px = filmcraft_frame::pool::take_u8((BIG.0 * BIG.1 * 4) as usize);
+            px.resize((BIG.0 * BIG.1 * 4) as usize, (pts / 1000) as u8);
+            Ok(vec![DecodedFrame { pts, frame: VideoFrame::rgba8(BIG.0, BIG.1, px), draft: false }])
+        }
+        fn flush(&mut self) -> Vec<DecodedFrame> {
+            Vec::new()
+        }
+        fn reset(&mut self) {}
+        fn name(&self) -> &str {
+            "big"
+        }
+    }
+
+    impl VideoSamples for Big {
+        fn count(&self) -> usize {
+            self.0
+        }
+        fn pts(&self, i: usize) -> i64 {
+            i as i64 * 1000
+        }
+        fn sync_before(&self, _i: usize) -> usize {
+            0
+        }
+        fn sample_at(&self, t: i64) -> Option<usize> {
+            let i = (t / 1000) as usize;
+            (i < self.0).then_some(i)
+        }
+        fn read(&self, i: usize) -> crate::Result<Vec<u8>> {
+            Ok(vec![i as u8])
+        }
+        fn make_decoder(&self) -> crate::Result<Box<dyn VideoDecoder>> {
+            Ok(Box::new(Big(self.0)))
+        }
+    }
+
+    #[test]
+    fn evicted_frames_are_decoded_into_again() {
+        let s = Big(200);
+        // room for MIN_FRAMES pictures only
+        let mut c = GopCache::new(None);
+        c.budget = 0;
+        let reused = || filmcraft_frame::pool::stats().reused;
+        let before = reused();
+        // the cache holds MIN_FRAMES pictures: none is evicted yet, every plane is new
+        for i in 0..MIN_FRAMES as i64 {
+            assert_eq!(c.frame(&s, i * 1000).expect("frame").width, BIG.0);
+        }
+        assert_eq!(reused(), before);
+        // from here on each picture evicts one, whose buffer the next picture is decoded into
+        let more = 40;
+        for i in MIN_FRAMES as i64..MIN_FRAMES as i64 + more {
+            let f = c.frame(&s, i * 1000).expect("frame");
+            assert!(matches!(&f.data, filmcraft_frame::PixelData::Rgba8(d) if d.iter().all(|&b| b == i as u8)), "frame {i} has its own pixels");
+        }
+        assert!(reused() - before >= more as u64 - 2, "{} of {more} planes recycled", reused() - before);
     }
 }

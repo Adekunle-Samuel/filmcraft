@@ -35,6 +35,7 @@ mod intra;
 mod mbtypes;
 pub mod params;
 mod picture;
+pub use picture::set_plane_allocator;
 pub mod slice;
 mod slicedec;
 #[cfg(test)]

@@ -43,6 +43,18 @@ to a 12 GB footprint, 10.8 GB of it live heap in three piles.
    memory appeared in no counter (`frames.cache` covers the frame server's rendered images and
    GPU plans only).
 
+4. **Freed planes the allocator keeps (2.5 GB), MEM4.** With MEM1–MEM3 the same twelve clips took
+   5.1 GB, only 2.5 GB of it live: every decoded picture allocated three planes and every
+   eviction freed them, and the system allocator kept the freed pages (`footprint`: 1.7 GB
+   reclaimable). `filmcraft_frame::pool` now keeps the planes of evicted frames (up to 192 MiB per
+   sample type; a frame something else still holds is left alone) and the H.264 decoder and the
+   VideoToolbox path decode into them, so steady-state decoding allocates no planes.
+   `perf.stats` reports `decode.planePoolMB` and `decode.planesReused`.
+
+The same session showed that the desktop app never used hardware decoding: `register()` was an
+argument of a `log::info!` that no logger evaluated (fixed under HW1; `decode.hardware.sessions`
+was 0 with every frame decoded in software).
+
 What remains per live decoder is unchanged: the H.264 decoder publishes each macroblock row of a
 picture as its own allocations (`Frame::make_row`, five per row), which is where the 290 MB per
 decoder comes from.
