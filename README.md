@@ -184,7 +184,7 @@ No FFmpeg inside. The video codecs, AAC, Opus and the containers are our own Rus
 | **Matroska / WebM** | ✓ | | Lacing, Cues, header stripping, HDR colour metadata |
 | **Stills** | ✓ | ✓ | Import PNG, JPEG, GIF, WebP, TIFF and BMP; export PNG sequences and animated GIF |
 
-MXF and hardware decode are next ([roadmap](ROADMAP.md)).
+Also imported: MPEG-2 / MPEG-1 video, AC-3, MP2, MXF (OP1a / OP-Atom), MPEG transport and program streams (AVCHD, broadcast, DVD), Ogg and image sequences. Not yet: HEVC and AV1 export, camera RAW, E-AC-3. Hardware decoding is arriving on macOS first, with Linux and Windows to follow ([#30](https://github.com/storytold/filmcraft/issues/30)).
 
 <br>
 
@@ -266,11 +266,26 @@ The control protocol is documented in [docs/control-protocol.md](docs/control-pr
 | [docs/control-protocol.md](docs/control-protocol.md) | Control-channel and MCP reference |
 | [docs/project-files.md](docs/project-files.md) | `.fcproj` format, schema migrations, auto-save and crash recovery |
 | [docs/graphics.md](docs/graphics.md) · [docs/captions.md](docs/captions.md) | Text engine, graphic clips and tools; caption tracks and formats |
-| [ROADMAP.md](ROADMAP.md) | Milestones and estimates |
+| [ROADMAP.md](ROADMAP.md) | Honest assessment, what's missing, milestones and estimates |
 
 ## Status
 
-FilmCraft is young and moving fast: roughly 45% of the way to Premiere Pro parity, with editing, trimming, colour, keyframes, titles, captions, mixing, codecs and export working today. [ROADMAP.md](ROADMAP.md) tracks every milestone with estimates.
+FilmCraft is young and moving fast. Editing, trimming, multicam, colour, keyframes, effects, titles, captions, mixing, codecs and export work today.
+
+We track two numbers ([ROADMAP.md](ROADMAP.md#honest-assessment-2026-10-05)):
+
+- **Feature checklist: ~87%.** Premiere Pro's menu items, effects, transitions, panels and formats that exist in FilmCraft.
+- **Ready for real work: ~50–60%.** Our honest estimate of how close FilmCraft is to replacing Premiere on real projects.
+
+The biggest gaps today:
+
+- **Speed on big footage.** Hardware decoding is arriving on macOS first. Effects and export still run on the CPU, and Windows and Linux have no hardware path yet ([#30](https://github.com/storytold/filmcraft/issues/30)).
+- **No plugins.** No VST3 / Audio Units or OpenFX hosting.
+- **Delivery codecs.** H.264 is our only delivery-codec export; no HEVC or AV1 export yet.
+- **Real-world media and platforms.** Our decoders are bit-exact on conformance streams, but camera and phone files in the wild are less tested. Windows and Linux get far less testing than macOS.
+- **AI features.** Few so far; speech to text is optional and off by default.
+
+Bug reports with real footage are the most useful thing you can send us: [open an issue](https://github.com/storytold/filmcraft/issues) or tell us in [Discord](https://discord.gg/artcraft).
 
 ## Architecture
 

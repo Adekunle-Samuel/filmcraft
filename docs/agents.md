@@ -140,7 +140,8 @@ media, sidecar and `ATTRIBUTION.md` entry.
 
 1. [AGENTS.md](../AGENTS.md): absolute rules (assets, clean-room, licences).
 2. [CLAUDE.md](../CLAUDE.md): working instructions and non-negotiables.
-3. [ROADMAP.md](../ROADMAP.md): milestones, what's done, what's running.
+3. [ROADMAP.md](../ROADMAP.md): read the **honest assessment** and **Where we are lacking** first, then
+   milestones, what's done and what's running.
 4. [architecture.md](architecture.md), then the README and tests of the crate you'll touch.
 5. [contributing.md](contributing.md) (how to add things, gates) and [testing.md](testing.md).
 
@@ -151,7 +152,9 @@ everything you need to contribute is in the public docs above. Ask a maintainer 
 ## 5. Autonomous work loop
 
 1. **Orient.** Pick the next task: the next unchecked task in the maintainer status file, or an open
-   ROADMAP item. Read the relevant architecture section and crate README.
+   ROADMAP item. Prefer the gaps in ROADMAP's *Where we are lacking* (speed, correctness on real
+   media, measurement, Windows/Linux) over adding more checklist items. Read the relevant
+   architecture section and crate README.
 2. **Plan tests first.** Write down the acceptance test before writing code.
 3. **Implement and test.**
 4. **Verify.** Run all gates (`cargo xtask ci`). For UI work, run the app with `--control`, drive it
@@ -190,3 +193,15 @@ A feature is done when:
 - [ ] all gates pass (`cargo xtask ci`), and new assets have sidecars;
 - [ ] the crate README and ROADMAP.md are updated where relevant;
 - [ ] it is committed with its task id.
+
+### Reporting progress honestly
+
+ROADMAP.md keeps two numbers: the **feature checklist** (does it exist?) and **ready for real
+work** (does it hold up?). When you update either:
+
+- say how a number was obtained: *measured* (a test, a diff, a benchmark you ran) or *estimated*;
+- count an approximation, a stub or a partly wired setting as such, never as done;
+- record known bugs and limitations in the crate README and the honest assessment, not only
+  what works;
+- benchmarks state the machine, the load average and before/after on the same build;
+- don't raise a percentage without evidence a reviewer can rerun.
