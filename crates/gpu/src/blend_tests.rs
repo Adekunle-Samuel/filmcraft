@@ -10,13 +10,13 @@ use super::*;
 use filmcraft_geom::{Affine, Vec2};
 use filmcraft_render::plan::execute_cpu;
 
-fn device() -> Option<(wgpu::Device, wgpu::Queue)> {
+pub(crate) fn device() -> Option<(wgpu::Device, wgpu::Queue)> {
     let instance = wgpu::Instance::default();
     let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default())).ok()?;
     pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())).ok()
 }
 
-fn yuv_frame(w: u32, h: u32) -> Arc<VideoFrame> {
+pub(crate) fn yuv_frame(w: u32, h: u32) -> Arc<VideoFrame> {
     let (cw, ch) = (w.div_ceil(2), h.div_ceil(2));
     let y: Vec<u8> = (0..w * h).map(|i| (16 + ((i % w) * 219 / w)) as u8).collect();
     let u: Vec<u8> = (0..cw * ch).map(|i| (64 + (i / cw) * 128 / ch) as u8).collect();
@@ -32,7 +32,7 @@ fn yuv_frame(w: u32, h: u32) -> Arc<VideoFrame> {
 }
 
 /// Decode an IEEE half.
-fn f16_to_f32(h: u16) -> f32 {
+pub(crate) fn f16_to_f32(h: u16) -> f32 {
     let s = if h & 0x8000 != 0 { -1.0 } else { 1.0 };
     let e = ((h >> 10) & 0x1f) as i32;
     let m = (h & 0x3ff) as f32;
@@ -44,7 +44,7 @@ fn f16_to_f32(h: u16) -> f32 {
 }
 
 /// Read the linear premultiplied accumulator back as f32 RGBA (what the CPU plan executor returns).
-fn read_accum(c: &GpuCompositor) -> Vec<f32> {
+pub(crate) fn read_accum(c: &GpuCompositor) -> Vec<f32> {
     let (tex, _, (w, h)) = c.accum.as_ref().expect("accumulator");
     let row = (w * 8).div_ceil(256) * 256;
     let buf = c.device.create_buffer(&wgpu::BufferDescriptor {
@@ -74,7 +74,7 @@ fn read_accum(c: &GpuCompositor) -> Vec<f32> {
 
 /// Per-pixel max channel difference of two RGBA8 images over the pixels `keep` selects: (p99,
 /// mean, max).
-fn stats8(a: &[u8], b: &[u8], keep: &[bool]) -> (u32, f64, u32) {
+pub(crate) fn stats8(a: &[u8], b: &[u8], keep: &[bool]) -> (u32, f64, u32) {
     let mut d: Vec<u32> = a
         .chunks(4)
         .zip(b.chunks(4))
@@ -88,9 +88,9 @@ fn stats8(a: &[u8], b: &[u8], keep: &[bool]) -> (u32, f64, u32) {
 
 /// Pixels at least 1.5 px away from every layer's quad outline (the CPU resampler fades a layer's
 /// edge over a pixel beyond it, the GPU rasterises the quad: compared separately).
-fn interior(plan: &FramePlan) -> Vec<bool> {
+pub(crate) fn interior(plan: &FramePlan) -> Vec<bool> {
     let FramePlan::Layers { width, height, layers } = plan else { return Vec::new() };
-    let inv: Vec<(Affine, f64, f64)> = layers.iter().filter_map(|l| Some((l.matrix.inverse()?, l.frame.width as f64, l.frame.height as f64))).collect();
+    let inv: Vec<(Affine, f64, f64)> = layers.iter().filter_map(|l| Some((l.matrix.inverse()?, l.size().0 as f64, l.size().1 as f64))).collect();
     let mut keep = vec![true; width * height];
     for (i, k) in keep.iter_mut().enumerate() {
         let (x, y) = ((i % width) as f64 + 0.5, (i / width) as f64 + 0.5);
@@ -108,7 +108,7 @@ fn interior(plan: &FramePlan) -> Vec<bool> {
 
 /// Linear premultiplied RGBA f32 test frame: a colour ramp with black and white bands; alpha 0 in
 /// the left tenth, 1 in the top third, partial below.
-fn ramp_layer(w: u32, h: u32, phase: u32) -> Arc<VideoFrame> {
+pub(crate) fn ramp_layer(w: u32, h: u32, phase: u32) -> Arc<VideoFrame> {
     let mut px = Vec::with_capacity((w * h * 4) as usize);
     for y in 0..h {
         for x in 0..w {
@@ -162,19 +162,21 @@ fn gpu_blend_modes_match_cpu() {
             layers: vec![
                 // opaque YUV on the left, a partially transparent ramp on the right; the top-right
                 // corner stays empty (destination alpha 0)
-                PlanLayer { frame: yuv_frame(640, 360), matrix: Affine::scale(0.35, 0.5), opacity: 1.0, blend: Blend::Normal },
-                PlanLayer { frame: base.clone(), matrix: Affine::translate(200.0, 40.0), opacity: 0.9, blend: Blend::Normal },
+                PlanLayer { frame: yuv_frame(640, 360), matrix: Affine::scale(0.35, 0.5), opacity: 1.0, blend: Blend::Normal, fx: None },
+                PlanLayer { frame: base.clone(), matrix: Affine::translate(200.0, 40.0), opacity: 0.9, blend: Blend::Normal, fx: None },
                 PlanLayer {
                     frame: top.clone(),
                     matrix: Affine::motion(Vec2::new(170.0, 95.0), Vec2::new(1.1, 1.1), 17.0, Vec2::new(80.0, 60.0)),
                     opacity: 0.8,
                     blend: mode,
+                    fx: None,
                 },
                 PlanLayer {
                     frame: demo.clone(),
                     matrix: Affine::motion(Vec2::new(250.0, 70.0), Vec2::new(0.45, 0.45), -9.0, Vec2::new(160.0, 90.0)),
                     opacity: 0.6,
                     blend: mode,
+                    fx: None,
                 },
             ],
         };
@@ -233,8 +235,8 @@ fn gpu_blend_edge_cases_match_cpu() {
                 width: n,
                 height: n,
                 layers: vec![
-                    PlanLayer { frame: back.clone(), matrix: Affine::IDENTITY, opacity: 1.0, blend: Blend::Normal },
-                    PlanLayer { frame: src.clone(), matrix: Affine::IDENTITY, opacity, blend: mode },
+                    PlanLayer { frame: back.clone(), matrix: Affine::IDENTITY, opacity: 1.0, blend: Blend::Normal, fx: None },
+                    PlanLayer { frame: src.clone(), matrix: Affine::IDENTITY, opacity, blend: mode, fx: None },
                 ],
             };
             let cpu = execute_cpu(&plan);
@@ -274,8 +276,8 @@ fn gpu_dissolve_pattern_is_exact() {
             width: w,
             height: h,
             layers: vec![
-                PlanLayer { frame: red.clone(), matrix: Affine::scale(w as f64, h as f64), opacity: 1.0, blend: Blend::Normal },
-                PlanLayer { frame: white.clone(), matrix: Affine::scale(w as f64, h as f64), opacity: op, blend: Blend::Dissolve },
+                PlanLayer { frame: red.clone(), matrix: Affine::scale(w as f64, h as f64), opacity: 1.0, blend: Blend::Normal, fx: None },
+                PlanLayer { frame: white.clone(), matrix: Affine::scale(w as f64, h as f64), opacity: op, blend: Blend::Dissolve, fx: None },
             ],
         };
         let cpu = execute_cpu(&plan).over_black_rgba8();
@@ -301,7 +303,7 @@ fn normal_fast_path_and_blend_layers_off_output() {
     };
     let mut c = GpuCompositor::new(&dev, &q);
     let grey = Arc::new(VideoFrame::rgba_f32(4, 4, vec![0.2; 64]));
-    let layer = |m: Affine, blend: Blend| PlanLayer { frame: grey.clone(), matrix: m, opacity: 1.0, blend };
+    let layer = |m: Affine, blend: Blend| PlanLayer { frame: grey.clone(), matrix: m, opacity: 1.0, blend, fx: None };
     let normal = FramePlan::Layers { width: 32, height: 16, layers: vec![layer(Affine::scale(8.0, 4.0), Blend::Normal)] };
     c.composite(&normal);
     assert!(c.backdrop.is_none());
@@ -327,7 +329,7 @@ fn normal_fast_path_and_blend_layers_off_output() {
 
 #[test]
 fn quad_bounds_clamps_and_handles_non_finite() {
-    let l = |m: Affine| PlanLayer { frame: Arc::new(VideoFrame::rgba_f32(10, 10, vec![0.0; 400])), matrix: m, opacity: 1.0, blend: Blend::Screen };
+    let l = |m: Affine| PlanLayer { frame: Arc::new(VideoFrame::rgba_f32(10, 10, vec![0.0; 400])), matrix: m, opacity: 1.0, blend: Blend::Screen, fx: None };
     assert_eq!(quad_bounds(&l(Affine::translate(5.0, 5.0)), 100, 100), Some((4, 4, 12, 12)));
     assert_eq!(quad_bounds(&l(Affine::translate(-5.0, 95.0)), 100, 100), Some((0, 94, 6, 6)));
     assert_eq!(quad_bounds(&l(Affine::translate(f64::NAN, 0.0)), 100, 100), Some((0, 0, 100, 100)));

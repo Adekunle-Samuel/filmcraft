@@ -15,6 +15,7 @@ pub mod blend;
 pub mod color_match;
 pub mod colorman;
 pub mod effects;
+pub mod gpufx;
 pub mod graphic_clip;
 pub mod graphics;
 pub mod image;

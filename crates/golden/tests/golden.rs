@@ -781,7 +781,7 @@ fn gpu_matches_cpu_on_golden_scenes() {
 /// GPU rasterises, and with blend modes those edge pixels are a visible share of a 320×180 frame.
 fn interior_diff(plan: &filmcraft_render::plan::FramePlan, a: &Rgba8, b: &Rgba8) -> (u32, f64) {
     let filmcraft_render::plan::FramePlan::Layers { width, layers, .. } = plan else { return (u32::MAX, f64::MAX) };
-    let inv: Vec<_> = layers.iter().filter_map(|l| Some((l.matrix.inverse()?, l.frame.width as f64, l.frame.height as f64))).collect();
+    let inv: Vec<_> = layers.iter().filter_map(|l| Some((l.matrix.inverse()?, l.size().0 as f64, l.size().1 as f64))).collect();
     let mut d: Vec<u32> = Vec::new();
     for (i, (pa, pb)) in a.px.chunks(4).zip(b.px.chunks(4)).enumerate() {
         let (x, y) = ((i % width) as f64 + 0.5, (i / width) as f64 + 0.5);
@@ -879,4 +879,97 @@ fn gpu_transition_of_blended_clips_matches_cpu_render() {
     let d = diff(&render_cpu(&s), &Rgba8::new(gw, gh, px)).unwrap();
     eprintln!("Screen clips in a cross dissolve: GPU vs CPU {d}");
     assert!(d.p99 <= 6 && d.mean_abs * 4.0 / 3.0 < 1.5, "{d}");
+}
+
+/// Standard effect chains run on the GPU: every clip below plans as a GPU layer with its effects
+/// (no CPU-rendered image), including keyframed parameters, transformed clips, partial opacity
+/// and blend modes, and matches the CPU render with the GPU parity tolerance (p99 ≤ 6, mean < 1.5
+/// away from layer outlines) at three times. A clip with an effect the GPU stage lacks (Emboss)
+/// still falls back to a CPU layer image.
+#[test]
+fn gpu_effect_chains_match_cpu_render() {
+    let mut b = Builder::new(5);
+    let (bg, dunes, aurora, bars, sunset) =
+        (b.demo(DemoScene::OceanSunset), b.demo(DemoScene::Dunes), b.demo(DemoScene::Aurora), b.media(Generator::BarsAndTone), b.demo(DemoScene::OceanSunset));
+    let v1 = b.place(0, bg, 0, 48);
+    b.effect(v1, "brightness_contrast", &[("brightness", fl(-10.0)), ("contrast", fl(20.0))]);
+    b.effect(v1, "gaussian_blur", &[("repeat_edge", ParamValue::Bool(true))]);
+    // keyframed blur: evaluated at the frame's time
+    let p = b.clip(v1).effects.last_mut().and_then(|e| e.params.get_mut("blurriness")).expect("blurriness");
+    p.put_keyframe(Tick::ZERO, fl(2.0));
+    p.put_keyframe(RATE.tick_of(24), fl(20.0));
+    let v2 = b.place(1, dunes, 0, 48);
+    b.fixed(v2, "motion", &[("scale", fl(60.0)), ("rotation", fl(12.0)), ("position", pt(130.0, 80.0))]);
+    b.fixed(v2, "opacity", &[("opacity", fl(70.0)), ("blend", blend("Screen"))]);
+    b.effect(v2, "tint", &[("amount", fl(60.0))]);
+    b.effect(v2, "unsharp_mask", &[("amount", fl(120.0)), ("radius", fl(2.0))]);
+    b.effect(v2, "crop", &[("left", fl(8.0)), ("bottom", fl(12.0)), ("feather", fl(6.0))]);
+    let v3 = b.place(2, aurora, 0, 48);
+    b.fixed(v3, "motion", &[("scale", fl(45.0)), ("rotation", fl(-20.0)), ("position", pt(210.0, 110.0))]);
+    b.fixed(v3, "opacity", &[("opacity", fl(85.0))]);
+    b.effect(v3, "levels", &[("in_black", fl(20.0)), ("gamma", fl(130.0))]);
+    b.effect(v3, "mirror", &[("angle", fl(60.0))]);
+    b.effect(v3, "directional_blur", &[("length", fl(4.0)), ("direction", fl(45.0))]);
+    b.effect(v3, "transform", &[("rotation", fl(10.0)), ("scale_height", fl(110.0))]);
+    let v4 = b.place(3, bars, 0, 48);
+    b.fixed(v4, "motion", &[("scale", fl(30.0)), ("position", pt(250.0, 50.0))]);
+    b.fixed(v4, "opacity", &[("blend", blend("Multiply"))]);
+    b.effect(v4, "posterize", &[("levels", fl(5.0))]);
+    b.effect(v4, "invert", &[("blend", fl(40.0))]);
+    b.effect(v4, "offset", &[("shift", pt(400.0, 120.0))]);
+    b.effect(v4, "horizontal_flip", &[]);
+    b.effect(v4, "black_white", &[]);
+    let v5 = b.place(4, sunset, 0, 48);
+    b.fixed(v5, "motion", &[("scale", fl(25.0)), ("position", pt(60.0, 140.0))]);
+    b.effect(v5, "emboss", &[]);
+    let mut s = b.at(12);
+    let plan = filmcraft_render::plan::plan_frame(&s.project, s.seq, RATE.tick_of(s.frame), RenderOptions::default(), &s.sources);
+    let filmcraft_render::plan::FramePlan::Layers { layers, .. } = &plan else { panic!("planned as a CPU image") };
+    assert_eq!(layers.len(), 5);
+    for (i, l) in layers.iter().take(4).enumerate() {
+        let fx = l.fx.as_ref().unwrap_or_else(|| panic!("V{}: not a GPU effect layer", i + 1));
+        assert!(!fx.ops.is_empty());
+    }
+    assert!(layers[4].fx.is_none(), "Emboss is rendered on the CPU");
+    let Some((dev, q)) = device() else {
+        eprintln!("SKIPPED (gpu effect parity): no GPU adapter");
+        return;
+    };
+    let mut c = filmcraft_gpu::GpuCompositor::new(&dev, &q);
+    let mut failures = Vec::new();
+    for frame in [0, 12, 30] {
+        s.frame = frame;
+        let plan = filmcraft_render::plan::plan_frame(&s.project, s.seq, RATE.tick_of(frame), RenderOptions::default(), &s.sources);
+        c.composite(&plan);
+        let (gw, gh, mut px) = c.read_output().expect("GPU readback");
+        px.as_chunks_mut::<4>().0.iter_mut().for_each(|p| p[3] = 255);
+        let gpu = Rgba8::new(gw, gh, px);
+        let cpu = render_cpu(&s);
+        let d = diff(&cpu, &gpu).unwrap();
+        let (p99, mean) = interior_diff(&plan, &cpu, &gpu);
+        eprintln!("effect chains @ {frame}: GPU vs CPU interior p99 {p99}, mean {mean:.3}; whole frame {d}");
+        if p99 > 6 || mean >= 1.5 {
+            let dir = filmcraft_testkit::golden::failures_dir();
+            let _ = filmcraft_testkit::golden::write_png(&dir.join(format!("fx_chains_{frame}.gpu.png")), &gpu);
+            let _ = filmcraft_testkit::golden::write_png(&dir.join(format!("fx_chains_{frame}.cpu.png")), &cpu);
+            failures.push(format!("frame {frame}: interior p99 {p99}, mean {mean}; {d}; images in {}", dir.display()));
+        }
+    }
+    // ½ playback resolution: the working images (and the effects' pixel radii) shrink with it
+    let opts = RenderOptions { scale: 0.5, ..RenderOptions::default() };
+    let plan = filmcraft_render::plan::plan_frame(&s.project, s.seq, RATE.tick_of(s.frame), opts, &s.sources);
+    let filmcraft_render::plan::FramePlan::Layers { layers, .. } = &plan else { panic!("½: planned as a CPU image") };
+    assert!(layers.iter().take(4).all(|l| l.fx.is_some()));
+    c.composite(&plan);
+    let (gw, gh, mut px) = c.read_output().expect("GPU readback");
+    px.as_chunks_mut::<4>().0.iter_mut().for_each(|p| p[3] = 255);
+    let gpu = Rgba8::new(gw, gh, px);
+    let img = render_sequence(&s.project, s.seq, RATE.tick_of(s.frame), opts, &s.sources);
+    let cpu = Rgba8::new(img.w as u32, img.h as u32, img.over_black_rgba8());
+    let (p99, mean) = interior_diff(&plan, &cpu, &gpu);
+    eprintln!("effect chains @ ½: GPU vs CPU interior p99 {p99}, mean {mean:.3}; whole frame {}", diff(&cpu, &gpu).unwrap());
+    if p99 > 6 || mean >= 1.5 {
+        failures.push(format!("½ resolution: interior p99 {p99}, mean {mean}"));
+    }
+    assert!(failures.is_empty(), "GPU effect chains differ from the CPU render:\n{}", failures.join("\n"));
 }

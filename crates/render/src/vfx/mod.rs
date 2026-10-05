@@ -13,6 +13,7 @@
 
 mod blur;
 mod color;
+pub(crate) use color::cdl;
 mod distort;
 mod immersive;
 mod lights;
@@ -459,12 +460,8 @@ pub fn apply(img: &mut Image, e: &EffectInstance, cx: &FxCtx) -> bool {
     match e.effect.as_str() {
         // Adjust / Color / Image Control / Keying / Utility colour
         "lighting_effects" => color::lighting(img, e, cx),
-        "asc_cdl" => color::asc_cdl(img, e, cx),
         "video_limiter" => color::video_limiter(img, e, cx),
         "vignette" => color::vignette(img, e, cx),
-        "channel_mix" => color::channel_mix(img, e, cx),
-        "color_replace" => color::color_replace(img, e, cx),
-        "alpha_adjust" => color::alpha_adjust(img, e, cx),
         "logo_cutout" => color::logo_cutout(img, e, cx),
         "ultra_key" => color::ultra_key(img, e, cx),
         "track_matte" => color::track_matte(img, e, cx),

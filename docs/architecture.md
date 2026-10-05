@@ -253,9 +253,21 @@ file ──► codecs (MP4/MOV, MKV, audio)        demux + decode, GOP-aware see
   turns a frame into GPU layers, each with its opacity and blend mode. All 27 blend modes run on the
   GPU (`filmcraft-gpu`): Normal and Dissolve with fixed-function "over" blending, the others by
   copying the accumulator under the layer into a backdrop texture and compositing in the fragment
-  shader with the CPU reference's formulas. Standard effects, adjustment layers, nested sequences
-  and non-dissolve transitions are rendered on the CPU for that layer or frame and handed to the
-  GPU as an image (a layer image keeps its clip's blend mode), so both paths give the same picture. Setting `FILMCRAFT_CPU_COMPOSITE=1`
+  shader with the CPU reference's formulas. The common standard effects run on the GPU too
+  (`render::gpufx`, `gpu::fx`): Brightness & Contrast, ProcAmp, Tint, Black & White, Color
+  Balance, Leave Color, Change to Color, Color Pass, Color Replace, Channel Mix, ASC CDL, Gamma
+  Correction, Levels, Extract, Invert, Posterize, Alpha Adjust, Gaussian Blur and Directional Blur
+  (and their legacy aliases), Camera Blur, Sharpen, Unsharp Mask, Crop, Edge Feather, Transform,
+  Horizontal / Vertical Flip, Mirror and Offset. When every enabled effect of a media clip is in
+  that set (unmasked, with finite parameters, and no Transform shrinking the picture below half
+  size, which the CPU pre-filters), the plan hands the GPU the clip's source with
+  the effects' parameters evaluated at that time: the source is drawn into an `Rgba32Float`
+  working image at the size the CPU decodes it, each effect runs as compute passes with the CPU
+  reference's math (effects, then Motion, then Opacity / blend, as on the CPU), and the result is
+  placed like any layer. Other standard effects, effect and opacity masks, adjustment layers,
+  nested sequences and non-dissolve transitions are rendered on the CPU for that layer or frame
+  and handed to the GPU as an image (a layer image keeps its clip's blend mode), so both paths
+  give the same picture. Setting `FILMCRAFT_CPU_COMPOSITE=1`
   forces the CPU path in the desktop app.
 - **Frame scheduling.** `crates/ui-egui/src/frames.rs` runs a small pool of worker threads with
   prioritised jobs: the frame on screen first, then playback prefetch, then thumbnails. The UI never

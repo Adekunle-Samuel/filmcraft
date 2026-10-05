@@ -13,6 +13,30 @@ the before/after comparison relies on. Each milestone below alternated base / af
 each); the most load-independent figure is the decoder's own cycle count (`proc_pid_rusage`
 instructions and cycles of a process, all threads summed).
 
+## Results (GPU2: standard effects on the GPU compositor, #30, before → after)
+
+Before = this change with clips that carry standard effects sent back to the CPU layer path in
+`render::plan` (same binary otherwise); after = GPU2. New `stack3-fx` scenario: `stack3` with
+Brightness & Contrast + Gaussian Blur (blurriness 8) on V2 and Tint (70 %) on V3. `bench_playback
+--scenario stack3-fx,stack3 --res full|half --gpu` (release), 8 s plays, two rounds alternating
+before / after on 2026-10-05 at load average 107–170 (1-minute; 5-minute 141–152). `stack3` in
+the same runs is the control; it shows how much the load alone moved the numbers.
+
+| case | shown/dropped before (2 runs) | after (2 runs) | CPU ms/frame before → after | worker svc p50 before → after |
+|---|---|---|---|---|
+| stack3-fx Full | 0/192, 0/192 | **192/0, 132/60** | 84, 92 → 94, 89 | 245, 220 → **1.8, 93** ms |
+| stack3-fx 1/2 | 9/183, 15/177 | **181/11, 166/26** | 111, 110 → 92, 92 | 295, 307 → **6.5, 28** ms |
+| stack3 Full (control) | 180/12, 189/3 | 172/19, 80/112 | 92, 92 → 89, 80 | 7.2, 5.1 → 17.8, 185 ms |
+| stack3 1/2 (control) | 138/54, 181/11 | 116/76, 134/53 | 91, 92 → 83, 91 | 61, 15 → 123, 106 ms |
+
+Before, every frame of the effect stack was rendered on the CPU (Gaussian Blur and the two colour
+effects on 1080p layers): ≈ 250 ms of worker time per frame, so playback showed nothing at Full
+and 5–8 % of frames at ½ (CPU ms/frame stays near 90 only because most jobs were cancelled
+before finishing). After, the workers only decode, as for `stack3`: the effect stage runs on the
+GPU at present time (UI present p50 11–24 ms vs 11–39 ms for the control in the same runs). The
+second "after Full" run coincided with a load spike (load 155 → 170; the control dropped 112
+frames in the same minute).
+
 ## Results (HW1: VideoToolbox hardware decoding, Off → Auto)
 
 Same commit, Settings ▸ Playback ▸ Hardware decoding switched with the bench flag `--hw off` /
