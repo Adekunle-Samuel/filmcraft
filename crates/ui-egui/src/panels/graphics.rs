@@ -8,7 +8,8 @@
 //!   Shift-selection, ⌘A, ⌘C/⌘X/⌘V, Return (new line) and Esc (stop editing) work as in a text
 //!   field. Double-clicking a text layer with the Selection tool also edits it.
 //! - **Selection tool:** click selects a layer (bounding box with handles); drag moves it; drag a
-//!   corner handle scales it.
+//!   handle scales it towards the pointer with the opposite side held in place (a corner scales
+//!   both axes alike, an edge handle only its own).
 //! - **Rectangle / Ellipse tools:** drag out a shape. **Pen tool:** click points; click the first
 //!   point again (or press Return) to close the path; Esc cancels.
 //!
@@ -150,7 +151,7 @@ fn next_boundary(s: &str, i: usize) -> usize {
 #[derive(Clone, Copy, Debug)]
 enum DragKind {
     Move,
-    /// Corner handle `n` of the layer's box: scales it with the opposite corner held in place.
+    /// Handle `n` of the layer's box (see [`handle_points`]): scales it with the opposite side held in place.
     Scale(usize),
     NewShape,
     TextSelect,
@@ -164,11 +165,52 @@ struct DragState {
     start: Pos2,
 }
 
-/// Dragging corner `n` of `quad` from `start` to `cur`: the corner that stays put (the opposite
-/// one) and the scale factor, so the box grows towards the pointer.
-fn corner_scale(quad: &[Pos2; 4], n: usize, start: Pos2, cur: Pos2) -> (Pos2, f32) {
-    let pin = quad[(n + 2) % 4];
-    (pin, ((cur - pin).length() / (start - pin).length().max(1.0)).max(0.01))
+/// The eight handles of a layer's box `quad` (TL, TR, BR, BL): the corners (0–3), then the middles
+/// of the top, right, bottom and left edges (4–7).
+fn handle_points(quad: &[Pos2; 4]) -> [Pos2; 8] {
+    let mid = |i: usize| quad[i] + (quad[(i + 1) % 4] - quad[i]) * 0.5;
+    [quad[0], quad[1], quad[2], quad[3], mid(0), mid(1), mid(2), mid(3)]
+}
+
+/// Dragging handle `n` of `quad` from `start` to `cur`: the box grows towards the pointer while
+/// the opposite corner / edge stays put. A corner scales both axes alike; an edge only its own.
+struct HandleScale {
+    /// The handle opposite the dragged one, which does not move.
+    pin: Pos2,
+    /// Unit vectors along the box's width and height on screen.
+    ux: egui::Vec2,
+    uy: egui::Vec2,
+    fx: f32,
+    fy: f32,
+}
+
+impl HandleScale {
+    fn new(quad: &[Pos2; 4], n: usize, start: Pos2, cur: Pos2) -> Self {
+        let pts = handle_points(quad);
+        let n = n.min(7);
+        let pin = if n < 4 { pts[(n + 2) % 4] } else { pts[4 + (n - 4 + 2) % 4] };
+        let (ux, uy) = ((quad[1] - quad[0]).normalized(), (quad[3] - quad[0]).normalized());
+        // the factor along `dir`: how far the pointer is from the pinned side, relative to the start
+        let along = |dir: egui::Vec2| {
+            let from = (start - pin).dot(dir);
+            if from.abs() < 1.0 { 1.0 } else { ((cur - pin).dot(dir) / from).max(0.01) }
+        };
+        let (fx, fy) = match n {
+            0..=3 => {
+                let f = along((start - pin).normalized());
+                (f, f)
+            }
+            4 | 6 => (1.0, along(uy)),
+            _ => (along(ux), 1.0),
+        };
+        Self { pin, ux, uy, fx, fy }
+    }
+
+    /// Where a screen point of the layer ends up.
+    fn apply(&self, p: Pos2) -> Pos2 {
+        let w = p - self.pin;
+        self.pin + self.ux * (w.dot(self.ux) * self.fx) + self.uy * (w.dot(self.uy) * self.fy)
+    }
 }
 
 const TEXT_EDIT_ID: &str = "gfx-text-edit";
@@ -210,9 +252,10 @@ pub fn monitor_overlay(app: &mut FilmcraftApp, ui: &mut egui::Ui, pic: Rect, fra
                     painter.rect_stroke(hr, 0.0, Stroke::new(1.0, accent), StrokeKind::Middle);
                     app.auto.add(&format!("program.layer.{}.{}.handle.{n}", v.clip.0, v.layer), hr.expand(3.0), "scale handle");
                 }
-                for i in 0..4 {
-                    let m = q[i] + (q[(i + 1) % 4] - q[i]) * 0.5;
-                    painter.rect_filled(Rect::from_center_size(m, vec2(5.0, 5.0)), 0.0, Color32::WHITE);
+                for (n, m) in handle_points(&q).iter().enumerate().skip(4) {
+                    let hr = Rect::from_center_size(*m, vec2(5.0, 5.0));
+                    painter.rect_filled(hr, 0.0, Color32::WHITE);
+                    app.auto.add(&format!("program.layer.{}.{}.handle.{n}", v.clip.0, v.layer), hr.expand(4.0), "scale handle");
                 }
                 // anchor point
                 let a = sp(&v.to_screen, v.spec.transform.anchor.x as f32, v.spec.transform.anchor.y as f32);
@@ -283,7 +326,7 @@ pub fn monitor_overlay(app: &mut FilmcraftApp, ui: &mut egui::Ui, pic: Rect, fra
                     let handle = views
                         .iter()
                         .filter(|v| Some(v.clip) == sel_clip && sel_layers.contains(&v.layer))
-                        .find_map(|v| v.quad().iter().position(|c| (*c - p).length() <= 7.0).map(|n| (v.clip, v.layer, n)));
+                        .find_map(|v| handle_points(&v.quad()).iter().position(|c| (*c - p).length() <= 7.0).map(|n| (v.clip, v.layer, n)));
                     if let Some((c, l, n)) = handle {
                         drag = Some(DragState { kind: DragKind::Scale(n), clip: c, layer: l, start: p });
                     } else if tool == Tool::Selection
@@ -333,8 +376,8 @@ pub fn monitor_overlay(app: &mut FilmcraftApp, ui: &mut egui::Ui, pic: Rect, fra
             }
             DragKind::Scale(n) => {
                 if let Some(v) = v {
-                    let (pin, f) = corner_scale(&v.quad(), n, d.start, cur);
-                    painter.add(egui::Shape::closed_line(v.quad().iter().map(|q| pin + (*q - pin) * f).collect(), Stroke::new(1.0, Color32::WHITE)));
+                    let h = HandleScale::new(&v.quad(), n, d.start, cur);
+                    painter.add(egui::Shape::closed_line(v.quad().iter().map(|q| h.apply(*q)).collect(), Stroke::new(1.0, Color32::WHITE)));
                 }
             }
             DragKind::NewShape => {
@@ -375,18 +418,23 @@ pub fn monitor_overlay(app: &mut FilmcraftApp, ui: &mut egui::Ui, pic: Rect, fra
                 }
                 DragKind::Scale(n) if moved => {
                     if let Some(v) = v {
-                        // the layer scales about its anchor, so it also moves to keep the pinned corner still
+                        // the layer scales about its anchor, so it also moves to keep the pinned side still
                         let a = sp(&v.to_screen, v.spec.transform.anchor.x as f32, v.spec.transform.anchor.y as f32);
-                        let (pin, f) = corner_scale(&v.quad(), n, d.start, cur);
-                        let off = (pin - a) * (1.0 - f);
+                        let h = HandleScale::new(&v.quad(), n, d.start, cur);
+                        let off = h.apply(a) - a;
                         let lin = Affine { e: 0.0, f: 0.0, ..v.canvas_to_screen };
                         let delta = lin.inverse().map(|i| i.apply(Vec2::new(off.x as f64, off.y as f64))).unwrap_or_default();
-                        let (s, p0, f) = (v.spec.transform.scale, v.spec.transform.position, f as f64);
-                        actions.push((
-                            "graphics.set".into(),
-                            json!({"clip": v.clip.0, "layer": v.layer, "props": {
-                                "scale": s.y * 100.0 * f, "scale_width": s.x * 100.0 * f, "position": [p0.x + delta.x, p0.y + delta.y]}}),
-                        ));
+                        let (s, p0) = (v.spec.transform.scale, v.spec.transform.position);
+                        let mut props = json!({
+                            "scale": s.y * 100.0 * h.fy as f64,
+                            "scale_width": s.x * 100.0 * h.fx as f64,
+                            "position": [p0.x + delta.x, p0.y + delta.y],
+                        });
+                        if n >= 4 {
+                            // an edge stretches one axis only
+                            props["uniform_scale"] = json!(false);
+                        }
+                        actions.push(("graphics.set".into(), json!({"clip": v.clip.0, "layer": v.layer, "props": props})));
                     }
                 }
                 DragKind::NewShape if moved => {
