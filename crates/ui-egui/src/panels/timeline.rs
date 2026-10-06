@@ -1679,7 +1679,7 @@ fn interact(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, layout: &
                     .iter()
                     .filter_map(|c| seq.find_item(*c).map(|(tid, it)| json!({"clip": c.0, "track": shift_track(seq, tid, track_delta).unwrap_or(tid).0, "time": (it.start + offset).max(Tick::ZERO).0})))
                     .collect();
-                Some(app.session.execute("timeline.move", json!({"moves": moves, "insert": mods.command})))
+                Some(app.session.execute("timeline.move", json!({"moves": moves, "insert": mods.command, "linked": false})))
             }
             Drag::Trim { clip, edge, mode, delta } if delta != Tick::ZERO => Some(app.session.execute(
                 "timeline.trim",

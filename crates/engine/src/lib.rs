@@ -924,6 +924,8 @@ mod shortcuts_tests;
 #[cfg(test)]
 mod tests;
 #[cfg(test)]
+mod timeline_move_tests;
+#[cfg(test)]
 mod track_params_tests;
 #[cfg(test)]
 mod transcript_tests;
