@@ -170,3 +170,110 @@ fn nest_leaves_transitions_to_clips_outside_the_selection_out() {
     assert!(q.all_tracks().all(|t| t.transitions.iter().all(|t| t.id != trn.id)));
     s.active_sequence().unwrap().check().unwrap();
 }
+
+/// Nest the 4th and 5th V1 clips (with their sound) as "Inner". Returns the nested sequence, the
+/// nest's video clip in the outer sequence, and the two nested clips' ids and lengths.
+fn nest_two(s: &mut Session) -> (ItemId, ClipId, [(ClipId, Tick); 2]) {
+    let v1 = &s.active_sequence().unwrap().video_tracks[0];
+    let pair = [(v1.items[3].id, v1.items[3].duration), (v1.items[4].id, v1.items[4].duration)];
+    s.execute("timeline.select", json!({"clips": [pair[0].0.0, pair[1].0.0]})).unwrap();
+    let nested = ItemId(s.execute("clip.nest", json!({"name": "Inner"})).unwrap()["sequence"].as_u64().unwrap());
+    let nest = s.active_sequence().unwrap().video_tracks[0].items.iter().find(|i| i.item == nested).unwrap().id;
+    (nested, nest, pair)
+}
+
+fn nest_clip(s: &Session, id: ClipId) -> filmcraft_project::TrackItem {
+    s.active_sequence().unwrap().find_item(id).unwrap().1.clone()
+}
+
+fn mix_at(s: &Session, t: Tick, frames: usize) -> filmcraft_frame::AudioBuffer {
+    let q = s.active_sequence().unwrap();
+    let sr = q.settings.sample_rate as i64;
+    let provider = s.media.full_res_provider(s.project.clone(), s.services.clone());
+    filmcraft_render::audio::mix_sequence(&s.project, q, t.to_units_floor(sr), frames, &provider)
+}
+
+#[test]
+fn a_nest_keeps_its_length_when_its_sequence_gets_shorter() {
+    let mut s = demo();
+    let outer = s.state.active_sequence.unwrap();
+    let (nested, nest, [(_, first), (second_id, second)]) = nest_two(&mut s);
+    let whole = nest_clip(&s, nest);
+    assert_eq!(whole.duration, first + second);
+    assert_eq!(s.project.nest_overhang(&whole), None);
+    // remove the second clip inside the nest
+    s.execute("sequence.open", json!({"item": nested.0})).unwrap();
+    s.execute("timeline.select", json!({"clips": [second_id.0]})).unwrap();
+    s.execute("edit.clear", json!({})).unwrap();
+    assert_eq!(s.active_sequence().unwrap().duration(), first);
+    s.execute("sequence.open", json!({"item": outer.0})).unwrap();
+    // the nest is as long as before; its end is now past the contents
+    let c = nest_clip(&s, nest);
+    assert_eq!(c.range(), whole.range());
+    let empty = s.project.nest_overhang(&c).expect("the end of the nest is empty");
+    assert_eq!(empty, TimeRange::new(c.start + first, second));
+    // there it shows and plays what the sequence would without the nest
+    let t = empty.start + Tick(empty.duration.0 / 2);
+    let (with_frame, with_mix) = (frame_at(&s, t), mix_at(&s, t, 4800));
+    s.execute("timeline.select", json!({"clips": [nest.0]})).unwrap();
+    s.execute("clip.enable", json!({})).unwrap();
+    let (without_frame, without_mix) = (frame_at(&s, t), mix_at(&s, t, 4800));
+    assert!(with_frame.px == without_frame.px, "nothing to see past the contents");
+    assert_eq!(with_mix.channels, without_mix.channels, "nothing to hear past the contents");
+    s.execute("clip.enable", json!({})).unwrap();
+    // it cannot be trimmed out further, and trimming the empty part off leaves a sound nest
+    s.execute("timeline.trim", json!({"clip": nest.0, "edge": "out", "deltaFrames": 12})).ok();
+    assert!(nest_clip(&s, nest).duration <= whole.duration, "no more empty time is added");
+    let back = nest_clip(&s, nest).duration - first;
+    s.execute("timeline.trim", json!({"clip": nest.0, "edge": "out", "delta": -back.0})).unwrap();
+    let c = nest_clip(&s, nest);
+    assert_eq!(c.duration, first);
+    assert_eq!(s.project.nest_overhang(&c), None);
+    s.active_sequence().unwrap().check().unwrap();
+}
+
+#[test]
+fn a_nest_can_be_trimmed_out_to_reveal_what_its_sequence_gained() {
+    let mut s = demo();
+    let outer = s.state.active_sequence.unwrap();
+    let rate = s.sequence_rate();
+    let (nested, nest, [(_, first), (_, second)]) = nest_two(&mut s);
+    let whole = nest_clip(&s, nest);
+    // make room after the nest in the outer sequence: drop everything that follows it on V1/A1
+    let later: Vec<u64> = s.active_sequence().unwrap().video_tracks[0].items.iter().filter(|i| i.start >= whole.end()).map(|i| i.id.0).collect();
+    s.execute("timeline.select", json!({"clips": later})).unwrap();
+    s.execute("edit.clear", json!({})).unwrap();
+    // add 48 frames of media to the end of the nested sequence
+    let media = s.project.items.values().find(|i| i.name == "Desert_Dunes.mp4").unwrap().id;
+    s.execute("sequence.open", json!({"item": nested.0})).unwrap();
+    s.execute("timeline.place", json!({"item": media.0, "time": (first + second).0, "duration": rate.tick_of(48).0})).unwrap();
+    assert_eq!(s.active_sequence().unwrap().duration(), first + second + rate.tick_of(48));
+    s.execute("sequence.open", json!({"item": outer.0})).unwrap();
+    // the nest did not grow by itself
+    assert_eq!(nest_clip(&s, nest).range(), whole.range());
+    // trimming reveals the new material, up to the end of the contents and no further
+    s.execute("timeline.trim", json!({"clip": nest.0, "edge": "out", "deltaFrames": 10})).unwrap();
+    assert_eq!(nest_clip(&s, nest).duration, whole.duration + rate.tick_of(10));
+    s.execute("timeline.trim", json!({"clip": nest.0, "edge": "out", "deltaFrames": 500})).ok();
+    let c = nest_clip(&s, nest);
+    assert_eq!(c.duration, whole.duration + rate.tick_of(48));
+    assert_eq!(s.project.nest_overhang(&c), None);
+}
+
+#[test]
+fn the_outer_sequence_shows_changes_made_inside_a_nest() {
+    let mut s = demo();
+    let outer = s.state.active_sequence.unwrap();
+    let (nested, nest, [(first_id, first), _]) = nest_two(&mut s);
+    let t = nest_clip(&s, nest).start + Tick(first.0 / 2);
+    let before = frame_at(&s, t);
+    let revision = s.revision;
+    // disable the clip that is on screen, inside the nest
+    s.execute("sequence.open", json!({"item": nested.0})).unwrap();
+    s.execute("timeline.select", json!({"clips": [first_id.0]})).unwrap();
+    s.execute("clip.enable", json!({})).unwrap();
+    s.execute("sequence.open", json!({"item": outer.0})).unwrap();
+    assert_ne!(s.revision, revision, "frames cached for the outer sequence are stale");
+    let after = frame_at(&s, t);
+    assert!(before.px != after.px, "the outer sequence shows the nest's new contents");
+}

@@ -313,6 +313,17 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
             let body = Rect::from_min_max(pos2(x0, r.rect.min.y + 1.0), pos2(x1.max(x0 + 1.0), r.rect.max.y - 1.0));
             draw_clip(app, &ctx, &p, body, it, r.kind, selection.contains(&it.id), &t, rate);
             app.auto.add(&format!("timeline.clip.{}", it.id.0), body.intersect(content), &it.name);
+            // a nest that runs past the end of its sequence's contents: that part is empty
+            if !previews.contains_key(&it.id)
+                && let Some(empty) = app.session.project.nest_overhang(it)
+            {
+                let er = Rect::from_min_max(pos2(layout.x_of(empty.start), body.min.y), pos2(layout.x_of(empty.end()), body.max.y)).intersect(body);
+                if er.width() > 0.0 {
+                    p.with_clip_rect(er.intersect(p.clip_rect())).rect_filled(er, 0.0, Color32::from_black_alpha(110));
+                    paint_hatch(&p, er);
+                    app.auto.add(&format!("timeline.clip.{}.empty", it.id.0), er.intersect(content), "past the end of the nested sequence");
+                }
+            }
         }
         // items dragged onto this track from another
         for (cid, (start, dur, mt)) in &previews {
@@ -722,16 +733,21 @@ pub(crate) fn request_peaks(app: &mut FilmcraftApp, item: ItemId) -> Option<Arc<
     None
 }
 
-fn draw_transition(p: &egui::Painter, r: Rect, trn: &filmcraft_project::Transition, _t: &Tokens) {
+/// 45° hatching over `r` (transitions, and the empty end of a nested sequence clip).
+fn paint_hatch(p: &egui::Painter, r: Rect) {
     let cp = p.with_clip_rect(r.intersect(p.clip_rect()));
-    cp.rect_filled(r, 0.0, Color32::from_black_alpha(90));
-    // 45° hatching
     let step = 4.0;
     let mut x = r.min.x - r.height();
     while x < r.max.x {
         cp.line_segment([pos2(x, r.max.y), pos2(x + r.height(), r.min.y)], Stroke::new(1.0, Color32::from_rgba_unmultiplied(0xd9, 0xd9, 0xd9, 110)));
         x += step;
     }
+}
+
+fn draw_transition(p: &egui::Painter, r: Rect, trn: &filmcraft_project::Transition, _t: &Tokens) {
+    let cp = p.with_clip_rect(r.intersect(p.clip_rect()));
+    cp.rect_filled(r, 0.0, Color32::from_black_alpha(90));
+    paint_hatch(p, r);
     let audio = matches!(trn.effect.def().map(|d| d.kind), Some(filmcraft_project::EffectKind::AudioTransition));
     if audio {
         // crossing fade curves
