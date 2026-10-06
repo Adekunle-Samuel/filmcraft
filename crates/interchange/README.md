@@ -39,6 +39,22 @@ Not represented: speed changes and frame holds (exported at 100 % with a report 
 sequences, graphics and synthetic media (gaps), video effects other than transitions, clip
 markers (written to the master mob, so they come back as media markers), OMF video and markers.
 
+## Graphics and adjustment layers
+
+No format here has an equivalent of a FilmCraft graphic (title) clip or an adjustment layer, and
+none of the exports brings one back. Each such clip is named in the export `Report` as a warning
+(`graphic clip "Title" at frame 48 …`, one line per clip), with what was written instead:
+
+| Format | Written as | On import into FilmCraft |
+|---|---|---|
+| FCP7 XML | a clip item without media (its layers as FilmCraft filter ids) | not read back |
+| FCPXML | a clip without media | not read back |
+| OTIO | a clip with a `MissingReference` (effects in the `filmcraft` metadata) | offline media |
+| EDL | an ordinary event with the reel the reel mode gives | an ordinary clip |
+| AAF | a gap | nothing |
+
+OMF carries no video at all.
+
 ## Tests
 
 - `tests/aaf_omf.rs`: AAF round trips at 25, 29.97 DF, 23.976 and 59.94 DF (clips, gaps,
@@ -47,6 +63,9 @@ markers (written to the master mob, so they come back as media markers), OMF vid
   (sample data and source offsets); separate consolidated files with a video mixdown; OMF round
   trips with embedded audio, separate AIFF files and breakout; empty sequences; truncation and
   random corruption never panic.
+- `tests/uncarried_clips.rs`: every format's export report names each graphic clip and adjustment
+  layer once, as a warning; a sequence without them reports nothing; what a re-import gives back
+  matches the report.
 - `src/aaf/tests.rs`: written files checked against the required properties of every class
   written (Header, Identification, Mobs, slots, components, descriptors), weak references
   resolving into the dictionary, source clips resolving to mobs and slots, the Edit Protocol

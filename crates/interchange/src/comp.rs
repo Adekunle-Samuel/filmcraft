@@ -272,7 +272,10 @@ impl Exporter<'_> {
                 return None;
             }
             _ => {
-                self.report.warn("graphics, titles and adjustment layers are not exported (left as gaps)");
+                match crate::common::uncarried_clip(self.p, c, self.seq_rate) {
+                    Some(clip) => self.report.warn(format!("{clip} is not exported (left as a gap)")),
+                    None => self.report.warn("graphics, titles and adjustment layers are not exported (left as gaps)"),
+                }
                 return None;
             }
         };

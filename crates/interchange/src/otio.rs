@@ -279,6 +279,10 @@ impl Exp<'_, '_> {
             return s;
         }
         let _ = generator_of(self.p, base);
+        if let Some(clip) = crate::common::uncarried_clip(self.p, it, rate) {
+            self.report
+                .warn(format!("{clip} has no OTIO equivalent: it is written as a clip with a missing media reference and is read back as offline media"));
+        }
         let mref = self.media_ref(base, rate);
         // OTIO source times are in the reference's time (which starts at its available_range start).
         let origin = item_media(self.p, base).and_then(|m| m.info.start_timecode.map(|f| m.frame_rate().tick_of(f))).unwrap_or(Tick::ZERO);

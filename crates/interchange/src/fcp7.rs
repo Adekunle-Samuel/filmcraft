@@ -908,6 +908,10 @@ impl Exp<'_, '_> {
         if !on_frame(rate, c.start) || !on_frame(rate, c.duration) {
             self.report.warn("sub-frame clip positions were rounded to frames");
         }
+        if let Some(clip) = crate::common::uncarried_clip(self.p, c, rate) {
+            self.report
+                .warn(format!("{clip} has no Final Cut Pro 7 XML equivalent: it is written as a clip item without media and is not read back on import"));
+        }
         let base = base_item(self.p, c.item);
         let generator = crate::common::generator_of(self.p, base).cloned();
         let is_seq = matches!(self.p.item(base).map(|i| &i.kind), Some(ItemKind::Sequence(_)));

@@ -129,6 +129,33 @@ fn graphic_renders_in_the_program_and_survives_save() {
     assert!(fonts.as_array().unwrap().iter().any(|f| f["family"] == "Inter"));
 }
 
+/// `file.exportInterchange` wrote a title out of the document without saying so: the command's
+/// report names every graphic clip a format cannot carry.
+#[test]
+fn interchange_export_reports_the_title_it_cannot_carry() {
+    let d = std::env::temp_dir().join(format!("fc-title-report-{}", std::process::id()));
+    std::fs::create_dir_all(&d).unwrap();
+    let mut s = demo();
+    let r = s.execute("graphics.newText", json!({"text": "Opening line", "time": 0, "seconds": 2.0})).unwrap();
+    let clip = ClipId(r["clip"].as_u64().unwrap());
+    let (track, it) = s.active_sequence().unwrap().find_item(clip).map(|(t, i)| (t, i.clone())).unwrap();
+    let frame = s.sequence_rate().frame_at(it.start);
+    let want = format!("graphic clip \"{}\" at frame {frame}", it.name);
+    for format in ["xml", "fcpxml", "otio", "aaf"] {
+        let path = d.join(format!("cut.{format}")).to_string_lossy().to_string();
+        let r = s.execute("file.exportInterchange", json!({"format": format, "path": path})).unwrap();
+        let named = r["report"].as_array().unwrap().iter().filter(|l| l.as_str().is_some_and(|l| l.starts_with(&want))).count();
+        assert_eq!(named, 1, "{format}: {}", r["report"]);
+    }
+    // an EDL holds one video track: the report names the title when its track is the one written
+    let q = s.active_sequence().unwrap();
+    assert_ne!(q.video_tracks[0].id, track, "the title sits above the footage");
+    let path = d.join("cut.edl").to_string_lossy().to_string();
+    let r = s.execute("file.exportInterchange", json!({"format": "edl", "path": path})).unwrap();
+    assert!(r["report"].to_string().contains("one video track"), "{}", r["report"]);
+    let _ = std::fs::remove_dir_all(&d);
+}
+
 fn quad_box(s: &mut Session, clip: u64, layer: usize) -> [f64; 4] {
     let l = s.execute("graphics.list", json!({"clip": clip})).unwrap();
     let q = l["layers"][layer]["quad"].as_array().unwrap().clone();
