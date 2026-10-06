@@ -380,7 +380,13 @@ impl<'a, 'i> Imp<'a, 'i, '_> {
             let label = if name.is_empty() { g.label() } else { name.clone() };
             self.b.generator_media(&key, &label, g, &spec, None)
         } else if let Some(f) = child(c, "file") {
-            self.file(f, Some(&name), None)?
+            match self.file(f, Some(&name), None) {
+                Some(item) => item,
+                None => {
+                    self.report.warn(format!("clip \"{name}\" refers to a file the document does not define; skipped"));
+                    return None;
+                }
+            }
         } else if let Some(s) = child(c, "sequence") {
             self.sequence(s, None)?
         } else {
@@ -907,6 +913,10 @@ impl Exp<'_, '_> {
         let rate = seq.settings.frame_rate;
         if !on_frame(rate, c.start) || !on_frame(rate, c.duration) {
             self.report.warn("sub-frame clip positions were rounded to frames");
+        }
+        if let Some(clip) = crate::common::uncarried_clip(self.p, c, rate) {
+            self.report
+                .warn(format!("{clip} has no Final Cut Pro 7 XML equivalent: it is written as a clip item without media and is not read back on import"));
         }
         let base = base_item(self.p, c.item);
         let generator = crate::common::generator_of(self.p, base).cloned();

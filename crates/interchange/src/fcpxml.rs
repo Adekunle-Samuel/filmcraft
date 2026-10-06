@@ -972,7 +972,13 @@ impl Exp<'_, '_> {
             let origin = self.p.sequence(base).map(|s| s.settings.frame_rate.tick_of(s.start_timecode)).unwrap_or(Tick::ZERO);
             ("ref-clip", r, origin)
         } else {
-            let r = self.asset(base, rate);
+            let r = match crate::common::uncarried_clip(self.p, it, rate) {
+                Some(clip) => {
+                    self.report.warn(format!("{clip} is not supported in FCPXML: it is written as a clip without media and is not read back on import"));
+                    String::new()
+                }
+                None => self.asset(base, rate),
+            };
             let m = item_media(self.p, base);
             let mrate = m.and_then(|m| m.info.video.as_ref().map(|v| v.frame_rate)).unwrap_or(rate);
             let st = m.and_then(|m| m.info.start_timecode).map(|f| mrate.tick_of(f)).unwrap_or(Tick::ZERO);

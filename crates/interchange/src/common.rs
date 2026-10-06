@@ -301,6 +301,18 @@ pub(crate) fn base_item(p: &Project, id: ItemId) -> ItemId {
     }
 }
 
+/// How an export report names a clip whose source is a graphic (title) or an adjustment layer,
+/// which most interchange formats cannot carry: `graphic clip "Title" at frame 48`. `None` for
+/// every other clip. A lost title must be named, not folded into a count.
+pub(crate) fn uncarried_clip(p: &Project, c: &TrackItem, rate: FrameRate) -> Option<String> {
+    let what = match &p.item(c.item)?.kind {
+        ItemKind::Graphic { .. } => "graphic clip",
+        ItemKind::AdjustmentLayer { .. } => "adjustment layer",
+        _ => return None,
+    };
+    Some(format!("{what} \"{}\" at frame {}", c.name, rate.frame_at(c.start)))
+}
+
 pub(crate) fn generator_of(p: &Project, id: ItemId) -> Option<&Generator> {
     match &item_media(p, id)?.media {
         MediaRef::Generator(g) => Some(g),

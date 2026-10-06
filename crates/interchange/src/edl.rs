@@ -764,6 +764,9 @@ pub(crate) fn export(p: &Project, seq_id: ItemId, opts: &ExportOptions, report: 
             let tr_in = track.transitions.iter().find(|t| t.to == Some(it.id));
             let tr_out = track.transitions.iter().find(|t| t.from == Some(it.id));
             let reel = x.reel(it.item, report);
+            if let Some(clip) = crate::common::uncarried_clip(p, it, rate) {
+                report.warn(format!("{clip} cannot be represented in an EDL: it is written as an ordinary event (reel {reel})"));
+            }
             let mut rec0 = it.start;
             let mut rec1 = it.end();
             let mut src0 = it.source_in;
