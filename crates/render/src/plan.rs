@@ -142,16 +142,16 @@ pub fn plan_frame(project: &Project, seq_id: ItemId, t: Tick, opts: RenderOption
                     layers.push(PlanLayer::new(Arc::new(VideoFrame::rgba_f32(1, 1, col.to_vec())), Affine::scale(w as f64, h as f64), 1.0, Blend::Normal));
                     let (it, k) = if p < 0.5 { (a, 1.0 - p * 2.0) } else { (b, (p - 0.5) * 2.0) };
                     if let Some(it) = it {
-                        push_item(project, seq, it, t, opts, sources, k, Some(Blend::Normal), &mut layers);
+                        push_item(project, seq, it, t, opts, sources, k, Some(Blend::Normal), 0, &mut layers);
                     }
                 }
                 _ => {
                     // cross dissolve: A at full, B over it at p (premultiplied over == linear mix when A is opaque)
                     if let Some(it) = a {
-                        push_item(project, seq, it, t, opts, sources, 1.0 - if b.is_none() { p } else { 0.0 }, Some(Blend::Normal), &mut layers);
+                        push_item(project, seq, it, t, opts, sources, 1.0 - if b.is_none() { p } else { 0.0 }, Some(Blend::Normal), 0, &mut layers);
                     }
                     if let Some(it) = b {
-                        push_item(project, seq, it, t, opts, sources, p, Some(Blend::Normal), &mut layers);
+                        push_item(project, seq, it, t, opts, sources, p, Some(Blend::Normal), 0, &mut layers);
                     }
                 }
             }
@@ -161,7 +161,7 @@ pub fn plan_frame(project: &Project, seq_id: ItemId, t: Tick, opts: RenderOption
         if !item.enabled {
             continue;
         }
-        push_item(project, seq, item, t, opts, sources, 1.0, None, &mut layers);
+        push_item(project, seq, item, t, opts, sources, 1.0, None, 0, &mut layers);
     }
     if opts.captions {
         for o in crate::caption_overlays(seq, t, w, h) {
@@ -178,6 +178,8 @@ pub fn plan_frame(project: &Project, seq_id: ItemId, t: Tick, opts: RenderOption
 
 /// Push the layer(s) of `item`. `blend` overrides the item's own blend mode: inside a transition
 /// the CPU reference mixes the clips and composites the result Normal, ignoring their modes.
+/// `nest` counts the multi-camera clips already followed to reach `item` (see
+/// [`crate::MAX_NEST_DEPTH`]).
 #[allow(clippy::too_many_arguments)]
 fn push_item(
     project: &Project,
@@ -188,6 +190,7 @@ fn push_item(
     sources: &dyn SourceProvider,
     extra_opacity: f32,
     blend: Option<Blend>,
+    nest: u32,
     out: &mut Vec<PlanLayer>,
 ) {
     // frame time (`ft`) vs. effect time (`mt`): they differ inside a frame hold without Hold Filters
@@ -198,6 +201,7 @@ fn push_item(
     // A multi-camera clip that only shows its angle (no effects, untransformed, same frame size)
     // draws the angle's clip directly: no CPU pass over the nested sequence.
     if let Some(ItemKind::Sequence(nested)) = project.item(item.item).map(|p| &p.kind)
+        && nest < crate::MAX_NEST_DEPTH
         && let Some(angle) = item.multicam_angle(nested)
         && !(opts.effects && item.has_standard_effects())
         && (nested.settings.width, nested.settings.height) == (seq.settings.width, seq.settings.height)
@@ -209,7 +213,7 @@ fn push_item(
         // Inside the nested sequence the angle's clip is composited onto an empty canvas, where
         // every mode but Dissolve is Normal; the multicam clip's own mode then applies to it.
         if let Some(inner) = tr.item_at(ft).filter(|i| i.enabled) {
-            push_item(project, nested, inner, ft, opts, sources, extra_opacity * op, Some(bl), out);
+            push_item(project, nested, inner, ft, opts, sources, extra_opacity * op, Some(bl), nest + 1, out);
         }
         return;
     }

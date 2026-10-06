@@ -608,3 +608,23 @@ fn pan51_automation_is_block_invariant() {
     assert!(energy(0, 0, 2000) > 5.0 * energy(1, 0, 2000));
     assert!(energy(1, 10_000, 12_000) > 5.0 * energy(0, 10_000, 12_000));
 }
+
+/// A damaged project can hold a sequence that contains itself (the editor refuses to make one).
+/// Mixing it must end: this used to recurse until the stack overflowed.
+#[test]
+fn a_sequence_nested_in_itself_mixes_to_an_end() {
+    let mut p = Project::new("cycle");
+    let a = p.new_sequence("a", SequenceSettings::default(), 1, 1, None);
+    let b = p.new_sequence("b", SequenceSettings::default(), 1, 1, None);
+    let rate = FrameRate::default();
+    let second = TimeRange::new(Tick::ZERO, Tick(TICKS_PER_SECOND));
+    // a holds itself and b; b holds a
+    for (outer, inner) in [(a, a), (a, b), (b, a)] {
+        let it = p.make_track_item(inner, TrackKind::Audio, Tick::ZERO, second, rate).unwrap();
+        p.sequence_mut(outer).unwrap().audio_tracks[0].items.push(it);
+    }
+    let seq = p.sequence(a).unwrap();
+    let out = mix_graph(&p, seq, 0, 4800, &SourceMap::default(), None);
+    assert_eq!(out.channels.len(), 2);
+    assert!(out.channels.iter().all(|c| c.len() == 4800 && c.iter().all(|s| *s == 0.0)), "no source: silence");
+}
