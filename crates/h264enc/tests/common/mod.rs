@@ -110,15 +110,36 @@ pub fn out_dir(name: &str) -> PathBuf {
     filmcraft_testkit::fixtures_dir(&format!("h264enc/{name}"))
 }
 
-/// Decode an Annex-B file with ffmpeg; returns (stderr, raw yuv420p bytes).
+/// Strict decode of an Annex-B file with ffmpeg; returns (diagnostics, raw yuv420p bytes). Any diagnostic
+/// text is a failure for the caller.
+///
+/// - `-v warning`: ffmpeg reports a picture with a damaged, missing or concealed slice as
+///   `corrupt decoded frame`, which is a warning. At `-v error` a stream with a whole slice missing
+///   decodes silently (#74).
+/// - Error concealment stays at ffmpeg's default. With `-ec 0`, ffmpeg (7.1, 8.1) flags every picture
+///   that has more than one slice as corrupt, libx264's multi-slice streams included, so that mode
+///   can't tell a real defect from a clean multi-slice picture. Concealment can't hide a defect here:
+///   a concealed picture is still reported, and the caller compares every decoded pixel with the
+///   encoder's reconstruction.
+/// - `-err_detect`: also report the non-conformances ffmpeg tolerates by default.
 pub fn ffmpeg_decode(file: &Path) -> (String, Vec<u8>) {
     let out = Command::new(ffmpeg().unwrap())
-        .args(["-v", "error", "-ec", "0", "-i"])
+        .args(["-nostdin", "-hide_banner", "-v", "warning", "-err_detect", "+crccheck+bitstream+buffer+explode", "-i"])
         .arg(file)
         .args(["-f", "rawvideo", "-pix_fmt", "yuv420p", "-"])
         .output()
         .expect("run ffmpeg");
-    (String::from_utf8_lossy(&out.stderr).into_owned(), out.stdout)
+    let mut diag = String::from_utf8_lossy(&out.stderr).into_owned();
+    if !out.status.success() {
+        diag.push_str(&format!("ffmpeg exited with {}", out.status));
+    }
+    (diag, out.stdout)
+}
+
+/// Annex-B NAL units of `stream` as byte ranges (start code included).
+pub fn annexb_nals(stream: &[u8]) -> Vec<std::ops::Range<usize>> {
+    let starts: Vec<usize> = (0..stream.len().saturating_sub(3)).filter(|&i| stream[i..i + 3] == [0, 0, 1]).collect();
+    starts.iter().enumerate().map(|(k, &s)| s..starts.get(k + 1).copied().unwrap_or(stream.len())).collect()
 }
 
 /// Raw frames produced by ffmpeg from a lavfi source.

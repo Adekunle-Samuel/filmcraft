@@ -55,10 +55,16 @@ for p in enc.flush() { /* ... */ }
 ## Verification
 
 `cargo test --release -p filmcraft-h264enc` (ffmpeg/ffprobe used only as external oracles; tests skip when
-absent). Every stream is decoded with `ffmpeg -ec 0 -f rawvideo` and must report no errors, produce exactly the
-number of frames encoded, and be **bit-identical to the encoder's reconstruction** — this covers Baseline/Main/High,
-all presets, 0–3 B-frames, 1–4 slices, odd sizes, `testsrc2` and `mandelbrot` sources, and length-prefixed output
-re-wrapped with the avcC parameter sets. B-frame display order is checked with ffprobe.
+absent). Every stream is decoded with `ffmpeg -v warning -err_detect +crccheck+bitstream+buffer+explode -f rawvideo`
+and must print nothing (not even a `corrupt decoded frame` warning), produce exactly the number of frames encoded,
+and be **bit-identical to the encoder's reconstruction** — this covers Baseline/Main/High, all presets, 0–3
+B-frames, 1–4 slices and automatic slicing at 1080p, odd sizes, `testsrc2` and `mandelbrot` sources, and
+length-prefixed output re-wrapped with the avcC parameter sets. B-frame display order is checked with ffprobe. A
+negative control drops and truncates slices and checks that the oracle reports them.
+
+The oracle leaves ffmpeg's error concealment on. With `-ec 0`, ffmpeg 7.1 and 8.1 print `corrupt decoded frame`
+for every picture that has more than one slice, libx264's multi-slice streams included, while the decoded pixels
+are unchanged (#74). The bit-exact comparison is what rules out concealment.
 
 Results on the synthetic content (moving gradient, grain noise, text-like edges, sub-pixel panning):
 
