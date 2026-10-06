@@ -49,21 +49,37 @@ fn app_icon() -> egui::IconData {
     eframe::icon_data::from_png_bytes(png).unwrap_or_default()
 }
 
+/// Print `text` (stdout, or stderr for an error). A Windows release build has no console
+/// (`windows_subsystem = "windows"`), so there it is also shown in a message box: otherwise `--help`
+/// would print nothing and a bad option would quit without a word.
+fn tell(text: &str, error: bool) {
+    if error {
+        eprint!("{text}");
+    } else {
+        print!("{text}");
+    }
+    #[cfg(all(target_os = "windows", not(debug_assertions)))]
+    {
+        let level = if error { rfd::MessageLevel::Error } else { rfd::MessageLevel::Info };
+        let _ = rfd::MessageDialog::new().set_level(level).set_title("FilmCraft").set_description(text).show();
+    }
+}
+
 fn main() -> eframe::Result {
     // lossy, so a value that is not Unicode is reported like any other bad port instead of ignored
     let env_port = std::env::var_os("FILMCRAFT_CONTROL_PORT").map(|p| p.to_string_lossy().into_owned());
     let Launch { control_port, files, demo, startup_flag, recover, data_dir } = match args::parse(env_port, std::env::args().skip(1)) {
         Ok(Cli::Run(l)) => l,
         Ok(Cli::Help) => {
-            print!("{}", args::USAGE);
+            tell(args::USAGE, false);
             return Ok(());
         }
         Ok(Cli::Version) => {
-            println!("filmcraft {}", env!("CARGO_PKG_VERSION"));
+            tell(&format!("filmcraft {}\n", env!("CARGO_PKG_VERSION")), false);
             return Ok(());
         }
         Err(e) => {
-            eprint!("filmcraft: {e}\n\n{}", args::USAGE);
+            tell(&format!("filmcraft: {e}\n\n{}", args::USAGE), true);
             std::process::exit(2);
         }
     };
