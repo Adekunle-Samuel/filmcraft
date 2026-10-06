@@ -61,3 +61,56 @@ fn naming_a_missing_track_is_an_error_not_a_default() {
     s.execute("edit.undo", json!({})).unwrap();
     assert!(!s.active_sequence().unwrap().audio_tracks[0].muted);
 }
+
+/// `timeline.place {track: "A3"}` put a picture item on the audio track A3 and a second sound
+/// clip on A1; a sound-only item went to A1 whatever audio track `track` named.
+#[test]
+fn place_on_an_audio_track_places_the_sound_there_and_nothing_else() {
+    let mut s = demo();
+    s.execute("file.newSequence", json!({"name": "Sound tracks", "video": 1, "audio": 3})).unwrap();
+    let a3 = s.active_sequence().unwrap().audio_tracks[2].id;
+    let with_picture = s.project.items.values().find(|i| i.has_video() && i.has_audio() && i.as_media().is_some()).map(|i| i.id).unwrap();
+    let sound_only = s.project.items.values().find(|i| !i.has_video() && i.has_audio() && i.as_media().is_some()).map(|i| i.id).unwrap();
+    let picture_only = s.project.items.values().find(|i| i.has_video() && !i.has_audio() && i.as_media().is_some()).map(|i| i.id).unwrap();
+    // how many clips sit on [V1, A1, A2, A3]
+    let counts = |s: &Session| {
+        let q = s.active_sequence().unwrap();
+        [q.video_tracks[0].items.len(), q.audio_tracks[0].items.len(), q.audio_tracks[1].items.len(), q.audio_tracks[2].items.len()]
+    };
+    // a clip with picture and sound, sent to A3 by name: its sound alone, on A3
+    let r = s.execute("timeline.place", json!({"item": with_picture.0, "track": "A3", "frame": 0})).unwrap();
+    assert_eq!(counts(&s), [0, 0, 0, 1], "{r}");
+    let q = s.active_sequence().unwrap();
+    assert_eq!(r["clips"], json!([q.audio_tracks[2].items[0].id.0]));
+    assert_eq!(q.audio_tracks[2].items[0].link, None, "no picture was placed, so nothing to link to");
+    q.check().unwrap();
+    // a sound-only item goes to the audio track named, by name or by id
+    s.execute("timeline.place", json!({"item": sound_only.0, "track": "A2", "frame": 0})).unwrap();
+    assert_eq!(counts(&s), [0, 0, 1, 1]);
+    s.execute("timeline.place", json!({"item": sound_only.0, "track": a3.0, "seconds": 120.0})).unwrap();
+    assert_eq!(counts(&s), [0, 0, 1, 2]);
+    // what cannot be meant is a parameter error that says why, and changes nothing
+    let before = s.project.clone();
+    let undo = s.history.undo.len();
+    for (p, why) in [
+        (json!({"item": with_picture.0, "track": "A3", "audioTrack": "A1", "seconds": 300.0}), "name the sound's track once"),
+        (json!({"item": with_picture.0, "audioTrack": "V1", "seconds": 300.0}), "`audioTrack` names a video track"),
+        (json!({"item": with_picture.0, "track": "V1", "audioTrack": "V1", "seconds": 300.0}), "`audioTrack` names a video track"),
+        (json!({"item": picture_only.0, "track": "A1", "seconds": 300.0}), "this item has no sound"),
+        (json!({"item": sound_only.0, "track": "V1", "seconds": 300.0}), "this item has no picture"),
+    ] {
+        let e = s.execute("timeline.place", p.clone()).unwrap_err();
+        assert!(matches!(&e, EngineError::BadParams { cmd, .. } if cmd == "timeline.place"), "{p}: {e:?}");
+        assert!(e.to_string().contains(why), "{p}: {e}");
+    }
+    assert_eq!(*s.project, *before, "a refused place changes nothing");
+    assert_eq!(s.history.undo.len(), undo, "and adds nothing to the undo history");
+    // a sound-only item dropped on a video row still lands on the audio track sent with it
+    s.execute("timeline.place", json!({"item": sound_only.0, "track": "V1", "audioTrack": "A1", "seconds": 900.0})).unwrap();
+    s.execute("edit.undo", json!({})).unwrap();
+    // the usual forms are unchanged: picture on `track`, sound on `audioTrack` or the default A1
+    s.execute("timeline.place", json!({"item": with_picture.0, "track": "V1", "audioTrack": "A2", "seconds": 300.0})).unwrap();
+    assert_eq!(counts(&s), [1, 0, 2, 2]);
+    s.execute("timeline.place", json!({"item": with_picture.0, "seconds": 600.0})).unwrap();
+    assert_eq!(counts(&s), [2, 1, 2, 2]);
+}

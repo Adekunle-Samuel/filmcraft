@@ -1573,15 +1573,30 @@ fn build() -> Vec<CommandSpec> {
             "Place Clip",
             [],
             None,
-            r#"{"item":id,"track":"V1"|id?,"audioTrack":"A1"|id?,"time":ticks|"frame":i64|"seconds":f64,"insert":bool,"sourceIn":ticks?,"duration":ticks?}"#,
+            r#"{"item":id,"track":"V1"|id|"A1" (sound only)?,"audioTrack":"A1"|id?,"time":ticks|"frame":i64|"seconds":f64,"insert":bool,"sourceIn":ticks?,"duration":ticks?}"#,
             has_seq,
             |s, p| {
                 let item = item_p(p, "item").ok_or_else(|| bad("timeline.place", "need `item`"))?;
                 let at = time_p(s, p, "").unwrap_or(s.playhead());
                 let tg = s.targeting();
-                let v = track_p(s, p, "track", "timeline.place")?.or(tg.video_dest);
-                let a = track_p(s, p, "audioTrack", "timeline.place")?.or(tg.audio_dest);
                 let pi = s.project.item(item).ok_or_else(|| bad("timeline.place", "no such item"))?;
+                let is_audio = |t: TrackId| s.active_sequence().is_some_and(|q| q.audio_tracks.iter().any(|x| x.id == t));
+                // `track` is where the picture goes and `audioTrack` where the sound goes. A caller that
+                // names an audio track as `track` asks for the sound alone, on that track.
+                let (v, a) = match (track_p(s, p, "track", "timeline.place")?, track_p(s, p, "audioTrack", "timeline.place")?) {
+                    (Some(t), Some(_)) if is_audio(t) => {
+                        return Err(bad("timeline.place", "`track` names an audio track and `audioTrack` is given as well: name the sound's track once"));
+                    }
+                    (_, Some(t)) if !is_audio(t) => return Err(bad("timeline.place", "`audioTrack` names a video track")),
+                    (Some(t), None) if is_audio(t) && !pi.has_audio() => {
+                        return Err(bad("timeline.place", "`track` names an audio track and this item has no sound"));
+                    }
+                    (Some(t), None) if is_audio(t) => (None, Some(t)),
+                    (Some(_), None) if !pi.has_video() => {
+                        return Err(bad("timeline.place", "`track` names a video track and this item has no picture: name an audio track"));
+                    }
+                    (v, a) => (v.or(tg.video_dest), a.or(tg.audio_dest)),
+                };
                 let full = match &pi.kind {
                     // Settings ▸ Timeline ▸ Still Image Default Duration
                     ItemKind::Media(m)
