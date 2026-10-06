@@ -342,6 +342,12 @@ fn apply(s: &mut Session, plans: Vec<Plan>, align_timecode: bool, label: &str) -
                 m.info = info.clone();
             }
             proj.shift_media_time(p.item, shift);
+            if p.cand.info.is_some() {
+                // The item's size is now the file's own. Clips that came from an interchange import
+                // while the file was missing still have an "auto" (NaN) anchor waiting for it:
+                // centre it in the real picture. Points that are numbers are not touched.
+                proj.resolve_placed_auto_points(|_| true, |source| source.id == p.item);
+            }
         }
         Ok(())
     })?;

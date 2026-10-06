@@ -303,6 +303,38 @@ mod tests {
         }
     }
 
+    /// A clip with unresolved "auto" points (NaN) is written with `null` coordinates. Such a file
+    /// used to be refused as damaged; it opens, and the points are still "auto".
+    #[test]
+    fn auto_points_written_as_null_open_again() {
+        use filmcraft_project::{ItemKind, SequenceSettings, TrackKind};
+        use filmcraft_time::{FrameRate, Tick, TimeRange};
+        let mut p = Project::new("Imported");
+        let layer = p.add_item(
+            "Layer",
+            filmcraft_project::Label::Iris,
+            ItemKind::AdjustmentLayer { width: 3840, height: 2160, rate: FrameRate::FPS_24, duration: FrameRate::FPS_24.tick_of(48) },
+            None,
+        );
+        let seq = p.new_sequence("Sequence 01", SequenceSettings::default(), 1, 1, None);
+        let ti = p.make_track_item(layer, TrackKind::Video, Tick::ZERO, TimeRange::new(Tick::ZERO, FrameRate::FPS_24.tick_of(48)), FrameRate::FPS_24).unwrap();
+        p.sequence_mut(seq).unwrap().video_tracks[0].items.push(ti);
+        for pretty in [true, false] {
+            let bytes = encode(&p, pretty);
+            let text = String::from_utf8(bytes.clone()).unwrap();
+            assert!(text.replace([' ', '\n'], "").contains(r#"{"Vec2":{"x":null,"y":null}}"#), "the file holds NaN points as null");
+            let l = decode(&bytes).unwrap_or_else(|e| panic!("a file with `null` points is refused: {e}"));
+            let motion = l.project.sequence(seq).unwrap().video_tracks[0].items[0].effect("motion").unwrap().clone();
+            let anchor = motion.params["anchor"].value.as_vec2().unwrap();
+            assert!(anchor.x.is_nan() && anchor.y.is_nan(), "still auto");
+            assert_eq!(motion.params["scale"].value.as_f64(), Some(100.0));
+            assert_eq!(encode(&l.project, pretty), bytes, "and the file is written back the same");
+            // a `null` where no "auto" exists is still a damaged file
+            let broken = text.replacen("3840", "null", 1);
+            assert!(matches!(decode(broken.as_bytes()), Err(FormatError::Corrupt(_))));
+        }
+    }
+
     #[test]
     fn envelope_has_explicit_schema_version() {
         let v: Value = serde_json::from_slice(&encode(&Project::new("x"), true)).unwrap();

@@ -11,7 +11,11 @@ use serde::{Deserialize, Serialize};
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum ParamValue {
     Float(f64),
-    Vec2(Vec2),
+    /// A point. A coordinate may be NaN: point parameters use NaN for "auto" (the frame or source
+    /// centre) until [`crate::resolve_auto_points`] fills it in. JSON has no NaN and writes it as
+    /// `null`, so `null` reads back as NaN here, and only here: a `null` coordinate anywhere else
+    /// in a project (a mask vertex, a layer rectangle) is still a damaged file.
+    Vec2(#[serde(deserialize_with = "point_or_auto")] Vec2),
     Color([f32; 4]),
     Bool(bool),
     Choice(u32),
@@ -20,6 +24,22 @@ pub enum ParamValue {
     Curve(Vec<[f32; 2]>),
     /// A mask path (Bézier vertices in clip pixels); interpolates vertex-wise.
     Path(crate::mask::MaskPath),
+}
+
+/// Read a point parameter's value, taking a `null` coordinate as NaN ("auto").
+fn point_or_auto<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Vec2, D::Error> {
+    fn nan_if_null<'de, D: serde::Deserializer<'de>>(d: D) -> Result<f64, D::Error> {
+        Ok(Option::<f64>::deserialize(d)?.unwrap_or(f64::NAN))
+    }
+    #[derive(Deserialize)]
+    struct Point {
+        #[serde(deserialize_with = "nan_if_null")]
+        x: f64,
+        #[serde(deserialize_with = "nan_if_null")]
+        y: f64,
+    }
+    let p = Point::deserialize(d)?;
+    Ok(Vec2::new(p.x, p.y))
 }
 
 impl ParamValue {

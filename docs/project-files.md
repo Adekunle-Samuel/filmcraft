@@ -19,6 +19,13 @@ writing them is `crates/format` (`filmcraft-format`); the engine's `file.*` comm
 - `project` is the serialized `filmcraft_project::Project` (bins, media clips, sequences, tracks,
   clips, effects, keyframes, markers). Media is referenced by path, never embedded.
 - Files are written compact (no indentation). A 2,000-clip project is about 1.4 MB.
+- A coordinate of an effect's point parameter may be `null`. Point parameters use NaN for "auto"
+  (the frame centre, or the source centre for `anchor`), and JSON writes NaN as `null`; it reads back
+  as "auto". Placing a clip resolves these points at once. An interchange import resolves them
+  too, except the `anchor` of a clip whose media file was not found. That one stays "auto", and
+  the renderer centres it, until Link Media (`media.relink`, `media.autoRelink`) reads the file
+  and with it the real picture size; a file that merely comes back at its old path does not
+  change it. `null` anywhere else is a damaged file.
 
 ### Schema history
 

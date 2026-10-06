@@ -1335,9 +1335,15 @@ impl Project {
 
 /// Resolve NaN "auto" point defaults (frame centre / source centre) in an effect instance.
 pub fn resolve_auto_points(e: &mut EffectInstance, frame: (u32, u32), source: (u32, u32)) {
+    resolve_auto_points_sized(e, frame, Some(source));
+}
+
+/// [`resolve_auto_points`] for a source whose size may not be known yet (`None`): the points
+/// measured in the source (`anchor`) then stay "auto".
+fn resolve_auto_points_sized(e: &mut EffectInstance, frame: (u32, u32), source: Option<(u32, u32)>) {
     for (k, p) in e.params.iter_mut() {
         if let ParamValue::Vec2(v) = &mut p.value {
-            let (w, h) = if k == "anchor" { source } else { frame };
+            let Some((w, h)) = (if k == "anchor" { source } else { Some(frame) }) else { continue };
             if let Some((fx, fy)) = effect::auto_point(&e.effect, k) {
                 if v.x.is_nan() {
                     v.x = w as f64 * fx;
@@ -1355,6 +1361,79 @@ pub fn resolve_auto_points(e: &mut EffectInstance, frame: (u32, u32), source: (u
         }
     }
     let _ = Vec2::ZERO;
+}
+
+impl Project {
+    /// Size in pixels of what an item shows: a media clip's picture, a sequence's frame, an
+    /// adjustment layer or graphic; a subclip has the size of its parent. `None` without
+    /// picture. This is the size the renderer centres a clip's "auto" anchor in.
+    pub fn source_size(&self, item: ItemId) -> Option<(u32, u32)> {
+        let mut id = item;
+        // subclips of subclips: bounded, a damaged project could point a subclip at itself
+        for _ in 0..16 {
+            return match &self.item(id)?.kind {
+                ItemKind::Media(m) => m.info.video.as_ref().map(|v| (v.width, v.height)),
+                ItemKind::Sequence(q) => Some((q.settings.width, q.settings.height)),
+                ItemKind::AdjustmentLayer { width, height, .. } | ItemKind::Graphic { width, height, .. } => Some((*width, *height)),
+                ItemKind::Subclip { parent, .. } => {
+                    id = *parent;
+                    continue;
+                }
+            };
+        }
+        None
+    }
+
+    /// Resolve the "auto" (NaN) points of the clips in the sequences `sequences` selects, for
+    /// clips that did not go through a placing command (an interchange import builds them with
+    /// the effect defaults). Points measured in the frame use the sequence's size. `anchor` is
+    /// measured in the clip's source ([`Project::source_size`], a subclip through its parent) and
+    /// is resolved only when `size_is_final` says so for that source item (the media item for a
+    /// subclip); otherwise it stays "auto", which the renderer centres in whatever size the media
+    /// turns out to have. Points that are not NaN are never touched, so this can run again when
+    /// more sizes are known.
+    pub fn resolve_placed_auto_points(&mut self, sequences: impl Fn(ItemId) -> bool, size_is_final: impl Fn(&ProjectItem) -> bool) {
+        let seq_ids: Vec<ItemId> = self.items.values().filter(|i| matches!(i.kind, ItemKind::Sequence(_)) && sequences(i.id)).map(|i| i.id).collect();
+        for seq_id in seq_ids {
+            let Some(seq) = self.sequence(seq_id) else { continue };
+            // the source size of each clip that has an unresolved point, looked up before the edit
+            let sources: BTreeMap<ClipId, Option<(u32, u32)>> = seq
+                .all_tracks()
+                .flat_map(|t| t.items.iter())
+                .filter(|c| c.effects.iter().any(has_auto_point))
+                .map(|c| (c.id, self.final_source_size(c.item, &size_is_final)))
+                .collect();
+            if sources.is_empty() {
+                continue;
+            }
+            let Some(seq) = self.sequence_mut(seq_id) else { continue };
+            let frame = (seq.settings.width, seq.settings.height);
+            for clip in seq.all_tracks_mut().flat_map(|t| t.items.iter_mut()) {
+                let Some(source) = sources.get(&clip.id) else { continue };
+                for e in &mut clip.effects {
+                    resolve_auto_points_sized(e, frame, *source);
+                }
+            }
+        }
+    }
+
+    /// [`Project::source_size`] of `item` when the item that carries the size (the media item of
+    /// a subclip) passes `size_is_final`.
+    fn final_source_size(&self, item: ItemId, size_is_final: &impl Fn(&ProjectItem) -> bool) -> Option<(u32, u32)> {
+        let mut id = item;
+        for _ in 0..16 {
+            let it = self.item(id)?;
+            match &it.kind {
+                ItemKind::Subclip { parent, .. } => id = *parent,
+                _ => return if size_is_final(it) { self.source_size(id) } else { None },
+            }
+        }
+        None
+    }
+}
+
+fn has_auto_point(e: &EffectInstance) -> bool {
+    e.params.values().any(|p| matches!(&p.value, ParamValue::Vec2(v) if v.x.is_nan() || v.y.is_nan()))
 }
 
 #[cfg(test)]
@@ -1399,6 +1478,78 @@ mod tests {
         let q = Project::from_json(&s).unwrap();
         assert_eq!(p, q);
         assert!(q.sequence(seq).unwrap().check().is_ok());
+    }
+
+    #[test]
+    fn point_params_keep_auto_through_json_and_no_other_point_reads_null() {
+        // serde_json writes NaN as `null`; a point parameter reads it back as NaN ("auto")
+        let json = serde_json::to_string(&ParamValue::Vec2(Vec2::new(f64::NAN, 540.0))).unwrap();
+        assert_eq!(json, r#"{"Vec2":{"x":null,"y":540.0}}"#);
+        let v = serde_json::from_str::<ParamValue>(&json).unwrap().as_vec2().unwrap();
+        assert!(v.x.is_nan() && v.y == 540.0);
+        let both = serde_json::from_str::<ParamValue>(r#"{"Vec2":{"x":null,"y":null}}"#).unwrap().as_vec2().unwrap();
+        assert!(both.x.is_nan() && both.y.is_nan());
+        assert_eq!(serde_json::from_str::<ParamValue>(r#"{"Vec2":{"x":1.5,"y":-2}}"#).unwrap(), ParamValue::Vec2(Vec2::new(1.5, -2.0)));
+        // anything else is still an error, and so is a missing coordinate
+        for bad in [r#"{"Vec2":{"x":"a","y":0}}"#, r#"{"Vec2":{"x":0}}"#, r#"{"Vec2":null}"#, r#"{"Float":null}"#] {
+            assert!(serde_json::from_str::<ParamValue>(bad).is_err(), "{bad}");
+        }
+        // only point parameters: a `null` coordinate in a mask vertex (or any other point) is damage
+        assert!(serde_json::from_str::<Vec2>(r#"{"x":null,"y":0}"#).is_err());
+        let mut path = serde_json::to_value(MaskPath::ellipse(Vec2::new(100.0, 100.0), Vec2::new(50.0, 40.0))).unwrap();
+        assert!(serde_json::from_value::<MaskPath>(path.clone()).is_ok());
+        path["vertices"][0]["p"]["x"] = serde_json::Value::Null;
+        assert!(serde_json::from_value::<MaskPath>(path.clone()).is_err());
+        assert!(serde_json::from_value::<ParamValue>(serde_json::json!({ "Path": path })).is_err());
+    }
+
+    #[test]
+    fn placed_auto_points_resolve_once_the_source_size_is_final() {
+        let (mut p, clip, seq) = demo_project();
+        let src = p.item(clip).and_then(|i| i.as_media()).and_then(|m| m.info.video.clone()).unwrap();
+        let rate = p.sequence(seq).unwrap().settings.frame_rate;
+        let second = TimeRange::new(Tick::ZERO, Tick(TICKS_PER_SECOND));
+        let sub = p.add_item("Sub", Label::Iris, ItemKind::Subclip { parent: clip, range: second, restrict_trims: true }, None);
+        let sub_of_sub = p.add_item("Sub 2", Label::Iris, ItemKind::Subclip { parent: sub, range: second, restrict_trims: true }, None);
+        assert_eq!(p.source_size(clip), Some((src.width, src.height)));
+        assert_eq!((p.source_size(sub), p.source_size(sub_of_sub)), (p.source_size(clip), p.source_size(clip)), "a subclip has its parent's size");
+        assert_eq!(p.source_size(ItemId(987_654_321)), None);
+        // clips whose Motion position / anchor were never resolved (as an interchange import builds them)
+        let mut ids = Vec::new();
+        for (n, item) in [clip, sub, sub_of_sub].into_iter().enumerate() {
+            let ti = p.make_track_item(item, TrackKind::Video, Tick(n as i64 * TICKS_PER_SECOND), second, rate).unwrap();
+            assert!(ti.effect("motion").unwrap().vec2_at("position", Tick::ZERO).x.is_nan());
+            ids.push(ti.id);
+            p.sequence_mut(seq).unwrap().video_tracks[0].items.push(ti);
+        }
+        let st = p.sequence(seq).unwrap().settings.clone();
+        let point = |p: &Project, id: ClipId, k: &str| p.sequence(seq).unwrap().find_item(id).unwrap().1.effect("motion").unwrap().vec2_at(k, Tick::ZERO);
+        let (frame_centre, source_centre) =
+            (Vec2::new(st.width as f64 / 2.0, st.height as f64 / 2.0), Vec2::new(src.width as f64 / 2.0, src.height as f64 / 2.0));
+        // sequences that are not selected are left alone
+        let mut untouched = p.clone();
+        untouched.resolve_placed_auto_points(|_| false, |_| true);
+        assert!(point(&untouched, ids[0], "position").x.is_nan());
+        // the source size is not final yet: the frame's points resolve, the anchor stays auto
+        p.resolve_placed_auto_points(|_| true, |_| false);
+        for id in &ids {
+            assert_eq!(point(&p, *id, "position"), frame_centre);
+            assert!(point(&p, *id, "anchor").x.is_nan() && point(&p, *id, "anchor").y.is_nan());
+        }
+        // ...and survives a save: NaN is written as `null` and read back as NaN
+        let mut q = Project::from_json(&p.to_json()).unwrap();
+        assert!(point(&q, ids[0], "anchor").x.is_nan());
+        assert_eq!(q.to_json(), p.to_json());
+        // final for the media item only: its clip and the clips of its subclips get the source centre
+        q.resolve_placed_auto_points(|_| true, |i| i.id == clip);
+        for id in &ids {
+            assert_eq!((point(&q, *id, "position"), point(&q, *id, "anchor")), (frame_centre, source_centre));
+        }
+        assert!(!q.to_json().contains("null}}"), "no NaN point is left to write");
+        // running it again changes nothing
+        let once = q.clone();
+        q.resolve_placed_auto_points(|_| true, |_| true);
+        assert_eq!(q, once);
     }
 
     #[test]

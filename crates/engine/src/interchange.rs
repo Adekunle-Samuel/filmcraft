@@ -20,6 +20,10 @@ fn report_json(r: &filmcraft_interchange::Report) -> Vec<String> {
     r.entries.iter().map(|e| if e.count > 1 { format!("{} (×{})", e.message, e.count) } else { e.message.clone() }).collect()
 }
 
+fn is_file_media(item: &filmcraft_project::ProjectItem) -> bool {
+    matches!(&item.kind, ItemKind::Media(m) if matches!(m.media, MediaRef::File { .. }))
+}
+
 /// Import a document: merge its bins, media and sequences into the project (one undo step), then
 /// link each media file that exists on disk. Returns the new sequences.
 pub fn import(s: &mut Session, path: &str, bytes: &[u8], format: Format) -> Result<Value> {
@@ -46,7 +50,15 @@ pub fn import(s: &mut Session, path: &str, bytes: &[u8], format: Format) -> Resu
     };
     let before: std::collections::HashSet<ItemId> = s.project.items.keys().copied().collect();
     let name = opts.name.clone().unwrap_or_else(|| format.name().to_string());
-    let seqs = s.edit(&format!("Import {name}"), |proj, _| Ok(filmcraft_interchange::merge_into(proj, fragment, None)))?;
+    let seqs = s.edit(&format!("Import {name}"), |proj, _| {
+        let seqs = filmcraft_interchange::merge_into(proj, fragment, None);
+        // A document that sets only some Motion parameters leaves the others at their "auto"
+        // (NaN) defaults. Resolve them as placing a clip does, for every format. A media file's
+        // picture size is only what the document says so far (an EDL says nothing: the importer
+        // assumes the sequence size), so its clips' anchors wait for Link Media below.
+        proj.resolve_placed_auto_points(|seq| !before.contains(&seq), |source| !is_file_media(source));
+        Ok(seqs)
+    })?;
     // Link media: probe each new file-backed item that exists.
     let new_media: Vec<(ItemId, String)> = s
         .project
@@ -85,6 +97,8 @@ pub fn import(s: &mut Session, path: &str, bytes: &[u8], format: Format) -> Resu
                             filmcraft_interchange::rebase_source_timecode(proj, id, tc, rate);
                         }
                     }
+                    // the picture size is now the file's own: centre the anchors of its clips in it
+                    proj.resolve_placed_auto_points(|seq| !before.contains(&seq), |source| source.id == id);
                     Ok(())
                 })?;
                 s.media.insert_file(id, &mpath, src);
