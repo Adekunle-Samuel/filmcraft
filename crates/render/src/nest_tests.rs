@@ -260,3 +260,103 @@ fn captions_inside_a_nest_are_part_of_its_picture() {
     let shown = render_sequence(&r.p, outer, t, RenderOptions { captions: true, ..Default::default() }, &r.map);
     assert!(worst(&shown, &with) > 0.1, "and are drawn when asked for");
 }
+
+// ---- the frame plan draws a plain nest's layers itself
+
+/// How many layers the plan of `seq` at `t` has (None when it fell back to one CPU image).
+fn layer_count(r: &Rig, seq: ItemId, t: Tick) -> Option<usize> {
+    match plan::plan_frame(&r.p, seq, t, RenderOptions::default(), &r.map) {
+        plan::FramePlan::Layers { layers, .. } => Some(layers.len()),
+        _ => None,
+    }
+}
+
+/// An inner sequence with the ocean on V1 and a half-size, half-transparent red matte over it on
+/// V2, nested alone in an outer sequence of the same size. Returns (inner, outer, nest clip).
+fn two_layer_nest(r: &mut Rig) -> (ItemId, ItemId, ClipId) {
+    let ocean = r.add(GeneratorSource::demo(DemoScene::OceanSunset));
+    let (w, h) = {
+        let v = r.map.0[&ocean].info().video.clone().unwrap();
+        (v.width, v.height)
+    };
+    let red = r.matte(RED, w / 2, h / 2);
+    let inner = r.seq("inner", w, h, FrameRate::FPS_24);
+    r.put(inner, ocean, 96);
+    let rate = FrameRate::FPS_24;
+    let mut top = r.p.make_track_item(red, TrackKind::Video, Tick::ZERO, TimeRange::new(Tick::ZERO, rate.tick_of(96)), rate).unwrap();
+    top.effect_mut("opacity").unwrap().params.get_mut("opacity").unwrap().value = ParamValue::Float(50.0);
+    r.p.sequence_mut(inner).unwrap().video_tracks[1].items.push(top);
+    let outer = r.seq("outer", w, h, FrameRate::FPS_24);
+    let nest = r.put(outer, inner, 96);
+    (inner, outer, nest)
+}
+
+#[test]
+fn a_plain_nest_is_planned_as_its_own_layers_and_looks_the_same() {
+    let mut r = Rig::new();
+    let (inner, outer, _) = two_layer_nest(&mut r);
+    let t = FrameRate::FPS_24.tick_of(20);
+    // two layers (the nest's clips), not one image of the nest
+    assert_eq!(layer_count(&r, outer, t), Some(2));
+    assert!(worst(&r.planned(outer, t), &r.frame(outer, t)) < 0.01);
+    assert!(worst(&r.planned(outer, t), &r.frame(inner, t)) < 0.01, "and it is the nested sequence's picture");
+    // a nest of the nest still plans down to the two clips
+    let outermost = r.seq("outermost", r.p.sequence(outer).unwrap().settings.width, r.p.sequence(outer).unwrap().settings.height, FrameRate::FPS_24);
+    r.put(outermost, outer, 96);
+    assert_eq!(layer_count(&r, outermost, t), Some(2));
+    assert!(worst(&r.planned(outermost, t), &r.frame(outermost, t)) < 0.01);
+    // with something under the nest in the outer sequence too
+    let under = r.matte([0.0, 0.0, 1.0, 1.0], 64, 64);
+    let rate = FrameRate::FPS_24;
+    let nest_clip = r.p.sequence_mut(outermost).unwrap().video_tracks[0].items.remove(0);
+    let mut below = r.p.make_track_item(under, TrackKind::Video, Tick::ZERO, TimeRange::new(Tick::ZERO, rate.tick_of(96)), rate).unwrap();
+    below.scale_to_frame = true;
+    let s = r.p.sequence_mut(outermost).unwrap();
+    s.video_tracks[0].items.push(below);
+    s.video_tracks[1].items.push(nest_clip);
+    assert_eq!(layer_count(&r, outermost, t), Some(3));
+    assert!(worst(&r.planned(outermost, t), &r.frame(outermost, t)) < 0.01);
+}
+
+#[test]
+fn a_nest_that_is_not_plain_is_still_drawn_right() {
+    let t = FrameRate::FPS_24.tick_of(20);
+    // each of these keeps the nest one layer (rendered on the CPU), and the plan matches the reference
+    let cases: [(&str, fn(&mut Rig, ItemId, ItemId, ClipId)); 5] = [
+        ("half-transparent nest", |r, _, outer, nest| {
+            r.clip(outer, nest).effect_mut("opacity").unwrap().params.get_mut("opacity").unwrap().value = ParamValue::Float(50.0);
+        }),
+        ("moved nest", |r, _, outer, nest| {
+            r.clip(outer, nest).effect_mut("motion").unwrap().params.get_mut("scale").unwrap().value = ParamValue::Float(60.0);
+        }),
+        ("nest with an effect", |r, _, outer, nest| {
+            let mut crop = filmcraft_project::effect::find_effect("crop").unwrap().instance();
+            crop.params.get_mut("left").unwrap().value = ParamValue::Float(30.0);
+            r.clip(outer, nest).effects.push(crop);
+        }),
+        ("a blend mode inside the nest", |r, inner, _, _| {
+            let top = &mut r.p.sequence_mut(inner).unwrap().video_tracks[1].items[0];
+            top.effect_mut("opacity").unwrap().params.get_mut("blend").unwrap().value = ParamValue::Choice(3);
+        }),
+        ("a nest of another size", |r, inner, _, _| {
+            r.p.sequence_mut(inner).unwrap().settings.width /= 2;
+        }),
+    ];
+    for (what, change) in cases {
+        let mut r = Rig::new();
+        let (inner, outer, nest) = two_layer_nest(&mut r);
+        // under the nest, so that blending the nest as a whole or layer by layer would differ
+        let under = r.matte([0.0, 1.0, 0.0, 1.0], 64, 64);
+        let rate = FrameRate::FPS_24;
+        let nest_clip = r.p.sequence_mut(outer).unwrap().video_tracks[0].items.remove(0);
+        let mut below = r.p.make_track_item(under, TrackKind::Video, Tick::ZERO, TimeRange::new(Tick::ZERO, rate.tick_of(96)), rate).unwrap();
+        below.scale_to_frame = true;
+        let s = r.p.sequence_mut(outer).unwrap();
+        s.video_tracks[0].items.push(below);
+        s.video_tracks[1].items.push(nest_clip);
+        change(&mut r, inner, outer, nest);
+        assert_eq!(layer_count(&r, outer, t), Some(2), "{what}: the matte and one image of the nest");
+        let w = worst(&r.planned(outer, t), &r.frame(outer, t));
+        assert!(w < 0.01, "{what}: plan and reference differ by {w}");
+    }
+}

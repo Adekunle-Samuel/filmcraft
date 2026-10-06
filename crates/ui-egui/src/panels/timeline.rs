@@ -39,6 +39,11 @@ pub struct TlState {
     snap_x: Option<f32>,
     pub peaks: Arc<Mutex<HashMap<ItemId, Arc<Vec<(f32, f32)>>>>>,
     peaks_pending: Arc<Mutex<Vec<ItemId>>>,
+    /// Nested sequences have waveforms too, of their mix. Unlike media a sequence changes: this is
+    /// the content key (see [`sequence_audio_key`]) the cached peaks of each sequence were made
+    /// from, and the key worked out for the session revision last seen.
+    seq_peak_keys: Arc<Mutex<HashMap<ItemId, u64>>>,
+    seq_keys_seen: HashMap<ItemId, (u64, u64)>,
     /// Source peak of each cached peak list (keyed by the list's address), for the waveform
     /// display gain: scanning the whole source per clip per frame cost more than drawing.
     peak_max: HashMap<ItemId, (usize, f32)>,
@@ -52,6 +57,8 @@ impl TlState {
     pub fn reset_media_caches(&mut self) {
         self.peaks = Default::default();
         self.peaks_pending = Default::default();
+        self.seq_peak_keys = Default::default();
+        self.seq_keys_seen.clear();
         self.peak_max.clear();
     }
 }
@@ -691,7 +698,86 @@ fn waveform_display_gain(source_peak: f32, clip_gain_db: f64) -> f32 {
     filmcraft_render::audio::db_to_gain(clip_gain_db) * boost
 }
 
+/// A key that changes when the sound of sequence `item` does: its audio segments (clips,
+/// transitions, mixer state; see `filmcraft_render::preview::audio_segments`) and its length.
+fn sequence_audio_key(project: &filmcraft_project::Project, item: ItemId) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    for seg in filmcraft_render::preview::audio_segments(project, item) {
+        (seg.first_sample, seg.samples, seg.hash).hash(&mut h);
+    }
+    project.sequence(item).map(|q| (q.duration().0, q.settings.sample_rate)).hash(&mut h);
+    h.finish()
+}
+
+/// Waveform peaks of a nested sequence's mix, in the same form as a media item's (min, max per
+/// 256 samples at 48 kHz). They are mixed in the background, and again whenever the sequence's
+/// sound changes; until the new ones are ready the old ones stay on show.
+fn request_sequence_peaks(app: &mut FilmcraftApp, item: ItemId) -> Option<Arc<Vec<(f32, f32)>>> {
+    let revision = app.session.revision;
+    let key = match app.tl.seq_keys_seen.get(&item) {
+        Some(&(rev, key)) if rev == revision => key,
+        _ => {
+            let key = sequence_audio_key(&app.session.project, item);
+            app.tl.seq_keys_seen.insert(item, (revision, key));
+            key
+        }
+    };
+    let have = app.tl.peaks.lock().unwrap_or_else(|e| e.into_inner()).get(&item).cloned();
+    let current = app.tl.seq_peak_keys.lock().unwrap_or_else(|e| e.into_inner()).get(&item) == Some(&key);
+    if current && have.is_some() {
+        return have;
+    }
+    {
+        let mut pend = app.tl.peaks_pending.lock().unwrap_or_else(|e| e.into_inner());
+        if pend.contains(&item) {
+            return have;
+        }
+        pend.push(item);
+    }
+    let (peaks, keys, pending) = (app.tl.peaks.clone(), app.tl.seq_peak_keys.clone(), app.tl.peaks_pending.clone());
+    let project = app.session.project.clone();
+    let provider = app.session.media.provider(project.clone(), app.session.services.clone());
+    let run = move || {
+        // a panic in the mix must not take the app down with it, nor leave the item pending for good
+        let mixed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let seq = project.sequence(item)?;
+            let sr = seq.settings.sample_rate.max(1);
+            let total = seq.duration().to_units_floor(sr as i64).max(0) as usize;
+            // one peak per 256 samples at 48 kHz, whatever the sequence's own rate
+            let bucket = ((256u64 * sr as u64) / 48_000).max(1) as usize;
+            let chunk = (bucket * 750).max(1);
+            let mut out = Vec::with_capacity(total / bucket + 1);
+            let mut s = 0usize;
+            while s < total {
+                let n = chunk.min(total - s);
+                let buf = filmcraft_render::audio::mix_sequence(&project, seq, s as i64, n, &provider);
+                let ch = buf.channels.first()?;
+                for c in ch.chunks(bucket) {
+                    let (lo, hi) = c.iter().fold((0f32, 0f32), |(l, h), v| (l.min(*v), h.max(*v)));
+                    out.push((lo, hi));
+                }
+                s += n;
+            }
+            Some(out)
+        }));
+        if let Ok(Some(out)) = mixed {
+            peaks.lock().unwrap_or_else(|e| e.into_inner()).insert(item, Arc::new(out));
+            keys.lock().unwrap_or_else(|e| e.into_inner()).insert(item, key);
+        }
+        pending.lock().unwrap_or_else(|e| e.into_inner()).retain(|i| *i != item);
+    };
+    #[cfg(not(target_arch = "wasm32"))]
+    std::thread::spawn(run);
+    #[cfg(target_arch = "wasm32")]
+    run();
+    have
+}
+
 pub(crate) fn request_peaks(app: &mut FilmcraftApp, item: ItemId) -> Option<Arc<Vec<(f32, f32)>>> {
+    if app.session.project.sequence(item).is_some() {
+        return request_sequence_peaks(app, item);
+    }
     if let Some(p) = app.tl.peaks.lock().unwrap_or_else(|e| e.into_inner()).get(&item) {
         return Some(p.clone());
     }
