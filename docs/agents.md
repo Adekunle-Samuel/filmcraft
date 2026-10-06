@@ -89,6 +89,9 @@ Notes:
 
 - Time is in ticks (254 016 000 000 per second). Commands also accept `seconds`, `frame` or
   `timecode`.
+- A track parameter (`track`, `audioTrack`) is a track id or a name such as `"V1"` / `"A2"`.
+  Leaving it out picks the command's default track; naming a track the sequence does not have is
+  an "invalid parameters" error, never a different track.
 - `engine.execute` also runs UI-only commands (`tool.razor`, `playback.toggle`,
   `window.workspace.color`, `window.panel.<name>`).
 - Element ids come from the previous frame. If an element is missing right after a layout change,

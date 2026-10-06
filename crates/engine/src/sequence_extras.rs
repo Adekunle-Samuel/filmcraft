@@ -225,7 +225,7 @@ fn transcribe(s: &mut Session, p: &Value) -> Result<Value> {
     let track = match p.get("track") {
         None => None,
         Some(Value::String(t)) if t.eq_ignore_ascii_case("mix") => None,
-        Some(_) => Some(crate::commands::track_p(s, p, "track").ok_or_else(|| bad("sequence.transcribe", "unknown `track`"))?),
+        Some(_) => Some(crate::commands::track_p(s, p, "track", "sequence.transcribe")?.ok_or_else(|| bad("sequence.transcribe", "unknown `track`"))?),
     };
     let mut items = Vec::new();
     for t in q.audio_tracks.iter().filter(|t| track.is_none_or(|x| x == t.id)) {

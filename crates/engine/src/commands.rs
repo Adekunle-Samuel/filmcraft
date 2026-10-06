@@ -187,18 +187,32 @@ pub(crate) fn clips_p(s: &Session, p: &Value) -> Vec<ClipId> {
         None => clip_p(p, "clip").map(|c| vec![c]).unwrap_or_else(|| s.state.selection.clone()),
     }
 }
-pub(crate) fn track_p(s: &Session, p: &Value, k: &str) -> Option<TrackId> {
-    let v = p.get(k)?;
-    if let Some(id) = v.as_u64() {
-        return Some(TrackId(id));
-    }
-    // "V1", "A2"
-    let name = v.as_str()?;
-    let seq = s.active_sequence()?;
-    let (kind, idx) = name.split_at(1);
-    let i: usize = idx.parse().ok()?;
-    let tracks = if kind.eq_ignore_ascii_case("v") { &seq.video_tracks } else { &seq.audio_tracks };
-    tracks.get(i.checked_sub(1)?).map(|t| t.id)
+/// The track parameter `k` names: a track id, or "V1" / "A2" (kind and 1-based number).
+/// `Ok(None)` when the parameter is absent. Naming a track the active sequence does not have is
+/// an error (bad parameters of `cmd`): callers fall back to a default track only when no track
+/// was asked for.
+pub(crate) fn track_p(s: &Session, p: &Value, k: &str, cmd: &str) -> Result<Option<TrackId>> {
+    let v = match p.get(k) {
+        None | Some(Value::Null) => return Ok(None),
+        Some(v) => v,
+    };
+    let seq = s.active_sequence().ok_or(EngineError::NoSequence)?;
+    let by_name = |name: &str| {
+        let mut rest = name.chars();
+        let tracks = match rest.next()? {
+            'v' | 'V' => &seq.video_tracks,
+            'a' | 'A' => &seq.audio_tracks,
+            _ => return None,
+        };
+        let i: usize = rest.as_str().parse().ok()?;
+        tracks.get(i.checked_sub(1)?).map(|t| t.id)
+    };
+    let found = match v.as_u64() {
+        Some(id) => seq.track(TrackId(id)).map(|t| t.id),
+        None => v.as_str().and_then(by_name),
+    };
+    let named = v.as_str().map(str::to_string).unwrap_or_else(|| v.to_string());
+    found.map(Some).ok_or_else(|| bad(cmd, format!("no track {named} in this sequence (`{k}`)")))
 }
 pub(crate) fn item_p(p: &Value, k: &str) -> Option<ItemId> {
     u64_p(p, k).map(ItemId)
@@ -1208,7 +1222,7 @@ fn build() -> Vec<CommandSpec> {
             set_transition
         ),
         cmd!("sequence.closeGap", "Close Gap", ["Sequence"], None, r#"{"track":"V1"|id,"time":ticks}"#, has_seq, |s, p| {
-            let tr = track_p(s, p, "track").ok_or_else(|| bad("sequence.closeGap", "need `track`"))?;
+            let tr = track_p(s, p, "track", "sequence.closeGap")?.ok_or_else(|| bad("sequence.closeGap", "need `track`"))?;
             let t = time_p(s, p, "").unwrap_or(s.playhead());
             s.edit_sequence("Ripple Delete", |q, _, st| {
                 let before: Vec<(ClipId, Tick)> = q.track(tr).map(|x| x.items.iter().map(|i| (i.id, i.start)).collect()).unwrap_or_default();
@@ -1252,7 +1266,7 @@ fn build() -> Vec<CommandSpec> {
             Ok(Value::Null)
         }),
         cmd!("sequence.deleteTrack", "Delete Track", [], None, r#"{"track":"V3"|id}"#, has_seq, |s, p| {
-            let tr = track_p(s, p, "track").ok_or_else(|| bad("sequence.deleteTrack", "need `track`"))?;
+            let tr = track_p(s, p, "track", "sequence.deleteTrack")?.ok_or_else(|| bad("sequence.deleteTrack", "need `track`"))?;
             s.edit_sequence("Delete Track", |q, _, _| {
                 q.video_tracks.retain(|t| t.id != tr);
                 q.audio_tracks.retain(|t| t.id != tr);
@@ -1565,8 +1579,8 @@ fn build() -> Vec<CommandSpec> {
                 let item = item_p(p, "item").ok_or_else(|| bad("timeline.place", "need `item`"))?;
                 let at = time_p(s, p, "").unwrap_or(s.playhead());
                 let tg = s.targeting();
-                let v = track_p(s, p, "track").or(tg.video_dest);
-                let a = track_p(s, p, "audioTrack").or(tg.audio_dest);
+                let v = track_p(s, p, "track", "timeline.place")?.or(tg.video_dest);
+                let a = track_p(s, p, "audioTrack", "timeline.place")?.or(tg.audio_dest);
                 let pi = s.project.item(item).ok_or_else(|| bad("timeline.place", "no such item"))?;
                 let full = match &pi.kind {
                     // Settings ▸ Timeline ▸ Still Image Default Duration
@@ -1617,11 +1631,13 @@ fn build() -> Vec<CommandSpec> {
             Ok(json!({"selection": s.state.selection.iter().map(|c| c.0).collect::<Vec<_>>()}))
         }),
         cmd!("timeline.move", "Move Clips", [], None, r#"{"moves":[{"clip":id,"track":id|"V2","time":ticks}],"insert":bool}"#, has_seq, |s, p| {
-            let moves: Vec<(ClipId, TrackId, Tick)> = p
-                .get("moves")
-                .and_then(Value::as_array)
-                .map(|a| a.iter().filter_map(|m| Some((clip_p(m, "clip")?, track_p(s, m, "track")?, Tick(m.get("time")?.as_i64()?)))).collect())
-                .unwrap_or_default();
+            let mut moves: Vec<(ClipId, TrackId, Tick)> = Vec::new();
+            for m in p.get("moves").and_then(Value::as_array).into_iter().flatten() {
+                let track = track_p(s, m, "track", "timeline.move")?;
+                if let (Some(clip), Some(track), Some(time)) = (clip_p(m, "clip"), track, m.get("time").and_then(Value::as_i64)) {
+                    moves.push((clip, track, Tick(time)));
+                }
+            }
             if moves.is_empty() {
                 return Err(bad("timeline.move", "need `moves`"));
             }
@@ -1830,7 +1846,7 @@ fn build() -> Vec<CommandSpec> {
         }),
         cmd!("timeline.razor", "Razor", [], None, r#"{"time":ticks,"track":"V1"|id?,"clip":id?}"#, has_seq, |s, p| {
             let t = time_p(s, p, "").unwrap_or(s.playhead());
-            let tr = track_p(s, p, "track");
+            let tr = track_p(s, p, "track", "timeline.razor")?;
             let clip = clip_p(p, "clip");
             let n = if let Some(c) = clip {
                 let clips = with_links(s, &[c]);
@@ -1849,7 +1865,7 @@ fn build() -> Vec<CommandSpec> {
             r#"{"track":"V1"|id,"locked":bool?,"syncLock":bool?,"enabled":bool?,"muted":bool?,"solo":bool?,"name":str?,"volumeDb":f64?,"pan":f64?}"#,
             has_seq,
             |s, p| {
-                let tr = track_p(s, p, "track").ok_or_else(|| bad("timeline.setTrack", "need `track`"))?;
+                let tr = track_p(s, p, "track", "timeline.setTrack")?.ok_or_else(|| bad("timeline.setTrack", "need `track`"))?;
                 let p = p.clone();
                 s.edit_sequence("Track Settings", |q, _, _| {
                     let t = q.track_mut(tr).ok_or(filmcraft_edit::EditError::NoTrack(tr))?;
@@ -1883,7 +1899,7 @@ fn build() -> Vec<CommandSpec> {
             }
         ),
         cmd!("timeline.setTargeting", "Track Targeting", [], None, r#"{"track":"V1"|id,"targeted":bool?,"sourcePatch":bool?}"#, has_seq, |s, p| {
-            let tr = track_p(s, p, "track").ok_or_else(|| bad("timeline.setTargeting", "need `track`"))?;
+            let tr = track_p(s, p, "track", "timeline.setTargeting")?.ok_or_else(|| bad("timeline.setTargeting", "need `track`"))?;
             let seq_id = s.state.active_sequence.ok_or(EngineError::NoSequence)?;
             let mut tg = s.targeting();
             let is_video = s.active_sequence().is_some_and(|q| q.video_tracks.iter().any(|t| t.id == tr));
