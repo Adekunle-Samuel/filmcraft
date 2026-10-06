@@ -2554,11 +2554,19 @@ fn paste(s: &mut Session, insert: bool) -> Result<Value> {
     Ok(Value::Null)
 }
 
+/// The name Nest… offers: the first unused "Nested Sequence NN".
+pub fn next_nested_name(s: &Session) -> String {
+    (1..=s.project.items.len().saturating_add(1))
+        .map(|k| format!("Nested Sequence {k:02}"))
+        .find(|n| !s.project.items.values().any(|i| &i.name == n))
+        .unwrap_or_else(|| "Nested Sequence".to_string())
+}
+
 fn nest(s: &mut Session, p: &Value) -> Result<Value> {
     let seq_id = s.state.active_sequence.ok_or(EngineError::NoSequence)?;
     let sel = with_links(s, &s.state.selection.clone());
     let q = s.active_sequence().ok_or(EngineError::NoSequence)?.clone();
-    let name = str_p(p, "name").map(str::to_string).unwrap_or_else(|| "Nested Sequence 01".to_string());
+    let name = str_p(p, "name").filter(|n| !n.trim().is_empty()).map(str::to_string).unwrap_or_else(|| next_nested_name(s));
     let mut items: Vec<(TrackKind, usize, filmcraft_project::TrackItem)> = Vec::new();
     for (k, ts) in [(TrackKind::Video, &q.video_tracks), (TrackKind::Audio, &q.audio_tracks)] {
         for (ti, t) in ts.iter().enumerate() {

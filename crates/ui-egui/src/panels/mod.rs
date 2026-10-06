@@ -184,7 +184,13 @@ pub fn panel_menu_popup(app: &mut FilmcraftApp, ui: &mut egui::Ui) {
     let area = egui::Area::new(id.with("area")).order(egui::Order::Foreground).fixed_pos(pos).show(ui.ctx(), |ui| {
         egui::Frame::popup(ui.style()).show(ui, |ui| {
             ui.set_min_width(190.0);
-            if ui.button("Close Panel").clicked() {
+            // the Timeline's tabs are its open sequences: closing one keeps the panel
+            if p == PanelKind::Timeline && app.session.state.active_sequence.is_some() {
+                if ui.button("Close Sequence").clicked() {
+                    let _ = app.session.execute("sequence.close", serde_json::json!({}));
+                    close = true;
+                }
+            } else if ui.button("Close Panel").clicked() {
                 app.ui.dock.close(p);
                 close = true;
             }
