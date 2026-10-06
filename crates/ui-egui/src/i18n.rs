@@ -1,8 +1,10 @@
 //! Interface translations. Command ids, document text and file names remain stable.
 //! Untranslated labels fall back to English so coverage can grow incrementally.
 //!
-//! No Japanese font is bundled: Japanese uses a font already installed on the system
-//! ([`system_japanese_font`]); without one, switching to Japanese is refused with a message.
+//! Japanese text uses the Japanese craft-fonts when FilmCraft was built with them (`CRAFT_FONTS_DIR`;
+//! `theme::install` already puts them in every font family, see [`craft_japanese_font`]), otherwise
+//! a font already installed on the system ([`system_japanese_font`]); with neither, switching to
+//! Japanese is refused with a message.
 
 use std::sync::{Arc, OnceLock};
 
@@ -90,10 +92,24 @@ pub fn system_japanese_font() -> Option<Arc<egui::FontData>> {
     .clone()
 }
 
-/// Add the system's Japanese font as the last fallback of every theme font family, from the next
+/// Whether the craft-fonts build input (empty unless built with `CRAFT_FONTS_DIR`) supplies a
+/// Japanese interface font: some craft-fonts face covers [`JAPANESE_SAMPLE`]. `theme::install` adds
+/// these faces to every font family, so nothing else needs installing (and no system scan runs).
+pub fn craft_japanese_font() -> bool {
+    filmcraft_text::fonts::craft_japanese().next().is_some()
+        && filmcraft_text::fonts::all_faces()
+            .iter()
+            .any(|f| f.info.origin == filmcraft_text::fonts::CRAFT_ORIGIN && JAPANESE_SAMPLE.chars().all(|c| f.has_char(c)))
+}
+
+/// Japanese for the interface: true when built with the craft-fonts (already installed by
+/// `theme::install`). Otherwise add the system's Japanese font as the last fallback of every theme font family, from the next
 /// pass on. Returns false (and changes nothing) when no Japanese font is installed. Call it again
 /// after `theme::install`, which replaces the font definitions.
 pub fn install_japanese_font(ctx: &egui::Context) -> bool {
+    if craft_japanese_font() {
+        return true;
+    }
     let Some(font) = system_japanese_font() else { return false };
     let families = crate::theme::font_families()
         .into_iter()
@@ -229,8 +245,9 @@ mod tests {
         let ctx = egui::Context::default();
         crate::theme::install(&ctx, &crate::theme::Tokens::for_kind(crate::theme::ThemeKind::default()));
         let r = crate::menus::invoke(&mut app, &ctx, "app.language.japanese", serde_json::json!({}));
-        if system_japanese_font().is_none() {
-            // nothing is bundled: refused, and the interface stays English
+        let craft = craft_japanese_font();
+        if !craft && system_japanese_font().is_none() {
+            // no craft-fonts and no system font: refused, and the interface stays English
             assert!(r.is_err(), "{r:?}");
             assert_eq!(app.ui.language, Language::En);
             return;
@@ -239,10 +256,16 @@ mod tests {
         let mut output = ctx.run_ui(egui::RawInput::default(), |_| {});
         output.textures_delta.clear();
         ctx.fonts_mut(|fonts| {
-            // every theme family falls back to the system Japanese font
+            // every theme family falls back to the craft-fonts (when built with them; no system
+            // font is added then) or to the system Japanese font
             for family in crate::theme::font_families() {
                 let stack = fonts.definitions().families.get(&family).cloned().unwrap_or_default();
-                assert_eq!(stack.last().map(String::as_str), Some(JAPANESE_FONT), "{family:?}: {stack:?}");
+                if craft {
+                    assert!(stack.last().is_some_and(|n| n.starts_with("craft:")), "{family:?}: {stack:?}");
+                    assert!(!stack.iter().any(|n| n == JAPANESE_FONT), "{family:?}: {stack:?}");
+                } else {
+                    assert_eq!(stack.last().map(String::as_str), Some(JAPANESE_FONT), "{family:?}: {stack:?}");
+                }
             }
             // and the glyphs resolve. (Only families whose replacement-box face is another font:
             // egui's `has_glyph` reports false for any character served by the face it also uses
