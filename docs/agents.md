@@ -39,6 +39,9 @@ claude mcp add filmcraft-headless -- /abs/path/filmcraft/target/release/filmcraf
 |---|---|---|
 | `command_list` | both | every command: id, label, menu, shortcut, params, enabled now (`filter`, `enabled_only`) |
 | `command_run` | both | run a command `{id, params}`; edits are undoable |
+| `command_batch` | both | run several commands in order `{steps: [{id, params}], stop_on_error}` → `{completed, failed, results}` |
+| `doc_inspect` | both | the project tree and the active sequence in one call (`project_inspect` + `sequence_inspect`) |
+| `render_preview` | both | same as `render_frame` |
 | `project_inspect` | both | bins and items with ids, types, durations; active sequence |
 | `sequence_inspect` | both | the active sequence: tracks, clips (ticks and frames), effects, transitions, markers, playhead, selection |
 | `media_import` | both | import files by absolute path (`text`, one path per line) |
@@ -54,6 +57,47 @@ claude mcp add filmcraft-headless -- /abs/path/filmcraft/target/release/filmcraf
 
 Typical loop: `project_inspect` / `sequence_inspect` → get ids → `command_run` → `render_frame` or
 `ui_screenshot` → look at the result → `edit.undo` if it's wrong.
+
+### Conventions
+
+The server follows a few conventions that make it predictable for agents. They are not
+FilmCraft-specific: the sibling craft apps' MCP servers can follow the same ones, so an agent that has
+driven one app can drive the others.
+
+- **Core tools.** `command_list`, `command_run`, `command_batch`, `doc_inspect` and `render_preview`
+  work in both modes. The FilmCraft tools above stay as they are.
+- **Titles and annotations.** Every tool has a `title` and the four MCP hints (`readOnlyHint`,
+  `destructiveHint`, `idempotentHint`, `openWorldHint`), so a client can let the read-only tools
+  (lists, inspects, renders, screenshots) run without asking and ask before edits. When you add a
+  tool, set them in its `#[tool(...)]` attribute; a test checks every listed tool.
+- **Strict arguments.** An unknown tool argument is a JSON-RPC `-32602` error that names it and the
+  accepted ones (`unknown argument "filtr" for command_list; expected: enabled_only, filter`), not a
+  silently ignored key. `command_run.params` goes to the command unchanged.
+- **Errors.** A failing command is an `isError` result with the engine's message. A line that is not
+  JSON gets a `-32700` parse error (id `null`) and the server keeps serving. A command that panics is
+  reported as `internal error: …`, and the session stays usable.
+- **Resources.** `filmcraft://document` (the project tree and active sequence, as `doc_inspect`) and
+  `filmcraft://commands` (the command catalog, as `command_list`), both `application/json`. For MCP
+  2026-07-28 clients such as current Claude Code, list and read results carry the `ttlMs` and
+  `cacheScope` hints that revision requires.
+
+### Long exports: progress and cancellation
+
+`command_run {"id": "file.exportMedia", "params": {…, "wait": true}}` in headless mode blocks until
+the file is written. It uses the MCP progress and cancellation utilities, so a client can show
+progress and stop it:
+
+- The export runs as the same background job `jobs.list` shows. The session is locked only for short
+  polls, so other requests (`ping`, `doc_inspect`, `jobs.list`, …) are answered while it encodes.
+- With `"_meta": {"progressToken": T}` on the `tools/call`, the server sends
+  `notifications/progress` `{progressToken: T, progress: <frames done>, total: <frames>, message:
+  <job status>}` at most every 100 ms while frames advance. Without a token it sends none.
+- `notifications/cancelled` for the request stops the encode at the next batch (`jobs.cancel`),
+  deletes the partial output (the movie, or the frames and caption sidecar written so far) and sends
+  no response, as the MCP cancellation utility asks.
+- Without `wait` the command returns `{job, path}` at once, as before: poll `jobs.list` and stop it
+  with `jobs.cancel`. Other exports (`file.exportFrame`, interchange formats, …) finish quickly and
+  ignore the token. Bridge mode forwards the call unchanged; the app shows its own progress.
 
 ## 2. Control channel
 
