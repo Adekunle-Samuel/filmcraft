@@ -405,3 +405,21 @@ fn merge(v: Vec<(i64, i64)>) -> Vec<(i64, i64)> {
 fn unused_kind_import() {
     let _ = TrackKind::Video;
 }
+
+#[test]
+fn hostile_speeds_are_refused_or_clamped_never_overflow() {
+    // a tiny speed used to saturate the new duration to i64::MAX, then the ripple shift overflowed
+    for speed in [1e-7, 1e-300, f64::MIN_POSITIVE, f64::NAN, f64::INFINITY, -1.0, 0.0] {
+        let mut fx = Fx::new();
+        let v1 = fx.v(0);
+        let a = fx.put(v1, 0, 10, 10);
+        let _b = fx.put(v1, 10, 10, 10);
+        let before = fx.seq.clone();
+        let mut n = fx.next;
+        let r = set_speed_group(&mut fx.seq, &[a], speed, false, true, &mut Fx::ctx(&mut n));
+        match r {
+            Ok(()) => fx.seq.check().unwrap(),
+            Err(_) => assert_eq!(format!("{:?}", fx.seq), format!("{before:?}"), "{speed}: a refused edit changes nothing"),
+        }
+    }
+}

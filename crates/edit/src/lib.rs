@@ -761,7 +761,7 @@ pub fn set_speed(seq: &mut Sequence, clip: ClipId, speed: f64, reverse: bool, ri
 /// by different amounts (a split edit), the later material moves by the largest change, so no
 /// member is overlapped and the tracks stay in sync. Nothing changes when the edit fails.
 pub fn set_speed_group(seq: &mut Sequence, clips: &[ClipId], speed: f64, reverse: bool, ripple: bool, ctx: &mut EditCtx) -> Result<()> {
-    if speed <= 0.0 {
+    if !(speed.is_finite() && speed > 0.0) {
         return Err(EditError::Other("speed must be positive".into()));
     }
     let mut work = seq.clone();
@@ -773,7 +773,9 @@ pub fn set_speed_group(seq: &mut Sequence, clips: &[ClipId], speed: f64, reverse
             return Err(EditError::Other("clips on one track change speed one at a time".into()));
         }
         let src_len = it.source_out() - it.source_in;
-        let mut new_dur = Tick((src_len.0 as f64 / speed).round() as i64).max(ctx.min_duration);
+        // a tiny speed saturates the cast: keep the clip's end representable
+        let room = Tick(Tick::MAX.0.saturating_sub(it.start.0.max(0)));
+        let mut new_dur = Tick((src_len.0 as f64 / speed).round() as i64).min(room).max(ctx.min_duration);
         let old_end = it.end();
         let tr = work.track(tid).ok_or(EditError::NoTrack(tid))?;
         let (_, next_start) = neighbours(tr, *clip);
@@ -801,7 +803,9 @@ pub fn set_speed_group(seq: &mut Sequence, clips: &[ClipId], speed: f64, reverse
             let from = member.unwrap_or(main_from);
             for i in &mut tr.items {
                 if !clips.contains(&i.id) && i.start >= from {
-                    i.start += shift;
+                    // later clips must still end on the representable timeline
+                    let start = i.start.0.checked_add(shift.0).filter(|s| s.checked_add(i.duration.0).is_some());
+                    i.start = Tick(start.ok_or_else(|| EditError::Other("the speed change would move later clips past the end of the timeline".into()))?);
                 }
             }
             tr.sort();
