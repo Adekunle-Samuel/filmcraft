@@ -2094,13 +2094,26 @@ fn build() -> Vec<CommandSpec> {
                 p.get("items").and_then(Value::as_array).map(|a| a.iter().filter_map(|v| v.as_u64().map(ItemId)).collect()).unwrap_or_default();
             Ok(Value::Null)
         }),
-        cmd!("project.delete", "Clear", [], Some("Delete"), r#"{"items":[id]?}"#, has_project_selection, |s, p| {
-            let items: Vec<ItemId> = p
+        cmd!("project.delete", "Clear", [], Some("Delete"), r#"{"items":[id|binId]?}"#, has_project_selection, |s, p| {
+            let asked: Vec<ItemId> = p
                 .get("items")
                 .and_then(Value::as_array)
                 .map(|a| a.iter().filter_map(|v| v.as_u64().map(ItemId)).collect())
                 .unwrap_or_else(|| s.state.project_selection.clone());
+            // A bin named here goes with everything in it, as in the Project panel of any editor.
+            let root = s.project.root.id;
+            let bins: Vec<filmcraft_project::BinId> =
+                asked.iter().map(|i| filmcraft_project::BinId(i.0)).filter(|b| *b != root && s.project.root.find_bin(*b).is_some()).collect();
+            let mut items: Vec<ItemId> = asked.iter().copied().filter(|i| !bins.contains(&filmcraft_project::BinId(i.0))).collect();
+            for b in &bins {
+                if let Some(bin) = s.project.root.find_bin(*b) {
+                    bin.all_items(&mut items);
+                }
+            }
             s.edit("Clear", |pr, st| {
+                for b in &bins {
+                    pr.root.remove_bin(*b);
+                }
                 for i in &items {
                     pr.items.remove(i);
                     pr.root.remove_item(*i);
@@ -2122,7 +2135,7 @@ fn build() -> Vec<CommandSpec> {
                 s.media.remove(*i);
             }
             s.fix_state();
-            Ok(Value::Null)
+            Ok(json!({"items": items.len(), "bins": bins.len()}))
         }),
         cmd!("project.moveToBin", "Move to Bin", [], None, r#"{"items":[id]?,"bin":binId|null}"#, always, |s, p| {
             let items: Vec<ItemId> = match p.get("items").and_then(Value::as_array) {

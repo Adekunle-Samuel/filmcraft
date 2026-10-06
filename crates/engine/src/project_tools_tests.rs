@@ -401,3 +401,39 @@ fn system_report_lists_the_build() {
     assert!(r["decoders"].as_array().unwrap().iter().any(|d| d.as_str().unwrap().contains("H.264")));
     assert_eq!(r["exportFormats"].as_array().unwrap().len(), filmcraft_export::Format::ALL.len());
 }
+
+#[test]
+fn clear_deletes_a_bin_with_everything_in_it() {
+    let mut s = demo();
+    let before = s.project.items.len();
+    let outer = s.execute("file.newBin", json!({"name": "Old footage"})).unwrap()["bin"].as_u64().unwrap();
+    let inner = s.execute("file.newBin", json!({"name": "Inside", "parent": outer})).unwrap()["bin"].as_u64().unwrap();
+    let empty = s.execute("file.newBin", json!({"name": "Empty"})).unwrap()["bin"].as_u64().unwrap();
+    let ocean = item_named(&s, "Ocean_Sunset.mp4");
+    s.execute("project.moveToBin", json!({"items": [ocean.0], "bin": inner})).unwrap();
+    let dunes = item_named(&s, "Desert_Dunes.mp4");
+    let select = |s: &mut Session| s.execute("project.select", json!({"items": [dunes.0]})).unwrap();
+    select(&mut s);
+    // an empty bin, by its id: gone, nothing else touched
+    let r = s.execute("project.delete", json!({"items": [empty]})).unwrap();
+    assert_eq!(r, json!({"items": 0, "bins": 1}));
+    assert!(s.project.root.find_bin(filmcraft_project::BinId(empty)).is_none());
+    assert_eq!(s.project.items.len(), before);
+    // a bin holding a sub-bin holding a clip: all three go
+    select(&mut s);
+    let r = s.execute("project.delete", json!({"items": [outer]})).unwrap();
+    assert_eq!(r, json!({"items": 1, "bins": 1}));
+    assert!(s.project.root.find_bin(filmcraft_project::BinId(outer)).is_none());
+    assert!(s.project.root.find_bin(filmcraft_project::BinId(inner)).is_none());
+    assert!(s.project.item(ocean).is_none());
+    assert_eq!(s.project.items.len(), before - 1);
+    // undo puts the bins and the clip back where they were
+    s.execute("edit.undo", json!({})).unwrap();
+    assert!(s.project.root.find_bin(filmcraft_project::BinId(inner)).is_some());
+    assert_eq!(s.project.root.parent_of(ocean), Some(filmcraft_project::BinId(inner)));
+    // the project's own top bin is never cleared
+    let root = s.project.root.id.0;
+    select(&mut s);
+    s.execute("project.delete", json!({"items": [root]})).unwrap();
+    assert_eq!(s.project.items.len(), before);
+}
