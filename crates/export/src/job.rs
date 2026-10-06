@@ -11,6 +11,10 @@
 //! When a source's bytes are not available yet (asynchronous web reads mark
 //! [`filmcraft_media::pending`]), the batch is rendered again on the next call: nothing is encoded
 //! from frames or audio with missing media.
+//!
+//! The file does not depend on how many frames a step renders (one per core natively, one on the
+//! web): packets go to the muxer in fixed groups of [`INTERLEAVE`] output frames, each followed by
+//! the audio up to its end, so the same project and settings give the same bytes on any machine.
 
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
@@ -29,6 +33,11 @@ use crate::{
     AudioEncoder, ColorSignal, EncodedPacket, EncoderFrame, ExportError, ExportSettings, Format, H264Pass, Out, Progress, Report, Result, VideoEncoder,
     audio_factories, export_range, frame_span, video_factories,
 };
+
+/// Output frames per interleaved group: the video packets of these frames, then the audio up to
+/// their end, form one chunk of each track. Fixed (not the batch size, which follows the core
+/// count) so the file layout is the same on every machine.
+pub const INTERLEAVE: i64 = 16;
 
 /// What one [`Exporter::step`] did.
 #[derive(Debug)]
@@ -58,7 +67,9 @@ pub struct Exporter {
     measured: bool,
     /// The first pass of a two-pass encode is running.
     first_pass: bool,
-    /// Created after the first batch (encoders may finalise their codec config then).
+    /// Encoded video packets not written yet (the current [`INTERLEAVE`] group).
+    queued: Vec<EncodedPacket>,
+    /// Created after the first group was encoded (encoders may finalise their codec config then).
     mux: Option<Mp4Writer<Out>>,
     /// MXF exports write through this instead of `mux`.
     mxf: Option<MxfMux>,
@@ -140,6 +151,7 @@ impl Exporter {
             audio,
             measured,
             first_pass: two_pass,
+            queued: Vec::new(),
             mux: None,
             mxf: None,
             seq,
@@ -295,22 +307,33 @@ impl Exporter {
                 self.next = end;
                 return Ok(Step::Progress);
             }
-            let mixed = match self.audio.as_ref().map(|a| a.sr) {
-                Some(sr) if (self.mux.is_none() && self.mxf.is_none()) || self.at.is_some() || self.mxf.is_some() => {
-                    let until = self.sample_at_frame(end, sr);
-                    self.audio.as_mut().and_then(|a| a.pull(until, sources))
+            // the audio of every interleave group that ends in this batch (before encoding, so a
+            // pending source can still make the batch run again)
+            let cuts: Vec<i64> = (f + 1..=end).filter(|&g| (g - self.f0) % INTERLEAVE == 0).collect();
+            let mut mixed = Vec::with_capacity(cuts.len());
+            if let Some(sr) = self.audio.as_ref().map(|a| a.sr) {
+                for &g in &cuts {
+                    let until = self.sample_at_frame(g, sr);
+                    mixed.push(self.audio.as_mut().and_then(|a| a.pull(until, sources)));
                 }
-                _ => None,
-            };
+            }
             if filmcraft_media::pending::take() {
                 return Ok(Step::Pending);
             }
-            let packets = self.encode(&frames, f)?;
-            if self.mux.is_none() && self.mxf.is_none() {
-                self.open_mux()?;
+            let mut mixed = mixed.into_iter();
+            for (k, frame) in frames.iter().enumerate() {
+                let fi = f + k as i64;
+                let packets = self.encode(std::slice::from_ref(frame), fi)?;
+                self.queued.extend(packets);
+                if cuts.contains(&(fi + 1)) {
+                    if self.mux.is_none() && self.mxf.is_none() {
+                        self.open_mux()?;
+                    }
+                    let packets = std::mem::take(&mut self.queued);
+                    self.write_video(packets)?;
+                    self.write_audio(mixed.next().flatten())?;
+                }
             }
-            self.write_video(packets)?;
-            self.write_audio(mixed)?;
             progress.done.fetch_add((end - f) as u64, Ordering::Relaxed);
             self.next = end;
             return Ok(Step::Progress);
@@ -332,7 +355,8 @@ impl Exporter {
         if self.mux.is_none() && self.mxf.is_none() {
             self.open_mux()?;
         }
-        let tail = self.venc.flush()?;
+        let mut tail = std::mem::take(&mut self.queued);
+        tail.extend(self.venc.flush()?);
         self.write_video(tail)?;
         self.write_audio(mixed)?;
         if let (Some(at), Some(a)) = (self.at, self.aenc.as_mut()) {

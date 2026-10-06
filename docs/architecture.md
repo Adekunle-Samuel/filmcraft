@@ -601,6 +601,11 @@ file.exportMedia {path, preset?, settings?, format?, range?, …}     export.qui
 | `png`, `tiff`, `bmp` | `image` | numbered stills `<name>000.<ext>`, `<name>001.<ext>` … |
 | `gif`, `wav`, `aiff` | built in / `image` | GIF / RIFF WAVE (`WAVE_FORMAT_EXTENSIBLE` for 5.1) / AIFF (16- or 24-bit PCM) |
 
+- **Reproducible.** The same project and settings give the same file on every machine. Frames render
+  in batches of one per core, but the muxer gets them in fixed groups of 16 output frames
+  (`INTERLEAVE` in `crates/export/src/job.rs`), each followed by its audio, and H.264 uses one slice
+  per four macroblock rows instead of one per core. MXF files are the exception: their UMIDs and
+  modification date come from the clock, as SMPTE ST 330 / ST 377 expect.
 - **Settings.** `ExportSettings` (serde, camelCase, every field optional) holds Video (frame size or
   Match Source, frame rate, Scale to Fit / Fill / Stretch, pixel aspect, field order — progressive
   only, profile / level, bitrate encoding, target / maximum / adaptive bitrate, keyframe distance,
