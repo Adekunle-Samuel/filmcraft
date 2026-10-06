@@ -193,6 +193,79 @@ fn ripple_trim_shifts_following() {
 }
 
 #[test]
+fn ripple_trim_group_takes_a_split_edit_along() {
+    // V1: a [0,10) then b [10,20). b's linked sound leads it by 4 on sync-locked A1: [6,20).
+    let mut fx = Fx::new();
+    let (v1, a1) = (fx.v(0), fx.a(0));
+    let a = fx.put(v1, 0, 10, 0);
+    let b = fx.put(v1, 10, 10, 0);
+    let sound = fx.put(a1, 6, 14, 0);
+    for c in [b, sound] {
+        fx.seq.find_item_mut(c).unwrap().1.link = Some(7);
+    }
+    let mut n = fx.next;
+    ripple_trim_group(&mut fx.seq, &[a], Edge::Out, f(3), &mut Fx::ctx(&mut n)).unwrap();
+    assert_eq!((fx.spans(v1), fx.spans(a1)), (vec![(0, 13), (13, 10)], vec![(9, 14)]), "longer: the early sound follows its picture");
+    ripple_trim_group(&mut fx.seq, &[a], Edge::Out, -f(5), &mut Fx::ctx(&mut n)).unwrap();
+    assert_eq!((fx.spans(v1), fx.spans(a1)), (vec![(0, 8), (8, 10)], vec![(4, 14)]), "shorter: it follows too");
+    // the sound would start before the sequence does: refused, nothing changes
+    assert_eq!(ripple_trim_group(&mut fx.seq, &[a], Edge::Out, -f(5), &mut Fx::ctx(&mut n)), Err(EditError::SyncLockConflict));
+    // another clip right before the sound leaves it no room either
+    fx.put(a1, 0, 4, 0);
+    assert_eq!(ripple_trim_group(&mut fx.seq, &[a], Edge::Out, -f(2), &mut Fx::ctx(&mut n)), Err(EditError::SyncLockConflict));
+    assert_eq!((fx.spans(v1), fx.spans(a1)), (vec![(0, 8), (8, 10)], vec![(0, 4), (4, 14)]), "unchanged on failure");
+    // a linked clip that ends before the cut is not a split edit and stays where it is
+    let early = fx.put(fx.a(1), 0, 3, 0);
+    fx.seq.find_item_mut(early).unwrap().1.link = Some(7);
+    ripple_trim_group(&mut fx.seq, &[a], Edge::Out, f(2), &mut Fx::ctx(&mut n)).unwrap();
+    assert_eq!(fx.spans(fx.a(1)), vec![(0, 3)]);
+    fx.seq.check().unwrap();
+
+    // In edge: V1 b [10,20), c [20,30); c's sound starts 12 early on A1: [8,30). b loses 3 at its head.
+    let mut fx = Fx::new();
+    let (v1, v2, a1, a2) = (fx.v(0), fx.v(1), fx.a(0), fx.a(1));
+    fx.put(v1, 0, 10, 0);
+    let b = fx.put(v1, 10, 10, 0);
+    let c = fx.put(v1, 20, 10, 0);
+    let c_sound = fx.put(a1, 8, 22, 0);
+    // two more clips linked to b that the caller did not put in the group
+    let b_sound = fx.put(a2, 10, 10, 0);
+    let b_top = fx.put(v2, 12, 8, 0);
+    for (x, link) in [(c, 7), (c_sound, 7), (b, 8), (b_sound, 8), (b_top, 8)] {
+        fx.seq.find_item_mut(x).unwrap().1.link = Some(link);
+    }
+    let mut n = fx.next;
+    ripple_trim_group(&mut fx.seq, &[b], Edge::In, f(3), &mut Fx::ctx(&mut n)).unwrap();
+    assert_eq!((fx.spans(v1), fx.spans(a1)), (vec![(0, 10), (10, 7), (17, 10)], vec![(5, 22)]), "c and its early sound move up together");
+    assert_eq!((fx.spans(v2), fx.spans(a2)), (vec![(9, 8)], vec![(10, 10)]), "the trimmed clip's own partners never follow");
+
+    // a crossfade into the early sound from a clip that stays behind no longer sits on a cut: it goes
+    let mut fx = Fx::new();
+    let (v1, a1) = (fx.v(0), fx.a(0));
+    let a = fx.put(v1, 0, 10, 0);
+    let b = fx.put(v1, 10, 10, 0);
+    let stays = fx.put(a1, 0, 6, 0);
+    let sound = fx.put(a1, 6, 14, 0);
+    for x in [b, sound] {
+        fx.seq.find_item_mut(x).unwrap().1.link = Some(7);
+    }
+    fx.seq.track_mut(a1).unwrap().transitions = vec![Transition {
+        id: TransitionId(1),
+        effect: filmcraft_project::find_effect("cross_dissolve").unwrap().instance(),
+        start: f(4),
+        duration: f(4),
+        from: Some(stays),
+        to: Some(sound),
+        align: Default::default(),
+        reverse: false,
+    }];
+    let mut n = fx.next;
+    ripple_trim_group(&mut fx.seq, &[a], Edge::Out, f(3), &mut Fx::ctx(&mut n)).unwrap();
+    assert_eq!(fx.spans(a1), vec![(0, 6), (9, 14)]);
+    assert!(fx.seq.track(a1).unwrap().transitions.is_empty());
+}
+
+#[test]
 fn roll_slip_slide() {
     let mut fx = Fx::new();
     let v1 = fx.v(0);
