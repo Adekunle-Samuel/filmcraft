@@ -38,6 +38,9 @@ cargo xtask web --serve 8765                          # the web app on http://12
 
 `FILMCRAFT_CONTROL_PORT=9876` works like `--control 9876`, and `FILMCRAFT_CPU_COMPOSITE=1`
 disables the GPU compositor.
+`filmcraft --help` lists the app's options. An option it does not know, or a control port that is
+not a number (from `--control` or from `FILMCRAFT_CONTROL_PORT`), is an error on stderr with exit
+code 2 instead of a window.
 
 Dev builds compile dependencies at `opt-level = 2` and workspace crates at `opt-level = 1`. For
 playback and codec speed, use `--release`.

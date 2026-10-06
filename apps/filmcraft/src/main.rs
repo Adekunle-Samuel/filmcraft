@@ -1,13 +1,15 @@
 //! FilmCraft desktop app.
 //!
 //! Usage: `filmcraft [--control <port>] [--demo|--empty] [--recover|--no-recover] [--data-dir <dir>]
-//! [project.fcproj | media files…]`
+//! [project.fcproj | media files…]`; `--help` prints the options, `--version` the version. An
+//! unknown option is an error (exit code 2), not a file to open.
 //!
 //! Without a project, `--demo` or `--empty`, Settings ▸ General ▸ At Startup decides: Show Home
 //! (the demo project), Open Most Recent, or an empty project.
 //!
 //! `--control <port>` (or `FILMCRAFT_CONTROL_PORT`) starts a localhost JSON-lines control server;
-//! see `filmcraft_ui_egui::control` for the methods.
+//! see `filmcraft_ui_egui::control` for the methods. A port that is not a number is an error from
+//! either source.
 //!
 //! Auto-save and the crash-recovery journal run in every session (data in `--data-dir`, else
 //! `FILMCRAFT_DATA_DIR`, else the per-user application data folder). If a previous session died
@@ -18,6 +20,7 @@
 #![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable))]
 
 mod app_nap;
+mod args;
 mod audio;
 mod audio_in;
 mod control_server;
@@ -25,6 +28,7 @@ mod control_server;
 mod native_menu;
 mod window_raise;
 
+use args::{Cli, Launch};
 use chrono::TimeZone;
 use filmcraft_engine::Session;
 use filmcraft_engine::autosave::{AutosaveConfig, default_data_dir};
@@ -46,30 +50,24 @@ fn app_icon() -> egui::IconData {
 }
 
 fn main() -> eframe::Result {
-    app_nap::disable();
-    let mut control_port: Option<u16> = std::env::var("FILMCRAFT_CONTROL_PORT").ok().and_then(|p| p.parse().ok());
-    let mut files = Vec::new();
-    let mut demo = true;
-    // --demo / --empty given: skip Settings ▸ General ▸ At Startup
-    let mut startup_flag = false;
-    let mut recover: Option<bool> = None;
-    let mut data_dir = None;
-    let mut args = std::env::args().skip(1);
-    while let Some(a) = args.next() {
-        match a.as_str() {
-            "--control" => control_port = args.next().and_then(|p| p.parse().ok()),
-            "--demo" => (demo, startup_flag) = (true, true),
-            "--empty" => (demo, startup_flag) = (false, true),
-            "--recover" => recover = Some(true),
-            "--no-recover" => recover = Some(false),
-            "--data-dir" => data_dir = args.next().map(std::path::PathBuf::from),
-            "--version" => {
-                println!("filmcraft {}", env!("CARGO_PKG_VERSION"));
-                return Ok(());
-            }
-            _ => files.push(a),
+    // lossy, so a value that is not Unicode is reported like any other bad port instead of ignored
+    let env_port = std::env::var_os("FILMCRAFT_CONTROL_PORT").map(|p| p.to_string_lossy().into_owned());
+    let Launch { control_port, files, demo, startup_flag, recover, data_dir } = match args::parse(env_port, std::env::args().skip(1)) {
+        Ok(Cli::Run(l)) => l,
+        Ok(Cli::Help) => {
+            print!("{}", args::USAGE);
+            return Ok(());
         }
-    }
+        Ok(Cli::Version) => {
+            println!("filmcraft {}", env!("CARGO_PKG_VERSION"));
+            return Ok(());
+        }
+        Err(e) => {
+            eprint!("filmcraft: {e}\n\n{}", args::USAGE);
+            std::process::exit(2);
+        }
+    };
+    app_nap::disable();
     // Panics anywhere go to <data dir>/Logs/crash-<day>.log with a backtrace; the UI pass and
     // frame workers catch them and keep running (see filmcraft_ui_egui::crash).
     filmcraft_ui_egui::crash::install(data_dir.clone().or_else(default_data_dir).map(|d| d.join("Logs")));
