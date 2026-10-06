@@ -600,4 +600,22 @@ fn shorter_head_closes_the_stretch_after_the_cut_on_sync_locked_tracks() {
         };
         assert_eq!(r, Err(EditError::SyncLockConflict), "group {group}");
     }
+    // a clip on a sync-locked track that starts at the cut stays put while the pictures after it move
+    // up: only the stretch after the cut sees it (the old stretch, before the cut, let it through)
+    for group in [false, true] {
+        let mut fx = Fx::new();
+        let (v1, a1) = (fx.v(0), fx.a(0));
+        fx.put(v1, 0, 10, 0);
+        let b = fx.put(v1, 10, 10, 0);
+        fx.put(v1, 20, 10, 0);
+        fx.put(a1, 10, 5, 0);
+        let mut n = fx.next;
+        let r = if group {
+            ripple_trim_group(&mut fx.seq, &[b], Edge::In, f(3), &mut Fx::ctx(&mut n))
+        } else {
+            trim(&mut fx.seq, b, Edge::In, TrimMode::Ripple, f(3), &mut Fx::ctx(&mut n))
+        };
+        assert_eq!(r, Err(EditError::SyncLockConflict), "group {group}");
+        assert_eq!(fx.spans(v1), vec![(0, 10), (10, 10), (20, 10)], "unchanged on failure");
+    }
 }

@@ -92,6 +92,16 @@ fn ripple_trim_is_refused_when_the_early_sound_has_no_room() {
 /// the shorter head takes away.
 #[test]
 fn shorter_head_on_a_j_cut_take_shortens_picture_and_sound_together() {
+    shorter_head_on_a_j_cut_take(false);
+}
+
+/// The same trim grabbed by the early sound instead of the picture gives the same result.
+#[test]
+fn shorter_head_grabbed_by_the_early_sound_gives_the_same_result() {
+    shorter_head_on_a_j_cut_take(true);
+}
+
+fn shorter_head_on_a_j_cut_take(grab_sound: bool) {
     let mut s = Session::default();
     let (first, second, sound) = j_cut(&mut s);
     let rate = s.sequence_rate();
@@ -100,7 +110,7 @@ fn shorter_head_on_a_j_cut_take_shortens_picture_and_sound_together() {
     let ((pic_len, pic_in), (snd_len, snd_in)) = (len(&s, second), len(&s, sound));
     let first_before = len(&s, first);
     let before = s.project.clone();
-    let r = s.execute("timeline.trim", json!({"clip": second.0, "edge": "in", "mode": "ripple", "deltaFrames": 8})).unwrap();
+    let r = s.execute("timeline.trim", json!({"clip": if grab_sound { sound.0 } else { second.0 }, "edge": "in", "mode": "ripple", "deltaFrames": 8})).unwrap();
     let by = rate.tick_of(8);
     assert_eq!(r["delta"], json!(by.0));
     assert_eq!((start(&s, second), start(&s, sound)), (picture_at, sound_at), "both stay where they start");

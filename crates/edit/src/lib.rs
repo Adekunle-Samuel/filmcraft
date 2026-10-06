@@ -652,7 +652,11 @@ pub fn ripple_trim_group(seq: &mut Sequence, clips: &[ClipId], edge: Edge, delta
             origins.push((tid, from));
         }
     }
-    let main_from = {
+    // a shorter or longer head: the cut is the latest member's start (a sound that leads its picture
+    // starts earlier), whichever member was grabbed
+    let main_from = if edge == Edge::In {
+        origins.iter().map(|o| o.1).max().unwrap_or_default()
+    } else {
         let (tid, _) = seq.find_item(first).ok_or(EditError::NoItem(first))?;
         origins.iter().find(|(t, _)| *t == tid).map(|o| o.1).unwrap_or_default()
     };
