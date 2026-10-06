@@ -1,11 +1,11 @@
 //! The picture of nested sequences: a nest shows its sequence at that sequence's own size and
-//! frame rate.
+//! frame rate, through the clip's speed, holds and effects, with the sequence's captions.
 //! Premiere's behaviour was observed in Premiere Pro 26.5.2.
 
 use super::*;
 use filmcraft_media::generators::GeneratorSource;
 use filmcraft_media::{DemoScene, Generator, MediaSource};
-use filmcraft_project::{ClipId, Label, MediaClip, MediaRef, ParamValue, SequenceSettings, TrackKind};
+use filmcraft_project::{Caption, CaptionFormat, CaptionTrack, ClipId, Label, MediaClip, MediaRef, ParamValue, SequenceSettings, TrackId, TrackKind};
 use filmcraft_time::{FrameRate, TICKS_PER_SECOND, TimeRange};
 
 const RED: [f32; 4] = [1.0, 0.0, 0.0, 1.0];
@@ -147,4 +147,116 @@ fn a_nest_at_another_frame_rate_shows_its_sequence_at_the_same_moment() {
     let t = FrameRate::FPS_24.tick_of(36);
     assert!(worst(&r.frame(outer, t), &r.frame(inner, t)) < 0.01);
     assert!(worst(&r.frame(inner, t), &r.frame(inner, Tick::ZERO)) > 0.05, "the footage moves, so the comparison means something");
+}
+
+#[test]
+fn speed_reverse_and_frame_hold_on_a_nest_pick_the_frame_of_its_sequence() {
+    let mut r = Rig::new();
+    let ocean = r.add(GeneratorSource::demo(DemoScene::OceanSunset));
+    let (w, h) = {
+        let v = r.map.0[&ocean].info().video.clone().unwrap();
+        (v.width, v.height)
+    };
+    let rate = FrameRate::FPS_24;
+    let inner = r.seq("inner", w, h, rate);
+    r.put(inner, ocean, 96);
+    let outer = r.seq("outer", w, h, rate);
+    let nest = r.put(outer, inner, 48);
+    let f = |n: i64| rate.tick_of(n);
+    // double speed: frame 10 of the nest is frame 20 of its sequence
+    r.clip(outer, nest).speed = 2.0;
+    assert!(worst(&r.frame(outer, f(10)), &r.frame(inner, f(20))) < 0.01);
+    // reversed (48 frames at normal speed): 10 frames in is 10 frames back from the end of what it
+    // covers, a tick short of frame 38
+    let c = r.clip(outer, nest);
+    c.speed = 1.0;
+    c.reverse = true;
+    assert!(worst(&r.frame(outer, f(10)), &r.frame(inner, f(38) - Tick(1))) < 0.01);
+    // a frame hold shows one frame of the sequence throughout
+    let c = r.clip(outer, nest);
+    c.reverse = false;
+    c.frame_hold = Some(f(30));
+    assert!(worst(&r.frame(outer, f(5)), &r.frame(inner, f(30))) < 0.01);
+    assert!(worst(&r.frame(outer, f(40)), &r.frame(inner, f(30))) < 0.01);
+}
+
+#[test]
+fn opacity_and_effects_on_a_nest_apply_to_its_whole_picture() {
+    let mut r = Rig::new();
+    let red = r.matte(RED, 320, 180);
+    let inner = r.seq("inner", 320, 180, FrameRate::FPS_24);
+    r.put(inner, red, 48);
+    let outer = r.seq("outer", 320, 180, FrameRate::FPS_24);
+    let nest = r.put(outer, inner, 48);
+    r.clip(outer, nest).effect_mut("opacity").unwrap().params.get_mut("opacity").unwrap().value = ParamValue::Float(50.0);
+    for img in [r.frame(outer, Tick(1000)), r.planned(outer, Tick(1000))] {
+        let c = img.get(160, 90);
+        assert!((c[3] - 0.5).abs() < 0.02, "half transparent: {c:?}");
+    }
+    // a crop on the nest cuts its picture like any clip's
+    let c = r.clip(outer, nest);
+    c.effect_mut("opacity").unwrap().params.get_mut("opacity").unwrap().value = ParamValue::Float(100.0);
+    let mut crop = filmcraft_project::effect::find_effect("crop").unwrap().instance();
+    crop.params.get_mut("left").unwrap().value = ParamValue::Float(50.0);
+    c.effects.push(crop);
+    let img = r.frame(outer, Tick(1000));
+    assert!(img.get(40, 90)[3] < 0.02 && close(img.get(280, 90), RED));
+}
+
+#[test]
+fn captions_inside_a_nest_are_part_of_its_picture() {
+    // Premiere draws a nested sequence's captions in the sequence it is nested in
+    let mut r = Rig::new();
+    let red = r.matte(RED, 320, 180);
+    let inner = r.seq("inner", 320, 180, FrameRate::FPS_24);
+    r.put(inner, red, 48);
+    let mut track = CaptionTrack::new(TrackId(9001), "Subtitles".into(), CaptionFormat::Subtitle);
+    track.captions.push(Caption {
+        id: ClipId(9002),
+        start: Tick::ZERO,
+        duration: Tick(TICKS_PER_SECOND),
+        text: "NESTED".into(),
+        speaker: None,
+        cue_id: None,
+        settings: String::new(),
+    });
+    r.p.sequence_mut(inner).unwrap().caption_tracks.push(track);
+    let outer = r.seq("outer", 640, 360, FrameRate::FPS_24);
+    r.put(outer, inner, 48);
+    let t = Tick(1000);
+    let with = r.frame(outer, t);
+    r.p.sequence_mut(inner).unwrap().caption_tracks[0].enabled = false;
+    let without = r.frame(outer, t);
+    r.p.sequence_mut(inner).unwrap().caption_tracks[0].enabled = true;
+    // the caption changes pixels, all of them inside the nest's part of the frame (x 160..480, y 90..270)
+    let mut changed = 0;
+    for y in 0..with.h {
+        for x in 0..with.w {
+            if !close(with.get(x, y), without.get(x, y)) {
+                changed += 1;
+                assert!((160..480).contains(&x) && (90..270).contains(&y), "caption pixel outside the nest at ({x}, {y})");
+            }
+        }
+    }
+    assert!(changed > 20, "the caption is drawn ({changed} pixels)");
+    // after the caption ends there is nothing to draw
+    assert!(worst(&r.frame(outer, Tick(TICKS_PER_SECOND + 1000)), &without) < 0.01);
+    // the frame plan gives the same picture
+    assert!(worst(&r.planned(outer, t), &with) < 0.02);
+    // and the outer sequence's own captions are still its own business: with captions off for
+    // the outer render, the nested ones show all the same
+    let mut outer_track = CaptionTrack::new(TrackId(9003), "Outer".into(), CaptionFormat::Subtitle);
+    outer_track.captions.push(Caption {
+        id: ClipId(9004),
+        start: Tick::ZERO,
+        duration: Tick(TICKS_PER_SECOND),
+        text: "OUTER".into(),
+        speaker: None,
+        cue_id: None,
+        settings: String::new(),
+    });
+    r.p.sequence_mut(outer).unwrap().caption_tracks.push(outer_track);
+    assert!(worst(&r.frame(outer, t), &with) < 0.01, "outer captions are only drawn when asked for");
+    let shown = render_sequence(&r.p, outer, t, RenderOptions { captions: true, ..Default::default() }, &r.map);
+    assert!(worst(&shown, &with) > 0.1, "and are drawn when asked for");
 }

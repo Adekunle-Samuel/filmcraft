@@ -628,3 +628,132 @@ fn a_sequence_nested_in_itself_mixes_to_an_end() {
     assert_eq!(out.channels.len(), 2);
     assert!(out.channels.iter().all(|c| c.len() == 4800 && c.iter().all(|s| *s == 0.0)), "no source: silence");
 }
+
+// ---- the sound of nested sequences
+
+/// A mono-in-stereo sine that knows its sample rate: the same pitch at whatever rate it is read.
+struct Tone {
+    info: MediaInfo,
+    hz: f64,
+}
+
+impl Tone {
+    fn at(&self, seconds: f64) -> f32 {
+        (std::f64::consts::TAU * self.hz * seconds).sin() as f32 * 0.5
+    }
+}
+
+impl MediaSource for Tone {
+    fn info(&self) -> &MediaInfo {
+        &self.info
+    }
+    fn video_frame(&self, _: FrameRequest) -> filmcraft_media::Result<Arc<VideoFrame>> {
+        Err(MediaError::Unsupported("audio only".into()))
+    }
+    fn audio(&self, start: i64, frames: usize, sample_rate: u32) -> filmcraft_media::Result<AudioBuffer> {
+        let ch: Vec<f32> = (0..frames).map(|i| self.at((start + i as i64) as f64 / sample_rate as f64)).collect();
+        Ok(AudioBuffer { sample_rate, channels: vec![ch.clone(), ch] })
+    }
+}
+
+/// An outer 48 kHz sequence whose A1 holds one clip of an inner sequence (at `inner_rate`) that
+/// holds 10 s of a 500 Hz tone. Returns the project, the outer sequence, the sources and the tone.
+fn nested_tone(inner_rate: u32) -> (Project, ItemId, SourceMap, Arc<Tone>) {
+    let mut p = Project::new("nest");
+    let ten = TimeRange::new(Tick::ZERO, Tick(10 * TICKS_PER_SECOND));
+    let info = MediaInfo {
+        name: "tone".into(),
+        kind: MediaKind::AudioOnly,
+        duration: ten.duration,
+        video: None,
+        audio: Some(AudioStreamInfo { sample_rate: 48_000, channels: 2, codec: "test".into(), bits_per_sample: Some(32) }),
+        container: "test".into(),
+        start_timecode: None,
+        file_size: None,
+    };
+    let media = p.add_item(
+        "tone",
+        Label::Iris,
+        ItemKind::Media(MediaClip {
+            media: MediaRef::File { path: "/tone.wav".into() },
+            info: info.clone(),
+            interpret: Default::default(),
+            mark_in: None,
+            mark_out: None,
+            markers: vec![],
+            offline: false,
+            proxy: None,
+            identity: None,
+        }),
+        None,
+    );
+    let tone = Arc::new(Tone { info, hz: 500.0 });
+    let mut map = SourceMap::default();
+    map.0.insert(media, tone.clone());
+    let inner = p.new_sequence("inner", SequenceSettings { sample_rate: inner_rate, ..SequenceSettings::default() }, 1, 1, None);
+    let clip = p.make_track_item(media, TrackKind::Audio, Tick::ZERO, ten, FrameRate::FPS_24).unwrap();
+    p.sequence_mut(inner).unwrap().audio_tracks[0].items.push(clip);
+    let outer = p.new_sequence("outer", SequenceSettings { sample_rate: 48_000, ..SequenceSettings::default() }, 1, 1, None);
+    let nest = p.make_track_item(inner, TrackKind::Audio, Tick::ZERO, ten, FrameRate::FPS_24).unwrap();
+    p.sequence_mut(outer).unwrap().audio_tracks[0].items.push(nest);
+    (p, outer, map, tone)
+}
+
+/// The largest difference between the mix's left channel and `want(seconds)`, over samples
+/// `skip..` (resampling and fades settle within the first few samples).
+fn worst(mix: &AudioBuffer, start: i64, skip: usize, want: impl Fn(f64) -> f32) -> f32 {
+    mix.channels[0].iter().enumerate().skip(skip).map(|(i, s)| (s - want((start + i as i64) as f64 / 48_000.0)).abs()).fold(0.0, f32::max)
+}
+
+#[test]
+fn a_nest_plays_its_sequence_as_it_sounds_there() {
+    let (p, outer, map, tone) = nested_tone(48_000);
+    let start = 48_000 * 2;
+    let mix = mix_graph(&p, p.sequence(outer).unwrap(), start, 4800, &map, None);
+    assert!(worst(&mix, start, 0, |t| tone.at(t)) < 1e-4);
+}
+
+#[test]
+fn a_nest_at_another_sample_rate_keeps_its_pitch_and_timing() {
+    // the nested sequence used to be read sample for sample: a 44.1 kHz nest in a 48 kHz
+    // sequence played 8.8% fast and sharp
+    for rate in [44_100, 96_000, 32_000] {
+        let (p, outer, map, tone) = nested_tone(rate);
+        let start = 48_000 * 3 + 17;
+        let mix = mix_graph(&p, p.sequence(outer).unwrap(), start, 4800, &map, None);
+        assert_eq!(mix.channels[0].len(), 4800);
+        assert!(worst(&mix, start, 8, |t| tone.at(t)) < 0.01, "{rate} Hz nest: off by {}", worst(&mix, start, 8, |t| tone.at(t)));
+    }
+}
+
+#[test]
+fn speed_and_reverse_on_a_nest_change_its_sound_like_a_clips() {
+    // speed and reverse used to be ignored for the sound of a nest
+    let (mut p, outer, map, tone) = nested_tone(48_000);
+    let nest = &mut p.sequence_mut(outer).unwrap().audio_tracks[0].items[0];
+    nest.speed = 2.0;
+    nest.duration = Tick(5 * TICKS_PER_SECOND);
+    let start = 48_000 + 5;
+    let mix = mix_graph(&p, p.sequence(outer).unwrap(), start, 4800, &map, None);
+    assert!(worst(&mix, start, 8, |t| tone.at(2.0 * t)) < 0.01, "double speed: twice as far into the sequence, an octave up");
+    // reversed at normal speed: the 10 s nest plays from its end
+    let nest = &mut p.sequence_mut(outer).unwrap().audio_tracks[0].items[0];
+    nest.speed = 1.0;
+    nest.duration = Tick(10 * TICKS_PER_SECOND);
+    nest.reverse = true;
+    let mix = mix_graph(&p, p.sequence(outer).unwrap(), start, 4800, &map, None);
+    // (a reversed clip reads its source a sample or two off, media and nests alike)
+    let w = (0..4).map(|k| worst(&mix, start, 8, |t| tone.at(10.0 - t - k as f64 / 48_000.0))).fold(f32::MAX, f32::min);
+    assert!(w < 0.01, "reversed: off by {w}");
+}
+
+#[test]
+fn a_nest_trimmed_in_starts_later_in_its_sequence() {
+    let (mut p, outer, map, tone) = nested_tone(44_100);
+    let nest = &mut p.sequence_mut(outer).unwrap().audio_tracks[0].items[0];
+    nest.source_in = Tick(3 * TICKS_PER_SECOND);
+    nest.duration = Tick(7 * TICKS_PER_SECOND);
+    let start = 48_000;
+    let mix = mix_graph(&p, p.sequence(outer).unwrap(), start, 4800, &map, None);
+    assert!(worst(&mix, start, 8, |t| tone.at(t + 3.0)) < 0.01);
+}

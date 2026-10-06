@@ -184,7 +184,8 @@ pub(crate) fn render_seq_tracks(project: &Project, seq: &Sequence, t: Tick, opts
     if opts.depth == 0 && !opts.working_output {
         colorman::to_display(&mut canvas, &seq.settings.color);
     }
-    if opts.captions && opts.depth == 0 {
+    // (a nested sequence's captions are part of its picture: see `base_layer`)
+    if opts.captions {
         for o in caption_overlays(seq, t, w, h) {
             o.composite_onto(&mut canvas.px, w, h);
         }
@@ -395,7 +396,9 @@ pub(crate) fn base_layer(
                         Image::new(nw, nh)
                     }
                 },
-                None => render_seq(project, nested, ft, sub, sources),
+                // A nested sequence shows its captions wherever it is nested, as part of its
+                // picture (Premiere does the same), whether or not the outer sequence shows its own.
+                None => render_seq(project, nested, ft, RenderOptions { captions: true, ..sub }, sources),
             }
         }
         ItemKind::AdjustmentLayer { .. } => return None,
