@@ -200,3 +200,7 @@ Status: ✅ done · 🟡 in progress · ⬜ not started. Estimates are remaining
 - **2026-09-30 (midday):** HEVC decoder, Matroska/WebM demuxer and audio DSP merged; HEVC import wired; asset rules (AGENTS.md, ATTRIBUTION.md, `cargo xtask assets`); README with hero screenshot and the Craft family.
 - **2026-09-30 (late morning):** keyframe value/velocity graphs; xtask gates; H.264 MP4 export; Lumetri curves, wheels, looks, HSL secondary.
 - **2026-09-30 (early morning):** H.264 decoder, ProRes, AAC; GPU compositor; MCP; Premiere 26 visual fidelity pass.
+
+### Interface localization
+
+Edit > Language switches English/Japanese and persists in UI state. Commands `app.language.english` and `app.language.japanese` are reachable through the control channel. Core native/in-window menu labels are translated; untranslated labels use English. Japanese text uses a Japanese font already installed on the system (none is bundled); without one, switching to Japanese is refused with a message. Dialog/panel translation coverage remains open. Existing vertical text support is preserved.

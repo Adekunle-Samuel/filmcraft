@@ -231,6 +231,12 @@ impl Tokens {
 }
 
 /// Install fonts (Inter, Inter SemiBold, JetBrains Mono) and egui visuals.
+/// Every font family the theme defines (fallback fonts such as the system Japanese font are added to
+/// each of them).
+pub fn font_families() -> Vec<FontFamily> {
+    vec![FontFamily::Proportional, FontFamily::Monospace, FontFamily::Name("semibold".into()), FontFamily::Name("medium".into())]
+}
+
 pub fn install(ctx: &egui::Context, t: &Tokens) {
     let mut fonts = FontDefinitions::default();
     fonts.font_data.insert("inter".into(), Arc::new(FontData::from_static(filmcraft_text::fonts::INTER_REGULAR)));

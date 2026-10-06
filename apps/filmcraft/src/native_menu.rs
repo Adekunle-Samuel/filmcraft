@@ -25,10 +25,12 @@ pub type ShortcutUpdater = Box<dyn FnMut(&[Item])>;
 pub fn install(app: &FilmcraftApp, ctx: egui::Context) -> (Receiver<String>, ShortcutUpdater) {
     let items = menu_items(app);
     let mut native: Vec<(String, MenuItem)> = Vec::new();
+    let mut titles: Vec<(String, Submenu)> = Vec::new();
     let bar = Menu::new();
     let app_menu = Submenu::new("FilmCraft", true);
     // FilmCraft ▸ Settings ▸ <category> (Premiere's app-menu layout; General is Cmd+,)
-    let settings = Submenu::new("Settings", true);
+    let settings = Submenu::new(app.ui.language.tr("Settings"), true);
+    titles.push(("Settings".into(), settings.clone()));
     for it in items.iter().filter(|i| i.id.starts_with("app.settings.")) {
         let label = it.label.trim_end_matches('…').to_string();
         let mi = MenuItem::with_id(it.id.clone(), label, true, it.shortcut.as_deref().and_then(accel));
@@ -48,7 +50,8 @@ pub fn install(app: &FilmcraftApp, ctx: egui::Context) -> (Receiver<String>, Sho
     ]);
     let _ = bar.append(&app_menu);
     for top in MENUS {
-        let sub = Submenu::new(top, true);
+        let sub = Submenu::new(app.ui.language.tr(top), true);
+        titles.push((top.into(), sub.clone()));
         let mine: Vec<&Item> = items.iter().filter(|i| i.path.first().map(String::as_str) == Some(top) && !i.id.starts_with("app.settings.")).collect();
         // submenus by path prefix (e.g. Clip ▸ Video Options ▸ Time Interpolation), created where
         // their first item appears
@@ -62,7 +65,8 @@ pub fn install(app: &FilmcraftApp, ctx: egui::Context) -> (Receiver<String>, Sho
                 parent = match subs.iter().find(|(k, _)| *k == key) {
                     Some((_, s)) => s.clone(),
                     None => {
-                        let s = Submenu::new(&it.path[depth], true);
+                        let s = Submenu::new(app.ui.language.tr(&it.path[depth]), true);
+                        titles.push((it.path[depth].clone(), s.clone()));
                         let _ = parent.append(&s);
                         subs.push((key, s.clone()));
                         s
@@ -88,8 +92,17 @@ pub fn install(app: &FilmcraftApp, ctx: egui::Context) -> (Receiver<String>, Sho
         }
     });
     let update: ShortcutUpdater = Box::new(move |items: &[Item]| {
+        let language = if items.iter().any(|it| it.id == "app.language.japanese" && it.checked == Some(true)) {
+            filmcraft_ui_egui::i18n::Language::Ja
+        } else {
+            filmcraft_ui_egui::i18n::Language::En
+        };
+        for (title, submenu) in &titles {
+            submenu.set_text(language.tr(title));
+        }
         for (id, mi) in &native {
             if let Some(it) = items.iter().find(|i| &i.id == id) {
+                mi.set_text(&it.label);
                 let _ = mi.set_accelerator(it.shortcut.as_deref().and_then(accel));
             }
         }

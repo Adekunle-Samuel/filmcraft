@@ -3,7 +3,7 @@
 //! live in the native menu bar (set up by the app); elsewhere a compact in-window menu bar follows
 //! the mode tabs.
 
-use egui::{Align2, Color32, Rect, Sense, Stroke, pos2, vec2};
+use egui::{Color32, Rect, Sense, Stroke, pos2, vec2};
 
 use crate::FilmcraftApp;
 use crate::icons::{self, Icon};
@@ -54,6 +54,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         }
         x += gw + 24.0;
     }
+    let mut left_end = x;
     // In-window menus when there is no native menu bar.
     if app.ui.show_menu_bar {
         let menu_rect = Rect::from_min_max(pos2(x + 6.0, rect.min.y + 7.0), pos2(x + 520.0, rect.max.y - 7.0));
@@ -62,10 +63,10 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         mu.style_mut().visuals.widgets.inactive.bg_stroke = Stroke::NONE;
         mu.style_mut().visuals.override_text_color = Some(t.text_dim);
         crate::menus::menu_bar(app, &mut mu);
+        left_end = mu.min_rect().max.x;
     }
     // Document title, centred
     let title = format!("{}{}", app.session.project.name, if app.session.is_dirty() { " - Edited" } else { "" });
-    p.text(pos2(rect.center().x, rect.center().y), Align2::CENTER_CENTER, title, Tokens::ui(14.0), t.tab_text_active);
     // Right cluster: icons at ~38 pt pitch, then workspace name in caps.
     let mut rx = rect.max.x - 14.0;
     let mut btn = |ui: &mut egui::Ui, icon: Icon, id: &str, tip: &str, app: &mut FilmcraftApp| -> egui::Response {
@@ -118,6 +119,23 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         ui.painter().rect_filled(r, 12.0, if resp.hovered() { t.accent_hover } else { t.accent });
         icons::paint(ui.painter(), Rect::from_center_size(pos2(r.min.x + 14.0, r.center().y), vec2(14.0, 14.0)), Icon::Chat, Color32::WHITE);
         ui.painter().galley(pos2(r.min.x + 25.0, r.center().y - g.size().y / 2.0), g, Color32::WHITE);
+        // Localized menus and user titles can be wider than English. Use the actual gap.
+        let left = left_end + 12.0;
+        let right = r.min.x - 12.0;
+        if right > left + 40.0 {
+            let mut job = egui::text::LayoutJob::simple_singleline(title, Tokens::ui(14.0), t.tab_text_active);
+            job.wrap.max_width = right - left;
+            job.wrap.max_rows = 1;
+            let galley = p.layout_job(job);
+            let half = galley.size().x / 2.0;
+            let center = if rect.center().x - half >= left && rect.center().x + half <= right { rect.center().x } else { (left + right) / 2.0 };
+            p.with_clip_rect(Rect::from_min_max(pos2(left, rect.min.y), pos2(right, rect.max.y))).galley(
+                pos2(center - half, rect.center().y - galley.size().y / 2.0),
+                galley,
+                t.tab_text_active,
+            );
+        }
+
         if resp.clicked() {
             crate::links::open(ui.ctx(), crate::links::DISCORD);
         }
