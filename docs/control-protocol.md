@@ -80,6 +80,13 @@ it shows. Dynamic trimming takes an explicit clock (seconds) so it is determinis
 {direction, slow?, clock}` (J/L), `trim.tick {clock}`, `trim.shuttleStop {clock?}` (K, one undo step),
 `trim.cancelDynamic` (Esc), `trim.playAround {clock, loop?}` (Space / Shift+K).
 
+**Replace With Clip**: `clip.replaceFromSource`, `clip.replaceFromSourceMatchFrame` and
+`clip.replaceFromBin {clips?, item?, keepSourceIn?}` swap the media of the clips and return
+`{clips: [ids], item}`. From Bin starts each clip at the new item's In point; with
+`keepSourceIn: true` each clip keeps its own source In instead. A subclip that restricts trims has
+no media outside its range, so there a kept In is moved to the subclip's first or last frame, and
+the result's `sourceInClamped: [ids]` (present with `keepSourceIn`) names the clips it was moved for.
+
 **Colour** (`crates/engine/src/color.rs`): `sequence.colorSettings {workingSpace: rec709|rec2100-pq|
 rec2100-hlg, wideGamut, autoToneMap}`, `clip.interpretFootage {items?, colorSpace: auto|<id>}`,
 `color.spaces`, `media.colorInfo {item}`; LUTs: `lut.import {path, name?}`, `lut.list`,

@@ -602,6 +602,79 @@ fn replace_with_clip_from_source_match_frame_and_bin() {
     assert!(s.execute("clip.replaceFromBin", json!({"item": music.0})).is_err());
 }
 
+/// Replace With Clip ▸ From Bin restarts the clip at the new item's In point (as Premiere does);
+/// `keepSourceIn` keeps the clip's place in the media instead.
+#[test]
+fn replace_from_bin_keeps_the_source_in_on_request() {
+    let mut s = demo();
+    let rate = s.sequence_rate();
+    s.execute("sequence.linkedSelection", json!({"on": false})).unwrap();
+    let c = v1(&s)[3].clone();
+    let dunes = item_named(&s, "Desert_Dunes.mp4");
+    let forest = item_named(&s, "Misty_Forest.mp4");
+    // disabled without a clip and a replacement, with or without the new parameter
+    s.execute("timeline.select", json!({"clips": []})).unwrap();
+    assert!(matches!(s.execute("clip.replaceFromBin", json!({"keepSourceIn": true})), Err(crate::EngineError::Disabled(..))));
+    // give the clip a source In that is not the start of its media
+    s.execute("timeline.trim", json!({"clip": c.id.0, "edge": "in", "mode": "regular", "deltaFrames": 7})).unwrap();
+    let trimmed = clip(&s, c.id.0);
+    assert_eq!(trimmed.source_in, c.source_in + rate.tick_of(7));
+    select(&mut s, &[c.id.0]);
+    s.execute("project.select", json!({"items": [dunes.0]})).unwrap();
+    let before = s.project.clone();
+    // default: the replacement starts at the item's In point, and the result is what it was
+    let r = s.execute("clip.replaceFromBin", json!({})).unwrap();
+    assert_eq!((clip(&s, c.id.0).item, clip(&s, c.id.0).source_in), (dunes, Tick::ZERO));
+    assert_eq!(r, json!({"clips": [c.id.0], "item": dunes.0}));
+    s.execute("edit.undo", json!({})).unwrap();
+    assert_eq!(*s.project, *before);
+    // keepSourceIn: the same place in the new media, everything else as before
+    let r = s.execute("clip.replaceFromBin", json!({"keepSourceIn": true})).unwrap();
+    let got = clip(&s, c.id.0);
+    assert_eq!((got.item, got.source_in, got.start, got.duration), (dunes, trimmed.source_in, trimmed.start, trimmed.duration));
+    assert_eq!(r, json!({"clips": [c.id.0], "item": dunes.0, "sourceInClamped": []}));
+    let after = s.project.clone();
+    s.execute("edit.undo", json!({})).unwrap();
+    assert_eq!(*s.project, *before);
+    s.execute("edit.redo", json!({})).unwrap();
+    assert_eq!(*s.project, *after);
+    s.execute("edit.undo", json!({})).unwrap();
+    s.execute("clip.replaceFromBin", json!({"keepSourceIn": false})).unwrap();
+    assert_eq!(clip(&s, c.id.0).source_in, Tick::ZERO);
+    s.execute("edit.undo", json!({})).unwrap();
+
+    // a subclip that restricts trims has no media outside its range: a kept In before or after it
+    // moves to its first or last frame, and the result names the clip
+    let sub = |s: &mut Session, from: Tick, to: Tick, restrict: bool| {
+        let r = s.execute("clip.makeSubclip", json!({"item": forest.0, "start": from.0, "end": to.0, "restrictTrims": restrict})).unwrap();
+        ItemId(r["item"].as_u64().unwrap())
+    };
+    let kept = trimmed.source_in;
+    let media_frame = s.project.item(forest).unwrap().as_media().unwrap().frame_rate().frame_duration();
+    assert!(kept > rate.tick_of(10) && media_frame > Tick::ZERO);
+    let later = sub(&mut s, kept + rate.tick_of(3), kept + rate.tick_of(15), true);
+    let earlier = sub(&mut s, Tick::ZERO, kept - rate.tick_of(2), true);
+    let loose = sub(&mut s, kept + rate.tick_of(3), kept + rate.tick_of(15), false);
+    for (item, want, clamped) in [(later, kept + rate.tick_of(3), true), (earlier, kept - rate.tick_of(2) - media_frame, true), (loose, kept, false)] {
+        let r = s.execute("clip.replaceFromBin", json!({"item": item.0, "keepSourceIn": true})).unwrap();
+        let got = clip(&s, c.id.0);
+        assert_eq!((got.item, got.source_in, got.start, got.duration), (item, want, trimmed.start, trimmed.duration));
+        assert_eq!(r["sourceInClamped"], if clamped { json!([c.id.0]) } else { json!([]) });
+        s.execute("edit.undo", json!({})).unwrap();
+    }
+    // a kept In that is already inside the subclip stays where it is
+    let around = sub(&mut s, kept - rate.tick_of(5), kept + rate.tick_of(23), true);
+    let r = s.execute("clip.replaceFromBin", json!({"item": around.0, "keepSourceIn": true})).unwrap();
+    assert_eq!((clip(&s, c.id.0).source_in, &r["sourceInClamped"]), (kept, &json!([])));
+    // hostile values of the flag fall back to the default
+    s.execute("edit.undo", json!({})).unwrap();
+    for junk in [json!("yes"), json!(1), json!(null), json!([true])] {
+        let r = s.execute("clip.replaceFromBin", json!({"item": dunes.0, "keepSourceIn": junk})).unwrap();
+        assert_eq!((clip(&s, c.id.0).source_in, r.get("sourceInClamped")), (Tick::ZERO, None));
+        s.execute("edit.undo", json!({})).unwrap();
+    }
+}
+
 #[test]
 fn audio_source_channels_pick_what_a_clip_plays() {
     let mut it = v1(&demo())[0].clone();
