@@ -595,7 +595,7 @@ impl Session {
         if self.exec_depth == 0 && spec.journal && self.trim_play.active() {
             self.settle_trim_playback(id);
         }
-        if let Err(why) = (spec.enabled)(self) {
+        if let Err(why) = self.enabled_for(spec, &params) {
             let e = EngineError::Disabled(id.to_string(), why);
             if self.exec_depth == 0 {
                 self.log.push(panels::Level::Warning, id, e.to_string());
@@ -645,6 +645,33 @@ impl Session {
         }
     }
 
+    /// Enablement of `spec` for one call. `enabled()` reads the selection, which is right for the
+    /// menus and for a call without targets. A caller that names its targets in `params`, under a
+    /// key the command documents (`clips` / `clip`: timeline clips, `items` / `item`: project
+    /// items), is asked the same question about those targets instead: the check runs again with
+    /// them standing in for the selection, so every other condition (an open sequence, a filled
+    /// clipboard, the kind of item…) still applies. The selections are put back before returning.
+    fn enabled_for(&mut self, spec: &CommandSpec, params: &Value) -> std::result::Result<(), String> {
+        let by_selection = (spec.enabled)(self);
+        if by_selection.is_ok() {
+            return by_selection;
+        }
+        let clips = commands::named_clips(self, spec, params);
+        let items = commands::named_items(self, spec, params);
+        if clips.is_none() && items.is_none() {
+            return by_selection;
+        }
+        let mut clips = clips.unwrap_or_else(|| self.state.selection.clone());
+        let mut items = items.unwrap_or_else(|| self.state.project_selection.clone());
+        std::mem::swap(&mut self.state.selection, &mut clips);
+        std::mem::swap(&mut self.state.project_selection, &mut items);
+        let by_params = (spec.enabled)(self);
+        self.state.selection = clips;
+        self.state.project_selection = items;
+        by_params
+    }
+
+    /// Whether the command can run on the current selection (what the menus show).
     pub fn is_enabled(&self, id: &str) -> bool {
         commands::find(id).is_some_and(|c| (c.enabled)(self).is_ok())
     }
@@ -879,6 +906,8 @@ mod clip_ops_tests;
 mod color_tests;
 #[cfg(test)]
 mod essential_sound_tests;
+#[cfg(test)]
+mod explicit_targets_tests;
 #[cfg(test)]
 mod export_tests;
 #[cfg(test)]

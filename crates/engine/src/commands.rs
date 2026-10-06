@@ -110,6 +110,33 @@ fn has_clipboard(s: &Session) -> std::result::Result<(), String> {
     if s.state.clipboard.is_empty() { Err("clipboard is empty".into()) } else { Ok(()) }
 }
 
+/// The ids a caller named under `many` (a list) or `one` (a single id), when the command documents
+/// that key as ids (`"clips":[id]`, `"item":id`); `None` when it named none.
+fn named_ids(spec: &CommandSpec, p: &Value, many: &str, one: &str) -> Option<Vec<u64>> {
+    let ids: Vec<u64> = if spec.params.contains(&format!("\"{many}\":[id]"))
+        && let Some(a) = p.get(many).and_then(Value::as_array)
+    {
+        a.iter().filter_map(Value::as_u64).collect()
+    } else if spec.params.contains(&format!("\"{one}\":id")) {
+        u64_p(p, one).into_iter().collect()
+    } else {
+        Vec::new()
+    };
+    (!ids.is_empty()).then_some(ids)
+}
+/// Timeline clips named explicitly in `clips` / `clip` (see [`Session::execute`]): only clips of
+/// the active sequence count, so an id of nothing does not stand in for a selection.
+pub(crate) fn named_clips(s: &Session, spec: &CommandSpec, p: &Value) -> Option<Vec<ClipId>> {
+    let seq = s.active_sequence()?;
+    let clips: Vec<ClipId> = named_ids(spec, p, "clips", "clip")?.into_iter().map(ClipId).filter(|c| seq.find_item(*c).is_some()).collect();
+    (!clips.is_empty()).then_some(clips)
+}
+/// Project items named explicitly in `items` / `item`, likewise.
+pub(crate) fn named_items(s: &Session, spec: &CommandSpec, p: &Value) -> Option<Vec<ItemId>> {
+    let items: Vec<ItemId> = named_ids(spec, p, "items", "item")?.into_iter().map(ItemId).filter(|i| s.project.item(*i).is_some()).collect();
+    (!items.is_empty()).then_some(items)
+}
+
 // ---------- param helpers ----------
 
 pub(crate) fn bad(cmd: &str, msg: impl Into<String>) -> EngineError {
@@ -1120,7 +1147,7 @@ fn build() -> Vec<CommandSpec> {
             "Audio Gain…",
             ["Clip", "Audio Options"],
             Some("G"),
-            r#"{"mode":"set|adjust|normalizeMax|normalizeAll"?,"db":f64,"relative":bool?}"#,
+            r#"{"clips":[id]?,"mode":"set|adjust|normalizeMax|normalizeAll"?,"db":f64,"relative":bool?}"#,
             has_selection,
             |s, p| crate::mixer::audio_gain(s, p)
         ),

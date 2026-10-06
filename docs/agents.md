@@ -135,6 +135,13 @@ Notes:
   `timecode`.
 - `engine.execute` also runs UI-only commands (`tool.razor`, `playback.toggle`,
   `window.workspace.color`, `window.panel.<name>`).
+- A command that works on the selection is disabled ("no clips selected", "select a clip in the
+  Project panel") until something is selected, unless the call names its targets under a key the
+  command documents (`clips` / `clip` for timeline clips, `items` / `item` for project items):
+  `clip.replaceFromBin {"clips":[12],"item":4}` runs with nothing selected and leaves the
+  selection alone. Only the selection condition is answered by the named targets; every other
+  one (an open sequence, a filled clipboard, the right kind of clip) still applies, and ids of
+  nothing do not count. `command_list` / `engine.commands` keep reporting the selection's state.
 - Element ids come from the previous frame. If an element is missing right after a layout change,
   the app retries on later frames before giving up.
 - Without a window, `filmcraft-cli run script.jsonl` (lines of `{"id":"…","params":{…}}`) runs the

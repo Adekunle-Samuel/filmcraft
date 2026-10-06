@@ -31,6 +31,12 @@ Methods (handlers in `crates/ui-egui/src/control.rs`):
 | `ui.resize`, `ui.focus`, `app.quit` | | `ui.focus` is the only request that activates the app and takes keyboard focus |
 | `perf.stats` | – | performance counters (also the command `perf.stats`, so `engine.execute` and MCP `command_run` reach it; headless sessions return the engine part). `decode`: GOP-cache requests / hits / `cacheHitRate`, decoder seeks, samples decoded and skipped while catching up, `draftFrames` (decoded in draft mode), `h264Threads` (frame-threading workers per H.264 decoder), decoder ms (total and per sample), `framesDecoded`, `hardware` (Settings ▸ Playback ▸ Hardware decoding: `enabled`, pictures from hardware decoders `frames` vs `softwareFrames`, `sessions`, `declined` streams, mid-stream `fallbacks`); `playback`: playing, shown / dropped frames and `dropRate` of the current or last play, resolution, `draftDecode` (Settings ▸ Playback ▸ Draft decoding); `frames`: frame-worker jobs, cancelled, `requestHitRate`, `decodeMs` / `renderMs` (mean, p50, p95 of the last 256 jobs), queue, render-cost estimate, cache use; `ui`: fps and frame ms; `process`: CPU seconds; `media`, `jobs`. Counters are cumulative: diff two readings to measure an interval ([performance.md](performance.md)) |
 
+**Selection or explicit targets.** A command that acts on the selection is "not available right now" when
+nothing is selected. When `params` name the targets under a key the command documents (`clips` /
+`clip`: timeline clips of the active sequence, `items` / `item`: project items), enablement is
+checked against those instead and the selection is left as it is; the command's other conditions
+still apply. `engine.commands` and the menus always show the selection's enablement.
+
 **Focus.** Driving the app never steals the user's keyboard. Started with `--control`, the app opens
 without activating itself. UI requests and screenshots that need a rendered frame bring the window
 forward without making it key (macOS `orderFrontRegardless`), so the user's typing keeps going to
@@ -46,7 +52,7 @@ solo, record arm, solo safe, mode Off/Read/Latch/Touch/Write, output, input map,
 `mixer.recordStart` / `mixer.recordStop` (playback runs them), `mixer.addSubmix`, `mixer.deleteSubmix`,
 `mixer.addInsert` / `removeInsert` / `setInsert`, `mixer.addSend` / `setSend` / `removeSend`,
 `mixer.setKeyframe` / `deleteKeyframe` / `moveKeyframe` / `clearLane`, `mixer.writeAutomation`;
-`clipMixer.set`; `clip.audioGain {mode: set|adjust|normalizeMax|normalizeAll, db}`, `clip.audioPeak`;
+`clipMixer.set`; `clip.audioGain {clips?, mode: set|adjust|normalizeMax|normalizeAll, db}`, `clip.audioPeak`;
 `effects.setDefaultTransition`. UI ids: `mixer.<A1|S1|Mix>.<fader|value|pan|panValue|mode|mute|solo|
 record|soloSafe|output|input|fx.<n>|send.<n>|meter|name>` (popup entries below them, e.g.
 `mixer.A1.mode.Touch`, `mixer.A1.fx.0.studio_reverb`), `mixer.showEffects`, `mixer.transport.<cmd>`,
