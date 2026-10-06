@@ -1439,6 +1439,8 @@ const CLIP_MENU: &[&[(&str, &str)]] = &[
         ("Insert Frame Hold Segment", "clip.insertFrameHoldSegment"),
         ("Field Options…", "clip.fieldOptions"),
         ("Scale to Frame Size", "clip.scaleToFrameSize"),
+        ("Fit to frame", "clip.fitToFrame"),
+        ("Fill frame", "clip.fillFrame"),
     ],
     &[("Reveal in Project", "clip.revealInProject"), ("Join Through Edits", "sequence.joinThroughEdits")],
 ];

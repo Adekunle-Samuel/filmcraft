@@ -964,6 +964,8 @@ mod multicam_tests;
 #[cfg(test)]
 mod nest_editing_tests;
 #[cfg(test)]
+mod nest_fidelity_tests;
+#[cfg(test)]
 mod nesting_tests;
 #[cfg(test)]
 mod panels_tests;

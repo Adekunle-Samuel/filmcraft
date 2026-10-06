@@ -506,5 +506,8 @@ mod adjustment_tests;
 mod mixer_tests;
 
 #[cfg(test)]
+mod nest_tests;
+
+#[cfg(test)]
 #[path = "preview_tests.rs"]
 mod preview_tests;
