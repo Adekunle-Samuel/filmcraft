@@ -22,7 +22,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 
 use filmcraft_codecs::hw::{NalCodec, NalStreamInfo};
 use filmcraft_codecs::{CodecError, DecodedFrame, Result, VideoDecoder};
-use filmcraft_frame::{Chroma, PixelData, VideoFrame};
+use filmcraft_frame::{Chroma, PixelData, VideoFrame, pool};
 use objc2_core_foundation::{CFBoolean, CFDictionary, CFNumber, CFRetained, CFString, CFType};
 use objc2_core_media::{
     CMBlockBuffer, CMFormatDescription, CMSampleBuffer, CMSampleTimingInfo, CMTime, CMTimeFlags, CMVideoFormatDescriptionCreateFromH264ParameterSets,
@@ -216,11 +216,11 @@ fn copy_out(pb: &CVImageBuffer, l: &Layout) -> std::result::Result<VideoFrame, S
         return Err("decoded picture planes are smaller than the picture".into());
     }
     let data = if bps == 1 {
-        let mut yp = Vec::with_capacity(w * h);
+        let mut yp = pool::take_u8(w * h);
         for y in 0..h {
             yp.extend_from_slice(ys.row(oy + y, ox * bps, w * bps)?);
         }
-        let (mut u, mut v) = (Vec::with_capacity(cw * ch), Vec::with_capacity(cw * ch));
+        let (mut u, mut v) = (pool::take_u8(cw * ch), pool::take_u8(cw * ch));
         for y in 0..ch {
             for pair in cs.row(coy + y, cox * 2 * bps, cw * 2 * bps)?.as_chunks::<2>().0 {
                 u.push(pair[0]);
@@ -230,11 +230,11 @@ fn copy_out(pb: &CVImageBuffer, l: &Layout) -> std::result::Result<VideoFrame, S
         PixelData::Yuv8 { planes: [Arc::new(yp), Arc::new(u), Arc::new(v)], chroma: l.chroma, alpha: None }
     } else {
         let shift = 16 - l.bits;
-        let mut yp = Vec::with_capacity(w * h);
+        let mut yp = pool::take_u16(w * h);
         for y in 0..h {
             yp.extend(ys.row(oy + y, ox * bps, w * bps)?.as_chunks::<2>().0.iter().map(|b| u16::from_ne_bytes([b[0], b[1]]) >> shift));
         }
-        let (mut u, mut v) = (Vec::with_capacity(cw * ch), Vec::with_capacity(cw * ch));
+        let (mut u, mut v) = (pool::take_u16(cw * ch), pool::take_u16(cw * ch));
         for y in 0..ch {
             for q in cs.row(coy + y, cox * 2 * bps, cw * 2 * bps)?.as_chunks::<4>().0 {
                 u.push(u16::from_ne_bytes([q[0], q[1]]) >> shift);

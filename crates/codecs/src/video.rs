@@ -204,12 +204,14 @@ pub struct H264Decoder {
 
 impl H264Decoder {
     pub fn new(avcc: Vec<u8>) -> Result<Self> {
+        recycle_h264_planes();
         let dec = filmcraft_h264::Decoder::from_avcc(&avcc).map_err(|e| CodecError::Decode(e.to_string()))?;
         let length_size = avcc_length_size(&avcc);
         Ok(Self { avcc, dec, length_size, draft: false })
     }
     /// A decoder for Annex B byte-stream samples (start codes, in-band parameter sets: MXF, TS).
     pub fn annexb() -> Self {
+        recycle_h264_planes();
         Self { avcc: Vec::new(), dec: filmcraft_h264::Decoder::new(), length_size: 0, draft: false }
     }
     fn convert(p: filmcraft_h264::Picture) -> DecodedFrame {
@@ -267,6 +269,12 @@ impl VideoDecoder for H264Decoder {
         // Annex B samples carry their parameter sets: an IDR access unit is a starting point.
         (self.length_size == 0).then(|| filmcraft_bitstream::annexb_nals(sample).iter().any(|n| n.first().is_some_and(|h| h & 0x1f == 5)))
     }
+}
+
+/// The H.264 decoder's output planes come from the frames the caches evicted
+/// (`filmcraft_frame::pool`) instead of the allocator.
+fn recycle_h264_planes() {
+    filmcraft_h264::set_plane_allocator(filmcraft_frame::pool::take_u8);
 }
 
 /// Worker threads each H.264 decoder uses (frame threading; 1 on wasm).

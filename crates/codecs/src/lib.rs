@@ -31,7 +31,7 @@ pub mod video;
 use std::sync::{Arc, RwLock};
 
 pub use audio::AudioFileSource;
-pub use gop::{GopStats, gop_stats};
+pub use gop::{FRAME_BUDGET, GopStats, cached_bytes, gop_stats, live_decoders};
 pub use mkv::MkvSource;
 pub use mp4::Mp4Source;
 pub use mpeg::MpegSource;
@@ -87,6 +87,11 @@ pub fn register_video_decoder(f: VideoDecoderFactory) {
     if !g.iter().any(|x| std::ptr::fn_addr_eq(*x, f)) {
         g.insert(0, f);
     }
+}
+
+/// Whether `f` is among the registered video decoder factories (startup diagnostics, tests).
+pub fn video_decoder_registered(f: VideoDecoderFactory) -> bool {
+    factories().read().unwrap_or_else(|e| e.into_inner()).iter().any(|x| std::ptr::fn_addr_eq(*x, f))
 }
 
 /// Create a decoder for a sample entry.

@@ -5,8 +5,11 @@
 //! for the next frames therefore hit the cache or continue the running decoder without re-seeking.
 
 use std::collections::BTreeMap;
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError, TryLockError, Weak};
+use std::time::Duration;
+
+use web_time::Instant;
 
 use filmcraft_color::ColorInfo;
 use filmcraft_frame::VideoFrame;
@@ -68,7 +71,7 @@ fn count_frames<T>(out: &[T]) {
 
 /// Run a decoder call, adding its wall time to the process-wide counter.
 fn timed<R>(f: impl FnOnce() -> R) -> R {
-    let t0 = web_time::Instant::now();
+    let t0 = Instant::now();
     let r = f();
     DECODE_NS.fetch_add(t0.elapsed().as_nanos() as u64, Ordering::Relaxed);
     r
@@ -135,9 +138,35 @@ struct State {
     /// The cached frames that were decoded in draft mode: served to draft requests only.
     drafts: std::collections::BTreeSet<i64>,
     bytes: usize,
+    /// When a frame was last asked of this cache.
+    last_used: Instant,
 }
 
 impl State {
+    /// Give up the decoder (and the spare intra decoders): the next request that has to decode
+    /// makes a new one and restarts at a sync sample. Returned so they are dropped off the lock.
+    fn release_decoder(&mut self, pool: &Pool) -> Vec<Box<dyn VideoDecoder>> {
+        let mut out = std::mem::take(&mut self.spare);
+        if let Some(d) = self.decoder.take() {
+            pool.decoders.fetch_sub(1, Ordering::Relaxed);
+            out.push(d);
+        }
+        self.next = usize::MAX;
+        out
+    }
+
+    /// Evict frames, earliest first, while `more` says so.
+    fn release_frames(&mut self, pool: &Pool, more: impl Fn() -> bool) {
+        while more() {
+            let Some((pts, f)) = self.frames.pop_first() else { break };
+            self.drafts.remove(&pts);
+            self.bytes = self.bytes.saturating_sub(f.byte_size());
+            pool.bytes.fetch_sub(f.byte_size(), Ordering::Relaxed);
+            EVICTED.fetch_add(1, Ordering::Relaxed);
+            filmcraft_frame::pool::recycle(f);
+        }
+    }
+
     /// The cached frame at `pts`, unless it is a draft frame and the request wants the exact one.
     fn cached(&self, pts: i64, draft_ok: bool) -> Option<&Arc<VideoFrame>> {
         self.frames.get(&pts).filter(|_| draft_ok || !self.drafts.contains(&pts))
@@ -178,9 +207,140 @@ impl Drop for DecodingGuard {
     }
 }
 
+/// A decoder keeps its reference and in-flight pictures (hundreds of MB for a frame-threaded
+/// 4K decoder), so only this many caches keep theirs once idle: a timeline's other clips make a
+/// new one when the playhead reaches them, which costs what a seek costs.
+const MAX_LIVE_DECODERS: usize = 4;
+
+/// A cache asked for a frame this recently is in use (a layer of the frame being composited,
+/// the next clip being prefetched): it keeps its decoder whatever the count.
+const IDLE: Duration = Duration::from_secs(3);
+
+/// Decoded frames all caches may hold together before idle ones give theirs up. Each cache also
+/// has its own budget, which alone let every clip on a timeline keep hundreds of MB of frames
+/// nobody was looking at.
+pub const FRAME_BUDGET: usize = 1 << 30;
+
+/// What the caches of a process share: the cap on live decoders and the frame budget.
+struct Pool {
+    caches: Mutex<Vec<Weak<Shared>>>,
+    /// Caches that hold a decoder.
+    decoders: AtomicUsize,
+    max_decoders: usize,
+    idle: Duration,
+    /// Bytes of the frames the caches hold.
+    bytes: AtomicUsize,
+    budget: usize,
+}
+
+/// The part of a [`GopCache`] its pool reaches.
+struct Shared {
+    state: Mutex<State>,
+    pool: Arc<Pool>,
+}
+
+impl Drop for Shared {
+    fn drop(&mut self) {
+        let st = self.state.get_mut().unwrap_or_else(PoisonError::into_inner);
+        drop(st.release_decoder(&self.pool));
+        self.pool.bytes.fetch_sub(st.bytes, Ordering::Relaxed);
+    }
+}
+
+/// A cache's state unless another thread is using it (it is then decoding: not idle).
+fn try_state(c: &Shared) -> Option<MutexGuard<'_, State>> {
+    match c.state.try_lock() {
+        Ok(g) => Some(g),
+        Err(TryLockError::Poisoned(e)) => Some(e.into_inner()),
+        Err(TryLockError::WouldBlock) => None,
+    }
+}
+
+impl Pool {
+    fn new(max_decoders: usize, idle: Duration, budget: usize) -> Self {
+        Self { caches: Mutex::new(Vec::new()), decoders: AtomicUsize::new(0), max_decoders, idle, bytes: AtomicUsize::new(0), budget }
+    }
+
+    /// The pool of every cache in the process.
+    fn global() -> Arc<Pool> {
+        static POOL: std::sync::OnceLock<Arc<Pool>> = std::sync::OnceLock::new();
+        POOL.get_or_init(|| Arc::new(Pool::new(MAX_LIVE_DECODERS, IDLE, FRAME_BUDGET))).clone()
+    }
+
+    fn register(&self, c: &Arc<Shared>) {
+        let mut g = self.caches.lock().unwrap_or_else(PoisonError::into_inner);
+        g.retain(|w| w.strong_count() > 0);
+        g.push(Arc::downgrade(c));
+    }
+
+    /// The idle caches other than `me` that `keep` selects, least recently used first. Other
+    /// caches are only ever try-locked, so two caches trimming each other cannot deadlock.
+    fn idle_others(&self, me: &Shared, keep: impl Fn(&State) -> bool) -> Vec<Arc<Shared>> {
+        let all: Vec<Arc<Shared>> = self.caches.lock().unwrap_or_else(PoisonError::into_inner).iter().filter_map(Weak::upgrade).collect();
+        let mut idle: Vec<(Instant, Arc<Shared>)> = all
+            .into_iter()
+            .filter(|c| !std::ptr::eq(Arc::as_ptr(c), me))
+            .filter_map(|c| {
+                let used = try_state(&c).filter(|st| keep(st) && st.last_used.elapsed() >= self.idle).map(|st| st.last_used)?;
+                Some((used, c))
+            })
+            .collect();
+        idle.sort_by_key(|(used, _)| *used);
+        idle.into_iter().map(|(_, c)| c).collect()
+    }
+
+    /// Take the decoders of idle caches, least recently used first, down to the cap. The caller
+    /// drops them with no cache lock held: dropping a decoder can block (a hardware session waits
+    /// for its frames in flight).
+    #[must_use = "drop the released decoders with no cache lock held"]
+    fn trim_decoders(&self, me: &Shared) -> Vec<Box<dyn VideoDecoder>> {
+        let mut released = Vec::new();
+        if self.decoders.load(Ordering::Relaxed) <= self.max_decoders {
+            return released;
+        }
+        for c in self.idle_others(me, |st| st.decoder.is_some()) {
+            if self.decoders.load(Ordering::Relaxed) <= self.max_decoders {
+                break;
+            }
+            if let Some(mut st) = try_state(&c) {
+                released.extend(st.release_decoder(self));
+            }
+        }
+        released
+    }
+
+    /// Evict the frames of idle caches, least recently used first, down to the budget. Caches in
+    /// use keep theirs (each within its own budget): a frame evicted before it is shown costs a
+    /// re-decode from the keyframe.
+    fn trim_frames(&self, me: &Shared) {
+        let over = || self.bytes.load(Ordering::Relaxed) > self.budget;
+        if !over() {
+            return;
+        }
+        for c in self.idle_others(me, |st| !st.frames.is_empty()) {
+            if !over() {
+                break;
+            }
+            if let Some(mut st) = try_state(&c) {
+                st.release_frames(self, over);
+            }
+        }
+    }
+}
+
+/// Caches that hold a decoder right now, process-wide (`perf.stats`).
+pub fn live_decoders() -> usize {
+    Pool::global().decoders.load(Ordering::Relaxed)
+}
+
+/// Bytes of decoded frames the caches hold right now, process-wide (`perf.stats`).
+pub fn cached_bytes() -> usize {
+    Pool::global().bytes.load(Ordering::Relaxed)
+}
+
 /// Decoder + decoded-frame cache for one video track.
 pub struct GopCache {
-    state: Mutex<State>,
+    shared: Arc<Shared>,
     /// Colour signalled by the container, which wins over the bitstream's.
     explicit_color: Option<ColorInfo>,
     /// Clockwise quarter turns from the container's display matrix, applied to every frame.
@@ -200,7 +360,13 @@ const CONTINUE_THROUGH: usize = 48;
 
 impl GopCache {
     pub fn new(explicit_color: Option<ColorInfo>) -> Self {
-        Self {
+        // unit tests count decoder restarts: each of their caches gets a pool of its own
+        let pool = if cfg!(test) { Arc::new(Pool::new(MAX_LIVE_DECODERS, IDLE, FRAME_BUDGET)) } else { Pool::global() };
+        Self::in_pool(explicit_color, pool)
+    }
+
+    fn in_pool(explicit_color: Option<ColorInfo>, pool: Arc<Pool>) -> Self {
+        let shared = Arc::new(Shared {
             state: Mutex::new(State {
                 decoder: None,
                 intra: false,
@@ -211,11 +377,12 @@ impl GopCache {
                 frames: BTreeMap::new(),
                 drafts: Default::default(),
                 bytes: 0,
+                last_used: Instant::now(),
             }),
-            explicit_color,
-            rotation: 0,
-            budget: 384 << 20,
-        }
+            pool: pool.clone(),
+        });
+        pool.register(&shared);
+        Self { shared, explicit_color, rotation: 0, budget: 384 << 20 }
     }
 
     /// Turn every decoded frame clockwise by `quarter_turns` × 90° (the container's display
@@ -245,9 +412,11 @@ impl GopCache {
             st.drafts.remove(&pts);
         }
         let budget = self.budget.max(MIN_FRAMES * f.byte_size());
+        let before = st.bytes;
         st.bytes += f.byte_size();
         if let Some(old) = st.frames.insert(pts, Arc::new(f)) {
             st.bytes -= old.byte_size();
+            filmcraft_frame::pool::recycle(old);
         }
         // evict frames far from the most recent (keep a window around the working position)
         while st.bytes > budget && st.frames.len() > 2 {
@@ -257,8 +426,17 @@ impl GopCache {
                 st.drafts.remove(&victim);
                 st.bytes -= v.byte_size();
                 EVICTED.fetch_add(1, Ordering::Relaxed);
+                // its planes serve the next decoded pictures instead of going back to the allocator
+                filmcraft_frame::pool::recycle(v);
             }
         }
+        let pool = &self.shared.pool;
+        if st.bytes >= before {
+            pool.bytes.fetch_add(st.bytes - before, Ordering::Relaxed);
+        } else {
+            pool.bytes.fetch_sub(before - st.bytes, Ordering::Relaxed);
+        }
+        pool.trim_frames(&self.shared);
     }
 
     /// Store decoder output (in presentation order) and advance `out_max`.
@@ -297,8 +475,13 @@ impl GopCache {
             return self.private_frame(s, i, want_pts, n);
         }
         let draft = filmcraft_media::cancel::draft();
-        let mut st = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        // Idle caches' decoders released below. Declared before the lock guard, so it is dropped
+        // after the guard on every return path: dropping a decoder can block (a hardware session
+        // waits for its frames in flight) and must not hold this cache's lock.
+        let mut released: Vec<Box<dyn VideoDecoder>> = Vec::new();
+        let mut st = self.shared.state.lock().unwrap_or_else(|e| e.into_inner());
         let _decoding = DecodingGuard::enter(me);
+        st.last_used = Instant::now();
         if let Some(f) = st.cached(want_pts, draft) {
             HITS.fetch_add(1, Ordering::Relaxed);
             return Ok(f.clone());
@@ -309,7 +492,9 @@ impl GopCache {
             st.intra = d.intra_only();
             st.decoder = Some(d);
             st.next = usize::MAX;
+            self.shared.pool.decoders.fetch_add(1, Ordering::Relaxed);
         }
+        released.extend(self.shared.pool.trim_decoders(&self.shared));
         // Nothing cached: the work ahead (possibly a seek and a GOP of decoding) is only worth it
         // while someone still wants the frame.
         if filmcraft_media::cancel::cancelled() {
@@ -462,7 +647,7 @@ impl GopCache {
             DECODED.fetch_add(1, Ordering::Relaxed);
             timed(|| dec.decode(&data, want_pts))
         });
-        let mut st = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        let mut st = self.shared.state.lock().unwrap_or_else(|e| e.into_inner());
         if st.spare.len() < 16 {
             st.spare.push(dec);
         }
@@ -480,7 +665,6 @@ mod tests {
     use super::*;
     use crate::video::DecodedFrame;
     use std::collections::VecDeque;
-    use std::sync::atomic::AtomicUsize;
 
     /// `n` samples, a sync sample every `gop`, pts = 1000 · index (no reordering).
     struct Samples {
@@ -715,5 +899,166 @@ mod tests {
         assert_eq!(index_of(&r.expect("cached")), 3);
         assert_eq!(index_of(&c.frame(&s, 7_000).expect("frame")), 7);
         assert_eq!(s.resets.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn idle_caches_give_up_their_decoders_beyond_the_cap() {
+        let pool = Arc::new(Pool::new(2, Duration::ZERO, FRAME_BUDGET));
+        let live = || pool.decoders.load(Ordering::Relaxed);
+        let s: Vec<Samples> = (0..5).map(|_| samples(300, 250, 3, false)).collect();
+        let c: Vec<GopCache> = (0..5).map(|_| GopCache::in_pool(None, pool.clone())).collect();
+        // a clip after another, as when clips are dropped on a timeline
+        for k in 0..5 {
+            assert_eq!(index_of(&c[k].frame(&s[k], 10_000).expect("frame")), 10);
+            assert!(live() <= 2, "{} live decoders after clip {k}", live());
+        }
+        assert_eq!(live(), 2);
+        // the most recently used keep theirs and carry on without a seek
+        assert_eq!(index_of(&c[4].frame(&s[4], 20_000).expect("frame")), 20);
+        assert_eq!(s[4].resets.load(Ordering::Relaxed), 1);
+        // a cache that lost its decoder still serves what it cached…
+        let decodes = s[0].decodes.load(Ordering::Relaxed);
+        assert_eq!(index_of(&c[0].frame(&s[0], 10_000).expect("cached")), 10);
+        assert_eq!(s[0].decodes.load(Ordering::Relaxed), decodes);
+        // …and decodes again with a new decoder, from the sync sample
+        assert_eq!(index_of(&c[0].frame(&s[0], 20_000).expect("frame")), 20);
+        assert_eq!(s[0].resets.load(Ordering::Relaxed), 2);
+        assert_eq!(live(), 2);
+        // a dropped cache no longer counts
+        drop(c);
+        assert_eq!(live(), 0);
+    }
+
+    #[test]
+    fn caches_in_use_keep_their_decoders_whatever_the_cap() {
+        // every layer of one composited frame was asked moments ago: none is idle
+        let pool = Arc::new(Pool::new(2, Duration::from_secs(3600), FRAME_BUDGET));
+        let s: Vec<Samples> = (0..5).map(|_| samples(300, 250, 3, false)).collect();
+        let c: Vec<GopCache> = (0..5).map(|_| GopCache::in_pool(None, pool.clone())).collect();
+        for t in [10_000, 11_000, 12_000] {
+            for k in 0..5 {
+                assert_eq!(index_of(&c[k].frame(&s[k], t).expect("frame")) as i64, t / 1000);
+            }
+        }
+        assert_eq!(pool.decoders.load(Ordering::Relaxed), 5);
+        assert!(s.iter().all(|s| s.resets.load(Ordering::Relaxed) == 1), "no decoder restarted");
+    }
+
+    #[test]
+    fn intra_caches_give_up_their_spare_decoders_too() {
+        let pool = Arc::new(Pool::new(1, Duration::ZERO, FRAME_BUDGET));
+        let (a, b) = (samples(50, 1, 0, true), samples(50, 1, 0, true));
+        let (ca, cb) = (GopCache::in_pool(None, pool.clone()), GopCache::in_pool(None, pool.clone()));
+        assert_eq!(index_of(&ca.frame(&a, 3_000).expect("frame")), 3);
+        assert_eq!(index_of(&cb.frame(&b, 4_000).expect("frame")), 4);
+        let st = ca.shared.state.lock().unwrap();
+        assert!(st.decoder.is_none() && st.spare.is_empty());
+        drop(st);
+        assert_eq!(pool.decoders.load(Ordering::Relaxed), 1);
+        assert_eq!(index_of(&ca.frame(&a, 5_000).expect("frame")), 5);
+    }
+
+    #[test]
+    fn idle_caches_give_up_their_frames_beyond_the_shared_budget() {
+        // 1×1 RGBA pictures: 4 bytes each, a shared budget of ten of them
+        let pool = Arc::new(Pool::new(usize::MAX, Duration::ZERO, 40));
+        let held = || pool.bytes.load(Ordering::Relaxed);
+        let (a, b) = (samples(300, 250, 0, false), samples(300, 250, 0, false));
+        let (ca, cb) = (GopCache::in_pool(None, pool.clone()), GopCache::in_pool(None, pool.clone()));
+        // the only cache keeps what its own budget allows
+        assert_eq!(index_of(&ca.frame(&a, 10_000).expect("frame")), 10);
+        assert_eq!(held(), 44);
+        // a second clip takes the room from the idle first one, earliest frames first
+        assert_eq!(index_of(&cb.frame(&b, 5_000).expect("frame")), 5);
+        assert_eq!(held(), 40);
+        let decodes = b.decodes.load(Ordering::Relaxed);
+        assert!((0..=5).all(|i| index_of(&cb.frame(&b, i * 1000).expect("cached")) as i64 == i));
+        assert_eq!(b.decodes.load(Ordering::Relaxed), decodes, "the clip in use lost nothing");
+        let st = ca.shared.state.lock().unwrap();
+        assert_eq!((st.frames.len(), st.bytes), (4, 16));
+        assert_eq!(st.frames.keys().next(), Some(&7_000));
+        drop(st);
+        // an evicted frame decodes again
+        assert_eq!(index_of(&ca.frame(&a, 2_000).expect("frame")), 2);
+        assert!(held() <= 40 + 4 * 3, "{} bytes held", held());
+        drop((ca, cb));
+        assert_eq!(held(), 0);
+    }
+
+    #[test]
+    fn caches_in_use_keep_their_frames_whatever_the_shared_budget() {
+        let pool = Arc::new(Pool::new(usize::MAX, Duration::from_secs(3600), 40));
+        let (a, b) = (samples(300, 250, 0, false), samples(300, 250, 0, false));
+        let (ca, cb) = (GopCache::in_pool(None, pool.clone()), GopCache::in_pool(None, pool.clone()));
+        assert_eq!(index_of(&ca.frame(&a, 10_000).expect("frame")), 10);
+        assert_eq!(index_of(&cb.frame(&b, 10_000).expect("frame")), 10);
+        assert_eq!(pool.bytes.load(Ordering::Relaxed), 88);
+        let decodes = a.decodes.load(Ordering::Relaxed);
+        assert_eq!(index_of(&ca.frame(&a, 0).expect("cached")), 0);
+        assert_eq!(a.decodes.load(Ordering::Relaxed), decodes);
+    }
+
+    /// Pictures big enough for the plane pool (its own size, so that parallel tests cannot take
+    /// the buffers), no reordering, one long GOP.
+    struct Big(usize);
+    const BIG: (u32, u32) = (200, 101);
+
+    impl VideoDecoder for Big {
+        fn decode(&mut self, _sample: &[u8], pts: i64) -> crate::Result<Vec<DecodedFrame>> {
+            let mut px = filmcraft_frame::pool::take_u8((BIG.0 * BIG.1 * 4) as usize);
+            px.resize((BIG.0 * BIG.1 * 4) as usize, (pts / 1000) as u8);
+            Ok(vec![DecodedFrame { pts, frame: VideoFrame::rgba8(BIG.0, BIG.1, px), draft: false }])
+        }
+        fn flush(&mut self) -> Vec<DecodedFrame> {
+            Vec::new()
+        }
+        fn reset(&mut self) {}
+        fn name(&self) -> &str {
+            "big"
+        }
+    }
+
+    impl VideoSamples for Big {
+        fn count(&self) -> usize {
+            self.0
+        }
+        fn pts(&self, i: usize) -> i64 {
+            i as i64 * 1000
+        }
+        fn sync_before(&self, _i: usize) -> usize {
+            0
+        }
+        fn sample_at(&self, t: i64) -> Option<usize> {
+            let i = (t / 1000) as usize;
+            (i < self.0).then_some(i)
+        }
+        fn read(&self, i: usize) -> crate::Result<Vec<u8>> {
+            Ok(vec![i as u8])
+        }
+        fn make_decoder(&self) -> crate::Result<Box<dyn VideoDecoder>> {
+            Ok(Box::new(Big(self.0)))
+        }
+    }
+
+    #[test]
+    fn evicted_frames_are_decoded_into_again() {
+        let s = Big(200);
+        // room for MIN_FRAMES pictures only
+        let mut c = GopCache::new(None);
+        c.budget = 0;
+        let reused = || filmcraft_frame::pool::stats().reused;
+        let before = reused();
+        // the cache holds MIN_FRAMES pictures: none is evicted yet, every plane is new
+        for i in 0..MIN_FRAMES as i64 {
+            assert_eq!(c.frame(&s, i * 1000).expect("frame").width, BIG.0);
+        }
+        assert_eq!(reused(), before);
+        // from here on each picture evicts one, whose buffer the next picture is decoded into
+        let more = 40;
+        for i in MIN_FRAMES as i64..MIN_FRAMES as i64 + more {
+            let f = c.frame(&s, i * 1000).expect("frame");
+            assert!(matches!(&f.data, filmcraft_frame::PixelData::Rgba8(d) if d.iter().all(|&b| b == i as u8)), "frame {i} has its own pixels");
+        }
+        assert!(reused() - before >= more as u64 - 2, "{} of {more} planes recycled", reused() - before);
     }
 }

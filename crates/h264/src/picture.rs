@@ -255,14 +255,15 @@ impl Frame {
     /// Crop and copy the frame into planar buffers (waits for completion).
     pub fn copy_cropped(&self, crop: (usize, usize, usize, usize)) -> (Vec<u8>, Vec<u8>, Vec<u8>) {
         let (cx, cy, cw, ch) = crop;
-        let mut y = Vec::with_capacity(cw * ch);
+        let alloc = plane_allocator();
+        let mut y = alloc(cw * ch);
         for r in cy..cy + ch {
             let row = self.row(r >> 4);
             y.extend_from_slice(&row.y[(r & 15) * self.width + cx..(r & 15) * self.width + cx + cw]);
         }
         let (ccx, ccy, ccw, cch) = (cx / 2, cy / 2, cw.div_ceil(2), ch.div_ceil(2));
-        let mut u = Vec::with_capacity(ccw * cch);
-        let mut v = Vec::with_capacity(ccw * cch);
+        let mut u = alloc(ccw * cch);
+        let mut v = alloc(ccw * cch);
         for r in ccy..ccy + cch {
             let row = self.row(r >> 3);
             let o = (r & 7) * self.cwidth + ccx;
@@ -271,6 +272,18 @@ impl Frame {
         }
         (y, u, v)
     }
+}
+
+static PLANE_ALLOCATOR: std::sync::OnceLock<fn(usize) -> Vec<u8>> = std::sync::OnceLock::new();
+
+/// Where output planes come from: an empty buffer with room for the given number of samples.
+/// The host sets it once to recycle the planes of pictures it is done with; the first call wins.
+pub fn set_plane_allocator(alloc: fn(usize) -> Vec<u8>) {
+    let _ = PLANE_ALLOCATOR.set(alloc);
+}
+
+fn plane_allocator() -> fn(usize) -> Vec<u8> {
+    PLANE_ALLOCATOR.get().copied().unwrap_or(Vec::with_capacity)
 }
 
 /// Copy `w` samples of `line` starting at x0 into `out`; when possible a fixed-size block of `N`

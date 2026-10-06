@@ -13,6 +13,52 @@ the before/after comparison relies on. Each milestone below alternated base / af
 each); the most load-independent figure is the decoder's own cycle count (`proc_pid_rusage`
 instructions and cycles of a process, all threads summed).
 
+## Memory of clips on a timeline (MEM1–MEM3)
+
+Measured on the desktop release build with `footprint`, `heap` and `malloc_history`
+(`MallocStackLogging=lite`), 2026-10-05: twelve H.264 clips dropped on a timeline took the process
+to a 12 GB footprint, 10.8 GB of it live heap in three piles.
+
+1. **Media files read whole (2.9 GB), MEM1.** The desktop host had no `Services::reader`, so
+   `MediaPool::open_file` fell back to `read_file` and every clip's bytes stayed in memory for as
+   long as its source was open. `FsServices::reader` now returns a
+   `filmcraft_media::reader::FileReader`: the file stays open and containers read their index and
+   then single samples with positional reads, as the web host already did through `BlobReader`
+   ([web.md](web.md)). Formats decoded in one go (stills, WAV, MPEG elementary streams) are still
+   read whole through the reader.
+2. **A decoder per clip, for good (3.5 GB), MEM2.** Every source kept its decoder once it had
+   decoded a frame, with its reference pictures and the pictures its frame threads have in flight:
+   about 290 MB per clip here (`h264` `PicState`, `Frame::make_row`). The GOP caches now share a
+   pool (`crates/codecs/src/gop.rs`): beyond `MAX_LIVE_DECODERS` (4) the least recently used
+   caches that have been idle for 3 s drop their decoder and make a new one when asked again,
+   which costs what a seek costs. A cache in use (a layer of the frame being composited, the next
+   clip being prefetched) always keeps its decoder, so a composite of more than four clips does
+   not restart decoders on every frame. `perf.stats` reports `decode.liveDecoders`.
+3. **A frame budget per clip, none overall (3.8 GB), MEM3.** Each GOP cache keeps up to 384 MB
+   of decoded frames (at least 64 frames), which every clip on the timeline filled and kept. The
+   pool now counts the frames of all caches against `FRAME_BUDGET` (1 GiB): over it, caches idle
+   for 3 s give up frames, least recently used cache first, earliest frames first. Caches in use
+   keep their own budget, because a frame evicted before it is shown costs a re-decode from the
+   keyframe. `perf.stats` reports `decode.cacheMB` and `decode.cacheBudgetMB`; before, this
+   memory appeared in no counter (`frames.cache` covers the frame server's rendered images and
+   GPU plans only).
+
+4. **Freed planes the allocator keeps (2.5 GB), MEM4.** With MEM1–MEM3 the same twelve clips took
+   5.1 GB, only 2.5 GB of it live: every decoded picture allocated three planes and every
+   eviction freed them, and the system allocator kept the freed pages (`footprint`: 1.7 GB
+   reclaimable). `filmcraft_frame::pool` now keeps the planes of evicted frames (up to 192 MiB per
+   sample type; a frame something else still holds is left alone) and the H.264 decoder and the
+   VideoToolbox path decode into them, so steady-state decoding allocates no planes.
+   `perf.stats` reports `decode.planePoolMB` and `decode.planesReused`.
+
+The same session showed that the desktop app never used hardware decoding: `register()` was an
+argument of a `log::info!` that no logger evaluated (fixed under HW1; `decode.hardware.sessions`
+was 0 with every frame decoded in software).
+
+What remains per live decoder is unchanged: the H.264 decoder publishes each macroblock row of a
+picture as its own allocations (`Frame::make_row`, five per row), which is where the 290 MB per
+decoder comes from.
+
 ## Results (GPU2: standard effects on the GPU compositor, #30, before → after)
 
 Before = this change with clips that carry standard effects sent back to the CPU layer path in

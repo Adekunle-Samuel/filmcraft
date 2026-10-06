@@ -89,7 +89,7 @@ fn main() -> eframe::Result {
     filmcraft_ui_egui::crash::install(data_dir.clone().or_else(default_data_dir).map(|d| d.join("Logs")));
     // OS hardware video decoders (VideoToolbox on macOS) in front of our own; Settings ▸ Playback ▸
     // Hardware decoding switches them off. Unsupported streams and failures use our decoders.
-    log::info!("hardware decoding: {:?}", filmcraft_platform::register());
+    register_hardware_decoders();
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("FilmCraft")
@@ -239,6 +239,15 @@ fn open_path(path: &str, reveal: bool) -> Result<(), String> {
     cmd.spawn().map(|_| ()).map_err(|e| format!("can't open {path}: {e}"))
 }
 
+/// Put the OS hardware video decoders in front of our own. Registered in a statement of its own:
+/// a log macro does not evaluate its arguments while no logger takes its level, which left the
+/// hardware decoders out of every run.
+fn register_hardware_decoders() -> filmcraft_platform::Availability {
+    let hardware = filmcraft_platform::register();
+    log::info!("hardware decoding: {hardware:?}");
+    hardware
+}
+
 /// Local UTC offset at a unix time (auto-save file names and recovery times use local time).
 fn local_offset(unix: i64) -> i32 {
     chrono::Local.timestamp_opt(unix, 0).single().map(|d| d.offset().local_minus_utc()).unwrap_or(0)
@@ -256,4 +265,16 @@ fn agent_event_loop(agent: bool) -> Option<eframe::EventLoopBuilderHook> {
     }
     let _ = agent;
     None
+}
+
+#[cfg(test)]
+mod tests {
+    /// Start-up registers the hardware decoders whether or not anything is logged (no logger is
+    /// installed here, as in a normal run).
+    #[test]
+    fn startup_registers_the_hardware_decoders_without_a_logger() {
+        assert!(!log::log_enabled!(log::Level::Info));
+        let hardware = super::register_hardware_decoders();
+        assert_eq!(filmcraft_platform::registered(), cfg!(target_os = "macos"), "{hardware:?}");
+    }
 }

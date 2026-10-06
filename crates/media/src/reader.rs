@@ -43,6 +43,57 @@ impl ByteReader for MemReader {
     }
 }
 
+/// A file on disk, read in place: the file stays open and only the requested ranges are read, so
+/// opening a clip costs its index rather than its size.
+#[cfg(any(unix, windows))]
+#[derive(Debug)]
+pub struct FileReader {
+    file: std::fs::File,
+    len: u64,
+}
+
+#[cfg(any(unix, windows))]
+impl FileReader {
+    pub fn open(path: &std::path::Path) -> io::Result<Self> {
+        let file = std::fs::File::open(path)?;
+        let m = file.metadata()?;
+        if !m.is_file() {
+            return Err(io::Error::new(io::ErrorKind::NotFound, format!("{} is not a file", path.display())));
+        }
+        Ok(Self { file, len: m.len() })
+    }
+}
+
+#[cfg(any(unix, windows))]
+impl ByteReader for FileReader {
+    fn len(&self) -> u64 {
+        self.len
+    }
+    /// Positional reads: threads decoding different parts of the file do not share a cursor.
+    fn read_at(&self, offset: u64, buf: &mut [u8]) -> io::Result<()> {
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::FileExt::read_exact_at(&self.file, buf, offset)
+        }
+        #[cfg(windows)]
+        {
+            let (mut done, mut at) = (0usize, offset);
+            while let Some(rest) = buf.get_mut(done..).filter(|r| !r.is_empty()) {
+                match std::os::windows::fs::FileExt::seek_read(&self.file, rest, at) {
+                    Ok(0) => return Err(eof()),
+                    Ok(n) => {
+                        done = done.saturating_add(n);
+                        at = at.saturating_add(n as u64);
+                    }
+                    Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
+                    Err(e) => return Err(e),
+                }
+            }
+            Ok(())
+        }
+    }
+}
+
 /// Read `len` bytes at `offset` (fewer at the end of the reader).
 pub fn read_range(r: &dyn ByteReader, offset: u64, len: usize) -> io::Result<Vec<u8>> {
     let n = (r.len().saturating_sub(offset)).min(len as u64) as usize;
@@ -83,6 +134,28 @@ mod tests {
         assert_eq!(&b, b"456");
         assert_eq!(r.read_at(8, &mut b).unwrap_err().kind(), io::ErrorKind::UnexpectedEof);
         assert_eq!(read_range(&r, 8, 100).unwrap(), b"89");
+    }
+
+    #[cfg(any(unix, windows))]
+    #[test]
+    fn file_reader_reads_ranges_in_place() {
+        let dir = std::env::temp_dir().join(format!("filmcraft-file-reader-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("bytes.bin");
+        std::fs::write(&path, b"0123456789").unwrap();
+        let r = FileReader::open(&path).unwrap();
+        assert_eq!(r.len(), 10);
+        let mut b = [0u8; 3];
+        r.read_at(4, &mut b).unwrap();
+        assert_eq!(&b, b"456");
+        // reads are positional: an earlier offset after a later one
+        r.read_at(0, &mut b).unwrap();
+        assert_eq!(&b, b"012");
+        assert_eq!(r.read_at(8, &mut b).unwrap_err().kind(), io::ErrorKind::UnexpectedEof);
+        assert_eq!(read_range(&r, 8, 100).unwrap(), b"89");
+        assert!(FileReader::open(&dir).is_err(), "a directory is not a media file");
+        assert_eq!(FileReader::open(&dir.join("missing")).unwrap_err().kind(), io::ErrorKind::NotFound);
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
