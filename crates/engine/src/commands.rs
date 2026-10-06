@@ -1034,8 +1034,26 @@ fn build() -> Vec<CommandSpec> {
                 };
                 let sel = with_links(s, &clips_p(s, p));
                 s.edit_sequence("Speed/Duration", |q, ctx, _| {
+                    // a clip and its linked partners on other tracks change as one edit, so a ripple
+                    // moves the later clips once
+                    let place = |q: &filmcraft_project::Sequence, c: ClipId| q.find_item(c).map(|(t, i)| (t, i.link));
+                    let mut groups: Vec<Vec<ClipId>> = Vec::new();
                     for c in &sel {
-                        edit::set_speed(q, *c, speed, reverse, ripple, ctx)?;
+                        // a clip that is not there goes on alone, so the edit fails with "no such item"
+                        let Some((track, link)) = place(q, *c) else {
+                            groups.push(vec![*c]);
+                            continue;
+                        };
+                        let joins = |g: &Vec<ClipId>| link.is_some() && g.iter().all(|o| place(q, *o).is_some_and(|(t, l)| l == link && t != track));
+                        match groups.iter_mut().find(|g| joins(g)) {
+                            Some(g) => g.push(*c),
+                            None => groups.push(vec![*c]),
+                        }
+                    }
+                    for group in &groups {
+                        edit::set_speed_group(q, group, speed, reverse, ripple, ctx)?;
+                    }
+                    for c in &sel {
                         if let (Some(m), Some((_, it))) = (interp, q.find_item_mut(*c)) {
                             it.time_interpolation = m;
                         }

@@ -888,6 +888,8 @@ mod image_sequence_tests;
 #[cfg(test)]
 mod keyboard_tests;
 #[cfg(test)]
+mod linked_speed_tests;
+#[cfg(test)]
 mod masks_tests;
 #[cfg(test)]
 mod media_browser_tests;

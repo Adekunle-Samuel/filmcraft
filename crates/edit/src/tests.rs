@@ -270,6 +270,44 @@ fn rate_stretch_and_speed() {
 }
 
 #[test]
+fn speed_on_a_linked_group_ripples_once() {
+    // V1: a [0,10), b [10,20). A1: a's sound [0,10), b's sound [10,20).
+    let build = |sound_len: i64| {
+        let mut fx = Fx::new();
+        let (v1, a1) = (fx.v(0), fx.a(0));
+        let a = fx.put(v1, 0, 10, 0);
+        fx.put(v1, 10, 10, 0);
+        let sound = fx.put(a1, 0, sound_len, 0);
+        fx.put(a1, sound_len, 10, 0);
+        (fx, a, sound)
+    };
+    for (speed, picture, later) in [(0.5, (0, 20), (20, 10)), (2.0, (0, 5), (5, 10))] {
+        let (mut fx, a, sound) = build(10);
+        let mut n = fx.next;
+        set_speed_group(&mut fx.seq, &[a, sound], speed, false, true, &mut Fx::ctx(&mut n)).unwrap();
+        assert_eq!((fx.spans(fx.v(0)), fx.spans(fx.a(0))), (vec![picture, later], vec![picture, later]), "{speed}");
+    }
+    // a split edit: the sound is 4 longer. Later clips move by the larger change, on both tracks.
+    let (mut fx, a, sound) = build(14);
+    let mut n = fx.next;
+    set_speed_group(&mut fx.seq, &[a, sound], 0.5, false, true, &mut Fx::ctx(&mut n)).unwrap();
+    assert_eq!((fx.spans(fx.v(0)), fx.spans(fx.a(0))), (vec![(0, 20), (24, 10)], vec![(0, 28), (28, 10)]));
+    let (mut fx, a, sound) = build(14);
+    let mut n = fx.next;
+    set_speed_group(&mut fx.seq, &[a, sound], 2.0, false, true, &mut Fx::ctx(&mut n)).unwrap();
+    assert_eq!((fx.spans(fx.v(0)), fx.spans(fx.a(0))), (vec![(0, 5), (5, 10)], vec![(0, 7), (9, 10)]));
+    fx.seq.check().unwrap();
+    // two clips of one track are not one group; a missing clip changes nothing
+    let (mut fx, a, _) = build(10);
+    let b = fx.seq.video_tracks[0].items[1].id;
+    let before = fx.seq.clone();
+    let mut n = fx.next;
+    assert!(set_speed_group(&mut fx.seq, &[a, b], 2.0, false, true, &mut Fx::ctx(&mut n)).is_err());
+    assert!(set_speed_group(&mut fx.seq, &[a, ClipId(1)], 2.0, false, true, &mut Fx::ctx(&mut n)).is_err());
+    assert_eq!(fx.seq, before);
+}
+
+#[test]
 fn move_with_insert_and_overwrite() {
     let mut fx = Fx::new();
     let (v1, v2) = (fx.v(0), fx.v(1));
