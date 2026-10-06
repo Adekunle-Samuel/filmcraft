@@ -84,8 +84,8 @@ fn the_empty_end_of_a_nest_is_marked_in_the_timeline() {
         (v1.items[3].clone(), v1.items[4].clone())
     };
     d.exec("timeline.select", json!({"clips": [a.id.0, b.id.0]}));
-    let nested = d.exec("clip.nest", json!({"name": "Inner"}))["sequence"].as_u64().unwrap();
-    let nest = d.app().session.state.selection[0].0;
+    let r = d.exec("clip.nest", json!({"name": "Inner"}));
+    let (nested, nest) = (r["sequence"].as_u64().unwrap(), r["clips"][0].as_u64().unwrap());
     d.frames(3);
     let clip = d.rect(&format!("timeline.clip.{nest}")).expect("the nest clip is on screen");
     assert!(d.rect(&format!("timeline.clip.{nest}.empty")).is_none(), "a full nest has no empty part");

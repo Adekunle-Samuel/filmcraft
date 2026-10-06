@@ -445,8 +445,12 @@ fn make_subsequence(s: &mut Session, p: &Value) -> Result<Value> {
         }
         nq.check().map_err(EngineError::Other)?;
         st.project_selection = vec![nid];
+        // like Premiere: the subsequence is loaded in the Source Monitor, ready to edit from
+        st.source_item = Some(nid);
+        st.source_playhead = Tick::ZERO;
         Ok(nid)
     })?;
+    s.events.push(crate::Event::OpenSource(id));
     Ok(json!({"sequence": id.0, "name": name}))
 }
 
