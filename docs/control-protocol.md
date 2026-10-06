@@ -80,6 +80,17 @@ management commands and dialog ids: offline media and relinking (`media.findMiss
 proxies (`media.createProxies`, `media.attachProxies`, `media.toggleProxies`, `proxies.*`), ingest
 (`project.ingestSettings`) and the Project Manager (`file.projectManager`, `pm.*`).
 
+**Moving clips**: `timeline.move {moves: [{clip, track, time}], insert?, linked?}` → `{moved: [clip ids]}`.
+With Linked Selection on (the default; `linked` overrides the toggle for one call) the linked
+partners of a listed clip that are not listed themselves move by the same time offset and stay on
+their own tracks, so picture and sound stay in sync. Like a listed clip, a partner overwrites
+what is at its destination (or inserts, with `insert`). A partner on a locked track stays where it
+is, and so does one whose position would not change (the listed clip only changed track). `moved`
+lists every clip that moved, partners included. No clip is moved before the sequence
+start: if one would be, all clips of the call land later by the same amount (their spacing is
+kept). A `time` beyond the representable range is an "invalid parameters" error. The timeline
+panel's drag passes `linked: false`, because it already lists exactly the clips it moves.
+
 **Trim mode** (`crates/engine/src/trim.rs`): `trim.selectEditPoint` / `trim.selectNearest` enter trim
 mode (the Program monitor becomes the Trim Monitor, ids `trimMonitor.*`); `trim.monitor` returns what
 it shows. Dynamic trimming takes an explicit clock (seconds) so it is deterministic: `trim.shuttle

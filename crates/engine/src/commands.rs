@@ -245,6 +245,57 @@ pub(crate) fn item_p(p: &Value, k: &str) -> Option<ItemId> {
     u64_p(p, k).map(ItemId)
 }
 
+/// `timeline.move`: move the listed clips to (track, time). With Linked Selection on (or
+/// `linked: true`) the linked partners of a listed clip that are not listed themselves follow by
+/// the same time offset on their own tracks, so picture and sound stay in sync; a partner on a
+/// locked track, or one whose position would not change, stays as it is. Nothing moves before the sequence start: when a clip would,
+/// every clip of the call lands later by the same amount, so the spacing asked for is kept.
+fn move_clips(s: &mut Session, p: &Value) -> Result<Value> {
+    const CMD: &str = "timeline.move";
+    let mut listed: Vec<(ClipId, TrackId, Tick)> = Vec::new();
+    for m in p.get("moves").and_then(Value::as_array).into_iter().flatten() {
+        let track = track_p(s, m, "track", CMD)?;
+        if let (Some(clip), Some(track), Some(time)) = (clip_p(m, "clip"), track, m.get("time").and_then(Value::as_i64)) {
+            listed.push((clip, track, Tick(time)));
+        }
+    }
+    if listed.is_empty() {
+        return Err(bad(CMD, "need `moves`"));
+    }
+    let follow = bool_p(p, "linked").unwrap_or(s.state.linked_selection);
+    let q = s.active_sequence().ok_or(EngineError::NoSequence)?;
+    // (clip, destination track, new start, where a partner starts now). `time` is any i64: the
+    // sums are done in i128, where a few i64 values cannot overflow, and checked on the way back.
+    let mut plan: Vec<(ClipId, TrackId, i128, Option<i128>)> = Vec::new();
+    for &(clip, track, time) in &listed {
+        plan.push((clip, track, i128::from(time.0), None));
+        let Some((_, it)) = q.find_item(clip) else { continue }; // `edit::move_items` reports it
+        let Some(link) = it.link.filter(|_| follow) else { continue };
+        let offset = i128::from(time.0) - i128::from(it.start.0);
+        for t in q.all_tracks().filter(|t| !t.locked) {
+            for partner in t.items.iter().filter(|i| i.link == Some(link)) {
+                if !listed.iter().any(|m| m.0 == partner.id) && !plan.iter().any(|m| m.0 == partner.id) {
+                    plan.push((partner.id, t.id, i128::from(partner.start.0) + offset, Some(i128::from(partner.start.0))));
+                }
+            }
+        }
+    }
+    let late = plan.iter().map(|m| -m.2).max().unwrap_or(0).max(0);
+    let mut moves: Vec<(ClipId, TrackId, Tick)> = Vec::with_capacity(plan.len());
+    for (clip, track, start, was) in plan {
+        // a partner that ends up where it is does not move (its listed clip only changed track):
+        // re-placing it would drop the transitions at its edges
+        if was == Some(start + late) {
+            continue;
+        }
+        let start = i64::try_from(start + late).ok().map(Tick).filter(|t| *t <= Tick::MAX).ok_or_else(|| bad(CMD, "`time` is out of range"))?;
+        moves.push((clip, track, start));
+    }
+    let ins = bool_p(p, "insert").unwrap_or(false);
+    s.edit_sequence(if ins { "Move (Insert)" } else { "Move" }, |q, ctx, _| Ok(edit::move_items(q, &moves, ins, ctx)?))?;
+    Ok(json!({"moved": moves.iter().map(|m| m.0.0).collect::<Vec<_>>()}))
+}
+
 /// Expand a clip selection with linked partners (when linked selection is on).
 pub fn with_links(s: &Session, clips: &[ClipId]) -> Vec<ClipId> {
     let Some(seq) = s.active_sequence() else { return clips.to_vec() };
@@ -1678,21 +1729,15 @@ fn build() -> Vec<CommandSpec> {
             }
             Ok(json!({"selection": s.state.selection.iter().map(|c| c.0).collect::<Vec<_>>()}))
         }),
-        cmd!("timeline.move", "Move Clips", [], None, r#"{"moves":[{"clip":id,"track":id|"V2","time":ticks}],"insert":bool}"#, has_seq, |s, p| {
-            let mut moves: Vec<(ClipId, TrackId, Tick)> = Vec::new();
-            for m in p.get("moves").and_then(Value::as_array).into_iter().flatten() {
-                let track = track_p(s, m, "track", "timeline.move")?;
-                if let (Some(clip), Some(track), Some(time)) = (clip_p(m, "clip"), track, m.get("time").and_then(Value::as_i64)) {
-                    moves.push((clip, track, Tick(time)));
-                }
-            }
-            if moves.is_empty() {
-                return Err(bad("timeline.move", "need `moves`"));
-            }
-            let ins = bool_p(p, "insert").unwrap_or(false);
-            s.edit_sequence(if ins { "Move (Insert)" } else { "Move" }, |q, ctx, _| Ok(edit::move_items(q, &moves, ins, ctx)?))?;
-            Ok(Value::Null)
-        }),
+        cmd!(
+            "timeline.move",
+            "Move Clips",
+            [],
+            None,
+            r#"{"moves":[{"clip":id,"track":id|"V2","time":ticks}],"insert":bool,"linked":bool?}"#,
+            has_seq,
+            move_clips
+        ),
         cmd!(
             "timeline.trim",
             "Trim Edit",

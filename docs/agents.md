@@ -149,6 +149,9 @@ Notes:
   nothing do not count. `command_list` / `engine.commands` keep reporting the selection's state.
 - Element ids come from the previous frame. If an element is missing right after a layout change,
   the app retries on later frames before giving up.
+- `timeline.move` takes linked partners along while Linked Selection is on: moving a picture
+  clip moves its sound by the same offset (pass `"linked": false` to move only the listed clips).
+  It returns `{"moved": [ids]}`, every clip that moved.
 - Without a window, `filmcraft-cli run script.jsonl` (lines of `{"id":"…","params":{…}}`) runs the
   same commands headlessly. See §2b for the rest of the CLI.
 
