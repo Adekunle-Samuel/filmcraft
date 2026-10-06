@@ -454,6 +454,132 @@ fn make_subsequence(s: &mut Session, p: &Value) -> Result<Value> {
     Ok(json!({"sequence": id.0, "name": name}))
 }
 
+// ---------- a sequence edited in as its clips ----------
+
+/// The nest toggle off ("Insert and overwrite sequences as nests or individual clips"): edit the
+/// clips of sequence `item` that lie in `range` of it into the active sequence at `at`, instead of
+/// one nested clip. As in Premiere, the clips come with their transitions and links; the source's
+/// tracks that hold clips go to consecutive tracks from `vdest` / `adest` up (source V1 and V3
+/// land on the destination track and the one above it), and tracks that are missing are added.
+/// A kind without a destination track is left out.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn place_sequence_clips(
+    s: &mut Session,
+    item: ItemId,
+    range: TimeRange,
+    at: Tick,
+    vdest: Option<TrackId>,
+    adest: Option<TrackId>,
+    insert: bool,
+    label: &str,
+) -> Result<Vec<ClipId>> {
+    let seq_id = s.state.active_sequence.ok_or(EngineError::NoSequence)?;
+    let src = s.project.sequence(item).ok_or_else(|| bad(label, "not a sequence"))?.clone();
+    let dst = s.active_sequence().ok_or(EngineError::NoSequence)?;
+    // (kind, how many tracks above the destination track, the clip trimmed to the range)
+    let mut items: Vec<(TrackKind, usize, TrackItem)> = Vec::new();
+    // source track index → tracks above the destination track, per kind
+    // (TrackKind has no Hash: the maps are keyed by "is audio")
+    let audio = |k: TrackKind| k == TrackKind::Audio;
+    let mut lanes: std::collections::HashMap<(bool, usize), usize> = std::collections::HashMap::new();
+    let mut base: std::collections::HashMap<bool, usize> = std::collections::HashMap::new();
+    for (kind, tracks, dest) in [(TrackKind::Video, &src.video_tracks, vdest), (TrackKind::Audio, &src.audio_tracks, adest)] {
+        let Some(first) = dest.and_then(|d| dst.tracks(kind).iter().position(|t| t.id == d)) else { continue };
+        base.insert(audio(kind), first);
+        let mut lane = 0;
+        for (ti, tr) in tracks.iter().enumerate() {
+            let clips: Vec<TrackItem> = tr.items.iter().filter_map(|it| edit::through::clip_item_to(it, range)).collect();
+            if clips.is_empty() {
+                continue;
+            }
+            lanes.insert((audio(kind), ti), lane);
+            items.extend(clips.into_iter().map(|c| (kind, lane, c)));
+            lane += 1;
+        }
+    }
+    if items.is_empty() {
+        return Err(EngineError::Other("no destination track for this sequence's clips (check source patching)".into()));
+    }
+    let media = s.media.clone();
+    s.edit(label, |p, st| {
+        // copies with ids, links and transitions of their own, moved to `at`
+        let mut ids = std::collections::HashMap::new();
+        let mut links = std::collections::HashMap::new();
+        let mut placed: Vec<(TrackKind, usize, TrackItem)> = Vec::new();
+        for (kind, lane, mut it) in items.clone() {
+            let id = ClipId(p.alloc_id());
+            ids.insert(it.id, id);
+            it.id = id;
+            it.start = at + (it.start - range.start);
+            if let Some(l) = it.link {
+                it.link = Some(*links.entry(l).or_insert_with(|| p.alloc_id()));
+            }
+            placed.push((kind, lane, it));
+        }
+        let mut transitions = Vec::new();
+        for (kind, tracks) in [(TrackKind::Video, &src.video_tracks), (TrackKind::Audio, &src.audio_tracks)] {
+            for (ti, tr) in tracks.iter().enumerate() {
+                let Some(lane) = lanes.get(&(audio(kind), ti)).copied() else { continue };
+                for trn in &tr.transitions {
+                    let from = trn.from.map(|c| ids.get(&c).copied());
+                    let to = trn.to.map(|c| ids.get(&c).copied());
+                    if trn.start >= range.start && trn.end() <= range.end() && from != Some(None) && to != Some(None) {
+                        let mut t = trn.clone();
+                        t.id = filmcraft_project::TransitionId(p.alloc_id());
+                        (t.from, t.to) = (from.flatten(), to.flatten());
+                        t.start = at + (t.start - range.start);
+                        transitions.push((kind, lane, t));
+                    }
+                }
+            }
+        }
+        // tracks for every lane, added on top when the sequence has too few
+        let mut dest: std::collections::HashMap<(bool, usize), TrackId> = std::collections::HashMap::new();
+        for (is_audio, lane) in placed.iter().map(|x| (audio(x.0), x.1)).collect::<std::collections::BTreeSet<_>>() {
+            let kind = if is_audio { TrackKind::Audio } else { TrackKind::Video };
+            let index = base.get(&is_audio).copied().unwrap_or(0).saturating_add(lane);
+            while p.sequence(seq_id).ok_or(EngineError::NoSequence)?.tracks(kind).len() <= index {
+                let id = TrackId(p.alloc_id());
+                let tracks = p.sequence_mut(seq_id).ok_or(EngineError::NoSequence)?.tracks_mut(kind);
+                let (word, n) = (if kind == TrackKind::Video { "Video" } else { "Audio" }, tracks.len() + 1);
+                tracks.push(filmcraft_project::Track::new(id, kind, format!("{word} {n}")));
+            }
+            let id = p.sequence(seq_id).and_then(|q| q.tracks(kind).get(index)).map(|t| t.id).ok_or(EngineError::NoSequence)?;
+            dest.insert((is_audio, lane), id);
+        }
+        let placements: Vec<(TrackId, TrackItem)> = placed.into_iter().filter_map(|(k, lane, it)| Some((*dest.get(&(audio(k), lane))?, it))).collect();
+        let span = placements.iter().map(|x| x.1.start).min().zip(placements.iter().map(|x| x.1.end()).max());
+        let snapshot = std::sync::Arc::new(p.clone());
+        let snap = snapshot.clone();
+        let durations = move |id: ItemId| crate::media_duration(&snapshot, &media, id);
+        let starts = move |id: ItemId| crate::media_start(&snap, id);
+        let mut next = p.next_id;
+        let seq = p.sequence_mut(seq_id).ok_or(EngineError::NoSequence)?;
+        let min = seq.settings.frame_rate.frame_duration();
+        let mut ctx = edit::EditCtx { next_id: &mut next, media_duration: &durations, media_start: &starts, min_duration: min };
+        let new = if insert { edit::insert(seq, placements, &mut ctx)? } else { edit::overwrite(seq, placements, &mut ctx)? };
+        for (kind, lane, t) in transitions {
+            if let Some(tr) = dest.get(&(audio(kind), lane)).and_then(|id| seq.track_mut(*id)) {
+                tr.transitions.push(t);
+            }
+        }
+        for tr in seq.all_tracks_mut() {
+            tr.sort();
+            edit::remove_orphan_transitions(tr);
+        }
+        seq.check().map_err(EngineError::Other)?;
+        if insert
+            && st.ripple_sequence_markers
+            && let Some((a, b)) = span
+        {
+            ripple_markers(&mut seq.markers, a, b - a);
+        }
+        p.next_id = next;
+        st.selection = new.clone();
+        Ok(new)
+    })
+}
+
 // ---------- delete tracks ----------
 
 /// Sequence ▸ Delete Tracks…: delete all empty video / audio tracks (`"empty"`) or one track per

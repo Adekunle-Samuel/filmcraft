@@ -966,7 +966,7 @@ fn draw_top(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, seq: &Sequenc
     let mut x = rect.min.x + 12.0;
     let y = rect.min.y + 26.0;
     let toggles: [(Icon, &str, bool, bool, &str); 6] = [
-        (Icon::Nest, "nest", true, true, "Insert and overwrite sequences as nests or individual clips"),
+        (Icon::Nest, "nest", !app.session.state.sequences_as_clips, true, "Insert and overwrite sequences as nests or individual clips"),
         (Icon::Magnet, "snap", app.session.state.snapping, true, "Snap in Timeline (S)"),
         (Icon::Link, "linked", app.session.state.linked_selection, true, "Linked Selection"),
         (Icon::Captions, "captions", false, false, "Caption track options"),
@@ -985,6 +985,7 @@ fn draw_top(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, seq: &Sequenc
         icons::paint(&p, r.shrink(7.0), icon, if toggle && on { t.text } else { t.text_dim });
         if resp.clicked() {
             let _ = match key {
+                "nest" => app.session.execute("sequence.nestSequences", json!({})),
                 "snap" => app.session.execute("sequence.snap", json!({})),
                 "linked" => app.session.execute("sequence.linkedSelection", json!({})),
                 "marker" => app.session.execute("markers.add", json!({})),

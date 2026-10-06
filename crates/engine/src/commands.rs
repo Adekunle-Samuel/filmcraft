@@ -432,6 +432,10 @@ pub(crate) fn place_item(
     audio_split: Option<(TimeRange, Tick)>,
 ) -> Result<Vec<ClipId>> {
     let pi = s.project.item(item).ok_or_else(|| bad(label, "no such item"))?.clone();
+    // the nest toggle off: a sequence edits in as its clips (a multi-camera source stays one clip)
+    if s.state.sequences_as_clips && pi.as_sequence().is_some_and(|q| q.multicam.is_none()) {
+        return crate::sequence_tools::place_sequence_clips(s, item, range, at, vdest, adest, insert, label);
+    }
     let has_v = pi.has_video() && vdest.is_some();
     let has_a = pi.has_audio() && adest.is_some();
     if !has_v && !has_a {
@@ -1347,6 +1351,11 @@ fn build() -> Vec<CommandSpec> {
         cmd!("sequence.linkedSelection", "Linked Selection", ["Sequence"], None, r#"{"on":bool?}"#, always, |s, p| {
             s.state.linked_selection = bool_p(p, "on").unwrap_or(!s.state.linked_selection);
             Ok(json!({"linkedSelection": s.state.linked_selection}))
+        }),
+        cmd!("sequence.nestSequences", "Insert and overwrite sequences as nests or individual clips", [], None, r#"{"on":bool?}"#, always, |s, p| {
+            let nest = bool_p(p, "on").unwrap_or(s.state.sequences_as_clips);
+            s.state.sequences_as_clips = !nest;
+            Ok(json!({"nest": nest}))
         }),
         cmd!("sequence.addTracks", "Add Tracks…", ["Sequence"], None, r#"{"video":n=1,"audio":n=0}"#, has_seq, |s, p| {
             let nv = u64_p(p, "video").unwrap_or(1) as usize;

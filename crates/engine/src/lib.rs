@@ -234,6 +234,10 @@ pub struct EditorState {
     pub targeting: std::collections::BTreeMap<ItemId, Targeting>,
     pub snapping: bool,
     pub linked_selection: bool,
+    /// The Timeline's "Insert and overwrite sequences as nests or individual clips" toggle, turned
+    /// off: a sequence edits in as its clips instead of one nested clip.
+    #[serde(default)]
+    pub sequences_as_clips: bool,
     /// Open sequences (timeline tabs), in tab order.
     pub open_sequences: Vec<ItemId>,
     /// Timeline clipboard (serialized track items with their relative track index).
@@ -950,6 +954,8 @@ mod media_test_util;
 mod mixer_tests;
 #[cfg(test)]
 mod multicam_tests;
+#[cfg(test)]
+mod nest_editing_tests;
 #[cfg(test)]
 mod nesting_tests;
 #[cfg(test)]
