@@ -47,7 +47,7 @@ none of the exports brings one back. Each such clip is named in the export `Repo
 
 | Format | Written as | On import into FilmCraft |
 |---|---|---|
-| FCP7 XML | a clip item without media (its layers as FilmCraft filter ids) | not read back |
+| FCP7 XML | a clip item without media (its layers as FilmCraft filter ids) | not read back; the import report names the skipped clip item |
 | FCPXML | a clip without media | not read back |
 | OTIO | a clip with a `MissingReference` (effects in the `filmcraft` metadata) | offline media |
 | EDL | an ordinary event with the reel the reel mode gives | an ordinary clip |
@@ -65,7 +65,7 @@ OMF carries no video at all.
   random corruption never panic.
 - `tests/uncarried_clips.rs`: every format's export report names each graphic clip and adjustment
   layer once, as a warning; a sequence without them reports nothing; what a re-import gives back
-  matches the report.
+  matches the report; the FCP7 XML import names a clip item whose file is not defined.
 - `src/aaf/tests.rs`: written files checked against the required properties of every class
   written (Header, Identification, Mobs, slots, components, descriptors), weak references
   resolving into the dictionary, source clips resolving to mobs and slots, the Edit Protocol

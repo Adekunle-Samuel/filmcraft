@@ -108,3 +108,39 @@ fn the_reports_match_what_an_import_gives_back() {
         assert_eq!(names.iter().any(|n| n.starts_with("Opening")), format == Format::Otio, "{format:?}: {names:?}");
     }
 }
+
+/// The FCP7 XML importer dropped a clip item whose `<file>` reference has no definition (which is
+/// how the export writes a title) without a word: the import report names it.
+#[test]
+fn fcp7_import_reports_a_clip_item_whose_file_is_not_defined() {
+    let (p, s) = project_with_a_title();
+    let (bytes, _) = export_report(&p, s, Format::Fcp7Xml);
+    let (imported, report) = import(&bytes, Format::Fcp7Xml, None).unwrap();
+    for name in ["Opening \"line\"", "Grade"] {
+        let line = format!("clip \"{name}\" refers to a file the document does not define; skipped");
+        assert_eq!(report.warnings().filter(|e| e.message == line).count(), 1, "{report}");
+    }
+    let seq = imported.project.sequence(only_seq(&imported)).unwrap();
+    let names: Vec<&str> = seq.video_tracks.iter().flat_map(|t| &t.items).map(|c| c.name.as_str()).collect();
+    assert_eq!(names, ["a.mov"], "the clip with media is imported as before");
+    // a hand-written reference to a file id that is never defined
+    let doc = r#"<?xml version="1.0" encoding="UTF-8"?>
+<xmeml version="4"><sequence id="s"><name>Cut</name><duration>48</duration><rate><timebase>24</timebase><ntsc>FALSE</ntsc></rate>
+<media><video><track>
+  <clipitem id="c1"><name>ghost</name><start>0</start><end>24</end><in>0</in><out>24</out><file id="nowhere"/></clipitem>
+  <clipitem id="c2"><name>real</name><start>24</start><end>48</end><in>0</in><out>24</out><file id="f1"><name>real.mov</name><pathurl>real.mov</pathurl></file></clipitem>
+</track></video></media></sequence></xmeml>"#;
+    let (imported, report) = import(doc.as_bytes(), Format::Fcp7Xml, None).unwrap();
+    assert!(report.mentions("clip \"ghost\" refers to a file the document does not define; skipped"), "{report}");
+    assert!(!report.mentions("\"real\""), "{report}");
+    assert_eq!(imported.project.sequence(only_seq(&imported)).unwrap().video_tracks[0].items.len(), 1);
+    // a document whose files are all defined says nothing of the kind
+    let mut plain = Project::new("Plain");
+    let s = sequence(&mut plain, "Cut", RATE, false);
+    let a = media(&mut plain, "/m/a.mov", true, true, RATE);
+    clip(&mut plain, s, TrackKind::Video, 0, a, 0, 48, 0);
+    clip(&mut plain, s, TrackKind::Video, 0, a, 48, 24, 0);
+    let (bytes, _) = export_report(&plain, s, Format::Fcp7Xml);
+    let (_, report) = import(&bytes, Format::Fcp7Xml, None).unwrap();
+    assert!(!report.mentions("does not define"), "{report}");
+}

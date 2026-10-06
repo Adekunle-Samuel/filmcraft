@@ -380,7 +380,13 @@ impl<'a, 'i> Imp<'a, 'i, '_> {
             let label = if name.is_empty() { g.label() } else { name.clone() };
             self.b.generator_media(&key, &label, g, &spec, None)
         } else if let Some(f) = child(c, "file") {
-            self.file(f, Some(&name), None)?
+            match self.file(f, Some(&name), None) {
+                Some(item) => item,
+                None => {
+                    self.report.warn(format!("clip \"{name}\" refers to a file the document does not define; skipped"));
+                    return None;
+                }
+            }
         } else if let Some(s) = child(c, "sequence") {
             self.sequence(s, None)?
         } else {
