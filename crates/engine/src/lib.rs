@@ -945,6 +945,8 @@ mod relink_tests;
 #[cfg(test)]
 mod remix_tests;
 #[cfg(test)]
+mod ripple_delete_tests;
+#[cfg(test)]
 mod scopes_tests;
 #[cfg(test)]
 mod sequence_inspect_tests;

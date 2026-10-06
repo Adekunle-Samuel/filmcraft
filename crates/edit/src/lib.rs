@@ -351,21 +351,66 @@ pub fn delete_items(seq: &mut Sequence, items: &[ClipId]) -> usize {
     n
 }
 
-/// Ripple delete track items: remove them and close the resulting gaps.
-pub fn ripple_delete_items(seq: &mut Sequence, items: &[ClipId]) -> Result<()> {
-    // Collect per-track ranges to close (merged), processed right-to-left.
-    let mut ranges: Vec<(TrackId, TimeRange)> = Vec::new();
-    for c in items {
-        let (tid, it) = seq.find_item(*c).ok_or(EditError::NoItem(*c))?;
-        ranges.push((tid, it.range()));
+/// The stretches a ripple delete of `items` closes, in time order: the time the deleted items
+/// covered, less whatever stays on the tracks that lose an item. Every such track then moves up
+/// by the same amount, into time that is free on all of them, so later clips stay in sync and
+/// nothing is overwritten. A clip and its linked sound with a split edit have different edges;
+/// closing each one's own range would move the tracks twice. Locked tracks lose nothing and do
+/// not count.
+fn ripple_delete_spans(seq: &Sequence, items: &[ClipId]) -> Vec<TimeRange> {
+    let (mut deleted, mut kept) = (Vec::new(), Vec::new());
+    for tr in seq.all_tracks().filter(|t| !t.locked && t.items.iter().any(|i| items.contains(&i.id))) {
+        for i in &tr.items {
+            if items.contains(&i.id) { deleted.push(i.range()) } else { kept.push(i.range()) }
+        }
     }
-    // Group identical ranges across tracks (linked A/V) into one ripple.
-    let mut spans: Vec<TimeRange> = ranges.iter().map(|r| r.1).collect();
-    spans.sort_by_key(|r| (r.start, r.duration));
-    spans.dedup();
+    let kept = merged(kept);
+    let mut spans = Vec::new();
+    for r in merged(deleted) {
+        let mut at = r.start;
+        for k in kept.iter().filter(|k| k.overlaps(&r)) {
+            if k.start > at {
+                spans.push(TimeRange::from_bounds(at, k.start));
+            }
+            at = at.max(k.end());
+        }
+        if at < r.end() {
+            spans.push(TimeRange::from_bounds(at, r.end()));
+        }
+    }
+    spans
+}
+
+/// `ranges` in time order, with the ones that touch or overlap joined.
+fn merged(mut ranges: Vec<TimeRange>) -> Vec<TimeRange> {
+    ranges.sort_by_key(|r| r.start);
+    let mut out: Vec<TimeRange> = Vec::new();
+    for r in ranges {
+        match out.last_mut() {
+            Some(last) if r.start <= last.end() => *last = TimeRange::from_bounds(last.start, last.end().max(r.end())),
+            _ => out.push(r),
+        }
+    }
+    out
+}
+
+/// Ripple delete track items: remove them and close the resulting gaps. Returns the stretches
+/// that were closed, in time order. Refused when no gap can close (what stays on the items'
+/// tracks covers all of their time): that would be a plain delete.
+pub fn ripple_delete_items(seq: &mut Sequence, items: &[ClipId]) -> Result<Vec<TimeRange>> {
+    // Collect the tracks that lose an item; the gaps close right-to-left.
+    let mut affected: Vec<TrackId> = Vec::new();
+    for c in items {
+        let (tid, _) = seq.find_item(*c).ok_or(EditError::NoItem(*c))?;
+        affected.push(tid);
+    }
+    let spans = ripple_delete_spans(seq, items);
+    if spans.is_empty() && !items.is_empty() {
+        let locked = affected.iter().all(|t| seq.track(*t).is_some_and(|tr| tr.locked));
+        return Err(if locked { EditError::Locked } else { EditError::Other("no gap can close: other clips on these tracks cover the deleted time".into()) });
+    }
     let mut work = seq.clone();
     delete_items(&mut work, items);
-    let affected: Vec<TrackId> = ranges.iter().map(|r| r.0).collect();
     for span in spans.iter().rev() {
         // the gap actually closable: from span.start to the next material on affected tracks
         for tr in work.all_tracks_mut() {
@@ -383,7 +428,7 @@ pub fn ripple_delete_items(seq: &mut Sequence, items: &[ClipId]) -> Result<()> {
         }
     }
     *seq = work;
-    Ok(())
+    Ok(spans)
 }
 
 /// Close the gap containing `t` on a track (Ripple Delete on a gap).

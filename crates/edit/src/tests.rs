@@ -149,6 +149,81 @@ fn ripple_delete_and_conflict() {
 }
 
 #[test]
+fn ripple_delete_closes_the_time_free_on_every_track() {
+    // four clips on V1 with their sounds on A1; the second sound starts 2 early and ends 2 late
+    let build = || {
+        let mut fx = Fx::new();
+        let (v1, a1) = (fx.v(0), fx.a(0));
+        let v: Vec<ClipId> = [(0, 10), (10, 10), (20, 10), (30, 10)].iter().map(|(s, d)| fx.put(v1, *s, *d, 0)).collect();
+        let a: Vec<ClipId> = [(0, 8), (8, 14), (22, 8), (30, 10)].iter().map(|(s, d)| fx.put(a1, *s, *d, 0)).collect();
+        (fx, v, a)
+    };
+    let span = |start, len| TimeRange::new(f(start), f(len));
+    // one clip with a split edit on both sides: the picture's stretch closes, everything later stays in sync
+    let (mut fx, v, a) = build();
+    assert_eq!(ripple_delete_items(&mut fx.seq, &[v[1], a[1]]), Ok(vec![span(10, 10)]));
+    assert_eq!(fx.spans(fx.v(0)), vec![(0, 10), (10, 10), (20, 10)]);
+    assert_eq!(fx.spans(fx.a(0)), vec![(0, 8), (12, 8), (20, 10)]);
+    fx.seq.check().unwrap();
+    // two neighbours with a split edit between them close as one stretch
+    let (mut fx, v, a) = build();
+    assert_eq!(ripple_delete_items(&mut fx.seq, &[v[1], a[1], v[2], a[2]]), Ok(vec![span(10, 20)]));
+    assert_eq!(fx.spans(fx.v(0)), vec![(0, 10), (10, 10)]);
+    assert_eq!(fx.spans(fx.a(0)), vec![(0, 8), (10, 10)]);
+    // clips apart in time each close their own gap
+    let (mut fx, v, a) = build();
+    assert_eq!(ripple_delete_items(&mut fx.seq, &[v[0], a[0], v[3], a[3]]), Ok(vec![span(0, 8), span(30, 10)]));
+    fx.seq.check().unwrap();
+
+    // straight cuts with the sounds on alternating tracks: V1 [0,10) [10,20) [20,30), A1 [0,10) [20,30), A2 [10,20)
+    let mut fx = Fx::new();
+    let (v1, a1, a2) = (fx.v(0), fx.a(0), fx.a(1));
+    let v: Vec<ClipId> = [0, 10, 20].iter().map(|s| fx.put(v1, *s, 10, 0)).collect();
+    let (s0, s1) = (fx.put(a1, 0, 10, 0), fx.put(a2, 10, 10, 0));
+    fx.put(a1, 20, 10, 0);
+    assert_eq!(ripple_delete_items(&mut fx.seq, &[v[0], s0, v[1], s1]), Ok(vec![span(0, 20)]));
+    assert_eq!((fx.spans(v1), fx.spans(a1), fx.spans(a2)), (vec![(0, 10)], vec![(0, 10)], vec![]));
+
+    // a sound shorter than its picture with nothing round it: the whole picture closes
+    let mut fx = Fx::new();
+    let (v1, a1) = (fx.v(0), fx.a(0));
+    let (p, s) = (fx.put(v1, 10, 10, 0), fx.put(a1, 12, 6, 0));
+    fx.put(v1, 20, 10, 0);
+    fx.put(a1, 20, 10, 0);
+    assert_eq!(ripple_delete_items(&mut fx.seq, &[p, s]), Ok(vec![span(10, 10)]));
+    // with the neighbours' sound right up against it, only the sound's stretch can close
+    let mut fx = Fx::new();
+    let (v1, a1) = (fx.v(0), fx.a(0));
+    fx.put(a1, 0, 12, 0);
+    let (p, s) = (fx.put(v1, 10, 10, 0), fx.put(a1, 12, 6, 0));
+    fx.put(v1, 20, 10, 0);
+    fx.put(a1, 18, 12, 0);
+    assert_eq!(ripple_delete_items(&mut fx.seq, &[p, s]), Ok(vec![span(12, 6)]));
+    assert_eq!((fx.spans(v1), fx.spans(a1)), (vec![(14, 10)], vec![(0, 12), (12, 12)]));
+
+    // a linked sound on a locked track stays, and does not shrink the gap that closes
+    let mut fx = Fx::new();
+    let (v1, a1) = (fx.v(0), fx.a(0));
+    let (p, s) = (fx.put(v1, 10, 10, 0), fx.put(a1, 12, 6, 0));
+    fx.put(v1, 20, 10, 0);
+    fx.seq.track_mut(a1).unwrap().locked = true;
+    fx.seq.track_mut(a1).unwrap().sync_lock = false;
+    assert_eq!(ripple_delete_items(&mut fx.seq, &[p, s]), Ok(vec![span(10, 10)]));
+    assert_eq!((fx.spans(v1), fx.spans(a1)), (vec![(10, 10)], vec![(12, 6)]));
+
+    // nothing can close: what stays on each track covers the other track's deleted time. Refused, unchanged.
+    let mut fx = Fx::new();
+    let (v1, a1) = (fx.v(0), fx.a(0));
+    let x = fx.put(v1, 10, 10, 0);
+    fx.put(v1, 30, 10, 0);
+    fx.put(a1, 10, 10, 0);
+    let y = fx.put(a1, 30, 10, 0);
+    let before = fx.seq.clone();
+    assert!(matches!(ripple_delete_items(&mut fx.seq, &[x, y]), Err(EditError::Other(_))));
+    assert_eq!(fx.seq, before);
+}
+
+#[test]
 fn close_gap_works() {
     let mut fx = Fx::new();
     let v1 = fx.v(0);

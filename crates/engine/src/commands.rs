@@ -1038,10 +1038,7 @@ fn build() -> Vec<CommandSpec> {
             }
             let sel = with_links(s, &clips_p(s, p));
             s.edit_sequence("Ripple Delete", |q, _, st| {
-                let mut spans: Vec<TimeRange> = sel.iter().filter_map(|c| q.find_item(*c).map(|(_, i)| i.range())).collect();
-                spans.sort_by_key(|r| (r.start, r.duration));
-                spans.dedup();
-                edit::ripple_delete_items(q, &sel)?;
+                let spans = edit::ripple_delete_items(q, &sel)?;
                 if st.ripple_sequence_markers {
                     for r in spans.iter().rev() {
                         crate::sequence_tools::ripple_markers(&mut q.markers, r.end(), -r.duration);
