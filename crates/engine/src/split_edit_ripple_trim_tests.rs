@@ -85,3 +85,44 @@ fn ripple_trim_is_refused_when_the_early_sound_has_no_room() {
     assert_eq!(*s.project, *before, "a refused trim changes nothing");
     assert_eq!(start(&s, second) - start(&s, sound), rate.tick_of(12));
 }
+
+/// A shorter head on the J-cut take itself: the picture and its early sound lose the same stretch
+/// and the sound still leads by 12. It was refused as a sync-lock conflict because the check looked
+/// at the stretch before the cut, where the first clip's sound sits on A1, instead of the stretch
+/// the shorter head takes away.
+#[test]
+fn shorter_head_on_a_j_cut_take_shortens_picture_and_sound_together() {
+    let mut s = Session::default();
+    let (first, second, sound) = j_cut(&mut s);
+    let rate = s.sequence_rate();
+    let len = |s: &Session, c: ClipId| s.active_sequence().unwrap().find_item(c).map(|(_, i)| (i.duration, i.source_in)).unwrap();
+    let (picture_at, sound_at) = (start(&s, second), start(&s, sound));
+    let ((pic_len, pic_in), (snd_len, snd_in)) = (len(&s, second), len(&s, sound));
+    let first_before = len(&s, first);
+    let before = s.project.clone();
+    let r = s.execute("timeline.trim", json!({"clip": second.0, "edge": "in", "mode": "ripple", "deltaFrames": 8})).unwrap();
+    let by = rate.tick_of(8);
+    assert_eq!(r["delta"], json!(by.0));
+    assert_eq!((start(&s, second), start(&s, sound)), (picture_at, sound_at), "both stay where they start");
+    assert_eq!(len(&s, second), (pic_len - by, pic_in + by), "the picture loses 8 from its head");
+    assert_eq!(len(&s, sound), (snd_len - by, snd_in + by), "its sound loses the same 8");
+    assert_eq!(start(&s, second) - start(&s, sound), rate.tick_of(12), "the sound still leads by 12");
+    assert_eq!(len(&s, first), first_before, "the clip before is untouched");
+    s.active_sequence().unwrap().check().unwrap();
+    s.execute("edit.undo", json!({})).unwrap();
+    assert_eq!(*s.project, *before, "one undo step puts both back");
+}
+
+/// Material on a sync-locked track inside the stretch a shorter head takes away still refuses it.
+#[test]
+fn shorter_head_is_refused_when_a_sync_locked_track_has_material_in_the_stretch() {
+    let mut s = Session::default();
+    let (_, second, _) = j_cut(&mut s);
+    let rate = s.sequence_rate();
+    let tone = s.project.items.values().find(|i| !i.has_video() && i.has_audio() && i.as_media().is_some()).map(|i| i.id).unwrap();
+    s.execute("timeline.place", json!({"item": tone.0, "audioTrack": "A1", "frame": 50, "duration": rate.tick_of(24).0})).unwrap();
+    let before = s.project.clone();
+    let e = s.execute("timeline.trim", json!({"clip": second.0, "edge": "in", "mode": "ripple", "deltaFrames": 8})).unwrap_err();
+    assert!(e.to_string().contains("sync"), "{e}");
+    assert_eq!(*s.project, *before, "a refused trim changes nothing");
+}
