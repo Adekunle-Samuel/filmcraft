@@ -438,6 +438,10 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
 fn empty_state(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let t = app.tokens;
     ui.painter().text(rect.center() - vec2(0.0, 12.0), Align2::CENTER_CENTER, "Drop media here to create sequence.", Tokens::ui(13.0), t.text_dim);
+    if app.session.project.items.values().any(|i| matches!(i.kind, filmcraft_project::ItemKind::Sequence(_))) {
+        let hint = "Double-click a sequence in the Project panel to open it here.";
+        ui.painter().text(rect.center() + vec2(0.0, 50.0), Align2::CENTER_CENTER, hint, Tokens::ui(12.0), t.text_dim);
+    }
     let b = Rect::from_center_size(rect.center() + vec2(0.0, 20.0), vec2(170.0, 26.0));
     let resp = ui.interact(b, egui::Id::new("tl-open-demo"), Sense::click());
     app.auto.add("timeline.openDemo", b, "Open Demo Project");
@@ -1386,6 +1390,41 @@ fn shift_track(seq: &Sequence, tid: TrackId, delta: i32) -> Option<TrackId> {
     Some(tid)
 }
 
+/// The clip context menu: groups (separated by rules) of (label, command id). Entries marked `…`
+/// open their dialog through `menus::invoke`, like the same item in the Clip menu.
+const CLIP_MENU: &[&[(&str, &str)]] = &[
+    &[
+        ("Cut", "edit.cut"),
+        ("Copy", "edit.copy"),
+        ("Paste Attributes…", "edit.pasteAttributes"),
+        ("Remove Attributes…", "edit.removeAttributes"),
+        ("Clear", "edit.clear"),
+        ("Ripple Delete", "edit.rippleDelete"),
+    ],
+    &[("Edit Original", "edit.editOriginal"), ("Replace With Clip From Source Monitor", "clip.replaceFromSource")],
+    &[
+        ("Enable", "clip.enable"),
+        ("Link", "clip.link"),
+        ("Group", "clip.group"),
+        ("Ungroup", "clip.ungroup"),
+        ("Synchronize…", "clip.synchronize"),
+        ("Merge Clips…", "clip.mergeClips"),
+        ("Nest…", "clip.nest"),
+        ("Make Subsequence", "sequence.makeSubsequence"),
+        ("Reveal Nested Sequence", "sequence.revealNested"),
+    ],
+    &[("Label", "edit.label")],
+    &[("Speed/Duration…", "clip.speedDuration")],
+    &[
+        ("Frame Hold Options…", "clip.frameHoldOptions"),
+        ("Add Frame Hold", "clip.frameHold"),
+        ("Insert Frame Hold Segment", "clip.insertFrameHoldSegment"),
+        ("Field Options…", "clip.fieldOptions"),
+        ("Scale to Frame Size", "clip.scaleToFrameSize"),
+    ],
+    &[("Join Through Edits", "sequence.joinThroughEdits")],
+];
+
 fn interact(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, layout: &Layout, rect: Rect) {
     let ctx = ui.ctx().clone();
     let area = Rect::from_min_max(pos2(layout.content.min.x, layout.ruler.min.y), layout.content.max);
@@ -1716,43 +1755,68 @@ fn interact(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, layout: &
         }
     }
 
-    // ---- context menu on clips
-    resp.context_menu(|ui| {
-        ui.set_min_width(200.0);
-        let sel_n = app.session.state.selection.len();
-        let items: [(&str, &str); 11] = [
-            ("Cut", "edit.cut"),
-            ("Copy", "edit.copy"),
-            ("Clear", "edit.clear"),
-            ("Ripple Delete", "edit.rippleDelete"),
-            ("Enable", "clip.enable"),
-            ("Unlink", "clip.link"),
-            ("Group", "clip.group"),
-            ("Speed/Duration…", "clip.speedDuration"),
-            ("Nest…", "clip.nest"),
-            ("Scale to Frame Size", "clip.scaleToFrameSize"),
-            ("Join Through Edits", "sequence.joinThroughEdits"),
-        ];
-        for (label, cmd) in items {
-            if ui.add_enabled(sel_n > 0 && app.session.is_enabled(cmd), egui::Button::new(label)).clicked() {
-                if cmd == "clip.speedDuration" {
-                    app.dialog = None;
-                    let _ = app.session.execute(cmd, json!({"speed": 50.0}));
-                } else if let Err(e) = app.session.execute(cmd, json!({})) {
-                    app.ui.status = e.to_string();
-                }
-                ui.close();
-            }
+    // ---- double-click a nested sequence clip: open it in its own Timeline tab
+    if resp.double_clicked()
+        && tool == Tool::Selection
+        && let Some(p) = resp.interact_pointer_pos()
+        && let Hit::Clip { clip, .. } = hit(seq, layout, p)
+        && seq.find_item(clip).is_some_and(|(_, it)| app.session.project.sequence(it.item).is_some())
+    {
+        let _ = app.session.execute("timeline.select", json!({"clips": [clip.0]}));
+        if let Err(e) = app.session.execute("sequence.revealNested", json!({})) {
+            app.ui.status = e.to_string();
         }
-        ui.separator();
-        ui.menu_button("Label", |ui| {
-            for l in filmcraft_project::Label::ALL {
-                if ui.button(l.name()).clicked() {
-                    let _ = app.session.execute("edit.label", json!({"label": l.name()}));
+    }
+
+    // ---- context menu on clips (right-clicking an unselected clip selects it first)
+    if resp.secondary_clicked()
+        && let Some(p) = resp.interact_pointer_pos()
+        && let Hit::Clip { clip, .. } = hit(seq, layout, p)
+        && !app.session.state.selection.contains(&clip)
+    {
+        let _ = app.session.execute("timeline.select", json!({"clips": [clip.0]}));
+    }
+    resp.context_menu(|ui| {
+        ui.set_min_width(220.0);
+        let sel = app.session.state.selection.clone();
+        let picked: Vec<&filmcraft_project::TrackItem> = sel.iter().filter_map(|c| seq.find_item(*c).map(|(_, it)| it)).collect();
+        let all_enabled = !picked.is_empty() && picked.iter().all(|it| it.enabled);
+        let linked = picked.iter().any(|it| it.link.is_some());
+        let mut first = true;
+        for group in CLIP_MENU {
+            if !std::mem::take(&mut first) {
+                ui.separator();
+            }
+            for &(label, cmd) in *group {
+                if cmd == "edit.label" {
+                    ui.menu_button(label, |ui| {
+                        for l in filmcraft_project::Label::ALL {
+                            if ui.button(l.name()).clicked() {
+                                let _ = app.session.execute("edit.label", json!({"label": l.name()}));
+                                ui.close();
+                            }
+                        }
+                    });
+                    continue;
+                }
+                let label = match cmd {
+                    "clip.enable" if all_enabled => "✓ Enable",
+                    "clip.link" if linked => "Unlink",
+                    _ => label,
+                };
+                let r = ui.add_enabled(!sel.is_empty() && app.session.is_enabled(cmd), egui::Button::new(label));
+                app.auto.add(&format!("timeline.clipMenu.{cmd}"), r.rect, label);
+                if r.clicked() {
+                    if cmd == "clip.speedDuration" {
+                        app.dialog = None;
+                        let _ = app.session.execute(cmd, json!({"speed": 50.0}));
+                    } else if let Err(e) = crate::menus::invoke(app, &ctx, cmd, json!({})) {
+                        app.ui.status = e;
+                    }
                     ui.close();
                 }
             }
-        });
+        }
     });
 
     // ---- drops: project items and effects

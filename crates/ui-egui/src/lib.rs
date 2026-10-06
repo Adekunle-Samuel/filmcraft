@@ -449,6 +449,9 @@ impl FilmcraftApp {
     }
 
     pub fn show_panel(&mut self, p: PanelKind) {
+        if p == PanelKind::Timeline {
+            self.ui.dock.restore_timeline();
+        }
         if !self.ui.dock.contains(p) {
             let near = match p {
                 PanelKind::LumetriColor | PanelKind::EssentialGraphics | PanelKind::EssentialSound | PanelKind::Properties => PanelKind::Program,
@@ -1023,6 +1026,7 @@ impl FilmcraftApp {
             match ev {
                 filmcraft_engine::Event::OpenSequence(_) => {
                     self.ui.timeline.fit_pending = true;
+                    self.ui.dock.restore_timeline();
                     self.ui.dock.activate(PanelKind::Timeline);
                 }
                 filmcraft_engine::Event::OpenSource(_) => {
@@ -1154,8 +1158,20 @@ impl FilmcraftApp {
         let mut groups = Vec::new();
         dock::layout(ui, &mut dock, body, &t, "", &mut groups, &mut self.auto);
         let mut actions = Vec::new();
+        let seqs = dock::SeqTabs {
+            open: self
+                .session
+                .state
+                .open_sequences
+                .iter()
+                .filter_map(|id| {
+                    self.session.project.item(*id).filter(|i| matches!(i.kind, filmcraft_project::ItemKind::Sequence(_))).map(|i| (id.0, i.name.clone()))
+                })
+                .collect(),
+            active: self.session.state.active_sequence.map(|i| i.0),
+        };
         for g in &groups {
-            actions.extend(dock::draw_group_chrome(ui, g, self.ui.focused, &t, &mut self.auto));
+            actions.extend(dock::draw_group_chrome(ui, g, self.ui.focused, &seqs, &t, &mut self.auto));
         }
         if maximized.is_none() {
             self.ui.dock = dock;
@@ -1174,6 +1190,18 @@ impl FilmcraftApp {
                 }
                 dock::DockAction::Focus(p) => self.ui.focused = p,
                 dock::DockAction::Close(p) => self.ui.dock.close(p),
+                dock::DockAction::OpenSequence(id) => {
+                    if self.session.state.active_sequence.map(|i| i.0) != Some(id)
+                        && let Err(e) = self.session.execute("sequence.open", json!({"item": id}))
+                    {
+                        self.ui.status = e.to_string();
+                    }
+                }
+                dock::DockAction::CloseSequence(id) => {
+                    if let Err(e) = self.session.execute("sequence.close", json!({"item": id})) {
+                        self.ui.status = e.to_string();
+                    }
+                }
                 dock::DockAction::PanelMenu(p, pos) => {
                     ui.ctx().data_mut(|d| d.insert_temp(egui::Id::new("panel-menu"), (p, pos)));
                 }
