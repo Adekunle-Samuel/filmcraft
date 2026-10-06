@@ -1,5 +1,5 @@
 //! `sequence.inspect` is how an agent checks its edits: it has to show where a clip ends in the
-//! sequence and in its media, the clip's audio gain and what a marker says.
+//! sequence and in its media, the clip's audio gain, whether it plays backward and what a marker says.
 
 use serde_json::json;
 
@@ -58,4 +58,32 @@ fn sequence_inspect_reports_clip_ends_gain_and_marker_comments() {
         }
     }
     assert_eq!(seen, 2, "both edited clips were found in the readback");
+}
+
+/// A clip set to play backward read back exactly like a forward one: same `speed`, same source
+/// range, and nothing that said it was reversed.
+#[test]
+fn sequence_inspect_reports_a_reversed_clip() {
+    let mut s = Session::default();
+    s.execute("file.openDemoProject", json!({})).unwrap();
+    let backward = s.active_sequence().unwrap().video_tracks[0].items[1].id;
+    let all = |js: &serde_json::Value| -> Vec<(u64, bool)> {
+        ["video", "audio"]
+            .iter()
+            .flat_map(|k| js[*k].as_array().unwrap().iter())
+            .flat_map(|t| t["items"].as_array().unwrap().iter())
+            .map(|i| (i["clip"].as_u64().unwrap(), i["reverse"].as_bool().expect("every clip reports `reverse`")))
+            .collect()
+    };
+    let js = s.execute("sequence.inspect", json!({})).unwrap();
+    assert!(all(&js).iter().all(|(_, reversed)| !reversed), "nothing plays backward yet");
+    s.execute("sequence.linkedSelection", json!({"on": false})).unwrap();
+    s.execute("timeline.select", json!({"clips": [backward.0]})).unwrap();
+    s.execute("clip.speedDuration", json!({"speed": 100, "reverse": true})).unwrap();
+    let js = s.execute("sequence.inspect", json!({})).unwrap();
+    let reversed: Vec<u64> = all(&js).into_iter().filter(|(_, r)| *r).map(|(c, _)| c).collect();
+    assert_eq!(reversed, vec![backward.0], "only the reversed clip says so");
+    s.execute("edit.undo", json!({})).unwrap();
+    let js = s.execute("sequence.inspect", json!({})).unwrap();
+    assert!(all(&js).iter().all(|(_, reversed)| !reversed));
 }
