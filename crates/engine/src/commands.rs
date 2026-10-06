@@ -2560,16 +2560,24 @@ fn nest(s: &mut Session, p: &Value) -> Result<Value> {
     let q = s.active_sequence().ok_or(EngineError::NoSequence)?.clone();
     let name = str_p(p, "name").map(str::to_string).unwrap_or_else(|| "Nested Sequence 01".to_string());
     let mut items: Vec<(TrackKind, usize, filmcraft_project::TrackItem)> = Vec::new();
+    // transitions go into the nest with their clips: those whose clips are all nested
+    let mut transitions: Vec<(TrackKind, usize, filmcraft_project::Transition)> = Vec::new();
     for (k, ts) in [(TrackKind::Video, &q.video_tracks), (TrackKind::Audio, &q.audio_tracks)] {
-        for (ti, t) in ts.iter().enumerate() {
+        // clips on a locked track stay where they are (they cannot be removed from it)
+        for (ti, t) in ts.iter().enumerate().filter(|(_, t)| !t.locked) {
             for i in t.items.iter().filter(|i| sel.contains(&i.id)) {
                 items.push((k, ti, i.clone()));
+            }
+            let nested = |c: Option<ClipId>| c.is_none_or(|c| sel.contains(&c));
+            for trn in t.transitions.iter().filter(|x| (x.from.is_some() || x.to.is_some()) && nested(x.from) && nested(x.to)) {
+                transitions.push((k, ti, trn.clone()));
             }
         }
     }
     if items.is_empty() {
         return Err(EngineError::Other("nothing selected".into()));
     }
+    let nested_ids: Vec<ClipId> = items.iter().map(|i| i.2.id).collect();
     let start = items.iter().map(|i| i.2.start).min().unwrap_or_default();
     let end = items.iter().map(|i| i.2.end()).max().unwrap_or_default();
     let lowest_v = items.iter().filter(|i| i.0 == TrackKind::Video).map(|i| i.1).min();
@@ -2578,14 +2586,22 @@ fn nest(s: &mut Session, p: &Value) -> Result<Value> {
         let nid = pr.new_sequence(&name, q.settings.clone(), q.video_tracks.len(), q.audio_tracks.len(), None);
         {
             let nq = pr.sequence_mut(nid).ok_or(EngineError::NoSequence)?;
+            crate::sequence_tools::lay_out_tracks_like(nq, &q);
             for (k, ti, it) in &items {
                 let mut it = it.clone();
                 it.start -= start;
-                nq.tracks_mut(*k)[*ti].items.push(it);
+                nq.tracks_mut(*k).get_mut(*ti).ok_or(EngineError::NoSequence)?.items.push(it);
+            }
+            for (k, ti, trn) in &transitions {
+                let mut trn = trn.clone();
+                trn.start -= start;
+                nq.tracks_mut(*k).get_mut(*ti).ok_or(EngineError::NoSequence)?.transitions.push(trn);
             }
             for t in nq.all_tracks_mut() {
                 t.sort();
+                edit::remove_orphan_transitions(t);
             }
+            nq.check().map_err(EngineError::Other)?;
         }
         let rate = q.settings.frame_rate;
         let mut v = pr
@@ -2599,7 +2615,7 @@ fn nest(s: &mut Session, p: &Value) -> Result<Value> {
             .ok_or_else(|| EngineError::Other("cannot place the nested sequence".into()))?;
         let link = pr.alloc_id();
         let seq = pr.sequence_mut(seq_id).ok_or(EngineError::NoSequence)?;
-        edit::delete_items(seq, &sel);
+        edit::delete_items(seq, &nested_ids);
         let mut ids = Vec::new();
         if let Some(vi) = lowest_v {
             let mut v = v;
