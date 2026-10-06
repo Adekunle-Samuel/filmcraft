@@ -150,8 +150,8 @@ fn next_boundary(s: &str, i: usize) -> usize {
 #[derive(Clone, Copy, Debug)]
 enum DragKind {
     Move,
-    /// A corner handle: scales about the layer's anchor.
-    Scale,
+    /// Corner handle `n` of the layer's box: scales it with the opposite corner held in place.
+    Scale(usize),
     NewShape,
     TextSelect,
 }
@@ -162,6 +162,13 @@ struct DragState {
     clip: ClipId,
     layer: usize,
     start: Pos2,
+}
+
+/// Dragging corner `n` of `quad` from `start` to `cur`: the corner that stays put (the opposite
+/// one) and the scale factor, so the box grows towards the pointer.
+fn corner_scale(quad: &[Pos2; 4], n: usize, start: Pos2, cur: Pos2) -> (Pos2, f32) {
+    let pin = quad[(n + 2) % 4];
+    (pin, ((cur - pin).length() / (start - pin).length().max(1.0)).max(0.01))
 }
 
 const TEXT_EDIT_ID: &str = "gfx-text-edit";
@@ -276,9 +283,9 @@ pub fn monitor_overlay(app: &mut FilmcraftApp, ui: &mut egui::Ui, pic: Rect, fra
                     let handle = views
                         .iter()
                         .filter(|v| Some(v.clip) == sel_clip && sel_layers.contains(&v.layer))
-                        .find_map(|v| v.quad().iter().position(|c| (*c - p).length() <= 7.0).map(|_| (v.clip, v.layer)));
-                    if let Some((c, l)) = handle {
-                        drag = Some(DragState { kind: DragKind::Scale, clip: c, layer: l, start: p });
+                        .find_map(|v| v.quad().iter().position(|c| (*c - p).length() <= 7.0).map(|n| (v.clip, v.layer, n)));
+                    if let Some((c, l, n)) = handle {
+                        drag = Some(DragState { kind: DragKind::Scale(n), clip: c, layer: l, start: p });
                     } else if tool == Tool::Selection
                         && let Some(v) = views.iter().find(|v| v.hit(p))
                     {
@@ -324,11 +331,10 @@ pub fn monitor_overlay(app: &mut FilmcraftApp, ui: &mut egui::Ui, pic: Rect, fra
                     crate::panels::monitor_view::draw_snap_lines(&painter, pic, &snap_off.1);
                 }
             }
-            DragKind::Scale => {
+            DragKind::Scale(n) => {
                 if let Some(v) = v {
-                    let a = sp(&v.to_screen, v.spec.transform.anchor.x as f32, v.spec.transform.anchor.y as f32);
-                    let f = ((cur - a).length() / (d.start - a).length().max(1.0)).max(0.01);
-                    painter.add(egui::Shape::closed_line(v.quad().iter().map(|q| a + (*q - a) * f).collect(), Stroke::new(1.0, Color32::WHITE)));
+                    let (pin, f) = corner_scale(&v.quad(), n, d.start, cur);
+                    painter.add(egui::Shape::closed_line(v.quad().iter().map(|q| pin + (*q - pin) * f).collect(), Stroke::new(1.0, Color32::WHITE)));
                 }
             }
             DragKind::NewShape => {
@@ -367,14 +373,19 @@ pub fn monitor_overlay(app: &mut FilmcraftApp, ui: &mut egui::Ui, pic: Rect, fra
                         ));
                     }
                 }
-                DragKind::Scale if moved => {
+                DragKind::Scale(n) if moved => {
                     if let Some(v) = v {
+                        // the layer scales about its anchor, so it also moves to keep the pinned corner still
                         let a = sp(&v.to_screen, v.spec.transform.anchor.x as f32, v.spec.transform.anchor.y as f32);
-                        let f = ((cur - a).length() / (d.start - a).length().max(1.0)).max(0.01) as f64;
-                        let s = v.spec.transform.scale;
+                        let (pin, f) = corner_scale(&v.quad(), n, d.start, cur);
+                        let off = (pin - a) * (1.0 - f);
+                        let lin = Affine { e: 0.0, f: 0.0, ..v.canvas_to_screen };
+                        let delta = lin.inverse().map(|i| i.apply(Vec2::new(off.x as f64, off.y as f64))).unwrap_or_default();
+                        let (s, p0, f) = (v.spec.transform.scale, v.spec.transform.position, f as f64);
                         actions.push((
                             "graphics.set".into(),
-                            json!({"clip": v.clip.0, "layer": v.layer, "props": {"scale": s.y * 100.0 * f, "scale_width": s.x * 100.0 * f}}),
+                            json!({"clip": v.clip.0, "layer": v.layer, "props": {
+                                "scale": s.y * 100.0 * f, "scale_width": s.x * 100.0 * f, "position": [p0.x + delta.x, p0.y + delta.y]}}),
                         ));
                     }
                 }
