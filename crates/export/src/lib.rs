@@ -11,6 +11,7 @@
 //! [`ExportSettings`] carries every Export-mode setting (frame size, rate, bitrate encoding, audio
 //! format, multiplexer, captions, effects, metadata) as serde data; [`presets`] defines the
 //! built-in presets.
+#![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable))]
 
 use std::io::Write;
 
@@ -1116,7 +1117,10 @@ pub fn export(project: &Arc<Project>, seq: ItemId, settings: &ExportSettings, so
             }
             (total, count)
         }
-        Format::H264 | Format::ProRes | Format::DnxHr | Format::Mjpeg | Format::MxfOp1a | Format::MxfOpAtom => unreachable!("stepped export"),
+        Format::H264 | Format::ProRes | Format::DnxHr | Format::Mjpeg | Format::MxfOp1a | Format::MxfOpAtom => {
+            // Handled by the stepped exporter above; reaching here would be a dispatch bug.
+            return Err(ExportError::Unsupported(format!("{:?} must run as a stepped export", settings.format)));
+        }
     };
     let secs = t0.elapsed().as_secs_f64();
     if !settings.part_of_batch {
