@@ -559,8 +559,9 @@ pub fn trim(seq: &mut Sequence, clip: ClipId, edge: Edge, mode: TrimMode, delta:
 
 /// Ripple-trim one edge of a group of linked items (e.g. a clip and its audio partners) as a single
 /// edit: every member's edge moves by the same delta, later material on the members' tracks and on
-/// sync-locked tracks shifts by the change. Only tracks without a group member can block the edit
-/// (a sync-locked track whose material would be overwritten).
+/// sync-locked tracks shifts by the change, and so does a clip that starts before the cut, reaches
+/// past it and is linked to a clip that shifts (a split edit). The edit is refused when it would
+/// overwrite material on a sync-locked track, or when such a linked clip has no room to follow.
 pub fn ripple_trim_group(seq: &mut Sequence, clips: &[ClipId], edge: Edge, delta: Tick, ctx: &mut EditCtx) -> Result<Tick> {
     let Some(&first) = clips.first() else { return Ok(Tick::ZERO) };
     let mut d = delta;
@@ -606,27 +607,54 @@ pub fn ripple_trim_group(seq: &mut Sequence, clips: &[ClipId], edge: Edge, delta
         origins.iter().find(|(t, _)| *t == tid).map(|o| o.1).unwrap_or_default()
     };
     let shift = if edge == Edge::In { -d } else { d };
-    for tr in work.all_tracks_mut() {
-        if tr.locked {
-            continue;
-        }
-        let member = origins.iter().find(|(t, _)| *t == tr.id).map(|o| o.1);
-        if member.is_none() && !tr.sync_lock {
-            continue;
-        }
-        let from = member.unwrap_or(main_from);
-        if member.is_none() && shift < Tick::ZERO {
+    // where the shift starts on each track that ripples: the members' tracks and the sync-locked ones
+    let rippling: Vec<(TrackId, Tick, bool)> = work
+        .all_tracks()
+        .filter(|tr| !tr.locked)
+        .filter_map(|tr| match origins.iter().find(|(t, _)| *t == tr.id) {
+            Some(o) => Some((tr.id, o.1, true)),
+            None => tr.sync_lock.then_some((tr.id, main_from, false)),
+        })
+        .collect();
+    // A split edit: the linked partner of a later clip can start before the shift does and reach
+    // past it (its sound leads the cut). It follows the clip it is linked to, or the two would
+    // drift apart.
+    // (the trimmed clips' own partners are trimmed, or left alone, by the caller: they never follow)
+    let own_links: Vec<u64> = clips.iter().filter_map(|c| work.find_item(*c).and_then(|(_, i)| i.link)).collect();
+    let mut shifting_links: Vec<u64> = Vec::new();
+    for (tid, from, _) in &rippling {
+        let Some(tr) = work.track(*tid) else { continue };
+        let later = tr.items.iter().filter(|i| !clips.contains(&i.id) && i.start >= *from);
+        shifting_links.extend(later.filter_map(|i| i.link).filter(|l| !own_links.contains(l)));
+    }
+    for (tid, from, member) in rippling {
+        let Some(tr) = work.track_mut(tid) else { continue };
+        let follows = |i: &TrackItem| i.start < from && i.end() > from && i.link.is_some_and(|l| shifting_links.contains(&l));
+        if !member && shift < Tick::ZERO {
             let at = if edge == Edge::In { from - Tick(1) } else { from };
-            if !track_range_empty(tr, TimeRange::new(at + shift, -shift)) {
+            let closing = TimeRange::new(at + shift, -shift);
+            if tr.items.iter().any(|i| i.range().overlaps(&closing) && !follows(i)) {
                 return Err(EditError::SyncLockConflict);
             }
         }
+        let followers: Vec<ClipId> = tr.items.iter().filter(|i| !clips.contains(&i.id) && follows(i)).map(|i| i.id).collect();
         for i in &mut tr.items {
-            if !clips.contains(&i.id) && i.start >= from {
+            if !clips.contains(&i.id) && (i.start >= from || followers.contains(&i.id)) {
                 i.start += shift;
             }
         }
         tr.sort();
+        // a transition into a follower from a clip that stayed behind no longer sits on a cut
+        let ends: Vec<(ClipId, Tick)> = tr.items.iter().map(|i| (i.id, i.end())).collect();
+        let starts: Vec<(ClipId, Tick)> = tr.items.iter().map(|i| (i.id, i.start)).collect();
+        tr.transitions.retain(|t| match (t.from, t.to) {
+            (Some(a), Some(b)) if followers.contains(&b) => ends.iter().find(|e| e.0 == a).map(|e| e.1) == starts.iter().find(|x| x.0 == b).map(|x| x.1),
+            _ => true,
+        });
+        // a follower with no room (a clip in its way, or the sequence start) blocks the edit
+        if tr.items.first().is_some_and(|i| i.start < Tick::ZERO) || tr.items.windows(2).any(|w| w[0].end() > w[1].start) {
+            return Err(EditError::SyncLockConflict);
+        }
     }
     transitions_follow_cuts(seq, &mut work);
     work.check().map_err(EditError::Other)?;
