@@ -17,15 +17,15 @@
       Scope="perMachine"
       Compressed="yes"
       Language="1033">
-    <SummaryInformation Description="FilmCraft image editor" Manufacturer="Learning Machines LLC" />
+    <SummaryInformation Description="FilmCraft video editor" Manufacturer="Learning Machines LLC" />
     <!-- Same-version upgrades let successive pre-releases of one X.Y.Z replace each other
          (MSI versions are numeric, so 1.2.3-rc.1 and 1.2.3-rc.2 are both 1.2.3). -->
     <MajorUpgrade AllowSameVersionUpgrades="yes"
         DowngradeErrorMessage="A newer version of FilmCraft is already installed." />
     <MediaTemplate EmbedCab="yes" CompressionLevel="high" />
 
-    <Icon Id="FilmcraftIcon" SourceFile="$(var.IconPath)" />
-    <Property Id="ARPPRODUCTICON" Value="FilmcraftIcon" />
+    <Icon Id="FilmcraftIcon.ico" SourceFile="$(var.IconPath)" />
+    <Property Id="ARPPRODUCTICON" Value="FilmcraftIcon.ico" />
     <Property Id="ARPURLINFOABOUT" Value="https://getartcraft.com/apps/filmcraft" />
     <Property Id="ARPURLUPDATEINFO" Value="https://getartcraft.com/apps/filmcraft" />
     <Property Id="ARPHELPLINK" Value="https://discord.gg/artcraft" />
@@ -45,8 +45,8 @@
       <Component Id="FilmcraftApp" Guid="15933017-925B-4963-8992-52000EB26AAA">
         <File Id="FilmcraftExe" Source="$(var.BinDir)\filmcraft.exe" KeyPath="yes">
           <Shortcut Id="StartMenuShortcut" Directory="ProgramMenuFolder" Name="FilmCraft"
-              Description="FilmCraft image editor" WorkingDirectory="INSTALLFOLDER" Advertise="yes"
-              Icon="FilmcraftIcon" IconIndex="0" />
+              Description="FilmCraft video editor" WorkingDirectory="INSTALLFOLDER" Advertise="yes"
+              Icon="FilmcraftIcon.ico" IconIndex="0" />
         </File>
 
         <RegistryValue Root="HKLM" Key="Software\Microsoft\Windows\CurrentVersion\App Paths\filmcraft.exe" Value="[#FilmcraftExe]" Type="string" />
