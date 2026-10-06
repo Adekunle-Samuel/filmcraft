@@ -304,7 +304,7 @@ fn go_to_gap(s: &mut Session, p: &Value, next: bool, in_track: bool) -> Result<V
     let t = s.playhead();
     let q = s.active_sequence().ok_or(EngineError::NoSequence)?;
     let gaps: Vec<TimeRange> = if in_track {
-        let tracks: Vec<TrackId> = match track_p(s, p, "track") {
+        let tracks: Vec<TrackId> = match track_p(s, p, "track", if next { "sequence.goToNextGapInTrack" } else { "sequence.goToPrevGapInTrack" })? {
             Some(id) => vec![id],
             None => s.targeting().targeted,
         };
@@ -460,7 +460,7 @@ fn delete_tracks(s: &mut Session, p: &Value) -> Result<Value> {
                 tracks.iter().filter(|t| t.items.is_empty()).map(|t| t.id).collect()
             }
             Some(_) => {
-                let id = track_p(s, p, key).ok_or_else(|| bad("sequence.deleteTracks", format!("unknown {key} track")))?;
+                let id = track_p(s, p, key, "sequence.deleteTracks")?.ok_or_else(|| bad("sequence.deleteTracks", format!("unknown {key} track")))?;
                 if !tracks.iter().any(|t| t.id == id) {
                     return Err(bad("sequence.deleteTracks", format!("`{key}` must name a {key} track")));
                 }

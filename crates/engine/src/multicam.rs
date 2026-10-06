@@ -382,7 +382,7 @@ fn synchronize(s: &mut Session, p: &Value) -> Result<Value> {
     // reference unit
     let reference = if let Some(c) = u64_p(p, "reference").map(ClipId) {
         units.iter().position(|u| u.members.contains(&c)).ok_or_else(|| bad(cmd, "`reference` is not among the clips"))?
-    } else if let Some(t) = track_p(s, p, "track") {
+    } else if let Some(t) = track_p(s, p, "track", cmd)? {
         units
             .iter()
             .position(|u| u.members.iter().any(|m| q.track(t).is_some_and(|tr| tr.item(*m).is_some())))
