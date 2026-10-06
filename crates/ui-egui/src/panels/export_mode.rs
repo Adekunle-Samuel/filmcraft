@@ -462,7 +462,7 @@ fn settings_column(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         if (s.has_audio()
             || !s.has_video()
             || s.format == Format::H264
-            || matches!(s.format, Format::ProRes | Format::DnxHr | Format::Mjpeg)
+            || matches!(s.format, Format::ProRes | Format::DnxHr | Format::Apv | Format::Mjpeg)
             || s.format.is_mxf())
             && !s.is_image_sequence()
             && s.format != Format::Gif
@@ -507,7 +507,7 @@ fn settings_column(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         if section(ui, &mut reg, &mut ex.open_sections, "effects", "Effects", &t) {
             pick_overlay = effects_section(ui, &mut reg, s, &t);
         }
-        if matches!(s.format, Format::H264 | Format::ProRes | Format::DnxHr | Format::Mjpeg)
+        if matches!(s.format, Format::H264 | Format::ProRes | Format::DnxHr | Format::Apv | Format::Mjpeg)
             && section(ui, &mut reg, &mut ex.open_sections, "metadata", "Metadata", &t)
         {
             let m = &mut s.metadata;
@@ -671,6 +671,16 @@ fn video_section(ui: &mut egui::Ui, reg: &mut Reg, s: &mut ExportSettings, t: &T
                 let cur = keys.iter().position(|k| *k == s.dnx_profile).unwrap_or(2);
                 if let Some(i) = combo(ui, reg, "export.video.dnxProfile", labels[cur], &opts(&labels), 220.0) {
                     s.dnx_profile = keys[i].into();
+                }
+            });
+        }
+        Format::Apv => {
+            row(ui, t, "Profile", |ui| {
+                let keys = ["422-10", "422-12", "444-10", "444-12"];
+                let labels = ["APV 422-10", "APV 422-12", "APV 444-10", "APV 444-12"];
+                let cur = keys.iter().position(|k| *k == s.apv_profile).unwrap_or(0);
+                if let Some(i) = combo(ui, reg, "export.video.apvProfile", labels[cur], &opts(&labels), 220.0) {
+                    s.apv_profile = keys[i].into();
                 }
             });
         }

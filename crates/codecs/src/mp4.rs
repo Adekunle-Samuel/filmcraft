@@ -62,13 +62,19 @@ fn hdr_metadata(md: Option<&filmcraft_isobmff::MasteringDisplay>, cll: Option<(u
 
 fn color_from(entry: &filmcraft_isobmff::SampleEntry, w: u32, h: u32) -> ColorInfo {
     let mut c = ColorInfo { matrix: filmcraft_frame::default_matrix(w, h), transfer: Transfer::Bt709, primaries: Primaries::Bt709, range: Range::Limited };
-    // VP9 carries its colour description in vpcC (used when there is no colr box).
+    // VP9 and APV carry their colour description in vpcC / apvC (used when there is no colr box).
     let vpc = match &entry.codec {
         CodecConfig::Vp9(v) => Some(filmcraft_isobmff::ColorInfo::Nclx {
             primaries: v.colour_primaries as u16,
             transfer: v.transfer_characteristics as u16,
             matrix: v.matrix_coefficients as u16,
             full_range: v.full_range,
+        }),
+        CodecConfig::Apv(a) if a.color_description_present => Some(filmcraft_isobmff::ColorInfo::Nclx {
+            primaries: a.color_primaries as u16,
+            transfer: a.transfer_characteristics as u16,
+            matrix: a.matrix_coefficients as u16,
+            full_range: a.full_range,
         }),
         _ => None,
     };
@@ -148,7 +154,8 @@ impl Mp4Source {
                 codec: codec_label(&entry.codec),
                 pixel_format: pixfmt_label(&entry.codec),
                 color,
-                has_alpha: matches!(&entry.codec, CodecConfig::ProRes { fourcc } if fourcc.0 == *b"ap4h" || fourcc.0 == *b"ap4x"),
+                has_alpha: matches!(&entry.codec, CodecConfig::ProRes { fourcc } if fourcc.0 == *b"ap4h" || fourcc.0 == *b"ap4x")
+                    || matches!(&entry.codec, CodecConfig::Apv(a) if a.chroma_format_idc == 4),
                 bitrate,
                 hdr: entry.video.as_ref().and_then(|v| hdr_metadata(v.mastering_display.as_ref(), v.content_light)),
             };
@@ -429,6 +436,10 @@ fn codec_label(c: &CodecConfig) -> String {
         CodecConfig::Hevc(_) => "HEVC".into(),
         CodecConfig::Vp9(c) => format!("VP9 (Profile {})", c.profile),
         CodecConfig::Av1(c) => format!("AV1 ({} Profile)", ["Main", "High", "Professional"].get(c.seq_profile as usize).unwrap_or(&"Main")),
+        CodecConfig::Apv(a) => match filmcraft_apv::Profile::from_idc(a.profile_idc) {
+            Some(p) => p.name().into(),
+            None => "APV".into(),
+        },
         CodecConfig::ProRes { fourcc } => match &fourcc.0 {
             b"apco" => "Apple ProRes 422 Proxy".into(),
             b"apcs" => "Apple ProRes 422 LT".into(),
@@ -468,6 +479,10 @@ fn pixfmt_label(c: &CodecConfig) -> String {
                 _ => "4:2:0",
             };
             format!("YUV {sub} {}-bit", c.bit_depth.max(8))
+        }
+        CodecConfig::Apv(a) => {
+            let chroma = filmcraft_apv::ChromaFormat::from_idc(a.chroma_format_idc).unwrap_or(filmcraft_apv::ChromaFormat::Yuv422);
+            crate::apv::apv_pixfmt_label(chroma, a.bit_depth_minus8.saturating_add(8))
         }
         CodecConfig::ProRes { fourcc } if fourcc.0[2] == b'4' => "YUVA 4:4:4 12-bit".into(),
         CodecConfig::ProRes { .. } => "YUV 4:2:2 10-bit".into(),
