@@ -170,4 +170,6 @@ pub fn open_bytes(name: &str, bytes: Arc<[u8]>) -> std::result::Result<filmcraft
 }
 
 #[cfg(test)]
+mod rounded_pts_tests;
+#[cfg(test)]
 mod tests;
