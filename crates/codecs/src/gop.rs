@@ -273,9 +273,8 @@ impl Pool {
         g.push(Arc::downgrade(c));
     }
 
-    /// The idle caches other than `me` that `keep` selects, least recently used first. Called
-    /// with `me` locked: other caches are only ever try-locked, so two caches trimming each other
-    /// cannot deadlock.
+    /// The idle caches other than `me` that `keep` selects, least recently used first. Other
+    /// caches are only ever try-locked, so two caches trimming each other cannot deadlock.
     fn idle_others(&self, me: &Shared, keep: impl Fn(&State) -> bool) -> Vec<Arc<Shared>> {
         let all: Vec<Arc<Shared>> = self.caches.lock().unwrap_or_else(PoisonError::into_inner).iter().filter_map(Weak::upgrade).collect();
         let mut idle: Vec<(Instant, Arc<Shared>)> = all
@@ -290,18 +289,24 @@ impl Pool {
         idle.into_iter().map(|(_, c)| c).collect()
     }
 
-    /// Drop the decoders of idle caches, least recently used first, down to the cap.
-    fn trim_decoders(&self, me: &Shared) {
+    /// Take the decoders of idle caches, least recently used first, down to the cap. The caller
+    /// drops them with no cache lock held: dropping a decoder can block (a hardware session waits
+    /// for its frames in flight).
+    #[must_use = "drop the released decoders with no cache lock held"]
+    fn trim_decoders(&self, me: &Shared) -> Vec<Box<dyn VideoDecoder>> {
+        let mut released = Vec::new();
         if self.decoders.load(Ordering::Relaxed) <= self.max_decoders {
-            return;
+            return released;
         }
         for c in self.idle_others(me, |st| st.decoder.is_some()) {
             if self.decoders.load(Ordering::Relaxed) <= self.max_decoders {
                 break;
             }
-            let released = try_state(&c).map(|mut st| st.release_decoder(self));
-            drop(released);
+            if let Some(mut st) = try_state(&c) {
+                released.extend(st.release_decoder(self));
+            }
         }
+        released
     }
 
     /// Evict the frames of idle caches, least recently used first, down to the budget. Caches in
@@ -470,6 +475,10 @@ impl GopCache {
             return self.private_frame(s, i, want_pts, n);
         }
         let draft = filmcraft_media::cancel::draft();
+        // Idle caches' decoders released below. Declared before the lock guard, so it is dropped
+        // after the guard on every return path: dropping a decoder can block (a hardware session
+        // waits for its frames in flight) and must not hold this cache's lock.
+        let mut released: Vec<Box<dyn VideoDecoder>> = Vec::new();
         let mut st = self.shared.state.lock().unwrap_or_else(|e| e.into_inner());
         let _decoding = DecodingGuard::enter(me);
         st.last_used = Instant::now();
@@ -485,7 +494,7 @@ impl GopCache {
             st.next = usize::MAX;
             self.shared.pool.decoders.fetch_add(1, Ordering::Relaxed);
         }
-        self.shared.pool.trim_decoders(&self.shared);
+        released.extend(self.shared.pool.trim_decoders(&self.shared));
         // Nothing cached: the work ahead (possibly a seek and a GOP of decoding) is only worth it
         // while someone still wants the frame.
         if filmcraft_media::cancel::cancelled() {
