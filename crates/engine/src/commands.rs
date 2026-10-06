@@ -737,9 +737,15 @@ fn build() -> Vec<CommandSpec> {
             }
             Ok(out)
         }),
-        cmd!("file.exportInterchange", "Export Interchange", [], None, r#"{"format":"edl|xml|fcpxml|otio","path":str,"sequence":id?}"#, has_seq, |s, p| {
-            crate::interchange::export(s, p)
-        }),
+        cmd!(
+            "file.exportInterchange",
+            "Export Interchange",
+            [],
+            None,
+            r#"{"format":"edl|xml|fcpxml|otio|aaf|omf"=xml,"path":str,"sequence":id?}"#,
+            has_seq,
+            crate::interchange::export
+        ),
         cmd!("file.exportEdl", "EDL…", ["File", "Export"], None, r#"{"path":str}"#, has_seq, |s, p| {
             let mut q = p.clone();
             q["format"] = json!("edl");

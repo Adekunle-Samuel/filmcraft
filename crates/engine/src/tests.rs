@@ -335,6 +335,39 @@ fn interchange_roundtrip_through_files() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// `file.exportInterchange {format: "<unknown>"}` used to write FCP7 XML without a word.
+#[test]
+fn export_interchange_refuses_an_unknown_format() {
+    let d = std::env::temp_dir().join(format!("fc-ix-format-{}", std::process::id()));
+    std::fs::create_dir_all(&d).unwrap();
+    let path = |n: &str| d.join(n).to_string_lossy().to_string();
+    let mut s = demo();
+    // unknown names, values that are not names, and spellings that are not the documented ones
+    for bad in [json!("premiere"), json!("mp4"), json!(""), json!(7), json!(["xml"]), json!(".xml"), json!("fcpxmld"), json!("omfi"), json!("xml ")] {
+        let e = s.execute("file.exportInterchange", json!({"format": bad, "path": path("bad.out")})).unwrap_err();
+        assert!(matches!(&e, EngineError::BadParams { cmd, .. } if cmd == "file.exportInterchange"), "{bad}: {e:?}");
+        let e = e.to_string();
+        assert!(e.contains("unknown format") && e.ends_with("use one of edl, xml, fcpxml, otio, aaf, omf"), "the error lists exactly the accepted names: {e}");
+        assert!(!d.join("bad.out").exists(), "nothing is written for {bad}");
+    }
+    // the documented formats still export (in either case), and no format still means FCP7 XML
+    let text = |n: &str| String::from_utf8_lossy(&std::fs::read(d.join(n)).unwrap()).into_owned();
+    s.execute("file.exportInterchange", json!({"path": path("default.xml")})).unwrap();
+    s.execute("file.exportInterchange", json!({"format": "xml", "path": path("a.xml")})).unwrap();
+    assert!(text("default.xml").contains("<xmeml") && text("a.xml").contains("<xmeml"));
+    s.execute("file.exportInterchange", json!({"format": "fcpxml", "path": path("a.fcpxml")})).unwrap();
+    assert!(text("a.fcpxml").contains("<fcpxml"));
+    s.execute("file.exportInterchange", json!({"format": "otio", "path": path("a.otio")})).unwrap();
+    assert!(text("a.otio").contains("OTIO_SCHEMA"));
+    s.execute("file.exportInterchange", json!({"format": "EDL", "path": path("a.edl")})).unwrap();
+    assert!(text("a.edl").contains("TITLE:"));
+    for (format, magic) in [("aaf", "aaf"), ("omf", "omf")] {
+        let r = s.execute("file.exportInterchange", json!({"format": format, "path": path(&format!("a.{magic}"))})).unwrap();
+        assert!(r["bytes"].as_u64().unwrap() > 0, "{format}");
+    }
+    let _ = std::fs::remove_dir_all(&d);
+}
+
 #[test]
 fn move_items_to_bin_and_back_with_undo() {
     let mut s = demo();
