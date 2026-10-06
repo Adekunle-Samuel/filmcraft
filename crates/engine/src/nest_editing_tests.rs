@@ -1,9 +1,10 @@
 //! Editing with nested sequences: the nest toggle ("Insert and overwrite sequences as nests or
-//! individual clips").
+//! individual clips"), a sequence as a source, and Match Frame on a nest.
 //! Premiere's behaviour was observed in Premiere Pro 26.5.2.
 
 use super::*;
 use filmcraft_project::{TrackItem, TrackKind};
+use filmcraft_time::TimeRange;
 use serde_json::json;
 
 fn demo() -> Session {
@@ -118,6 +119,37 @@ fn source_tracks_with_clips_go_to_consecutive_tracks_and_missing_tracks_are_adde
 }
 
 #[test]
+fn from_the_source_monitor_the_marked_part_of_a_sequence_is_edited_in() {
+    let mut s = demo();
+    let (source, _) = source_and_empty(&mut s);
+    let rate = s.sequence_rate();
+    let src_v = s.project.sequence(source).unwrap().video_tracks[0].clone();
+    // In inside the first clip, Out inside the second
+    let (mark_in, mark_out) = (src_v.items[0].start + rate.tick_of(12), src_v.items[1].start + rate.tick_of(23));
+    s.execute("source.open", json!({"item": source.0})).unwrap();
+    s.execute("project.setMarks", json!({"item": source.0, "in": mark_in.0, "out": mark_out.0})).unwrap();
+    let marked = TimeRange::from_bounds(mark_in, mark_out + rate.frame_duration());
+
+    // as a nest: one clip showing that part of the sequence
+    s.execute("source.overwrite", json!({})).unwrap();
+    let nest = clips(&s, TrackKind::Video, 0)[0].clone();
+    assert_eq!((nest.item, nest.source_in, nest.duration), (source, marked.start, marked.duration));
+    s.execute("edit.undo", json!({})).unwrap();
+
+    // as clips: the two clips the marks cut through, trimmed to them
+    s.execute("sequence.nestSequences", json!({"on": false})).unwrap();
+    s.set_playhead(Tick::ZERO);
+    s.execute("source.overwrite", json!({})).unwrap();
+    let v = clips(&s, TrackKind::Video, 0);
+    assert_eq!(v.len(), 2);
+    assert_eq!((v[0].start, v[0].source_in), (Tick::ZERO, src_v.items[0].source_in + rate.tick_of(12)));
+    assert_eq!(v[0].end(), v[1].start);
+    assert_eq!(v[1].end(), marked.duration);
+    assert_eq!(v[1].source_in, src_v.items[1].source_in);
+    s.active_sequence().unwrap().check().unwrap();
+}
+
+#[test]
 fn a_sequence_can_be_edited_into_itself_as_clips_but_not_as_a_nest() {
     let mut s = demo();
     let main = s.state.active_sequence.unwrap();
@@ -127,4 +159,47 @@ fn a_sequence_can_be_edited_into_itself_as_clips_but_not_as_a_nest() {
     s.execute("timeline.place", json!({"item": main.0, "seconds": 120.0})).expect("its clips are just clips");
     assert_eq!(clips(&s, TrackKind::Video, 0).len(), before * 2);
     assert_eq!(s.project.nest_cycle(), None);
+}
+
+#[test]
+fn match_frame_on_a_nest_loads_the_nested_sequence_at_the_frame_it_shows() {
+    let mut s = demo();
+    let rate = s.sequence_rate();
+    let v = clips(&s, TrackKind::Video, 0)[1].id;
+    s.execute("timeline.select", json!({"clips": [v.0]})).unwrap();
+    let r = s.execute("clip.nest", json!({"name": "Inner"})).unwrap();
+    let (nested, nest) = (ItemId(r["sequence"].as_u64().unwrap()), ClipId(r["clips"][0].as_u64().unwrap()));
+    let clip = |s: &Session| s.active_sequence().unwrap().find_item(nest).unwrap().1.clone();
+    // plain: 9 frames into the nest is 9 frames into its sequence
+    s.set_playhead(clip(&s).start + rate.tick_of(9));
+    s.execute("sequence.matchFrame", json!({})).unwrap();
+    assert_eq!((s.state.source_item, s.state.source_playhead), (Some(nested), rate.tick_of(9)));
+    // trimmed in by 5 frames: the same timeline frame now shows frame 9 still, 4 frames into the clip
+    s.execute("timeline.trim", json!({"clip": nest.0, "edge": "in", "deltaFrames": 5})).unwrap();
+    s.set_playhead(clip(&s).start + rate.tick_of(4));
+    s.execute("sequence.matchFrame", json!({})).unwrap();
+    assert_eq!(s.state.source_playhead, rate.tick_of(9));
+    // at double speed, 4 frames in is 8 frames further into the sequence
+    s.execute("timeline.select", json!({"clips": [nest.0]})).unwrap();
+    s.execute("clip.speedDuration", json!({"speed": 200.0})).unwrap();
+    s.set_playhead(clip(&s).start + rate.tick_of(4));
+    s.execute("sequence.matchFrame", json!({})).unwrap();
+    assert_eq!((s.state.source_item, s.state.source_playhead), (Some(nested), rate.tick_of(5 + 8)));
+}
+
+#[test]
+fn mark_in_and_out_in_the_source_monitor_mark_a_sequence_like_a_clip() {
+    // marks on a sequence loaded in the Source Monitor used to be dropped silently
+    let mut s = demo();
+    let (source, _) = source_and_empty(&mut s);
+    let rate = s.sequence_rate();
+    s.execute("source.open", json!({"item": source.0})).unwrap();
+    s.execute("markers.markIn", json!({"target": "source", "time": rate.tick_of(10).0})).unwrap();
+    s.execute("markers.markOut", json!({"target": "source", "time": rate.tick_of(40).0})).unwrap();
+    let q = s.project.sequence(source).unwrap();
+    assert_eq!((q.mark_in, q.mark_out), (Some(rate.tick_of(10)), Some(rate.tick_of(40))));
+    // and can be cleared again
+    s.execute("project.setMarks", json!({"item": source.0, "in": null, "out": null})).unwrap();
+    let q = s.project.sequence(source).unwrap();
+    assert_eq!((q.mark_in, q.mark_out), (None, None));
 }

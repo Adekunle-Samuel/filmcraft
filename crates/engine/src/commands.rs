@@ -2290,6 +2290,19 @@ fn build() -> Vec<CommandSpec> {
                     if let Some(v) = p.get("out") {
                         m.mark_out = v.as_i64().map(Tick);
                     }
+                } else if let Some(q) = it.as_sequence_mut() {
+                    // a sequence loaded in the Source Monitor is marked like a clip: these are the
+                    // sequence's own In and Out
+                    if let Some(v) = p.get("in") {
+                        q.mark_in = v.as_i64().map(Tick);
+                        q.split.video_in = None;
+                        q.split.audio_in = None;
+                    }
+                    if let Some(v) = p.get("out") {
+                        q.mark_out = v.as_i64().map(Tick);
+                        q.split.video_out = None;
+                        q.split.audio_out = None;
+                    }
                 }
                 Ok(())
             })?;
