@@ -824,41 +824,70 @@ pub fn rate_stretch(seq: &mut Sequence, clip: ClipId, edge: Edge, delta: Tick, c
 
 /// Set speed/duration (Clip ▸ Speed/Duration…). `ripple` shifts following material.
 pub fn set_speed(seq: &mut Sequence, clip: ClipId, speed: f64, reverse: bool, ripple: bool, ctx: &mut EditCtx) -> Result<()> {
-    if speed <= 0.0 {
+    set_speed_group(seq, &[clip], speed, reverse, ripple, ctx)
+}
+
+/// Speed/Duration on a clip and its linked partners on other tracks (its sound) as a single edit.
+/// `clips` holds at most one clip per track. Every member takes the speed, and with `ripple` the
+/// later material moves once, on the members' tracks and on sync-locked tracks. Rippling each
+/// member on its own would move the later clips once per member. When the members' lengths change
+/// by different amounts (a split edit), the later material moves by the largest change, so no
+/// member is overlapped and the tracks stay in sync. Nothing changes when the edit fails.
+pub fn set_speed_group(seq: &mut Sequence, clips: &[ClipId], speed: f64, reverse: bool, ripple: bool, ctx: &mut EditCtx) -> Result<()> {
+    if !(speed.is_finite() && speed > 0.0) {
         return Err(EditError::Other("speed must be positive".into()));
     }
-    let (tid, it) = seq.find_item(clip).ok_or(EditError::NoItem(clip))?;
-    let src_len = it.source_out() - it.source_in;
-    let mut new_dur = Tick((src_len.0 as f64 / speed).round() as i64).max(ctx.min_duration);
-    let old_end = it.end();
-    let tr = seq.track(tid).ok_or(EditError::NoTrack(tid))?;
-    let (_, next_start) = neighbours(tr, clip);
-    if !ripple {
-        new_dur = new_dur.min(next_start - it.start);
-    }
-    let delta = new_dur - it.duration;
-    let before = ripple.then(|| seq.clone());
-    {
-        let (_, it) = seq.find_item_mut(clip).ok_or(EditError::NoItem(clip))?;
+    let mut work = seq.clone();
+    // per member track: where its later material starts, and by how much the member's length changed
+    let mut origins: Vec<(TrackId, Tick, Tick)> = Vec::new();
+    for clip in clips {
+        let (tid, it) = work.find_item(*clip).ok_or(EditError::NoItem(*clip))?;
+        if origins.iter().any(|o| o.0 == tid) {
+            return Err(EditError::Other("clips on one track change speed one at a time".into()));
+        }
+        let src_len = it.source_out() - it.source_in;
+        // a tiny speed saturates the cast: keep the clip's end representable
+        let room = Tick(Tick::MAX.0.saturating_sub(it.start.0.max(0)));
+        let mut new_dur = Tick((src_len.0 as f64 / speed).round() as i64).min(room).max(ctx.min_duration);
+        let old_end = it.end();
+        let tr = work.track(tid).ok_or(EditError::NoTrack(tid))?;
+        let (_, next_start) = neighbours(tr, *clip);
+        if !ripple {
+            new_dur = new_dur.min(next_start - it.start);
+        }
+        let delta = new_dur - it.duration;
+        let (_, it) = work.find_item_mut(*clip).ok_or(EditError::NoItem(*clip))?;
         it.speed = speed;
         it.reverse = reverse;
         it.duration = new_dur;
+        origins.push((tid, old_end, delta));
     }
-    if ripple && delta != Tick::ZERO {
-        for tr in seq.all_tracks_mut() {
-            if !tr.locked && (tr.id == tid || tr.sync_lock) {
-                for i in &mut tr.items {
-                    if i.id != clip && i.start >= old_end {
-                        i.start += delta;
-                    }
-                }
-                tr.sort();
+    let main_from = origins.first().map(|o| o.1).unwrap_or_default();
+    let shift = origins.iter().map(|o| o.2).max().unwrap_or_default();
+    if ripple && shift != Tick::ZERO {
+        for tr in work.all_tracks_mut() {
+            if tr.locked {
+                continue;
             }
+            let member = origins.iter().find(|o| o.0 == tr.id).map(|o| o.1);
+            if member.is_none() && !tr.sync_lock {
+                continue;
+            }
+            let from = member.unwrap_or(main_from);
+            for i in &mut tr.items {
+                if !clips.contains(&i.id) && i.start >= from {
+                    // later clips must still end on the representable timeline
+                    let start = i.start.0.checked_add(shift.0).filter(|s| s.checked_add(i.duration.0).is_some());
+                    i.start = Tick(start.ok_or_else(|| EditError::Other("the speed change would move later clips past the end of the timeline".into()))?);
+                }
+            }
+            tr.sort();
         }
     }
-    if let Some(before) = before {
-        transitions_follow_cuts(&before, seq);
+    if ripple {
+        transitions_follow_cuts(seq, &mut work);
     }
+    *seq = work;
     Ok(())
 }
 
