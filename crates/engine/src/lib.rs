@@ -681,11 +681,25 @@ impl Session {
         commands::find(id).is_some_and(|c| (c.enabled)(self).is_ok())
     }
 
+    /// Every edit passes through here: one that would put a sequence inside itself (directly or
+    /// through another nested sequence) is refused, whichever command asked for it. A project that
+    /// was opened with such a sequence already in it can still be edited (and repaired).
+    fn refuse_self_nesting(&self, edited: &Project) -> Result<()> {
+        match edited.nest_cycle() {
+            Some(id) if self.project.nest_cycle().is_none() => {
+                let name = edited.item(id).map(|i| i.name.as_str()).unwrap_or_default();
+                Err(EngineError::Other(format!("a sequence cannot be nested inside itself (\u{201c}{name}\u{201d})")))
+            }
+            _ => Ok(()),
+        }
+    }
+
     /// Apply an undoable project edit. The closure gets a mutable copy; on error nothing changes.
     pub fn edit<R>(&mut self, label: &str, f: impl FnOnce(&mut Project, &mut EditorState) -> Result<R>) -> Result<R> {
         let mut p = (*self.project).clone();
         let mut st = self.state.clone();
         let r = f(&mut p, &mut st)?;
+        self.refuse_self_nesting(&p)?;
         let old = std::mem::replace(&mut self.project, Arc::new(p));
         self.history.undo.push((label.to_string(), old));
         if self.history.undo.len() > self.history.limit {
@@ -710,6 +724,7 @@ impl Session {
         let mut p = (*self.project).clone();
         let mut st = self.state.clone();
         let r = f(&mut p, &mut st)?;
+        self.refuse_self_nesting(&p)?;
         self.project = Arc::new(p);
         self.state = st;
         self.bump();
@@ -935,6 +950,8 @@ mod media_test_util;
 mod mixer_tests;
 #[cfg(test)]
 mod multicam_tests;
+#[cfg(test)]
+mod nesting_tests;
 #[cfg(test)]
 mod panels_tests;
 #[cfg(test)]

@@ -81,8 +81,24 @@ pub fn track_input_live(
     sources: &dyn SourceProvider,
     ovs: &HashMap<(TrackId, String), Override>,
 ) -> AudioBuffer {
+    track_input_at(project, track, start, frames, sr, sources, ovs, 0)
+}
+
+/// [`track_input_live`] for a track `depth` nested sequences down from the one being mixed.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn track_input_at(
+    project: &Project,
+    track: &Track,
+    start: i64,
+    frames: usize,
+    sr: u32,
+    sources: &dyn SourceProvider,
+    ovs: &HashMap<(TrackId, String), Override>,
+    depth: u32,
+) -> AudioBuffer {
     let w = crate::mixer::width_of(track.channels);
-    let live = ClipLive { vol: ovs.get(&(track.id, CLIP_LANE_VOLUME.to_string())).copied(), pan: ovs.get(&(track.id, CLIP_LANE_PAN.to_string())).copied() };
+    let live =
+        ClipLive { vol: ovs.get(&(track.id, CLIP_LANE_VOLUME.to_string())).copied(), pan: ovs.get(&(track.id, CLIP_LANE_PAN.to_string())).copied(), depth };
     let range = TimeRange::from_bounds(Tick::from_units(start, sr as i64), Tick::from_units(start + frames as i64, sr as i64));
     let mut tbuf = AudioBuffer::silence(sr, w, frames);
     for item in track.items.iter().filter(|i| i.enabled && i.range().overlaps(&range)) {
@@ -132,6 +148,8 @@ pub fn track_input_live(
 struct ClipLive {
     vol: Option<Override>,
     pan: Option<Override>,
+    /// How many nested sequences deep this track is ([`crate::MAX_NEST_DEPTH`] ends the descent).
+    depth: u32,
 }
 
 /// Balance for stereo signals (clip Panner, stereo track pan): centre = unity on both sides, turning
@@ -168,7 +186,7 @@ fn mix_item(
     let w = out.channels.len();
     let n = (a1 - a0) as usize;
     let buf = if let Some(nested) = project.sequence(item.item) {
-        nested_audio(project, item, nested, a0, n, sr, sources, w)
+        nested_audio(project, item, nested, a0, n, sr, sources, w, live.depth)
     } else {
         let Some(src) = sources.source(item.item) else { return };
         if !src.info().has_audio() {
@@ -227,16 +245,32 @@ fn mix_item(
 
 /// A nested sequence's mix for timeline samples `[a0, a0 + n)` of the clip that shows it, at width
 /// `w`. A multi-camera clip plays the audio of its source's audio setting: camera 1, all cameras,
-/// or (when switching audio) the angle the clip selects.
+/// or (when switching audio) the angle the clip selects. `depth` is the nesting depth of the clip's
+/// own sequence: past [`crate::MAX_NEST_DEPTH`] the nest is silent, like its picture is empty, so a
+/// sequence that contains itself (a damaged project; the editor refuses to make one) cannot
+/// recurse without end.
 #[allow(clippy::too_many_arguments)]
-fn nested_audio(project: &Project, item: &TrackItem, nested: &Sequence, a0: i64, n: usize, sr: u32, sources: &dyn SourceProvider, w: usize) -> Vec<Vec<f32>> {
+fn nested_audio(
+    project: &Project,
+    item: &TrackItem,
+    nested: &Sequence,
+    a0: i64,
+    n: usize,
+    sr: u32,
+    sources: &dyn SourceProvider,
+    w: usize,
+    depth: u32,
+) -> Vec<Vec<f32>> {
+    if depth >= crate::MAX_NEST_DEPTH {
+        return vec![vec![0.0; n]; w];
+    }
     let rel0 = a0 - item.start.to_units_floor(sr as i64) + item.source_in.to_units_floor(sr as i64);
     let q = if nested.multicam.is_some() {
         std::borrow::Cow::Owned(nested.with_angle_audio(item.multicam_angle(nested)))
     } else {
         std::borrow::Cow::Borrowed(nested)
     };
-    let b = crate::mixer::mix_graph(project, &q, rel0, n, sources, None);
+    let b = crate::mixer::mix_graph_at(project, &q, rel0, n, sources, None, depth + 1);
     let mut v = to_layout(b, Layout::from_channels(w), Mixdown::FrontRear).channels;
     v.resize(w, vec![0.0; n]);
     v

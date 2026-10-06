@@ -348,6 +348,18 @@ fn join_through_edits(s: &mut Session, p: &Value) -> Result<Value> {
 /// Sequence ▸ Make Subsequence: a new sequence (same settings and track layout) holding copies of the
 /// selected clips, or of everything on targeted tracks between In and Out, trimmed to In/Out when
 /// they are set. The new sequence is added to the project and selected; the original is unchanged.
+/// Give a sequence made from part of `from` (Nest…, Make Subsequence) the track names and audio
+/// channel layouts of `from`'s tracks, track for track.
+pub(crate) fn lay_out_tracks_like(new: &mut filmcraft_project::Sequence, from: &filmcraft_project::Sequence) {
+    for (tr, src) in new.video_tracks.iter_mut().zip(&from.video_tracks) {
+        tr.name = src.name.clone();
+    }
+    for (tr, src) in new.audio_tracks.iter_mut().zip(&from.audio_tracks) {
+        tr.name = src.name.clone();
+        tr.channels = src.channels;
+    }
+}
+
 fn make_subsequence(s: &mut Session, p: &Value) -> Result<Value> {
     let seq_id = s.state.active_sequence.ok_or(EngineError::NoSequence)?;
     let q = s.active_sequence().ok_or(EngineError::NoSequence)?.clone();
@@ -420,13 +432,7 @@ fn make_subsequence(s: &mut Session, p: &Value) -> Result<Value> {
             }
         }
         let nq = pr.sequence_mut(nid).ok_or(EngineError::NoSequence)?;
-        for (i, tr) in nq.video_tracks.iter_mut().enumerate() {
-            tr.name = q.video_tracks[i].name.clone();
-        }
-        for (i, tr) in nq.audio_tracks.iter_mut().enumerate() {
-            tr.name = q.audio_tracks[i].name.clone();
-            tr.channels = q.audio_tracks[i].channels;
-        }
+        lay_out_tracks_like(nq, &q);
         for (kind, ti, it) in placed {
             nq.tracks_mut(kind)[ti].items.push(it);
         }
@@ -439,8 +445,12 @@ fn make_subsequence(s: &mut Session, p: &Value) -> Result<Value> {
         }
         nq.check().map_err(EngineError::Other)?;
         st.project_selection = vec![nid];
+        // like Premiere: the subsequence is loaded in the Source Monitor, ready to edit from
+        st.source_item = Some(nid);
+        st.source_playhead = Tick::ZERO;
         Ok(nid)
     })?;
+    s.events.push(crate::Event::OpenSource(id));
     Ok(json!({"sequence": id.0, "name": name}))
 }
 

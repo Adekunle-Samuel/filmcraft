@@ -1198,6 +1198,75 @@ impl Project {
         self.items.values().filter(|i| matches!(i.kind, ItemKind::Sequence(_)))
     }
 
+    /// The part of a nested-sequence clip's timeline range that lies past the end of the nested
+    /// sequence's contents: it shows nothing and is silent, and the Timeline hatches it. A nest
+    /// keeps its length when its sequence gets shorter, so this is what is left to trim off.
+    /// `None` for other clips and for nests that end within their contents.
+    pub fn nest_overhang(&self, clip: &TrackItem) -> Option<TimeRange> {
+        let contents = self.sequence(clip.item)?.duration();
+        if let Some(held) = clip.frame_hold {
+            return (held >= contents).then(|| clip.range());
+        }
+        let past = clip.source_out() - contents;
+        if past <= Tick::ZERO {
+            return None;
+        }
+        let speed = clip.speed.abs();
+        if clip.source_in >= contents || !speed.is_finite() || speed < 1e-9 {
+            return Some(clip.range());
+        }
+        // source time past the contents, as timeline time
+        let len = Tick(((past.0 as f64 / speed).round() as i64).clamp(0, clip.duration.0));
+        if len <= Tick::ZERO {
+            return None;
+        }
+        // a reversed clip plays its source's end first
+        Some(if clip.reverse { TimeRange::new(clip.start, len) } else { TimeRange::new(clip.end() - len, len) })
+    }
+
+    /// A sequence that contains itself, directly or through the sequences nested in it (the lowest
+    /// id of those on a cycle), or `None` when nesting is sound. Such a sequence has no frame to
+    /// show, so edits that would make one are refused; only a damaged project file holds one.
+    pub fn nest_cycle(&self) -> Option<ItemId> {
+        // each sequence's nested sequences
+        let mut nests: BTreeMap<ItemId, Vec<ItemId>> = BTreeMap::new();
+        for it in self.items.values() {
+            let ItemKind::Sequence(q) = &it.kind else { continue };
+            let mut inner: Vec<ItemId> = q.all_tracks().flat_map(|t| t.items.iter().map(|i| i.item)).filter(|i| self.sequence(*i).is_some()).collect();
+            inner.sort_unstable();
+            inner.dedup();
+            if !inner.is_empty() {
+                nests.insert(it.id, inner);
+            }
+        }
+        // drop sequences whose nests all lead out of the set, until none can be dropped: what is
+        // left lies on a cycle or leads into one
+        loop {
+            let leaves: Vec<ItemId> = nests.iter().filter(|(_, inner)| inner.iter().all(|i| !nests.contains_key(i))).map(|(id, _)| *id).collect();
+            if leaves.is_empty() {
+                break;
+            }
+            for id in leaves {
+                nests.remove(&id);
+            }
+        }
+        // of those, the ones that can reach themselves
+        nests.keys().copied().find(|start| {
+            let mut seen: Vec<ItemId> = Vec::new();
+            let mut todo: Vec<ItemId> = nests.get(start).cloned().unwrap_or_default();
+            while let Some(id) = todo.pop() {
+                if id == *start {
+                    return true;
+                }
+                if !seen.contains(&id) {
+                    seen.push(id);
+                    todo.extend(nests.get(&id).into_iter().flatten().copied());
+                }
+            }
+            false
+        })
+    }
+
     /// Create an empty sequence with `v` video and `a` audio tracks.
     pub fn new_sequence(&mut self, name: &str, settings: SequenceSettings, v: usize, a: usize, bin: Option<BinId>) -> ItemId {
         let mut seq = Sequence {
@@ -1608,5 +1677,71 @@ mod tests {
         assert_eq!(p.root.parent_of(i), Some(b));
         assert!(p.root.remove_item(i));
         assert_eq!(p.root.parent_of(i), None);
+    }
+
+    #[test]
+    fn nest_cycle_finds_sequences_that_contain_themselves() {
+        let (mut p, clip, a) = demo_project();
+        let rate = p.sequence(a).unwrap().settings.frame_rate;
+        let b = p.new_sequence("b", SequenceSettings::default(), 1, 1, None);
+        let c = p.new_sequence("c", SequenceSettings::default(), 1, 1, None);
+        let put = |p: &mut Project, outer: ItemId, inner: ItemId| {
+            let it = p.make_track_item(inner, TrackKind::Video, Tick::ZERO, TimeRange::new(Tick::ZERO, rate.tick_of(10)), rate).unwrap();
+            let id = it.id;
+            p.sequence_mut(outer).unwrap().video_tracks[0].items.push(it);
+            id
+        };
+        // media and a chain of nests (a in b in c, a twice in c) are sound
+        put(&mut p, a, clip);
+        put(&mut p, b, a);
+        put(&mut p, c, b);
+        put(&mut p, c, a);
+        assert_eq!(p.nest_cycle(), None);
+        // c inside a closes the loop a → c → b → a
+        let closing = put(&mut p, a, c);
+        assert_eq!(p.nest_cycle(), Some(a));
+        p.sequence_mut(a).unwrap().video_tracks[0].items.retain(|i| i.id != closing);
+        assert_eq!(p.nest_cycle(), None);
+        // a sequence directly inside itself; one that only leads into the loop is not reported
+        put(&mut p, c, c);
+        let d = p.new_sequence("d", SequenceSettings::default(), 1, 1, None);
+        put(&mut p, d, c);
+        assert_eq!(p.nest_cycle(), Some(c));
+    }
+
+    #[test]
+    fn nest_overhang_is_the_part_past_the_contents() {
+        let (mut p, clip, a) = demo_project();
+        let rate = p.sequence(a).unwrap().settings.frame_rate;
+        let f = |n: i64| rate.tick_of(n);
+        // a holds 100 frames of media; b nests a for 150 frames starting at frame 10
+        let media = p.make_track_item(clip, TrackKind::Video, Tick::ZERO, TimeRange::new(Tick::ZERO, f(100)), rate).unwrap();
+        assert_eq!(p.nest_overhang(&media), None, "not a nest");
+        p.sequence_mut(a).unwrap().video_tracks[0].items.push(media);
+        let mut nest = p.make_track_item(a, TrackKind::Video, f(10), TimeRange::new(Tick::ZERO, f(150)), rate).unwrap();
+        assert_eq!(p.nest_overhang(&nest), Some(TimeRange::new(f(110), f(50))));
+        // within the contents, or exactly to their end: none
+        nest.duration = f(100);
+        assert_eq!(p.nest_overhang(&nest), None);
+        // trimmed in: 60 frames of contents are left
+        nest.source_in = f(40);
+        assert_eq!(p.nest_overhang(&nest), Some(TimeRange::new(f(70), f(40))));
+        // starting past the end: all of it
+        nest.source_in = f(100);
+        assert_eq!(p.nest_overhang(&nest), Some(nest.range()));
+        // double speed uses the contents up twice as fast
+        nest.source_in = Tick::ZERO;
+        nest.speed = 2.0;
+        assert_eq!(p.nest_overhang(&nest), Some(TimeRange::new(f(60), f(50))));
+        // reversed, the empty part comes first
+        nest.reverse = true;
+        assert_eq!(p.nest_overhang(&nest), Some(TimeRange::new(f(10), f(50))));
+        // a frame hold shows one frame throughout
+        nest.reverse = false;
+        nest.speed = 1.0;
+        nest.frame_hold = Some(f(20));
+        assert_eq!(p.nest_overhang(&nest), None);
+        nest.frame_hold = Some(f(100));
+        assert_eq!(p.nest_overhang(&nest), Some(nest.range()));
     }
 }
