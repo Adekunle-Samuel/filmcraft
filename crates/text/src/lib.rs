@@ -1,6 +1,7 @@
 //! FilmCraft text engine (layer L1).
 //!
-//! - [`fonts`]: font database — bundled OFL fonts (Inter, JetBrains Mono, Noto Serif) plus faces
+//! - [`fonts`]: font database — bundled OFL fonts (Inter, JetBrains Mono, Noto Serif), the optional
+//!   craft-fonts ([`fonts::CRAFT_FONTS`], Japanese; empty unless built with `CRAFT_FONTS_DIR`) plus faces
 //!   discovered by [`fonts::FontSource`]s (system font folders on native platforms; nothing on the
 //!   web unless the host registers font data), family/style resolution with synthetic bold/italic
 //!   and per-character fallback.

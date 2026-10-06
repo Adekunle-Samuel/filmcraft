@@ -1,5 +1,6 @@
-//! The font database: bundled fonts (always available, also on the web) plus fonts discovered by
-//! [`FontSource`]s (system font folders on native platforms).
+//! The font database: bundled fonts (always available, also on the web), the optional
+//! [`CRAFT_FONTS`] (present when built with `CRAFT_FONTS_DIR`, also on the web) plus fonts
+//! discovered by [`FontSource`]s (system font folders on native platforms).
 //!
 //! Faces are addressed by [`FaceId`] (an index that never changes for the life of the process).
 //! [`resolve`] maps a family + style name (as stored in projects) to a face and the synthetic
@@ -21,6 +22,27 @@ pub static INTER_BOLD: &[u8] = include_bytes!("../../../assets/fonts/Inter-Bold.
 pub static INTER_ITALIC: &[u8] = include_bytes!("../../../assets/fonts/Inter-Italic.ttf");
 pub static JETBRAINS_MONO_REGULAR: &[u8] = include_bytes!("../../../assets/fonts/JetBrainsMono-Regular.ttf");
 pub static NOTO_SERIF_REGULAR: &[u8] = include_bytes!("../../../assets/fonts/NotoSerif-Regular.ttf");
+
+/// A font from the optional craft-fonts build input (empty unless built with `CRAFT_FONTS_DIR`; see
+/// `build.rs` and storytold/craft-fonts `docs/integration.md`).
+pub struct CraftFont {
+    pub family: &'static str,
+    pub style: &'static str,
+    /// ISO 15924 scripts the font is for, e.g. `"Jpan"`.
+    pub scripts: &'static [&'static str],
+    pub bytes: &'static [u8],
+}
+
+include!(concat!(env!("OUT_DIR"), "/craft_fonts.rs"));
+
+/// The craft-fonts entries for Japanese (`Jpan`), in [`CRAFT_FONTS`] order. Empty when the app was
+/// built without craft-fonts.
+pub fn craft_japanese() -> impl Iterator<Item = &'static CraftFont> {
+    CRAFT_FONTS.iter().filter(|f| f.scripts.contains(&"Jpan"))
+}
+
+/// Origin of faces registered from [`CRAFT_FONTS`].
+pub const CRAFT_ORIGIN: &str = "craft-fonts";
 
 /// The default family for new text.
 pub const DEFAULT_FAMILY: &str = "Inter";
@@ -240,6 +262,13 @@ fn db() -> &'static RwLock<Db> {
                 push(&mut db, info_from(n, FaceData::Static(b), "bundled"));
             }
         }
+        // after the bundled faces, before anything a FontSource finds (a system copy of the same
+        // family + style is then skipped as a duplicate)
+        for f in CRAFT_FONTS {
+            for n in read_faces_bytes(f.bytes) {
+                push(&mut db, info_from(n, FaceData::Static(f.bytes), CRAFT_ORIGIN));
+            }
+        }
         RwLock::new(db)
     })
 }
@@ -394,7 +423,15 @@ fn resolve_in(family: &str, style: &str) -> Option<Resolved> {
     Some(Resolved { face: best.id, synth_bold: w >= 600 && best.info.weight <= 500, synth_italic: it && !best.info.italic, missing: false })
 }
 
-/// A face that covers `c`, preferring `prefer`; bundled and already-registered faces are searched.
+/// Whether a family name reads as a serif face (Noto Serif, Shippori Mincho, …), to pick a Mincho
+/// fallback for serif text and a Gothic one otherwise.
+fn is_serif(family: &str) -> bool {
+    let f = family.to_ascii_lowercase();
+    (f.contains("serif") && !f.contains("sans")) || f.contains("mincho")
+}
+
+/// A face that covers `c`, preferring `prefer`; bundled, craft-fonts and already-registered faces
+/// are searched, in that order.
 pub fn fallback_for(c: char, prefer: FaceId) -> FaceId {
     let p = face(prefer);
     if p.has_char(c) || c.is_control() {
@@ -403,6 +440,15 @@ pub fn fallback_for(c: char, prefer: FaceId) -> FaceId {
     let faces = all_faces();
     // prefer a face of the same italic-ness that is bundled (cheap), then anything loaded already
     for f in faces.iter().filter(|f| f.info.origin == "bundled") {
+        if f.has_char(c) {
+            return f.id;
+        }
+    }
+    // then the craft-fonts faces (Japanese): Mincho for serif text, Gothic otherwise, nearest weight
+    let serif = is_serif(&p.info.family);
+    let mut craft: Vec<&Arc<Face>> = faces.iter().filter(|f| f.info.origin == CRAFT_ORIGIN).collect();
+    craft.sort_by_key(|f| (is_serif(&f.info.family) != serif, f.info.italic != p.info.italic, f.info.weight.abs_diff(p.info.weight)));
+    for f in craft {
         if f.has_char(c) {
             return f.id;
         }
@@ -462,6 +508,37 @@ mod tests {
             let l = crate::layout("Helvetica", &crate::TextStyle { family: "Helvetica".into(), size: 30.0, ..Default::default() }, &Default::default());
             assert!(!l.missing_font && l.glyphs.iter().all(|g| g.id != 0));
         }
+    }
+
+    /// craft-fonts faces are registered after the bundled ones and serve Japanese characters the
+    /// requested face lacks: Gothic for sans text, Mincho for serif text.
+    #[test]
+    fn japanese_falls_back_to_craft_fonts() {
+        let craft: Vec<_> = all_faces().into_iter().filter(|f| f.info.origin == CRAFT_ORIGIN).collect();
+        if craft_japanese().next().is_none() {
+            eprintln!("SKIPPED: built without craft-fonts (set CRAFT_FONTS_DIR to run)");
+            assert!(craft.is_empty());
+            return;
+        }
+        assert!(craft.len() >= craft_japanese().count(), "{} faces", craft.len());
+        let bundled = all_faces().iter().take_while(|f| f.info.origin == "bundled").count();
+        assert!(craft.iter().all(|f| f.id >= bundled), "craft-fonts faces come after the bundled faces");
+        let sans = resolve("Inter", "Regular").face;
+        let serif = resolve("Noto Serif", "Regular").face;
+        for c in "日本語の文字".chars() {
+            let g = face(fallback_for(c, sans));
+            assert_eq!(g.info.origin, CRAFT_ORIGIN, "{c}");
+            assert!(g.has_char(c) && !is_serif(&g.info.family), "{c}: {}", g.info.family);
+            let m = face(fallback_for(c, serif));
+            assert!(m.has_char(c) && is_serif(&m.info.family), "{c}: {}", m.info.family);
+        }
+        // the bold UI face for bold text
+        let bold = face(fallback_for('日', resolve("Inter", "Bold").face));
+        assert!(bold.info.weight >= 600, "{} {}", bold.info.family, bold.info.style);
+        // and laid out with real glyphs (no tofu)
+        let l = crate::layout("日本語の文字", &crate::TextStyle { size: 40.0, ..Default::default() }, &Default::default());
+        assert_eq!(l.glyphs.len(), 6);
+        assert!(l.glyphs.iter().all(|g| g.id != 0), "{:?}", l.glyphs);
     }
 
     #[test]

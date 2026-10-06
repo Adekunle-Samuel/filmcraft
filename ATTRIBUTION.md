@@ -106,6 +106,21 @@ is traced or derived from Adobe artwork.
 | Lumetri Presets (Effects panel: Cinematic, Film Emulation, Monochrome, Technical) and their preview picture | `crates/render/src/lumetri_presets.rs`: Lumetri parameter values chosen by contributors, descriptive names, and a procedural preview picture (dusk sky, ridges, lake, grey ramp, colour chips) |
 | Colour palette and layout metrics | `crates/ui-egui/src/theme.rs`: colour values and sizes only; no artwork |
 
+## Optional build input: craft-fonts
+
+These fonts are **not files in this repository**. Builds made with the optional build input
+`CRAFT_FONTS_DIR` (all official releases; see [docs/contributing.md](docs/contributing.md#building-with-craft-fonts))
+embed them from [storytold/craft-fonts](https://github.com/storytold/craft-fonts), where each file,
+its author, pinned upstream source and licence text are listed in its
+[ATTRIBUTION.md](https://github.com/storytold/craft-fonts/blob/main/ATTRIBUTION.md). Release packages
+carry each font's licence as `OFL-<family>.txt`.
+
+| Font | Use in FilmCraft | Licence |
+|---|---|---|
+| BIZ UDPGothic Regular, Bold (Morisawa) | Japanese UI text; Japanese fallback for sans titles (the web build embeds only Regular) | OFL-1.1 |
+| Shippori Mincho Regular (FONTDASU) | Japanese fallback for serif titles (native builds) | OFL-1.1 |
+| BIZ UDMincho Regular (Morisawa) | Japanese fallback for serif titles (native builds) | OFL-1.1 |
+
 ## First-party brand marks
 
 The ArtCraft name, wordmark and logos are trademarks of the ArtCraft Team. They are not open source and
