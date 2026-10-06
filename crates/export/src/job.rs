@@ -189,7 +189,7 @@ impl Exporter {
         if n == 0 {
             return Ok(());
         }
-        let mux = self.mux.as_mut().expect("mux created");
+        let mux = self.mux.as_mut().ok_or_else(|| ExportError::Encode("internal: the container writer was not created".into()))?;
         match self.aenc.as_mut() {
             Some(a) => {
                 for au in a.encode(&buf)? {
@@ -221,7 +221,7 @@ impl Exporter {
         if let Some(m) = self.mxf.as_mut() {
             return m.write_video(packets);
         }
-        let mux = self.mux.as_mut().expect("mux created");
+        let mux = self.mux.as_mut().ok_or_else(|| ExportError::Encode("internal: the container writer was not created".into()))?;
         for p in packets {
             mux.write_sample(self.vt, WriteSample { data: &p.data, duration: p.duration, composition_offset: p.composition_offset, is_sync: p.key })
                 .map_err(|e| ExportError::Io(e.to_string()))?;
@@ -282,7 +282,7 @@ impl Exporter {
             if !self.settings.part_of_batch {
                 progress.set_status("Measuring loudness");
             }
-            let a = self.audio.as_mut().expect("audio");
+            let a = self.audio.as_mut().ok_or_else(|| ExportError::Encode("internal: the audio pipeline was not created".into()))?;
             a.measure(&self.settings, sources, &|| progress.cancel.load(Ordering::Relaxed))?;
             if filmcraft_media::pending::take() {
                 return Ok(Step::Pending);
@@ -361,7 +361,7 @@ impl Exporter {
         self.write_audio(mixed)?;
         if let (Some(at), Some(a)) = (self.at, self.aenc.as_mut()) {
             let fs = a.frame_size();
-            let mux = self.mux.as_mut().expect("mux created");
+            let mux = self.mux.as_mut().ok_or_else(|| ExportError::Encode("internal: the container writer was not created".into()))?;
             for au in a.flush()? {
                 mux.write_sample(at, WriteSample { data: &au, duration: fs, composition_offset: 0, is_sync: true })
                     .map_err(|e| ExportError::Io(e.to_string()))?;
@@ -370,7 +370,12 @@ impl Exporter {
         let (bytes, extra_files) = match self.mxf.take() {
             Some(m) => m.finish(&self.settings)?,
             None => {
-                let w = self.mux.take().expect("mux created").finish().map_err(|e| ExportError::Io(e.to_string()))?;
+                let w = self
+                    .mux
+                    .take()
+                    .ok_or_else(|| ExportError::Encode("internal: the container writer was not created".into()))?
+                    .finish()
+                    .map_err(|e| ExportError::Io(e.to_string()))?;
                 (w.finish(&self.settings)?, Vec::new())
             }
         };
