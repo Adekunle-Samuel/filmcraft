@@ -95,7 +95,7 @@ reproduce an image (for example, point lists traced from someone else's icon).
 9. **Fonts live in [storytold/craft-fonts](https://github.com/storytold/craft-fonts), never in this
    repo.** Don't commit new font files (the small Latin UI fonts already in `assets/fonts/` stay). A
    font FilmCraft needs is added to craft-fonts, which the app reads through the optional build input
-   `CRAFT_FONTS_DIR=<craft-fonts checkout>` (`crates/text/build.rs` embeds the fonts in its
+   `CRAFT_FONTS_DIR=<absolute path of a craft-fonts checkout>` (`crates/text/build.rs` embeds the fonts in its
    `fonts/manifest.txt` as `filmcraft_text::fonts::CRAFT_FONTS`; unset, it is empty and the app uses its
    bundled and system fonts). Never add craft-fonts to a `Cargo.toml`. Code using `CRAFT_FONTS` must work
    when it is empty. Standard: [`craftrules/standards/fonts.md`](https://github.com/storytold/craftrules/blob/main/standards/fonts.md).

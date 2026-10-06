@@ -1,7 +1,8 @@
 //! Optional craft-fonts build input (see storytold/craft-fonts `docs/integration.md` and
 //! craftrules `standards/fonts.md`).
 //!
-//! With `CRAFT_FONTS_DIR=<craft-fonts checkout>` this embeds every font listed in its
+//! With `CRAFT_FONTS_DIR=<absolute path of a craft-fonts checkout>` (a relative path resolves from
+//! `crates/text`) this embeds every font listed in its
 //! `fonts/manifest.txt` as [`CRAFT_FONTS`](crate::fonts::CRAFT_FONTS); unset, `CRAFT_FONTS` is
 //! empty and nothing else changes. A `CRAFT_FONTS_DIR` that is not a checkout is a warning, or an
 //! error with `CRAFT_FONTS_REQUIRED=1` (release builds).

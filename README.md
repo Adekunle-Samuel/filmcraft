@@ -256,7 +256,7 @@ Japanese text in the interface and in titles comes from [craft-fonts](https://gi
 
 ```sh
 git clone https://github.com/storytold/craft-fonts ../craft-fonts
-CRAFT_FONTS_DIR=../craft-fonts cargo run --release -p filmcraft
+CRAFT_FONTS_DIR="$PWD/../craft-fonts" cargo run --release -p filmcraft
 ```
 
 The control protocol is documented in [docs/control-protocol.md](docs/control-protocol.md). Stuck, or want to show what you made? Ask in [Discord](https://discord.gg/artcraft).

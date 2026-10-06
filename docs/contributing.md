@@ -53,10 +53,11 @@ dependency:
 
 ```sh
 git clone https://github.com/storytold/craft-fonts ../craft-fonts
-CRAFT_FONTS_DIR=../craft-fonts cargo run --release -p filmcraft
+CRAFT_FONTS_DIR="$PWD/../craft-fonts" cargo run --release -p filmcraft
 ```
 
-`crates/text/build.rs` reads its `fonts/manifest.txt` and embeds the fonts as
+Use an absolute path: `build.rs` runs in `crates/text`, so a relative `CRAFT_FONTS_DIR` would
+resolve from there. `crates/text/build.rs` reads its `fonts/manifest.txt` and embeds the fonts as
 `filmcraft_text::fonts::CRAFT_FONTS` (native: all of them; the web build: only BIZ UDPGothic
 Regular, to keep the wasm small). The Japanese ones become the last fallback of every UI font family
 (`crates/ui-egui/src/theme.rs`, BIZ UDPGothic first) and fallback faces in the text engine (Gothic
