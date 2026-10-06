@@ -624,7 +624,9 @@ Video encoders implement `export::VideoEncoder`. Codec crates plug in with `regi
 Timelines can be exchanged as EDL, FCP7 XML, FCPXML, OTIO, AAF or OMF. `file.import` detects these
 formats and merges the result into the project as one undoable step (AAF / OMF embedded audio is
 written next to the document first), and `file.exportInterchange`, `file.exportEdl`,
-`file.exportFcpxml`, `file.exportOtio`, `file.exportAaf` and `file.exportOmf` write them. For AAF and
+`file.exportFcpxml`, `file.exportOtio`, `file.exportAaf` and `file.exportOmf` write them.
+`file.exportInterchange {format}` takes `edl`, `xml` (the default), `fcpxml`, `otio`, `aaf` or `omf`;
+any other value is a parameter error and nothing is written. For AAF and
 OMF the engine (`engine::aaf_omf`) first prepares the audio the document references: it lists the
 used ranges (`interchange::essence::audio_needs`), decodes or renders them (clip effects through the
 export audio pipeline), embeds them or writes WAV / AIFF files, and optionally renders a video

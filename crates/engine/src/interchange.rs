@@ -108,15 +108,17 @@ pub fn import(s: &mut Session, path: &str, bytes: &[u8], format: Format) -> Resu
     }))
 }
 
-/// `file.exportInterchange {format: "edl"|"xml"|"fcpxml"|"otio", path, sequence?}`
+/// `file.exportInterchange {format: "edl"|"xml"|"fcpxml"|"otio"|"aaf"|"omf" = "xml", path, sequence?}`
 pub fn export(s: &mut Session, p: &Value) -> Result<Value> {
-    let format = match p.get("format").and_then(Value::as_str).unwrap_or("xml") {
-        "edl" => Format::Edl,
-        "fcpxml" => Format::Fcpxml,
-        "otio" => Format::Otio,
-        "aaf" => Format::Aaf,
-        "omf" => Format::Omf,
-        _ => Format::Fcp7Xml,
+    // FCP7 XML only when no format is asked for: a format we don't know is an error, not XML.
+    // The names are the documented ones (each format's extension, in either case) and nothing
+    // else, so the error can list exactly what is accepted.
+    let format = match p.get("format") {
+        None | Some(Value::Null) => Format::Fcp7Xml,
+        Some(v) => v.as_str().and_then(|name| Format::ALL.into_iter().find(|f| f.extension().eq_ignore_ascii_case(name))).ok_or_else(|| {
+            let names: Vec<&str> = Format::ALL.iter().map(|f| f.extension()).collect();
+            crate::commands::bad("file.exportInterchange", format!("unknown format {v}: use one of {}", names.join(", ")))
+        })?,
     };
     let path = p.get("path").and_then(Value::as_str).ok_or_else(|| EngineError::Other("need `path`".into()))?.to_string();
     let seq = p.get("sequence").and_then(Value::as_u64).map(ItemId).or(s.state.active_sequence).ok_or(EngineError::NoSequence)?;
