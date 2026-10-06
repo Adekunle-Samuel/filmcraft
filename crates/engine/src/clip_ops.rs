@@ -1724,10 +1724,35 @@ fn replace_with(s: &mut Session, p: &Value, how: Replace) -> Result<Value> {
         }
         Ok((out, clamped))
     })?;
-    let mut result = json!({"clips": replaced, "item": new_item.0});
+    let mut result = json!({"clips": replaced, "item": new_item.0, "short": short_clips(s, &replaced)});
     if keep_in {
         // the clips whose In was outside a trims-restricted subclip and now sits on its nearest frame
         result["sourceInClamped"] = json!(clamped);
     }
     Ok(result)
+}
+
+/// The clips among `clips` that play past the end of their media, with how many sequence frames
+/// of the clip have no media (at most the clip's own length). The edit is left as it is (the
+/// renderer holds the last frame there); this is so whoever replaced the clip knows.
+fn short_clips(s: &Session, clips: &[u64]) -> Vec<Value> {
+    let Some(q) = s.active_sequence() else { return Vec::new() };
+    let frame = q.settings.frame_rate.frame_duration().0.max(1);
+    clips
+        .iter()
+        .filter_map(|c| {
+            let (_, it) = q.find_item(ClipId(*c))?;
+            // stills, mattes and other sources without an end are never short; nor is a held frame
+            let media_end = crate::media_duration(&s.project, &s.media, it.item)?;
+            let over = it.source_out().0.saturating_sub(media_end.0);
+            if over <= 0 || it.frame_hold.is_some() {
+                return None;
+            }
+            // media ticks past the end, as sequence ticks of this clip
+            let length = it.duration.0.max(0);
+            let ticks = ((over as f64 / it.speed.abs().max(1e-9)).round().min(length as f64) as i64).min(length);
+            let frames = ticks.saturating_add(frame - 1) / frame;
+            (frames > 0).then(|| json!({"clip": c, "shortByFrames": frames}))
+        })
+        .collect()
 }

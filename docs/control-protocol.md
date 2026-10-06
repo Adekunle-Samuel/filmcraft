@@ -82,7 +82,10 @@ it shows. Dynamic trimming takes an explicit clock (seconds) so it is determinis
 
 **Replace With Clip**: `clip.replaceFromSource`, `clip.replaceFromSourceMatchFrame` and
 `clip.replaceFromBin {clips?, item?, keepSourceIn?}` swap the media of the clips and return
-`{clips: [ids], item}`. From Bin starts each clip at the new item's In point; with
+`{clips: [ids], item, short: [{clip, shortByFrames}]}`. `short` lists the replaced clips that now
+run past the end of their media (the renderer holds the last frame there) with the number of
+sequence frames that have no media, at most the clip's length; it is empty when the new media
+covers every clip. The edit is the same either way. From Bin starts each clip at the new item's In point; with
 `keepSourceIn: true` each clip keeps its own source In instead. A subclip that restricts trims has
 no media outside its range, so there a kept In is moved to the subclip's first or last frame, and
 the result's `sourceInClamped: [ids]` (present with `keepSourceIn`) names the clips it was moved for.

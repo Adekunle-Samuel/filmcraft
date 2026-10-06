@@ -625,14 +625,14 @@ fn replace_from_bin_keeps_the_source_in_on_request() {
     // default: the replacement starts at the item's In point, and the result is what it was
     let r = s.execute("clip.replaceFromBin", json!({})).unwrap();
     assert_eq!((clip(&s, c.id.0).item, clip(&s, c.id.0).source_in), (dunes, Tick::ZERO));
-    assert_eq!(r, json!({"clips": [c.id.0], "item": dunes.0}));
+    assert_eq!(r, json!({"clips": [c.id.0], "item": dunes.0, "short": []}));
     s.execute("edit.undo", json!({})).unwrap();
     assert_eq!(*s.project, *before);
     // keepSourceIn: the same place in the new media, everything else as before
     let r = s.execute("clip.replaceFromBin", json!({"keepSourceIn": true})).unwrap();
     let got = clip(&s, c.id.0);
     assert_eq!((got.item, got.source_in, got.start, got.duration), (dunes, trimmed.source_in, trimmed.start, trimmed.duration));
-    assert_eq!(r, json!({"clips": [c.id.0], "item": dunes.0, "sourceInClamped": []}));
+    assert_eq!(r, json!({"clips": [c.id.0], "item": dunes.0, "short": [], "sourceInClamped": []}));
     let after = s.project.clone();
     s.execute("edit.undo", json!({})).unwrap();
     assert_eq!(*s.project, *before);
@@ -673,6 +673,81 @@ fn replace_from_bin_keeps_the_source_in_on_request() {
         assert_eq!((clip(&s, c.id.0).source_in, r.get("sourceInClamped")), (Tick::ZERO, None));
         s.execute("edit.undo", json!({})).unwrap();
     }
+}
+
+/// A replacement shorter than the clip's slot left the clip running past the end of its media
+/// without a word. The three Replace With Clip commands now say which clips are short, by how
+/// many sequence frames.
+#[test]
+fn replace_with_clip_reports_clips_that_run_past_the_new_media() {
+    let mut s = demo();
+    let rate = s.sequence_rate();
+    let demo_seq = s.state.active_sequence.unwrap();
+    s.execute("sequence.linkedSelection", json!({"on": false})).unwrap();
+    let c = v1(&s)[3].clone();
+    let slot = rate.frame_at(c.duration);
+    let forest = item_named(&s, "Misty_Forest.mp4");
+    let forest_len = s.project.item(forest).unwrap().as_media().unwrap().info.duration;
+    assert!(slot > 12 && forest_len > c.duration + rate.tick_of(40), "the clip is longer than 12 frames and shorter than the media");
+    let state = |s: &Session| {
+        let it = clip(s, c.id.0);
+        (it.item, it.source_in, it.start, it.duration)
+    };
+    select(&mut s, &[c.id.0]);
+
+    // From Bin, with 12 frames of media (a subclip that restricts trims): the edit is what it
+    // always was, and the result says the clip is short
+    let r = s.execute("clip.makeSubclip", json!({"item": forest.0, "start": rate.tick_of(10).0, "end": rate.tick_of(22).0})).unwrap();
+    let short = ItemId(r["item"].as_u64().unwrap());
+    let before = s.project.clone();
+    let r = s.execute("clip.replaceFromBin", json!({"item": short.0})).unwrap();
+    assert_eq!(state(&s), (short, rate.tick_of(10), c.start, c.duration), "the edit itself is not changed");
+    assert_eq!(r["short"], json!([{"clip": c.id.0, "shortByFrames": slot - 12}]));
+    let after = s.project.clone();
+    s.execute("edit.undo", json!({})).unwrap();
+    assert_eq!(*s.project, *before);
+    s.execute("edit.redo", json!({})).unwrap();
+    assert_eq!(*s.project, *after);
+    s.execute("edit.undo", json!({})).unwrap();
+    // long enough media: nothing is short
+    assert_eq!(s.execute("clip.replaceFromBin", json!({"item": forest.0})).unwrap()["short"], json!([]));
+    s.execute("edit.undo", json!({})).unwrap();
+
+    // From Source Monitor, with the Source In 20 frames before the end of the media
+    let frames = |t: Tick| (t.0 + rate.frame_duration().0 - 1) / rate.frame_duration().0;
+    s.execute("source.open", json!({"item": forest.0})).unwrap();
+    let mark = forest_len - rate.tick_of(20);
+    s.execute("project.setMarks", json!({"item": forest.0, "in": mark.0})).unwrap();
+    let r = s.execute("clip.replaceFromSource", json!({})).unwrap();
+    let got = clip(&s, c.id.0);
+    assert_eq!(r["short"], json!([{"clip": c.id.0, "shortByFrames": frames(got.source_out() - forest_len)}]));
+    assert_eq!(frames(got.source_out() - forest_len), slot - 20);
+    s.execute("edit.undo", json!({})).unwrap();
+    // Match Frame: the last frame of the media on the clip's first frame
+    s.execute("playhead.set", json!({"time": c.start.0})).unwrap();
+    s.execute("source.setPlayhead", json!({"time": (forest_len - rate.tick_of(1)).0})).unwrap();
+    let r = s.execute("clip.replaceFromSourceMatchFrame", json!({})).unwrap();
+    assert_eq!(r["short"], json!([{"clip": c.id.0, "shortByFrames": slot - 1}]));
+    s.execute("edit.undo", json!({})).unwrap();
+    // with enough media after the frame, nothing is short
+    s.execute("source.setPlayhead", json!({"frame": 5})).unwrap();
+    assert_eq!(s.execute("clip.replaceFromSourceMatchFrame", json!({})).unwrap()["short"], json!([]));
+    s.execute("edit.undo", json!({})).unwrap();
+
+    // never more than the clip itself: an In that lies past the end of the new media altogether
+    s.execute("timeline.trim", json!({"clip": c.id.0, "edge": "in", "mode": "regular", "deltaFrames": 7})).unwrap();
+    let trimmed = clip(&s, c.id.0);
+    s.execute("file.newSequence", json!({"name": "Brief"})).unwrap();
+    let brief = s.state.active_sequence.unwrap();
+    s.execute("timeline.place", json!({"item": forest.0, "time": 0})).unwrap();
+    let placed = s.active_sequence().unwrap().video_tracks[0].items[0].clone();
+    s.execute("timeline.trim", json!({"clip": placed.id.0, "edge": "out", "mode": "regular", "delta": (rate.tick_of(3) - placed.duration).0})).unwrap();
+    s.execute("sequence.open", json!({"item": demo_seq.0})).unwrap();
+    select(&mut s, &[c.id.0]);
+    assert!(trimmed.source_in > s.project.sequence(brief).unwrap().duration(), "the kept In is past the end of the nested sequence");
+    let r = s.execute("clip.replaceFromBin", json!({"clips": [c.id.0], "item": brief.0, "keepSourceIn": true})).unwrap();
+    assert_eq!(clip(&s, c.id.0).source_in, trimmed.source_in);
+    assert_eq!(r["short"], json!([{"clip": c.id.0, "shortByFrames": rate.frame_at(trimmed.duration)}]), "all of the clip, not more");
 }
 
 #[test]
