@@ -151,7 +151,10 @@ fn timeline_has_a_tab_per_open_sequence() {
     assert!(d.has(&format!("timeline.tab.{main}")));
     assert!(!d.has(&format!("timeline.tab.{nested}")), "not opened until asked");
     // double-clicking the nested clip opens it in a second tab
-    let clip = d.app().session.state.selection[0].0;
+    let clip = {
+        let q = d.app().session.active_sequence().unwrap();
+        q.video_tracks[0].items.iter().find(|i| i.item.0 == nested).unwrap().id.0
+    };
     d.ok("ui.click", json!({"id": format!("timeline.clip.{clip}"), "count": 2}));
     d.frames(4);
     assert_eq!(d.app().session.state.active_sequence.map(|i| i.0), Some(nested));
