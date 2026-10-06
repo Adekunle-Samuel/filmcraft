@@ -205,6 +205,11 @@ fn list_searches_labels_and_keys() {
     let r = s.shortcuts.commands();
     assert!(r.iter().any(|c| c.id == "trim.forward"));
     assert!(!r.iter().any(|c| c.id == "timeline.move"), "commands with required params are not bindable");
+    // a parameter doc holds parameters only (each optional or with a default): a result
+    // description in it would take the command out of this list
+    for id in ["clip.replaceFromBin", "clip.replaceFromSource", "clip.replaceFromSourceMatchFrame"] {
+        assert!(r.iter().any(|c| c.id == id), "{id} has no required parameter, so it can be bound");
+    }
     let mut s = s;
     let v = s.execute("shortcuts.list", json!({"query": "ripple delete"})).unwrap();
     assert!(v.as_array().unwrap().iter().any(|c| c["id"] == "edit.rippleDelete"), "{v}");
