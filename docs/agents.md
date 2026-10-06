@@ -136,6 +136,8 @@ Notes:
 - A track parameter (`track`, `audioTrack`) is a track id or a name such as `"V1"` / `"A2"`.
   Leaving it out picks the command's default track; naming a track the sequence does not have is
   an "invalid parameters" error, never a different track.
+  In `timeline.place`, `track` is where the picture goes and `audioTrack` where the sound goes;
+  an audio track given as `track` places the sound alone, on that track.
 - `engine.execute` also runs UI-only commands (`tool.razor`, `playback.toggle`,
   `window.workspace.color`, `window.panel.<name>`).
 - A command that works on the selection is disabled ("no clips selected", "select a clip in the
