@@ -431,6 +431,12 @@ fn clear_deletes_a_bin_with_everything_in_it() {
     s.execute("edit.undo", json!({})).unwrap();
     assert!(s.project.root.find_bin(filmcraft_project::BinId(inner)).is_some());
     assert_eq!(s.project.root.parent_of(ocean), Some(filmcraft_project::BinId(inner)));
+    // the clip, its bin and the bin around it all named: each counted once
+    select(&mut s);
+    let r = s.execute("project.delete", json!({"items": [ocean.0, inner, outer]})).unwrap();
+    assert_eq!(r, json!({"items": 1, "bins": 1}));
+    assert_eq!(s.project.items.len(), before - 1);
+    s.execute("edit.undo", json!({})).unwrap();
     // the project's own top bin is never cleared
     let root = s.project.root.id.0;
     select(&mut s);
