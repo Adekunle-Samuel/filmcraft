@@ -2721,6 +2721,7 @@ pub fn inspect_sequence(s: &Session, id: ItemId, q: &filmcraft_project::Sequence
             "items": t.items.iter().map(|i| json!({
                 "clip": i.id.0, "item": i.item.0, "name": i.name, "start": i.start.0, "duration": i.duration.0,
                 "startFrame": rate.frame_at(i.start), "durationFrames": rate.frame_at(i.duration), "sourceIn": i.source_in.0, "speed": i.speed,
+                "end": i.end().0, "endFrame": rate.frame_at(i.end()), "sourceOut": i.source_out().0, "gainDb": i.gain_db,
                 "enabled": i.enabled, "link": i.link, "label": i.label.name(),
                 "effects": i.effects.iter().map(|e| json!({"effect": e.effect, "enabled": e.enabled, "masks": e.masks.len(), "params": e.params.iter().map(|(k, p)| (k.clone(), json!({"value": format!("{:?}", p.value), "keyframes": p.keyframes.len()}))).collect::<serde_json::Map<_, _>>()})).collect::<Vec<_>>(),
             })).collect::<Vec<_>>(),
@@ -2737,7 +2738,7 @@ pub fn inspect_sequence(s: &Session, id: ItemId, q: &filmcraft_project::Sequence
         "in": q.mark_in.map(|t| t.0),
         "out": q.mark_out.map(|t| t.0),
         "split": q.split,
-        "markers": q.markers.iter().map(|m| json!({"id": m.id.0, "start": m.start.0, "duration": m.duration.0, "kind": format!("{:?}", m.kind), "name": m.name, "color": m.color.name()})).collect::<Vec<_>>(),
+        "markers": q.markers.iter().map(|m| json!({"id": m.id.0, "start": m.start.0, "duration": m.duration.0, "kind": format!("{:?}", m.kind), "name": m.name, "comment": m.comment, "color": m.color.name()})).collect::<Vec<_>>(),
         "video": q.video_tracks.iter().map(tr).collect::<Vec<_>>(),
         "audio": q.audio_tracks.iter().map(tr).collect::<Vec<_>>(),
         "selection": s.state.selection.iter().map(|c| c.0).collect::<Vec<_>>(),

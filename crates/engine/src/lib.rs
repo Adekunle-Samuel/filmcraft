@@ -918,6 +918,8 @@ mod remix_tests;
 #[cfg(test)]
 mod scopes_tests;
 #[cfg(test)]
+mod sequence_inspect_tests;
+#[cfg(test)]
 mod sequence_tools_tests;
 #[cfg(test)]
 mod settings_tests;
