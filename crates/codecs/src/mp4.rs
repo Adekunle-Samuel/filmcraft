@@ -188,17 +188,7 @@ impl Mp4Source {
             };
             AudioStreamInfo { sample_rate: rate.max(1), channels: ch.max(1), codec: codec_label(&entry.codec), bits_per_sample: bits }
         });
-        let duration = {
-            let v = vtrack.map(|i| {
-                let t = &file.tracks[i];
-                Tick::from_rational(t.duration as i64, 1, t.timescale as i64)
-            });
-            let a = atrack.map(|i| {
-                let t = &file.tracks[i];
-                Tick::from_rational(t.duration as i64, 1, t.timescale as i64)
-            });
-            v.or(a).unwrap_or_default()
-        };
+        let duration = vtrack.or(atrack).and_then(|i| file.tracks.get(i)).map(|t| presentation_duration(&file, t)).unwrap_or_default();
         let start_timecode = file.tracks.iter().find_map(|t| match t.codec() {
             Some(CodecConfig::Timecode(tc)) => tc.start_frame.map(|f| f as i64),
             _ => None,
@@ -483,6 +473,25 @@ pub fn opener(name: &str, bytes: Arc<[u8]>) -> Option<Result<SharedSource, Media
     Some(Mp4Source::open(name, bytes).map(|s| Arc::new(s) as SharedSource).map_err(Into::into))
 }
 
+/// How long a track plays. With an edit list that is the sum of its edits (ISO/IEC 14496-12
+/// §8.6.6, movie timescale), as `tkhd` records it. The media duration (`mdhd`) runs on the decode
+/// timeline: it is longer than the presentation by the B-frame delay an edit skips (`media_time`, one
+/// extra frame on every ffmpeg / x264 MP4 with B-frames) and shorter by a leading empty edit (the last
+/// frame of a delayed video track was never shown). Fragmented files, and edit lists that add up to
+/// nothing or to more than a [`Tick`] holds, keep the media duration.
+fn presentation_duration(file: &Mp4File, t: &filmcraft_isobmff::Track) -> Tick {
+    let media = Tick::from_rational(t.duration as i64, 1, t.timescale as i64);
+    if file.fragmented || t.edits.is_empty() || file.timescale == 0 {
+        return media;
+    }
+    let edits = t.edits.iter().fold(0u128, |a, e| a.saturating_add(e.segment_duration as u128));
+    let ticks = edits.saturating_mul(filmcraft_time::TICKS_PER_SECOND as u128) / file.timescale as u128;
+    match i64::try_from(ticks) {
+        Ok(t) if t > 0 => Tick(t),
+        _ => media,
+    }
+}
+
 /// [`filmcraft_media::ReaderOpener`] for MP4/MOV.
 pub fn reader_opener(name: &str, head: &[u8], reader: &filmcraft_media::SharedReader) -> Option<Result<SharedSource, MediaError>> {
     if !sniff(head) {
@@ -518,6 +527,45 @@ mod tests {
             b[m + j * 4..m + j * 4 + 4].copy_from_slice(&v.to_be_bytes());
         }
         b.into()
+    }
+
+    /// A four-frame 25 fps ProRes MOV (64×32) whose video track carries `edits`.
+    fn mov_with_edits(edits: Vec<filmcraft_isobmff::Edit>) -> Arc<[u8]> {
+        let fr = filmcraft_prores::Frame::new(64, 32, filmcraft_prores::ChromaFormat::Yuv422, 10, false);
+        let data = filmcraft_prores::Encoder::new(filmcraft_prores::Profile::Hq, 64, 32).encode(&fr).expect("encode");
+        let mut mux = Mp4Writer::new(std::io::Cursor::new(Vec::new()), WriterOptions::new(Brand::Mov)).expect("writer");
+        let mut cfg = TrackConfig::new(SampleEntry::prores(FourCc(*b"apch"), 64, 32), 25);
+        cfg.edits = edits;
+        let t = mux.add_track(cfg).expect("track");
+        for _ in 0..4 {
+            mux.write_sample(t, WriteSample { data: &data, duration: 1, composition_offset: 0, is_sync: true }).expect("sample");
+        }
+        mux.finish().expect("finish").into_inner().into()
+    }
+
+    /// A clip lasts as long as its edit list presents it, not as long as its media (`mdhd`) runs.
+    /// Every ffmpeg / x264 MP4 with B-frames skips its reorder delay with an edit and imported one
+    /// frame too long; a video track delayed by an empty edit lost its last frame.
+    #[test]
+    fn duration_follows_the_edit_list() {
+        use filmcraft_isobmff::Edit;
+        let frames = |s: &Mp4Source| s.info().duration.to_rational_floor(1, 25);
+        // no edit list: the media duration
+        assert_eq!(frames(&Mp4Source::open("plain.mov", mov_with_edits(Vec::new())).expect("open")), 4);
+        // skip the first frame (B-frame delay style): three frames play (movie timescale 1000 ms)
+        let skip = vec![Edit { segment_duration: 120, media_time: 1, media_rate: 0x10000 }];
+        assert_eq!(frames(&Mp4Source::open("skip.mov", mov_with_edits(skip)).expect("open")), 3);
+        // a one-frame empty edit, then all four frames: five frames, and the last one is there
+        let delayed =
+            vec![Edit { segment_duration: 40, media_time: -1, media_rate: 0x10000 }, Edit { segment_duration: 160, media_time: 0, media_rate: 0x10000 }];
+        let s = Mp4Source::open("delayed.mov", mov_with_edits(delayed)).expect("open");
+        assert_eq!(frames(&s), 5);
+        assert!(s.video_frame(FrameRequest::full(Tick::from_rational(4, 1, 25))).is_ok());
+        // hostile segment durations fall back to the media duration instead of wrapping
+        let huge = vec![Edit { segment_duration: u64::MAX, media_time: 0, media_rate: 0x10000 }];
+        assert_eq!(frames(&Mp4Source::open("huge.mov", mov_with_edits(huge)).expect("open")), 4);
+        let zero = vec![Edit { segment_duration: 0, media_time: 0, media_rate: 0x10000 }];
+        assert_eq!(frames(&Mp4Source::open("zero.mov", mov_with_edits(zero)).expect("open")), 4);
     }
 
     /// Overwrite the big-endian u32 `skip` bytes after the first `fourcc` box type.
