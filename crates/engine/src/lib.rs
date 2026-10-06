@@ -299,10 +299,17 @@ pub struct EditorState {
 /// Events for frontends (drained each frame).
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub enum Event {
-    ProjectChanged { revision: u64 },
-    Toast { message: String, error: bool },
+    ProjectChanged {
+        revision: u64,
+    },
+    Toast {
+        message: String,
+        error: bool,
+    },
     OpenSequence(ItemId),
     OpenSource(ItemId),
+    /// Show this item in the Project panel (Reveal in Project).
+    RevealInProject(ItemId),
 }
 
 pub struct Session {

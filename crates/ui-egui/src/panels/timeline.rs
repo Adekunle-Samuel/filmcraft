@@ -1439,7 +1439,7 @@ const CLIP_MENU: &[&[(&str, &str)]] = &[
         ("Field Options…", "clip.fieldOptions"),
         ("Scale to Frame Size", "clip.scaleToFrameSize"),
     ],
-    &[("Join Through Edits", "sequence.joinThroughEdits")],
+    &[("Reveal in Project", "clip.revealInProject"), ("Join Through Edits", "sequence.joinThroughEdits")],
 ];
 
 fn interact(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, layout: &Layout, rect: Rect) {

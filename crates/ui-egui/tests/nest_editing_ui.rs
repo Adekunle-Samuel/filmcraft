@@ -1,4 +1,5 @@
-//! Headless UI tests of editing with nested sequences: the nest toggle button.
+//! Headless UI tests of editing with nested sequences: the nest toggle button and Reveal in
+//! Project.
 
 use std::sync::mpsc::{Sender, channel};
 
@@ -6,6 +7,7 @@ use egui_kittest::Harness;
 use filmcraft_engine::Session;
 use filmcraft_ui_egui::FilmcraftApp;
 use filmcraft_ui_egui::control::ControlRequest;
+use filmcraft_ui_egui::dock::PanelKind;
 use serde_json::{Value, json};
 
 struct Driver {
@@ -54,9 +56,18 @@ impl Driver {
         v["result"].clone()
     }
 
+    fn exec(&mut self, command: &str, params: Value) -> Value {
+        self.ok("engine.execute", json!({"command": command, "params": params}))
+    }
+
     fn click(&mut self, id: &str) {
         self.ok("ui.click", json!({"id": id}));
         self.frames(3);
+    }
+
+    fn has(&mut self, id: &str) -> bool {
+        let v = self.ok("ui.elements", json!({"prefix": id}));
+        v.as_array().unwrap().iter().any(|e| e["id"] == json!(id))
     }
 
     fn app(&mut self) -> &mut FilmcraftApp {
@@ -72,4 +83,38 @@ fn the_nest_button_toggles_how_sequences_are_edited_in() {
     assert!(d.app().session.state.sequences_as_clips);
     d.click("timeline.toggle.nest");
     assert!(!d.app().session.state.sequences_as_clips);
+}
+
+#[test]
+fn reveal_in_project_shows_the_clips_item_in_the_project_panel() {
+    use filmcraft_engine::project_panel::ViewMode;
+    for mode in [ViewMode::List, ViewMode::Icon] {
+        let mut d = Driver::new();
+        d.app().session.prefs.project_panel.view.mode = mode;
+        let (clip, item) = {
+            let it = &d.app().session.active_sequence().unwrap().video_tracks[0].items[2];
+            (it.id.0, it.item)
+        };
+        let bin = d.app().session.project.root.parent_of(item).expect("the demo keeps its footage in a bin").0;
+        // the Project panel is closed, its bins are collapsed and a search hides everything
+        d.app().ui.dock.close(PanelKind::Project);
+        d.app().ui.expanded_bins.clear();
+        d.app().ui.project_search = "no such thing".into();
+        d.frames(2);
+        assert!(!d.has(&format!("project.item.{}", item.0)));
+        d.exec("clip.revealInProject", json!({"clip": clip}));
+        d.frames(3);
+        assert!(d.app().ui.dock.is_visible(PanelKind::Project), "{mode:?}");
+        assert!(d.app().ui.project_search.is_empty());
+        assert_eq!(d.app().session.state.project_selection, vec![item]);
+        if mode == ViewMode::List {
+            // the list shows the tree with the item's bin opened
+            assert!(d.app().ui.expanded_bins.contains(&bin));
+            assert_eq!(d.app().ui.project_panel.bin, None);
+        } else {
+            // icons show one bin at a time: the panel is inside the item's bin
+            assert_eq!(d.app().ui.project_panel.bin, Some(bin));
+        }
+        assert!(d.has(&format!("project.item.{}", item.0)), "{mode:?}: the item is on show");
+    }
 }

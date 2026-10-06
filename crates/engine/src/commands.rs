@@ -1240,6 +1240,26 @@ fn build() -> Vec<CommandSpec> {
             crate::clip_ops::add_frame_hold(s, p)
         }),
         cmd!("clip.nest", "Nest…", ["Clip"], None, r#"{"name":str}"#, has_selection, |s, p| nest(s, p)),
+        // Reveal in Project (clip context menu) and Reveal Sequence in Project (Timeline tab menu):
+        // select the item in the Project panel and show it there
+        cmd!("clip.revealInProject", "Reveal in Project", [], None, r#"{"clip":id?}"#, has_seq, |s, p| {
+            let seq = s.active_sequence().ok_or(EngineError::NoSequence)?;
+            let t = s.playhead();
+            let tg = s.targeting().targeted;
+            // the named or first selected clip, else the topmost clip under the playhead on a targeted track
+            let item = clips_p(s, p)
+                .iter()
+                .find_map(|c| seq.find_item(*c).map(|(_, i)| i.item))
+                .or_else(|| {
+                    seq.video_tracks.iter().rev().chain(seq.audio_tracks.iter()).filter(|tr| tg.contains(&tr.id)).find_map(|tr| tr.item_at(t).map(|i| i.item))
+                })
+                .ok_or_else(|| EngineError::Other("select a clip to reveal".into()))?;
+            reveal_in_project(s, item)
+        }),
+        cmd!("sequence.revealInProject", "Reveal Sequence in Project", [], None, r#"{"item":id?}"#, has_seq, |s, p| {
+            let item = item_p(p, "item").or(s.state.active_sequence).ok_or(EngineError::NoSequence)?;
+            reveal_in_project(s, item)
+        }),
         // ================= Sequence =================
         cmd!("sequence.open", "Open in Timeline", [], None, r#"{"item":id}"#, always, |s, p| {
             let id = item_p(p, "item").ok_or_else(|| bad("sequence.open", "need `item`"))?;
@@ -2574,6 +2594,14 @@ fn paste(s: &mut Session, insert: bool) -> Result<Value> {
     })?;
     s.set_playhead(end);
     Ok(Value::Null)
+}
+
+/// Select `item` in the Project panel and ask the UI to show it there.
+fn reveal_in_project(s: &mut Session, item: ItemId) -> Result<Value> {
+    s.project.item(item).ok_or_else(|| EngineError::Other("that clip's source is not in the project".into()))?;
+    s.state.project_selection = vec![item];
+    s.events.push(crate::Event::RevealInProject(item));
+    Ok(json!({"item": item.0}))
 }
 
 /// The name Nest… offers: the first unused "Nested Sequence NN".

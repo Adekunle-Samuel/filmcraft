@@ -1,5 +1,5 @@
 //! Editing with nested sequences: the nest toggle ("Insert and overwrite sequences as nests or
-//! individual clips"), a sequence as a source, and Match Frame on a nest.
+//! individual clips"), a sequence as a source, Match Frame on a nest, and Reveal in Project.
 //! Premiere's behaviour was observed in Premiere Pro 26.5.2.
 
 use super::*;
@@ -185,6 +185,31 @@ fn match_frame_on_a_nest_loads_the_nested_sequence_at_the_frame_it_shows() {
     s.set_playhead(clip(&s).start + rate.tick_of(4));
     s.execute("sequence.matchFrame", json!({})).unwrap();
     assert_eq!((s.state.source_item, s.state.source_playhead), (Some(nested), rate.tick_of(5 + 8)));
+}
+
+#[test]
+fn reveal_in_project_selects_the_clips_item_and_asks_the_ui_to_show_it() {
+    let mut s = demo();
+    let v1 = clips(&s, TrackKind::Video, 0);
+    s.drain_events();
+    // the selected clip
+    s.execute("timeline.select", json!({"clips": [v1[2].id.0]})).unwrap();
+    assert_eq!(s.execute("clip.revealInProject", json!({})).unwrap()["item"], v1[2].item.0);
+    assert_eq!(s.state.project_selection, vec![v1[2].item]);
+    assert!(s.drain_events().iter().any(|e| matches!(e, Event::RevealInProject(i) if *i == v1[2].item)));
+    // a named clip
+    s.execute("clip.revealInProject", json!({"clip": v1[0].id.0})).unwrap();
+    assert_eq!(s.state.project_selection, vec![v1[0].item]);
+    // nothing selected: the clip under the playhead on a targeted track
+    s.execute("timeline.select", json!({"clips": []})).unwrap();
+    s.set_playhead(v1[3].start + Tick(v1[3].duration.0 / 2));
+    s.execute("clip.revealInProject", json!({})).unwrap();
+    assert_eq!(s.state.project_selection, vec![v1[3].item]);
+    // the sequence in the Timeline
+    let main = s.state.active_sequence.unwrap();
+    s.execute("sequence.revealInProject", json!({})).unwrap();
+    assert_eq!(s.state.project_selection, vec![main]);
+    assert!(s.drain_events().iter().any(|e| matches!(e, Event::RevealInProject(i) if *i == main)));
 }
 
 #[test]
