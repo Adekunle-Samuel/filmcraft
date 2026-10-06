@@ -1,5 +1,5 @@
-//! Headless UI tests of editing with nested sequences: the nest toggle button and Reveal in
-//! Project.
+//! Headless UI tests of editing with nested sequences: the nest toggle button, Reveal in Project
+//! and the clip menu's Multi-Camera submenu.
 
 use std::sync::mpsc::{Sender, channel};
 
@@ -117,4 +117,19 @@ fn reveal_in_project_shows_the_clips_item_in_the_project_panel() {
         }
         assert!(d.has(&format!("project.item.{}", item.0)), "{mode:?}: the item is on show");
     }
+}
+
+#[test]
+fn the_clip_menu_offers_multi_camera_and_reveal_in_project() {
+    let mut d = Driver::new();
+    let (clip, item) = {
+        let it = &d.app().session.active_sequence().unwrap().video_tracks[0].items[0];
+        (it.id.0, it.item)
+    };
+    d.ok("ui.click", json!({"id": format!("timeline.clip.{clip}"), "button": "right"}));
+    d.frames(3);
+    assert!(d.has("timeline.clipMenu.clip.multicam"));
+    assert!(d.has("timeline.clipMenu.clip.revealInProject"));
+    d.click("timeline.clipMenu.clip.revealInProject");
+    assert_eq!(d.app().session.state.project_selection, vec![item]);
 }
