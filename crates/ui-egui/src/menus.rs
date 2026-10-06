@@ -22,6 +22,8 @@ macro_rules! uic {
 }
 
 pub const UI_COMMANDS: &[UiCommand] = &[
+    uic!("app.language.english", "English", ["Edit", "Language"], None),
+    uic!("app.language.japanese", "日本語", ["Edit", "Language"], None),
     uic!("playback.toggle", "Play/Stop", [], Some("Space")),
     uic!("playback.forward", "Shuttle Right", [], Some("L")),
     uic!("playback.stop", "Shuttle Stop", [], Some("K")),
@@ -144,6 +146,19 @@ pub fn panel_command_id(p: PanelKind) -> String {
 
 /// Execute a UI or engine command by id.
 pub fn invoke(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, params: Value) -> Result<Value, String> {
+    if matches!(id, "app.language.english" | "app.language.japanese") {
+        // no Japanese font is bundled: Japanese needs one installed on the system
+        if id == "app.language.japanese" && !crate::i18n::install_japanese_font(ctx) {
+            return Err("no Japanese font is installed on this system (for example Noto Sans CJK JP); the interface stays in English".into());
+        }
+        app.ui.language = if id == "app.language.japanese" { crate::i18n::Language::Ja } else { crate::i18n::Language::En };
+        let items = menu_items(app);
+        if let Some(hook) = app.hooks.shortcuts_changed.as_mut() {
+            hook(&items);
+        }
+        ctx.request_repaint();
+        return Ok(json!(app.ui.language));
+    }
     if id == "perf.stats" {
         // the engine's counters plus playback, frame workers and UI timings
         return Ok(crate::perf::stats(app));
@@ -382,6 +397,12 @@ pub const MENUS: [&str; 9] = ["File", "Edit", "Clip", "Sequence", "Markers", "Gr
 pub fn menu_items(app: &FilmcraftApp) -> Vec<MenuItem> {
     let mut v = menu_items_for(&app.session);
     for it in &mut v {
+        it.label = app.ui.language.tr(&it.label).to_string();
+        match it.id.as_str() {
+            "app.language.english" => it.checked = Some(app.ui.language == crate::i18n::Language::En),
+            "app.language.japanese" => it.checked = Some(app.ui.language == crate::i18n::Language::Ja),
+            _ => {}
+        }
         if it.id.starts_with("view.") {
             it.checked = crate::panels::monitor_view::checked(app, &it.id).or(crate::panels::menu_dialogs::checked(app, &it.id));
             it.enabled &= crate::panels::monitor_view::enabled(app, &it.id);
@@ -518,13 +539,14 @@ pub fn external_commands() -> Vec<filmcraft_engine::shortcuts::CommandInfo> {
 
 /// Draw the in-window menu bar.
 pub fn menu_bar(app: &mut FilmcraftApp, ui: &mut egui::Ui) {
+    ui.ctx().data_mut(|d| d.insert_temp(egui::Id::new("interface-language"), app.ui.language));
     let items = menu_items(app);
     let ctx = ui.ctx().clone();
     let mut clicked: Option<String> = None;
     egui::MenuBar::new().ui(ui, |ui| {
         for top in MENUS {
             let mine: Vec<&MenuItem> = items.iter().filter(|i| i.path.first().map(String::as_str) == Some(top)).collect();
-            ui.menu_button(top, |ui| {
+            ui.menu_button(app.ui.language.tr(top), |ui| {
                 ui.set_min_width(260.0);
                 if mine.is_empty() {
                     ui.add_enabled(false, egui::Button::new("(empty)"));
@@ -549,7 +571,8 @@ fn menu_level(ui: &mut egui::Ui, items: &[&MenuItem], depth: usize, clicked: &mu
             }
             subs.push(sub);
             let inner: Vec<&MenuItem> = items.iter().copied().filter(|x| x.path.get(depth).map(String::as_str) == Some(sub)).collect();
-            ui.menu_button(sub, |ui| {
+            let language = ui.ctx().data(|d| d.get_temp::<crate::i18n::Language>(egui::Id::new("interface-language"))).unwrap_or_default();
+            ui.menu_button(language.tr(sub), |ui| {
                 ui.set_min_width(220.0);
                 menu_level(ui, &inner, depth + 1, clicked);
             });

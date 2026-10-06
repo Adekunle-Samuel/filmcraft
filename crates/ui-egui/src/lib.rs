@@ -13,6 +13,7 @@ pub mod crash;
 pub mod dock;
 pub mod frames;
 pub mod header;
+pub mod i18n;
 pub mod icons;
 pub mod links;
 pub mod menus;
@@ -854,8 +855,8 @@ impl FilmcraftApp {
         if self.bindings_rev != self.session.shortcuts.revision {
             self.bindings = menus::bindings(self);
             self.bindings_rev = self.session.shortcuts.revision;
+            let items = menus::menu_items(self);
             if let Some(hook) = self.hooks.shortcuts_changed.as_mut() {
-                let items = menus::menu_items_for(&self.session);
                 hook(&items);
             }
         }
@@ -1235,6 +1236,11 @@ impl eframe::App for FilmcraftApp {
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         if !self.styled {
             theme::install(ctx, &self.tokens);
+            // theme::install replaces the fonts: add the system Japanese font back (or fall back to
+            // English when a saved Japanese setting meets a system without one)
+            if self.ui.language == i18n::Language::Ja && !i18n::install_japanese_font(ctx) {
+                self.ui.language = i18n::Language::En;
+            }
             self.styled = true;
             ctx.request_repaint();
         } else {

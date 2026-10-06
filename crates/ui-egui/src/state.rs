@@ -344,6 +344,8 @@ pub enum GuideDialog {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct UiState {
+    #[serde(default)]
+    pub language: crate::i18n::Language,
     pub tool: Tool,
     pub mode: Mode,
     pub workspace: String,
@@ -721,6 +723,7 @@ fn yes() -> bool {
 impl Default for UiState {
     fn default() -> Self {
         Self {
+            language: crate::i18n::Language::default(),
             tool: Tool::Selection,
             mode: Mode::Edit,
             workspace: "Editing".into(),

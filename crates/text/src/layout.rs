@@ -851,6 +851,22 @@ mod tests {
     }
 
     #[test]
+    fn japanese_vertical_titles_with_an_installed_font() {
+        // Japanese glyphs come from a system font (none is bundled): skip where none is installed.
+        crate::fonts::scan_system();
+        if !crate::fonts::all_faces().iter().any(|f| "日本語縦書き".chars().all(|c| f.has_char(c))) {
+            eprintln!("SKIPPED: no Japanese font installed");
+            return;
+        }
+        let l = layout("日本語\n縦書き", &st(40.0), &ParagraphStyle { vertical: true, ..Default::default() });
+        assert!(l.vertical);
+        assert_eq!(l.glyphs.len(), 6);
+        assert!(l.glyphs.iter().all(|g| g.id != 0));
+        assert!(l.glyphs[1].y > l.glyphs[0].y);
+        assert!(l.glyphs[3].x < l.glyphs[0].x);
+    }
+
+    #[test]
     fn vertical_text_stacks_characters_in_columns() {
         let p = ParagraphStyle { vertical: true, ..Default::default() };
         let l = layout("abc\nde", &st(40.0), &p);
