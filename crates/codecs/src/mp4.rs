@@ -359,7 +359,8 @@ impl MediaSource for Mp4Source {
         let ch = ainfo.channels.max(1) as usize;
         // Map the requested window to source samples (edit list offset applied: presentation = pts + edit_offset).
         let ratio = src_rate as f64 / sample_rate as f64;
-        let s0 = (start as f64 * ratio).floor() as i64 - self.audio_offset * src_rate as i64 / track.timescale.max(1) as i64;
+        let p0 = (start as f64 * ratio).floor() as i64;
+        let s0 = p0 - self.audio_offset * src_rate as i64 / track.timescale.max(1) as i64;
         let need = (frames as f64 * ratio).ceil() as i64 + 2;
         // Samples-per-unit: the track timescale is usually the sample rate for audio.
         let unit = src_rate as f64 / track.timescale.max(1) as f64;
@@ -393,8 +394,9 @@ impl MediaSource for Mp4Source {
             }
             return Ok(out);
         }
-        // resample the local window
-        let frac = s0 as f64 - start as f64 * ratio;
+        // Resample the local window. Its first sample is presentation sample `p0`; the edit list
+        // offset is already in `s0` and must not shift the read position a second time.
+        let frac = p0 as f64 - start as f64 * ratio;
         let mut out = AudioBuffer::silence(sample_rate, ch, frames);
         for k in 0..frames {
             let pos = k as f64 * ratio - frac;
