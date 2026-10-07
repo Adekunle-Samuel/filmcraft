@@ -97,6 +97,9 @@ pub const UI_COMMANDS: &[UiCommand] = &[
     uic!("window.workspace.captionsandgraphics", "Captions and Graphics", ["Window", "Workspaces"], Some("Alt+Shift+6")),
     uic!("window.workspace.allpanels", "All Panels", ["Window", "Workspaces"], None),
     uic!("window.workspace.reset", "Reset to Saved Layout", ["Window", "Workspaces"], Some("Alt+Shift+0")),
+    uic!("window.workspace.saveChanges", "Save Changes to this Workspace", ["Window", "Workspaces"], None),
+    uic!("window.workspace.saveAs", "Save as New Workspace…", ["Window", "Workspaces"], None),
+    uic!("window.workspace.edit", "Edit Workspaces…", ["Window", "Workspaces"], None),
     uic!("tool.selection", "Selection Tool", [], Some("V")),
     uic!("tool.trackSelectForward", "Track Select Forward Tool", [], Some("A")),
     uic!("tool.trackSelectBackward", "Track Select Backward Tool", [], Some("Shift+A")),
@@ -173,15 +176,8 @@ pub fn invoke(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, params: Val
         app.show_panel(p);
         return Ok(Value::Null);
     }
-    if let Some(ws) = id.strip_prefix("window.workspace.") {
-        if ws == "reset" {
-            let name = app.ui.workspace.clone();
-            app.set_workspace(&name);
-            return Ok(Value::Null);
-        }
-        let name = crate::dock::WORKSPACES.iter().find(|w| w.to_ascii_lowercase().replace(' ', "") == ws).ok_or_else(|| format!("unknown workspace `{ws}`"))?;
-        app.set_workspace(name);
-        return Ok(json!({"workspace": name}));
+    if let Some(r) = crate::panels::workspaces::route(app, id, &params) {
+        return r;
     }
     if let Some(t) = id.strip_prefix("tool.") {
         let tool = Tool::from_name(t).ok_or_else(|| format!("unknown tool `{t}`"))?;
@@ -414,6 +410,7 @@ pub fn menu_items(app: &FilmcraftApp) -> Vec<MenuItem> {
             it.enabled &= crate::panels::monitor_view::enabled(app, &it.id);
         }
     }
+    crate::panels::workspaces::menu(app, &mut v);
     v
 }
 
