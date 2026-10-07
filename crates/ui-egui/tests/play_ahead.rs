@@ -95,6 +95,8 @@ fn a_device_with_other_channels_plays_the_channels_both_have() {
     for dev_ch in [1, 6, 10, 16] {
         let stats = Arc::new(AudioStats::default());
         let mut fill = spawn(frame_numbers(Duration::ZERO, Arc::default()), 1, SR, 2, stats.clone());
+        // let the mixer get ahead first, as a device would before its first callback
+        std::thread::sleep(Duration::from_millis(30));
         let out = play(&mut fill, dev_ch, 4);
         for (p, f) in out.chunks(dev_ch).enumerate() {
             let want: Vec<f32> = (0..dev_ch).map(|c| if c < 2 { (1 + p) as f32 } else { 0.0 }).collect();
