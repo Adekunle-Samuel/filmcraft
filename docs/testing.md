@@ -203,7 +203,11 @@ brute-force barycentric reference, `.cube`/`.3dl` round trips), `filmcraft-gpu`
 
 Not covered headless: `ui.screenshot` (needs a real viewport), the wgpu monitor path (the harness
 runs the CPU texture path), audio output, and wall-clock playback advance (kittest frames do not
-advance real time). Use `Driver` for new UI regressions: `d.exec(command, params)`,
+advance real time). Playing sound is covered without a device: `play_ahead` tests drive the
+mixed-ahead ring with a wall-clock device (order, underruns stay in time, mixer panic, stop), and
+`cargo run --release -p filmcraft-ui-egui --example bench_audio -- <project.fcproj>` plays a real
+project's sequences through a simulated 48 kHz device and counts dropouts, mixing in the callback
+(`direct`, as before) against mixing ahead (`ahead`). Use `Driver` for new UI regressions: `d.exec(command, params)`,
 `d.ok(method, params)`, `d.frames(n)`.
 
 ### Interactive checks
