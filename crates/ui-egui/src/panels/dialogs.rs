@@ -57,6 +57,12 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
             }
             return;
         }
+        Dialog::AddTracks => {
+            if !add_tracks(app, ctx) {
+                app.dialog = None;
+            }
+            return;
+        }
         Dialog::NewSequence | Dialog::Preferences | Dialog::Recovery | Dialog::RevertConfirm => {}
     }
     if !open {
@@ -142,6 +148,121 @@ fn audio_gain(app: &mut FilmcraftApp, ctx: &egui::Context) -> bool {
         keep = false;
     }
     app.ui.audio_gain = draft;
+    keep
+}
+
+/// Sequence ▸ Add Tracks…, laid out as Premiere Pro's dialog: "Add video tracks" (Amount,
+/// Placement), "Add audio tracks" (Amount, Placement, Track type: Standard, 5.1, Adaptive, Mono)
+/// and "Add audio submix tracks" (Amount, Placement, Track type: Stereo, 5.1, Adaptive, Mono).
+/// Placement is "Before First Track" or after one of the tracks; the submix placement is off
+/// while the sequence has no submix track. Returns whether the dialog stays open.
+///
+/// Automation ids, with `<kind>` = `video`, `audio` or `submix`: `addTracks.<kind>.amount`,
+/// `addTracks.<kind>.placement` and, while its list is open, `addTracks.<kind>.placement.option.<n>`
+/// (n tracks before the new ones; 0 = Before First Track); `addTracks.<audio|submix>.type` and
+/// `addTracks.<audio|submix>.type.option.<standard|stereo|5.1|adaptive|mono>`; `addTracks.ok`,
+/// `addTracks.cancel`.
+fn add_tracks(app: &mut FilmcraftApp, ctx: &egui::Context) -> bool {
+    let Some(seq) = app.session.active_sequence() else { return false };
+    let names = |tracks: &[filmcraft_engine::project::Track]| tracks.iter().map(|t| t.name.clone()).collect::<Vec<_>>();
+    let (vnames, anames, snames) = (names(&seq.video_tracks), names(&seq.audio_tracks), names(&seq.submix_tracks));
+    let mut d = app.ui.add_tracks.clone();
+    let mut keep = true;
+    let mut apply = false;
+    let mut elems: Vec<(String, egui::Rect, String)> = Vec::new();
+    const AUDIO_TYPES: [(&str, &str); 4] = [("standard", "Standard"), ("5.1", "5.1"), ("adaptive", "Adaptive"), ("mono", "Mono")];
+    const SUBMIX_TYPES: [(&str, &str); 4] = [("stereo", "Stereo"), ("5.1", "5.1"), ("adaptive", "Adaptive"), ("mono", "Mono")];
+    egui::Window::new("Add Tracks").collapsible(false).resizable(false).anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0]).show(ctx, |ui| {
+        ui.set_min_width(320.0);
+        let groups: [(&str, &str, &mut u32, &mut usize, &[String], Option<(&mut String, &[(&str, &str); 4])>); 3] = [
+            ("video", "Add video tracks", &mut d.video, &mut d.video_after, &vnames, None),
+            ("audio", "Add audio tracks", &mut d.audio, &mut d.audio_after, &anames, Some((&mut d.audio_type, &AUDIO_TYPES))),
+            ("submix", "Add audio submix tracks", &mut d.submix, &mut d.submix_after, &snames, Some((&mut d.submix_type, &SUBMIX_TYPES))),
+        ];
+        for (kind, title, amount, after, tracks, track_type) in groups {
+            ui.add_space(4.0);
+            ui.label(egui::RichText::new(title).strong());
+            ui.group(|ui| {
+                ui.set_width(ui.available_width());
+                egui::Grid::new(("add-tracks", kind)).num_columns(2).spacing([10.0, 6.0]).show(ui, |ui| {
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| ui.label("Amount"));
+                    let r = ui.add(egui::DragValue::new(amount).range(0..=99).speed(0.1));
+                    elems.push((format!("addTracks.{kind}.amount"), r.rect, amount.to_string()));
+                    ui.end_row();
+
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| ui.label("Placement"));
+                    *after = (*after).min(tracks.len());
+                    let place = |n: usize| match n.checked_sub(1).and_then(|i| tracks.get(i)) {
+                        Some(name) => format!("After {name}"),
+                        None => "Before First Track".to_string(),
+                    };
+                    let shown = place(*after);
+                    // nowhere to choose from while the sequence has no track of the kind
+                    ui.add_enabled_ui(!tracks.is_empty(), |ui| {
+                        let r = egui::ComboBox::from_id_salt(("add-tracks-placement", kind)).selected_text(&shown).width(190.0).show_ui(ui, |ui| {
+                            for n in 0..=tracks.len() {
+                                let label = place(n);
+                                let o = ui.selectable_value(after, n, &label);
+                                elems.push((format!("addTracks.{kind}.placement.option.{n}"), o.rect, label));
+                            }
+                        });
+                        elems.push((format!("addTracks.{kind}.placement"), r.response.rect, shown.clone()));
+                    });
+                    ui.end_row();
+
+                    if let Some((chosen, types)) = track_type {
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| ui.label("Track type"));
+                        let shown = types.iter().find(|(id, _)| *id == chosen.as_str()).map_or(types[0].1, |(_, label)| label).to_string();
+                        let r = egui::ComboBox::from_id_salt(("add-tracks-type", kind)).selected_text(&shown).width(190.0).show_ui(ui, |ui| {
+                            for (id, label) in types {
+                                let o = ui.selectable_value(chosen, id.to_string(), *label);
+                                elems.push((format!("addTracks.{kind}.type.option.{id}"), o.rect, label.to_string()));
+                            }
+                        });
+                        elems.push((format!("addTracks.{kind}.type"), r.response.rect, shown));
+                        ui.end_row();
+                    }
+                });
+            });
+        }
+        ui.add_space(10.0);
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            let o = ui.add(egui::Button::new(egui::RichText::new("OK").color(egui::Color32::WHITE)).fill(app.tokens.accent));
+            elems.push(("addTracks.ok".into(), o.rect, "OK".into()));
+            if o.clicked() {
+                apply = true;
+            }
+            let c = ui.button("Cancel");
+            elems.push(("addTracks.cancel".into(), c.rect, "Cancel".into()));
+            if c.clicked() {
+                keep = false;
+            }
+        });
+    });
+    for (id, r, l) in elems {
+        app.auto.add(&id, r, &l);
+    }
+    if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+        keep = false;
+    }
+    if ctx.input(|i| i.key_pressed(egui::Key::Enter)) && !ctx.egui_wants_keyboard_input() {
+        apply = true;
+    }
+    if apply {
+        // nothing asked for: OK closes the dialog and changes nothing
+        if d.video + d.audio + d.submix > 0 {
+            let params = serde_json::json!({
+                "video": d.video, "videoAfter": d.video_after,
+                "audio": d.audio, "audioAfter": d.audio_after, "audioType": d.audio_type,
+                "submix": d.submix, "submixAfter": d.submix_after, "submixType": d.submix_type,
+            });
+            if let Err(e) = app.session.execute("sequence.addTracks", params) {
+                app.ui.status = e.to_string();
+            }
+        }
+        keep = false;
+    }
+    app.ui.add_tracks = d;
     keep
 }
 
