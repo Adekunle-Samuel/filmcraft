@@ -1001,7 +1001,11 @@ impl FilmcraftApp {
                 }
             }
         });
-        for id in fire {
+        for mut id in fire {
+            // Select All / Deselect All act on the Project panel's items when it has focus (#168).
+            if self.ui.focused == PanelKind::Project && matches!(id.as_str(), "edit.selectAll" | "edit.deselectAll") {
+                id = id.replacen("edit.", "project.", 1);
+            }
             // Mark In/Out in the Source monitor when it has focus.
             let params = if self.ui.focused == PanelKind::Source
                 && (matches!(id.as_str(), "markers.markIn" | "markers.markOut") || id.starts_with("markers.markSplit") || id.starts_with("markers.goToSplit"))
