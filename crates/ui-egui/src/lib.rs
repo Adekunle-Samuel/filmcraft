@@ -1017,6 +1017,8 @@ impl FilmcraftApp {
         let focused = self.ui.focused.title();
         let mut fire = Vec::new();
         ctx.input_mut(|i| {
+            let modifiers = i.modifiers;
+            clipboard_events_as_keys(&mut i.events, modifiers);
             let panel = self.bindings.iter().filter(|b| b.3.as_deref() == Some(focused));
             let app_wide = self.bindings.iter().filter(|b| b.3.is_none());
             for (m, k, id, _) in panel.chain(app_wide) {
@@ -1561,6 +1563,79 @@ pub fn playback_mix(session: &Session, seq_id: filmcraft_project::ItemId, sr: u3
             filmcraft_engine::settings::map_output(&mix.channels[0], &mix.channels[1.min(mix.channels.len() - 1)], buf, ch, map);
         }
         panels::voiceover::mix_cues(buf, ch, cursor, &cues);
+    }
+}
+
+/// The windowing layer (egui-winit, and egui's web backend) reports the clipboard shortcuts as
+/// `Event::Copy` / `Event::Cut` / `Event::Paste` instead of key presses: Ctrl+C/X/V on Windows and
+/// Linux, plus Ctrl+Insert, Shift+Insert and Shift+Delete on Windows. The shortcut bindings only
+/// match key presses, so Copy, Cut, Paste, Paste Insert, Paste Attributes and (on Windows) Ripple
+/// Delete never fired from the keyboard (#199). macOS was unaffected because its native menu bar
+/// takes the key equivalents first.
+///
+/// Add the key press each event stands for, with the modifiers held, so the bindings see it. The
+/// original event stays for anything else that reads it. Only called when no text field has
+/// keyboard focus; text fields keep handling the clipboard themselves.
+fn clipboard_events_as_keys(events: &mut Vec<egui::Event>, modifiers: egui::Modifiers) {
+    use egui::{Event, Key};
+    let keys: Vec<Key> = events
+        .iter()
+        .filter_map(|e| match e {
+            Event::Copy if modifiers.command => Some(Key::C),
+            Event::Copy => Some(Key::Copy),
+            Event::Cut if modifiers.command => Some(Key::X),
+            Event::Cut if modifiers.shift => Some(Key::Delete),
+            Event::Cut => Some(Key::Cut),
+            Event::Paste(_) if modifiers.command => Some(Key::V),
+            Event::Paste(_) if modifiers.shift => Some(Key::Insert),
+            Event::Paste(_) => Some(Key::Paste),
+            _ => None,
+        })
+        .collect();
+    events.extend(keys.into_iter().map(|key| Event::Key { key, physical_key: Some(key), pressed: true, repeat: false, modifiers }));
+}
+
+#[cfg(test)]
+mod clipboard_key_tests {
+    use egui::{Event, Key, Modifiers};
+
+    fn keys(events: Vec<Event>, m: Modifiers) -> Vec<(Key, Modifiers)> {
+        let mut events = events;
+        super::clipboard_events_as_keys(&mut events, m);
+        events.into_iter().filter_map(|e| if let Event::Key { key, modifiers, pressed: true, .. } = e { Some((key, modifiers)) } else { None }).collect()
+    }
+
+    #[test]
+    fn ctrl_c_x_v_become_key_presses() {
+        let c = Modifiers::COMMAND;
+        assert_eq!(keys(vec![Event::Copy], c), vec![(Key::C, c)]);
+        assert_eq!(keys(vec![Event::Cut], c), vec![(Key::X, c)]);
+        assert_eq!(keys(vec![Event::Paste("x".into())], c), vec![(Key::V, c)]);
+    }
+
+    #[test]
+    fn extra_modifiers_are_kept() {
+        // Paste Insert (Ctrl+Shift+V) and Paste Attributes (Ctrl+Alt+V) also arrive as Paste
+        let cs = Modifiers::COMMAND | Modifiers::SHIFT;
+        assert_eq!(keys(vec![Event::Paste("x".into())], cs), vec![(Key::V, cs)]);
+        let ca = Modifiers::COMMAND | Modifiers::ALT;
+        assert_eq!(keys(vec![Event::Paste("x".into())], ca), vec![(Key::V, ca)]);
+    }
+
+    #[test]
+    fn windows_insert_and_delete_variants() {
+        // Shift+Delete (Ripple Delete) arrives as Cut on Windows; Shift+Insert as Paste
+        assert_eq!(keys(vec![Event::Cut], Modifiers::SHIFT), vec![(Key::Delete, Modifiers::SHIFT)]);
+        assert_eq!(keys(vec![Event::Paste("x".into())], Modifiers::SHIFT), vec![(Key::Insert, Modifiers::SHIFT)]);
+    }
+
+    #[test]
+    fn other_events_are_left_alone() {
+        let mut events = vec![Event::Text("a".into()), Event::Copy];
+        super::clipboard_events_as_keys(&mut events, Modifiers::COMMAND);
+        assert_eq!(events.len(), 3);
+        assert!(matches!(events[0], Event::Text(_)));
+        assert!(matches!(events[1], Event::Copy));
     }
 }
 
