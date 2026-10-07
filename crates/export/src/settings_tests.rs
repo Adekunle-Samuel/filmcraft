@@ -427,3 +427,55 @@ fn a_time_left_reads_like_a_clock() {
     assert_eq!(f(100 * 3600 * 1000), "100:00:00");
     assert!(!format_eta(Duration::MAX).is_empty(), "the largest duration cannot overflow");
 }
+
+#[test]
+fn h265_is_a_format_that_needs_a_registered_encoder() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    // names, ids, files and serialized settings
+    for name in ["hevc", "H.265", "h265", "HVC1", "x265"] {
+        assert_eq!(Format::from_name(name), Some(Format::Hevc), "{name}");
+    }
+    assert_eq!(Format::from_name(Format::Hevc.id()), Some(Format::Hevc));
+    assert_eq!((Format::Hevc.extension(), Format::Hevc.label()), ("mp4", "H.265 (HEVC)"));
+    assert!(Format::ALL.contains(&Format::Hevc) && Format::ALL.len() == 14);
+    let s: ExportSettings = serde_json::from_value(serde_json::json!({"format": "hevc"})).unwrap();
+    assert_eq!(s.format, Format::Hevc);
+    assert_eq!(serde_json::to_value(&s).unwrap()["format"], "hevc");
+
+    // it is H.264's family: MP4 with AAC, or QuickTime; the same size estimate
+    let h = ExportSettings { format: Format::Hevc, ..Default::default() };
+    assert_eq!((h.audio_codec(), h.extension()), (AudioCodec::Aac, "mp4"));
+    assert_eq!(ExportSettings { multiplexer: Multiplexer::Mov, ..h.clone() }.extension(), "mov");
+    // 10 s of 20 Mbps video + 320 kbps AAC ≈ 25.4 MB, like H.264
+    let b = h.estimate_bytes(1920, 1080, FrameRate::FPS_25, 48_000, Tick(10 * TICKS_PER_SECOND));
+    assert!((b as f64 - 25.4e6).abs() < 0.2e6, "{b}");
+    let summary = h.summary(1920, 1080, FrameRate::FPS_25, 48_000, Tick(10 * TICKS_PER_SECOND));
+    assert_eq!(summary.format, "H.265 (HEVC) (MP4)");
+    assert!(summary.video.contains("HEVC Main") && summary.video.contains("Target 20.00 Mbps"), "{}", summary.video);
+
+    // a hardware encoder has one pass
+    let e = ExportSettings { bitrate_mode: BitrateMode::Vbr2Pass, ..h.clone() }.validate().unwrap_err();
+    assert!(e.to_string().contains("two-pass"), "{e}");
+    assert!(ExportSettings { bitrate_mode: BitrateMode::Cbr, ..h.clone() }.validate().is_ok());
+
+    // formats with a built-in encoder are always available; this one only when a registered probe says so
+    assert!(Format::ALL.iter().filter(|f| f.has_builtin_encoder()).all(|f| available(*f)));
+    assert!(!Format::Hevc.has_builtin_encoder());
+    static HERE: AtomicBool = AtomicBool::new(false);
+    fn probe() -> bool {
+        HERE.load(Ordering::SeqCst)
+    }
+    assert!(!available(Format::Hevc), "nothing registered an encoder for it");
+    // and an export says so, honestly
+    let (p, seq, m) = matte([0.0, 0.0, 1.0, 1.0], 160, 90, None);
+    let sc = Scratch::new("h265-missing");
+    let err = export(&p, seq, &ExportSettings { path: sc.path("x.mp4"), include_audio: false, ..h.clone() }, &m, &Progress::default()).unwrap_err().to_string();
+    assert!(err.contains("H.265") && err.contains("encoder not available"), "{err}");
+    register_format_probe(Format::Hevc, probe);
+    register_format_probe(Format::Hevc, probe); // the same probe twice is harmless
+    assert!(!available(Format::Hevc));
+    HERE.store(true, Ordering::SeqCst);
+    assert!(available(Format::Hevc));
+    HERE.store(false, Ordering::SeqCst);
+    assert!(!available(Format::Hevc));
+}
