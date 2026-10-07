@@ -250,6 +250,9 @@ pub(crate) fn item_p(p: &Value, k: &str) -> Option<ItemId> {
 /// the same time offset on their own tracks, so picture and sound stay in sync; a partner on a
 /// locked track, or one whose position would not change, stays as it is. Nothing moves before the sequence start: when a clip would,
 /// every clip of the call lands later by the same amount, so the spacing asked for is kept.
+/// `overwritten` lists every clip the move covered without being asked to move it: its length
+/// before and after (ticks) and the clips what is left of it now lives on as (none = removed; a
+/// clip a moved clip lands inside is split in two).
 fn move_clips(s: &mut Session, p: &Value) -> Result<Value> {
     const CMD: &str = "timeline.move";
     let mut listed: Vec<(ClipId, TrackId, Tick)> = Vec::new();
@@ -292,8 +295,31 @@ fn move_clips(s: &mut Session, p: &Value) -> Result<Value> {
         moves.push((clip, track, start));
     }
     let ins = bool_p(p, "insert").unwrap_or(false);
+    // every clip on the sequence now: id -> (track, start, end, project item)
+    let spots = |s: &Session| -> Vec<(u64, TrackId, Tick, Tick, ItemId)> {
+        let q = s.active_sequence();
+        q.into_iter().flat_map(|q| q.all_tracks()).flat_map(|t| t.items.iter().map(move |i| (i.id.0, t.id, i.start, i.end(), i.item))).collect()
+    };
+    let before = spots(s);
     s.edit_sequence(if ins { "Move (Insert)" } else { "Move" }, |q, ctx, _| Ok(edit::move_items(q, &moves, ins, ctx)?))?;
-    Ok(json!({"moved": moves.iter().map(|m| m.0.0).collect::<Vec<_>>()}))
+    // An overwrite shortens, splits or removes whatever already sits where a clip lands, and a
+    // shortened clip may live on under a new id: name each clip the move changed without being
+    // asked to, with what is left of it, so the caller hears about it instead of finding out later.
+    let after = spots(s);
+    let moved = |c: u64| moves.iter().any(|m| m.0.0 == c);
+    let new = |c: u64| !before.iter().any(|b| b.0 == c);
+    let mut overwritten = Vec::new();
+    for &(c, track, start, end, item) in before.iter().filter(|b| !moved(b.0)) {
+        let kept = after.iter().find(|a| a.0 == c);
+        if ins || kept.is_some_and(|k| (k.2, k.3) == (start, end)) {
+            continue; // untouched (an insert only shifts clips, it never covers one)
+        }
+        let pieces: Vec<_> =
+            after.iter().filter(|a| a.0 == c || (new(a.0) && !moved(a.0) && a.1 == track && a.4 == item && a.2 >= start && a.3 <= end)).collect();
+        let now: i64 = pieces.iter().map(|a| (a.3 - a.2).0).sum();
+        overwritten.push(json!({"clip": c, "was": (end - start).0, "now": now, "pieces": pieces.iter().map(|a| a.0).collect::<Vec<_>>()}));
+    }
+    Ok(json!({"moved": moves.iter().map(|m| m.0.0).collect::<Vec<_>>(), "overwritten": overwritten}))
 }
 
 /// Expand a clip selection with linked partners (when linked selection is on).
