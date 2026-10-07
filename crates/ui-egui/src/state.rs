@@ -25,10 +25,11 @@ pub enum Tool {
     Hand,
     Zoom,
     Type,
+    VerticalType,
 }
 
 impl Tool {
-    pub const ALL: [Tool; 16] = [
+    pub const ALL: [Tool; 17] = [
         Tool::Selection,
         Tool::TrackSelectForward,
         Tool::TrackSelectBackward,
@@ -45,6 +46,7 @@ impl Tool {
         Tool::Hand,
         Tool::Zoom,
         Tool::Type,
+        Tool::VerticalType,
     ];
     pub fn label(self) -> &'static str {
         match self {
@@ -64,6 +66,7 @@ impl Tool {
             Tool::Hand => "Hand Tool",
             Tool::Zoom => "Zoom Tool",
             Tool::Type => "Type Tool",
+            Tool::VerticalType => "Vertical Type Tool",
         }
     }
     pub fn shortcut(self) -> &'static str {
@@ -83,6 +86,7 @@ impl Tool {
             Tool::Hand => "H",
             Tool::Zoom => "Z",
             Tool::Type => "T",
+            Tool::VerticalType => "",
         }
     }
     pub fn icon(self) -> Icon {
@@ -102,7 +106,7 @@ impl Tool {
             Tool::Ellipse => Icon::Ellipse,
             Tool::Hand => Icon::Hand,
             Tool::Zoom => Icon::Zoom,
-            Tool::Type => Icon::Type,
+            Tool::Type | Tool::VerticalType => Icon::Type,
         }
     }
     pub fn from_name(s: &str) -> Option<Tool> {
@@ -122,7 +126,7 @@ impl Tool {
             vec![Tool::Slip, Tool::Slide],
             vec![Tool::Pen, Tool::Rectangle, Tool::Ellipse],
             vec![Tool::Hand, Tool::Zoom],
-            vec![Tool::Type],
+            vec![Tool::Type, Tool::VerticalType],
         ]
     }
 }

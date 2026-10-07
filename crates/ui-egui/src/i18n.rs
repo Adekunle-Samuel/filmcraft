@@ -840,6 +840,8 @@ const PORTUGUESE: &[(&str, &str)] = &[
 ];
 
 const JAPANESE: &[(&str, &str)] = &[
+    ("Type Tool", "文字ツール"),
+    ("Vertical Type Tool", "縦書き文字ツール"),
     ("Clip", "クリップ"),
     ("Sequence", "シーケンス"),
     ("Markers", "マーカー"),
