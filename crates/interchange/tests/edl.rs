@@ -358,3 +358,36 @@ proptest! {
         let _ = Tick::ZERO;
     }
 }
+
+/// A nested sequence is one event: reel AX, the nested sequence's name as the clip name, and its
+/// own time as the source timecode. Premiere Pro 26.5.2 writes the same (seen in an EDL it
+/// exported for a sequence with a nest):
+/// `001  AX       V     C        00:00:00:00 00:00:06:00 00:00:00:00 00:00:06:00` and
+/// `* FROM CLIP NAME: Nested Sequence 02`.
+#[test]
+fn a_nested_sequence_is_one_event_from_reel_ax() {
+    let rate = FrameRate::FPS_24;
+    let mut p = filmcraft_project::Project::new("n");
+    let a = media(&mut p, "/media/a.mov", true, true, rate);
+    let inner = sequence(&mut p, "Nested Sequence 02", rate, false);
+    clip(&mut p, inner, TrackKind::Video, 0, a, 0, 144, 0);
+    clip(&mut p, inner, TrackKind::Audio, 0, a, 0, 144, 0);
+    let outer = sequence(&mut p, "clipHD", rate, false);
+    // two seconds of the nest from its second 1, at second 3 of the sequence
+    let v = clip(&mut p, outer, TrackKind::Video, 0, inner, 72, 48, 24);
+    let s = clip(&mut p, outer, TrackKind::Audio, 0, inner, 72, 48, 24);
+    link(&mut p, outer, &[v, s]);
+    let (bytes, rep) = export(&p, outer, Format::Edl, &ExportOptions::default()).unwrap();
+    let text = String::from_utf8(bytes.clone()).unwrap();
+    let events: Vec<&str> = text.lines().filter(|l| l.starts_with("00")).collect();
+    assert_eq!(events.len(), 1, "{text}");
+    let fields: Vec<&str> = events[0].split_whitespace().collect();
+    assert_eq!(fields, ["001", "AX", "B", "C", "00:00:01:00", "00:00:03:00", "00:00:03:00", "00:00:05:00"], "{text}");
+    assert!(text.lines().any(|l| l == "* FROM CLIP NAME: Nested Sequence 02"), "{text}");
+    assert!(rep.mentions("nested sequences"), "the report says the nest's own edit is not in the EDL: {rep}");
+    // read back, it is a clip of that name at the same place (an EDL cannot hold the nested edit)
+    let (imp, _) = import(&bytes, Format::Edl, None).unwrap();
+    let q = imp.project.sequence(only_seq(&imp)).unwrap();
+    let c = &q.video_tracks[0].items[0];
+    assert_eq!((c.name.as_str(), c.start, c.duration, c.source_in), ("Nested Sequence 02", rate.tick_of(72), rate.tick_of(48), rate.tick_of(24)));
+}
