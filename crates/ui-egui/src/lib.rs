@@ -615,7 +615,7 @@ impl FilmcraftApp {
         let fill = play_ahead::spawn(mix, cursor, sr, a.channels(), self.playback.audio_stats.clone());
         #[cfg(target_arch = "wasm32")]
         let fill = {
-            let mut cursor = cursor;
+            let (mut mix, mut cursor) = (mix, cursor);
             Box::new(move |buf: &mut [f32], ch: usize| {
                 mix(cursor, buf, ch);
                 cursor += (buf.len() / ch.max(1)) as i64;
@@ -1333,7 +1333,7 @@ impl eframe::App for FilmcraftApp {
 /// The program mix that playback plays: `mix(device_frame, interleaved, channels)` renders the
 /// active sequence at device rate `sr` from `device_frame`, with the live project snapshot (edits
 /// made while playing are heard), Output Mapping, the 5.1 mixdown and voice-over cues.
-pub fn playback_mix(session: &Session, seq_id: filmcraft_project::ItemId, sr: u32) -> impl Fn(i64, &mut [f32], usize) + Send + 'static {
+pub fn playback_mix(session: &Session, seq_id: filmcraft_project::ItemId, sr: u32) -> impl FnMut(i64, &mut [f32], usize) + Send + 'static {
     let project = session.project.clone();
     let provider = session.media.provider(project.clone(), session.services.clone());
     let previews = session.previews.clone();
@@ -1343,6 +1343,7 @@ pub fn playback_mix(session: &Session, seq_id: filmcraft_project::ItemId, sr: u3
     let mixdown = filmcraft_audio_dsp::channels::Mixdown::from_id(&session.prefs.audio.mixdown_type).unwrap_or_default();
     let cues = panels::voiceover::cues(session, sr);
     previews.live.publish_project(project.clone());
+    let mut resampler = None;
     move |cursor: i64, buf: &mut [f32], ch: usize| {
         // the newest project snapshot: mixer moves and other edits are heard while playing
         let project = previews.live.project().filter(|p| p.sequence(seq_id).is_some()).unwrap_or_else(|| project.clone());
@@ -1351,7 +1352,6 @@ pub fn playback_mix(session: &Session, seq_id: filmcraft_project::ItemId, sr: u3
             return;
         };
         let n = buf.len() / ch.max(1);
-        // Mix at the sequence rate; convert when the device rate differs (nearest sample).
         let seq_sr = seq.settings.sample_rate;
         // a 5.1 Mix plays as six channels (L, R, C, LFE, Ls, Rs) on a device with at least six
         use filmcraft_audio_dsp::channels::Layout;
@@ -1359,17 +1359,18 @@ pub fn playback_mix(session: &Session, seq_id: filmcraft_project::ItemId, sr: u3
         let mix = if seq_sr == sr {
             previews.mix_layout(&project, seq_id, cursor, n, &provider, layout, mixdown)
         } else {
-            let s0 = (cursor as i128 * seq_sr as i128 / sr as i128) as i64;
-            let m = n * seq_sr as usize / sr as usize + 2;
-            let b = previews.mix_layout(&project, seq_id, s0, m, &provider, layout, mixdown);
-            let mut out = filmcraft_frame::AudioBuffer::silence(sr, b.channels.len(), n);
-            for (o, c) in out.channels.iter_mut().zip(&b.channels) {
-                for (i, x) in o.iter_mut().enumerate() {
-                    let j = (i * seq_sr as usize / sr as usize).min(m - 1);
-                    *x = c[j];
-                }
+            // Mix at the sequence rate as one continuous stream, interpolated to the device rate
+            // (started afresh when the rate or the channel layout changes while playing).
+            let key = (seq_sr, layout);
+            if resampler.as_ref().is_none_or(|(k, _)| *k != key) {
+                resampler = Some((key, filmcraft_audio_dsp::resample::StreamResampler::new(seq_sr, sr)));
             }
-            out
+            let Some((_, r)) = resampler.as_mut() else {
+                buf.fill(0.0);
+                return;
+            };
+            let channels = r.process(cursor, n, |s0, m| previews.mix_layout(&project, seq_id, s0, m, &provider, layout, mixdown).channels);
+            filmcraft_frame::AudioBuffer { sample_rate: sr, channels }
         };
         if layout == Layout::Surround51 {
             buf.fill(0.0);

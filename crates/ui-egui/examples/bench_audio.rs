@@ -118,7 +118,7 @@ fn write_wav(path: &std::path::Path, samples: &[f32]) -> std::io::Result<()> {
 }
 
 fn play(s: &Session, seq: ItemId, mode: &str, seconds: f64) -> Run {
-    let mix = filmcraft_ui_egui::playback_mix(s, seq, SR);
+    let mut mix = filmcraft_ui_egui::playback_mix(s, seq, SR);
     match mode {
         "direct" => {
             let mut cursor = 0i64;
