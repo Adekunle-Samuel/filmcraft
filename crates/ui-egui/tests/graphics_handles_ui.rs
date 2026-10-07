@@ -395,3 +395,35 @@ fn shape_edge_handles_stretch_one_axis() {
     assert!(near(bl, bl2), "bottom edge stays put: {bl:?} -> {bl2:?}");
     assert!((top2.1 - top.1 + 30.0).abs() < 2.0, "top follows the pointer: {top:?} -> {top2:?}");
 }
+
+#[test]
+fn a_hidden_layer_has_no_box_and_cannot_be_clicked() {
+    let mut d = Driver::new();
+    let pre = d.shape();
+    let clip: u64 = pre.split('.').nth(2).unwrap().parse().unwrap();
+    let layer = format!("program.layer.{clip}.0");
+    let ids = |d: &mut Driver| -> Vec<String> {
+        let v = d.ok("ui.elements", json!({"prefix": layer}));
+        v.as_array().unwrap().iter().map(|e| e["id"].as_str().unwrap().to_string()).collect()
+    };
+    assert_eq!(ids(&mut d).len(), 10, "the layer, its eight handles and its anchor: {:?}", ids(&mut d));
+    let r = d.rect(&layer);
+    let inside = (r[0] + r[2] / 4.0, r[1] + r[3] / 2.0);
+
+    // visibility off: still selected in the panel, but nothing of it is on the monitor
+    d.exec("graphics.set", json!({"clip": clip, "props": {"enabled": false}}));
+    d.frames(4);
+    assert_eq!(ids(&mut d), Vec::<String>::new());
+    d.exec("graphics.selectLayer", json!({"clip": clip, "layers": []}));
+    d.ok("ui.click", json!({"x": inside.0, "y": inside.1}));
+    d.frames(4);
+
+    // visibility on: the click where it was selected nothing, so it has no handles; now it can be clicked
+    d.exec("graphics.set", json!({"clip": clip, "layer": 0, "props": {"enabled": true}}));
+    d.frames(4);
+    assert_eq!(ids(&mut d), vec![layer.clone()], "not selected: no handles");
+    // (elsewhere on it, so that the two clicks are not a double click)
+    d.ok("ui.click", json!({"x": r[0] + r[2] * 0.75, "y": inside.1}));
+    d.frames(4);
+    assert_eq!(ids(&mut d).len(), 10);
+}
