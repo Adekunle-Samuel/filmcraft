@@ -237,7 +237,7 @@ pub fn monitor_overlay(app: &mut FilmcraftApp, ui: &mut egui::Ui, pic: Rect, fra
     let sel_layers = app.session.state.graphic_layers.clone();
     let editing = app.ui.gfx_edit.clone();
     // ---- boxes and handles
-    let graphics_tool = matches!(tool, Tool::Selection | Tool::Type | Tool::Rectangle | Tool::Ellipse | Tool::Pen);
+    let graphics_tool = matches!(tool, Tool::Selection | Tool::Type | Tool::VerticalType | Tool::Rectangle | Tool::Ellipse | Tool::Pen);
     if graphics_tool {
         for v in views.iter().filter(|v| Some(v.clip) == sel_clip) {
             let q = v.quad();
@@ -275,7 +275,7 @@ pub fn monitor_overlay(app: &mut FilmcraftApp, ui: &mut egui::Ui, pic: Rect, fra
     // cursors
     if let Some(p) = hover {
         match tool {
-            Tool::Type => ui.ctx().set_cursor_icon(egui::CursorIcon::Text),
+            Tool::Type | Tool::VerticalType => ui.ctx().set_cursor_icon(egui::CursorIcon::Text),
             Tool::Rectangle | Tool::Ellipse | Tool::Pen => ui.ctx().set_cursor_icon(egui::CursorIcon::Crosshair),
             Tool::Selection => {
                 if editing.as_ref().is_some_and(|e| views.iter().any(|v| v.clip.0 == e.clip && v.layer == e.layer && v.hit(p))) {
@@ -321,7 +321,7 @@ pub fn monitor_overlay(app: &mut FilmcraftApp, ui: &mut egui::Ui, pic: Rect, fra
             }
         } else {
             match tool {
-                Tool::Selection | Tool::Type => {
+                Tool::Selection | Tool::Type | Tool::VerticalType => {
                     // handles of the selected layers first
                     let handle = views
                         .iter()
@@ -461,7 +461,7 @@ pub fn monitor_overlay(app: &mut FilmcraftApp, ui: &mut egui::Ui, pic: Rect, fra
         let in_edit = edit_view.is_some_and(|v| v.hit(p));
         match tool {
             _ if in_edit => {}
-            Tool::Type => {
+            Tool::Type | Tool::VerticalType => {
                 if let Some(v) = views.iter().find(|v| v.is_text() && v.hit(p)) {
                     start_edit_at(app, ui, v, p, &mut actions);
                 } else {
@@ -473,7 +473,8 @@ pub fn monitor_overlay(app: &mut FilmcraftApp, ui: &mut egui::Ui, pic: Rect, fra
                     if let Some(cl) = into {
                         prm["clip"] = json!(cl.0);
                     }
-                    actions.push(("graphics.newText#edit".into(), prm));
+                    let command = if tool == Tool::VerticalType { "graphics.newVerticalText#edit" } else { "graphics.newText#edit" };
+                    actions.push((command.into(), prm));
                 }
             }
             Tool::Selection => {
@@ -1269,6 +1270,14 @@ pub fn properties(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
             cx.number(ui, "Tracking", "tracking", 1.0, (-1000.0, 10_000.0), 0, "");
             cx.number(ui, "Leading", "leading", 0.5, (-5000.0, 5000.0), 0, "");
             cx.number(ui, "Baseline Shift", "baseline_shift", 0.5, (-5000.0, 5000.0), 0, "");
+            let vertical = pv(e, "vertical", mt).as_bool().unwrap_or(false);
+            let (_, mut vui) = cx.row(ui, "Orientation");
+            let mut value = vertical;
+            let response = vui.checkbox(&mut value, "Vertical Text");
+            cx.auto("vertical", response.rect, "Vertical Text");
+            if response.changed() {
+                cx.set("vertical", json!(value));
+            }
             cx.number(ui, "Text Box Width", "box_width", 2.0, (0.0, 100_000.0), 0, "");
             let (_, mut vui) = cx.row(ui, "Style");
             let flag = |id: &str| pv(e, id, mt).as_bool().unwrap_or(false);

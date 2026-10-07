@@ -114,6 +114,7 @@ pub const UI_COMMANDS: &[UiCommand] = &[
     uic!("tool.hand", "Hand Tool", [], Some("H")),
     uic!("tool.zoom", "Zoom Tool", [], Some("Z")),
     uic!("tool.type", "Type Tool", [], Some("T")),
+    uic!("tool.verticalType", "Vertical Type Tool", [], None),
     uic!("mode.import", "Import", [], None),
     uic!("mode.edit", "Edit", [], None),
     uic!("mode.export", "Export", ["File", "Export"], Some("Cmd+M")),
