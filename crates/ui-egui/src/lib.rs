@@ -19,6 +19,8 @@ pub mod links;
 pub mod menus;
 pub mod panels;
 pub mod perf;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod play_ahead;
 pub mod state;
 pub mod theme;
 pub mod widgets;
@@ -45,6 +47,10 @@ pub trait AudioOut {
     fn stop(&mut self);
     /// Device sample rate.
     fn sample_rate(&self) -> u32;
+    /// Device output channels (what `fill` will be called with).
+    fn channels(&self) -> usize {
+        2
+    }
     /// Frames played since `start` (the playback master clock), if the device reports it.
     fn played_frames(&self) -> Option<u64>;
     /// Hosts and devices that can be chosen in Settings ▸ Audio Hardware.
@@ -120,6 +126,9 @@ pub struct Playback {
     anchor_tick: Tick,
     /// Audio frames played at anchor (when the audio clock drives).
     pub audio_clock: bool,
+    /// Audio underruns for the current (or last) play (desktop: sound is mixed ahead).
+    #[cfg(not(target_arch = "wasm32"))]
+    pub audio_stats: std::sync::Arc<play_ahead::AudioStats>,
     /// Shown / dropped frame accounting for the current (or last) play.
     pub meter: frames::PlaybackMeter,
     /// Waiting for the first frames before starting the clock: when the wait began (egui time,
@@ -594,57 +603,24 @@ impl FilmcraftApp {
             return;
         }
         let Some(seq_id) = self.session.state.active_sequence else { return };
-        let project = self.session.project.clone();
-        let provider = self.session.media.provider(project.clone(), self.session.services.clone());
-        let previews = self.session.previews.clone();
         let start_tick = self.session.playhead();
-        // Settings ▸ Audio Hardware ▸ Output Mapping
-        let map = [self.session.prefs.audio_hardware.map_left, self.session.prefs.audio_hardware.map_right];
-        // Preferences ▸ Audio ▸ 5.1 Mixdown Type: how a 5.1 Mix plays on a stereo device
-        let mixdown = filmcraft_audio_dsp::channels::Mixdown::from_id(&self.session.prefs.audio.mixdown_type).unwrap_or_default();
         let Some(a) = self.audio.as_mut() else { return };
         let sr = a.sample_rate();
-        let mut cursor = start_tick.to_units_floor(sr as i64);
-        let cues = panels::voiceover::cues(&self.session, sr);
-        previews.live.publish_project(project.clone());
-        let fill = Box::new(move |buf: &mut [f32], ch: usize| {
-            // the newest project snapshot: mixer moves and other edits are heard while playing
-            let project = previews.live.project().filter(|p| p.sequence(seq_id).is_some()).unwrap_or_else(|| project.clone());
-            let Some(seq) = project.sequence(seq_id) else { return };
-            let n = buf.len() / ch.max(1);
-            // Mix at the sequence rate; convert when the device rate differs (nearest sample).
-            let seq_sr = seq.settings.sample_rate;
-            // a 5.1 Mix plays as six channels (L, R, C, LFE, Ls, Rs) on a device with at least six
-            use filmcraft_audio_dsp::channels::Layout;
-            let layout = if ch >= 6 && seq.settings.audio_master == filmcraft_project::AudioChannels::Surround51 { Layout::Surround51 } else { Layout::Stereo };
-            let mix = if seq_sr == sr {
-                previews.mix_layout(&project, seq_id, cursor, n, &provider, layout, mixdown)
-            } else {
-                let s0 = (cursor as i128 * seq_sr as i128 / sr as i128) as i64;
-                let m = n * seq_sr as usize / sr as usize + 2;
-                let b = previews.mix_layout(&project, seq_id, s0, m, &provider, layout, mixdown);
-                let mut out = filmcraft_frame::AudioBuffer::silence(sr, b.channels.len(), n);
-                for (o, c) in out.channels.iter_mut().zip(&b.channels) {
-                    for (i, x) in o.iter_mut().enumerate() {
-                        let j = (i * seq_sr as usize / sr as usize).min(m - 1);
-                        *x = c[j];
-                    }
-                }
-                out
-            };
-            if layout == Layout::Surround51 {
-                buf.fill(0.0);
-                for (i, frame) in buf.chunks_mut(ch).enumerate() {
-                    for (c, x) in frame.iter_mut().take(6).enumerate() {
-                        *x = mix.channels[c][i];
-                    }
-                }
-            } else {
-                filmcraft_engine::settings::map_output(&mix.channels[0], &mix.channels[1.min(mix.channels.len() - 1)], buf, ch, map);
-            }
-            panels::voiceover::mix_cues(buf, ch, cursor, &cues);
-            cursor += n as i64;
-        });
+        let cursor = start_tick.to_units_floor(sr as i64);
+        let mix = playback_mix(&self.session, seq_id, sr);
+        // the old stream stops before the new mixer resets the underrun counters
+        a.stop();
+        // Desktop: mix ahead on a thread so the device callback never waits on decoding.
+        #[cfg(not(target_arch = "wasm32"))]
+        let fill = play_ahead::spawn(mix, cursor, sr, a.channels(), self.playback.audio_stats.clone());
+        #[cfg(target_arch = "wasm32")]
+        let fill = {
+            let mut cursor = cursor;
+            Box::new(move |buf: &mut [f32], ch: usize| {
+                mix(cursor, buf, ch);
+                cursor += (buf.len() / ch.max(1)) as i64;
+            })
+        };
         match a.start(fill) {
             Ok(_) => self.playback.audio_clock = true,
             Err(e) => {
@@ -1351,6 +1327,61 @@ impl eframe::App for FilmcraftApp {
         if self.frames.queue_len() > 0 {
             ctx.request_repaint_after(std::time::Duration::from_millis(16));
         }
+    }
+}
+
+/// The program mix that playback plays: `mix(device_frame, interleaved, channels)` renders the
+/// active sequence at device rate `sr` from `device_frame`, with the live project snapshot (edits
+/// made while playing are heard), Output Mapping, the 5.1 mixdown and voice-over cues.
+pub fn playback_mix(session: &Session, seq_id: filmcraft_project::ItemId, sr: u32) -> impl Fn(i64, &mut [f32], usize) + Send + 'static {
+    let project = session.project.clone();
+    let provider = session.media.provider(project.clone(), session.services.clone());
+    let previews = session.previews.clone();
+    // Settings ▸ Audio Hardware ▸ Output Mapping
+    let map = [session.prefs.audio_hardware.map_left, session.prefs.audio_hardware.map_right];
+    // Preferences ▸ Audio ▸ 5.1 Mixdown Type: how a 5.1 Mix plays on a stereo device
+    let mixdown = filmcraft_audio_dsp::channels::Mixdown::from_id(&session.prefs.audio.mixdown_type).unwrap_or_default();
+    let cues = panels::voiceover::cues(session, sr);
+    previews.live.publish_project(project.clone());
+    move |cursor: i64, buf: &mut [f32], ch: usize| {
+        // the newest project snapshot: mixer moves and other edits are heard while playing
+        let project = previews.live.project().filter(|p| p.sequence(seq_id).is_some()).unwrap_or_else(|| project.clone());
+        let Some(seq) = project.sequence(seq_id) else {
+            buf.fill(0.0);
+            return;
+        };
+        let n = buf.len() / ch.max(1);
+        // Mix at the sequence rate; convert when the device rate differs (nearest sample).
+        let seq_sr = seq.settings.sample_rate;
+        // a 5.1 Mix plays as six channels (L, R, C, LFE, Ls, Rs) on a device with at least six
+        use filmcraft_audio_dsp::channels::Layout;
+        let layout = if ch >= 6 && seq.settings.audio_master == filmcraft_project::AudioChannels::Surround51 { Layout::Surround51 } else { Layout::Stereo };
+        let mix = if seq_sr == sr {
+            previews.mix_layout(&project, seq_id, cursor, n, &provider, layout, mixdown)
+        } else {
+            let s0 = (cursor as i128 * seq_sr as i128 / sr as i128) as i64;
+            let m = n * seq_sr as usize / sr as usize + 2;
+            let b = previews.mix_layout(&project, seq_id, s0, m, &provider, layout, mixdown);
+            let mut out = filmcraft_frame::AudioBuffer::silence(sr, b.channels.len(), n);
+            for (o, c) in out.channels.iter_mut().zip(&b.channels) {
+                for (i, x) in o.iter_mut().enumerate() {
+                    let j = (i * seq_sr as usize / sr as usize).min(m - 1);
+                    *x = c[j];
+                }
+            }
+            out
+        };
+        if layout == Layout::Surround51 {
+            buf.fill(0.0);
+            for (i, frame) in buf.chunks_mut(ch).enumerate() {
+                for (c, x) in frame.iter_mut().take(6).enumerate() {
+                    *x = mix.channels[c][i];
+                }
+            }
+        } else {
+            filmcraft_engine::settings::map_output(&mix.channels[0], &mix.channels[1.min(mix.channels.len() - 1)], buf, ch, map);
+        }
+        panels::voiceover::mix_cues(buf, ch, cursor, &cues);
     }
 }
 
