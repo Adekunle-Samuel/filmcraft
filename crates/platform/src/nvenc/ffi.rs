@@ -1,7 +1,7 @@
 //! The NVIDIA Video Codec SDK's encode API (`nvEncodeAPI.h`, API 12.1, MIT-licensed header by
 //! NVIDIA) as the driver's `nvEncodeAPI64.dll` expects it: the structures this backend fills in,
 //! the function table, and the constants it uses. Written from the public header; sizes and field
-//! offsets are checked against a C compiler's by `tests/nvenc_abi.rs`.
+//! offsets are checked against a C compiler's by the generated `abi_tests.rs`.
 //!
 //! API 12.1 is targeted on purpose: it is understood by every driver since 531.x, and the encoder
 //! features used here (H.264, presets, rate control) are the same in later versions.
