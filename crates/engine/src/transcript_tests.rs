@@ -162,16 +162,31 @@ fn set_delete_and_models() {
 fn generate_without_a_transcriber() {
     let (mut s, item, _) = session();
     s.transcriber = None;
-    let e = s.execute("transcript.generate", json!({"items": [item.0], "model": "nope"})).unwrap_err().to_string();
-    assert!(e.contains("unknown speech model"), "{e}");
-    if !filmcraft_speech::available() {
+    if filmcraft_speech::available() {
+        let e = s.execute("transcript.generate", json!({"items": [item.0], "model": "nope"})).unwrap_err().to_string();
+        assert!(e.contains("unknown speech model"), "{e}");
+    } else {
+        // no recogniser at all: the command is disabled, with the build limitation as its reason
+        assert!(!s.is_enabled("transcript.generate"));
+        assert!(!s.is_enabled("sequence.transcribe"), "Transcribe Sequence follows transcript.generate");
         let e = s.execute("transcript.generate", json!({"items": [item.0]})).unwrap_err().to_string();
-        assert!(e.contains("whisper") && e.contains("not available"), "{e}");
-        #[cfg(not(feature = "speech-download"))]
-        assert!(s.execute("transcript.downloadModel", json!({})).unwrap_err().to_string().contains("not available"));
+        assert!(e.contains("not available right now") && e.contains("whisper") && e.contains("transcript.set"), "{e}");
     }
-    // defaults to the media of the open sequence's audio clips
+    #[cfg(not(feature = "speech-download"))]
+    {
+        assert!(!s.is_enabled("transcript.downloadModel"));
+        let e = s.execute("transcript.downloadModel", json!({})).unwrap_err().to_string();
+        assert!(e.contains("not available right now") && e.contains("speech-download"), "{e}");
+    }
+    #[cfg(feature = "speech-download")]
+    assert!(s.is_enabled("transcript.downloadModel"));
+    // the other transcript commands don't depend on the build
+    for id in ["transcript.set", "transcript.models", "transcript.inspect"] {
+        assert!(s.is_enabled(id), "{id}");
+    }
+    // defaults to the media of the open sequence's audio clips; an installed recogniser enables it
     s.transcriber = Some(Arc::new(FixedTranscriber { transcript: Transcript::default(), id: "empty".into() }));
+    assert!(s.is_enabled("transcript.generate"));
     let r = s.execute("transcript.generate", json!({})).unwrap();
     assert!(r["items"].as_array().unwrap().len() >= 2, "{r}");
 }

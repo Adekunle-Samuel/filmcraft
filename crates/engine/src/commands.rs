@@ -826,13 +826,11 @@ fn build() -> Vec<CommandSpec> {
             // Project Settings ▸ Ingest: copy / transcode / create proxies
             // (image sequences are many files: ingest copies and transcodes single files only)
             let item_ids: Vec<ItemId> = ids.iter().filter(|i| !image_sequences.iter().any(|q| q["item"].as_u64() == Some(**i))).map(|i| ItemId(*i)).collect();
-            // Settings ▸ Media Analysis & Transcription ▸ Automatically transcribe clips
+            // Settings ▸ Media Analysis & Transcription ▸ Automatically transcribe clips. In a build
+            // without speech-to-text `transcript.generate` is disabled and its reason lands in
+            // `errors`, so the enabled setting doesn't silently do nothing (#89).
             let ma = &s.prefs.media_analysis;
-            if ma.auto_transcribe
-                && ma.auto_transcribe_scope == "allImported"
-                && !ids.is_empty()
-                && (s.transcriber.is_some() || crate::transcript::speech_available())
-            {
+            if ma.auto_transcribe && ma.auto_transcribe_scope == "allImported" && !ids.is_empty() {
                 let audio: Vec<u64> = ids.iter().copied().filter(|i| s.project.item(ItemId(*i)).is_some_and(|it| it.has_audio())).collect();
                 if !audio.is_empty()
                     && let Err(e) = s.execute("transcript.generate", json!({"items": audio}))

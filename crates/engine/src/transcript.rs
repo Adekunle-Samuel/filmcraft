@@ -52,6 +52,24 @@ fn has_transcript(s: &Session) -> std::result::Result<(), String> {
     if sequence_words(s).is_empty() { Err("the sequence has no transcript (Transcribe first)".into()) } else { Ok(()) }
 }
 
+const NO_SPEECH: &str = "speech-to-text is not available in this build (built without the `whisper` feature); import a transcript with transcript.set instead";
+
+/// `transcript.generate` needs a recogniser: one installed in [`Session::transcriber`], or this
+/// build's own (feature `whisper`). Without either the command is disabled, so `describe`,
+/// `command_list {"enabled_only": true}` and the menu don't offer it (#97).
+pub(crate) fn can_transcribe(s: &Session) -> std::result::Result<(), String> {
+    if s.transcriber.is_some() || speech_available() { Ok(()) } else { Err(NO_SPEECH.into()) }
+}
+
+/// `transcript.downloadModel` is compiled in only with the `speech-download` feature (#98).
+fn can_download(_: &Session) -> std::result::Result<(), String> {
+    if cfg!(feature = "speech-download") {
+        Ok(())
+    } else {
+        Err("model downloads are not available in this build (built without the `speech-download` feature)".into())
+    }
+}
+
 fn has_transcripts(s: &Session) -> std::result::Result<(), String> {
     if s.project.transcripts.is_empty() { Err("there are no transcripts".into()) } else { Ok(()) }
 }
@@ -123,9 +141,7 @@ fn transcriber(s: &Session, p: &Value) -> Result<Arc<dyn Transcriber>> {
         return Err(speech_err(SpeechError::UnknownModel(model.into())));
     }
     if !filmcraft_speech::available() {
-        return Err(EngineError::Other(
-            "speech-to-text is not available in this build (built without the `whisper` feature); import a transcript with transcript.set instead".into(),
-        ));
+        return Err(EngineError::Other(NO_SPEECH.into()));
     }
     let dir = models_dir().ok_or_else(|| EngineError::Other("no data directory for speech models".into()))?;
     filmcraft_speech::load(&dir, model).map_err(speech_err)
@@ -427,7 +443,7 @@ pub fn commands() -> Vec<CommandSpec> {
             "Transcribe…",
             &["Sequence", "Transcript"],
             r#"{"items":[id]?,"model":"whisper-base"?,"language":"en|auto"?,"diarize":bool?,"maxSpeakers":n?}"#,
-            always,
+            can_transcribe,
             generate,
             true,
         ),
@@ -444,7 +460,7 @@ pub fn commands() -> Vec<CommandSpec> {
         spec("transcript.inspect", "Inspect Transcript", &[], r#"{"paragraphGapSeconds":f?}"#, always, inspect, false),
         spec("transcript.search", "Search Transcript", &[], r#"{"query":str}"#, always, search, false),
         spec("transcript.models", "List Speech Models", &[], "{}", always, models, false),
-        spec("transcript.downloadModel", "Download Speech Model", &[], r#"{"model":"whisper-base"?}"#, always, download_model, true),
+        spec("transcript.downloadModel", "Download Speech Model", &[], r#"{"model":"whisper-base"?}"#, can_download, download_model, true),
         spec("transcript.select", "Mark Selected Text", &[], r#"{"from":word,"to":word?}"#, has_transcript, select, true),
         spec("transcript.extract", "Extract Selected Text", &[], r#"{"from":word,"to":word?}"#, has_transcript, |s, p| extract_or_lift(s, p, true), true),
         spec("transcript.lift", "Lift Selected Text", &[], r#"{"from":word,"to":word?}"#, has_transcript, |s, p| extract_or_lift(s, p, false), true),

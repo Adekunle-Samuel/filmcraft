@@ -481,6 +481,30 @@ fn auto_transcribe_on_import_and_transcription_defaults() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// #89: with auto-transcribe on in a build without speech-to-text (and no recogniser installed),
+/// importing a clip with sound reported `"errors": []` and transcribed nothing; the import now says
+/// why. With the setting off the import stays error-free.
+#[test]
+fn auto_transcribe_without_speech_to_text_reports_it_on_import() {
+    if filmcraft_speech::available() {
+        return;
+    }
+    let dir = tmp_dir("prefs-transcribe-off");
+    let mov = dir.join("talk.mov");
+    crate::media_test_util::make_movie(&mov, filmcraft_media::DemoScene::OceanSunset, 64, 36, 24);
+    let mut s = Session::default();
+    let r = s.execute("file.import", json!({"paths": [mov.to_string_lossy()]})).unwrap();
+    assert_eq!(r["errors"], json!([]));
+    set(&mut s, "mediaAnalysis.autoTranscribe", json!(true));
+    set(&mut s, "mediaAnalysis.autoTranscribeScope", json!("allImported"));
+    let r = s.execute("file.import", json!({"paths": [mov.to_string_lossy()]})).unwrap();
+    assert_eq!(r["items"].as_array().unwrap().len(), 1, "the clip is still imported");
+    let errors = r["errors"].as_array().unwrap();
+    assert!(errors.iter().any(|e| e.as_str().is_some_and(|e| e.starts_with("transcription:") && e.contains("whisper"))), "{errors:?}");
+    assert!(s.project.transcripts.is_empty());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 #[test]
 fn hardware_decoding_setting_drives_the_decoder_switch() {
     let mut s = Session::default();
