@@ -463,13 +463,18 @@ impl FilmcraftApp {
         self.frames.set_cache_budget(p.memory.frame_cache_mb as usize * (1 << 20));
         self.ui.play_after_render = p.timeline.play_after_rendering;
         if prev.as_ref().is_none_or(|q| q.audio_hardware != p.audio_hardware) {
+            if let Some(input) = self.session.voiceover.input.as_mut() {
+                input.configure_host(&p.audio_hardware.device_class);
+            }
             let rate = self.session.active_sequence().map(|q| q.settings.sample_rate);
-            let playing = self.playback.playing && self.playback.audio_clock;
+            let playing = self.playback.playing && self.playback.preroll.is_none();
             if let Some(a) = self.audio.as_mut() {
                 a.stop();
                 a.configure(&p.audio_hardware, rate);
             }
             if playing {
+                self.playback.anchor_tick = self.session.playhead();
+                self.playback.anchor_time = ctx.input(|i| i.time);
                 self.start_audio();
             }
         }
@@ -765,6 +770,18 @@ impl FilmcraftApp {
         }
         let rate = self.session.sequence_rate();
         let reading = if self.playback.audio_clock { self.audio.as_ref().and_then(|a| a.played_frames().map(|f| (f, a.sample_rate()))) } else { None };
+        if self.playback.audio_clock && reading.is_none() {
+            // A device error relinquishes its clock immediately. Resume from the displayed
+            // frame, rather than jumping to the old wall-clock anchor after buffered playback.
+            self.playback.anchor_tick = self.session.playhead();
+            self.playback.anchor_time = now;
+            self.playback.audio_clock = false;
+            if let Some(audio) = self.audio.as_mut() {
+                audio.stop();
+            }
+            log::warn!("audio output lost its playback clock; playing without sound");
+            self.ui.status = "Audio output failed: playing without sound (check Settings ▸ Audio Hardware)".into();
+        }
         if let Some((f, sr)) = reading {
             if f != self.playback.audio_seen.0 {
                 self.playback.audio_seen = (f, now);
@@ -1580,5 +1597,83 @@ mod gpu_fallback_tests {
         assert_eq!(super::plan_side(&p), 1920);
         let p = FramePlan::Image(filmcraft_render::Image::new(800, 4000));
         assert_eq!(super::plan_side(&p), 4000);
+    }
+}
+
+#[cfg(test)]
+mod audio_recovery_tests {
+    use super::*;
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
+
+    struct Device {
+        ready: bool,
+        starts: Arc<AtomicUsize>,
+        reading: Option<u64>,
+    }
+
+    impl AudioOut for Device {
+        fn sample_rate(&self) -> u32 {
+            48000
+        }
+        fn channels(&self) -> usize {
+            2
+        }
+        fn configure(&mut self, hardware: &filmcraft_engine::settings::AudioHardwarePrefs, _: Option<u32>) {
+            self.ready = hardware.default_output == "available";
+        }
+        fn start(&mut self, _: Box<dyn FnMut(&mut [f32], usize) + Send>) -> Result<u32, String> {
+            self.starts.fetch_add(1, Ordering::Relaxed);
+            if self.ready { Ok(48000) } else { Err("device unavailable".into()) }
+        }
+        fn stop(&mut self) {}
+        fn played_frames(&self) -> Option<u64> {
+            self.reading
+        }
+    }
+
+    #[test]
+    fn changing_hardware_recovers_wall_clock_playback_without_rewinding() {
+        let mut session = Session::default();
+        session.execute("file.newSequence", json!({"width":16,"height":16})).unwrap();
+        let ctx = egui::Context::default();
+        let mut app = FilmcraftApp::new(session);
+        let starts = Arc::new(AtomicUsize::new(0));
+        app.audio = Some(Box::new(Device { ready: false, starts: starts.clone(), reading: Some(0) }));
+        app.apply_prefs(&ctx);
+        app.play(1.0);
+        app.end_preroll(0.0);
+        assert!(!app.playback.audio_clock);
+        app.session.set_playhead(Tick::from_seconds_f64(2.0));
+        app.session.prefs.audio_hardware.default_output = "available".into();
+        app.apply_prefs(&ctx);
+        assert_eq!(starts.load(Ordering::Relaxed), 2);
+        assert!(app.playback.audio_clock);
+        assert_eq!(app.playback.anchor_tick, app.session.playhead());
+        app.stop();
+    }
+
+    #[test]
+    fn a_failed_device_clock_resumes_from_the_displayed_frame() {
+        let mut session = Session::default();
+        session.execute("file.openDemoProject", json!({})).unwrap();
+        let ctx = egui::Context::default();
+        let mut app = FilmcraftApp::new(session);
+        app.audio = Some(Box::new(Device { ready: true, starts: Arc::new(AtomicUsize::new(0)), reading: None }));
+        let displayed = app.session.sequence_rate().tick_of(48);
+        app.session.set_playhead(displayed);
+        app.playback.playing = true;
+        app.playback.audio_clock = true;
+        app.playback.anchor_tick = Tick::ZERO;
+        app.playback.anchor_time = 0.0;
+        let mut output = ctx.run_ui(egui::RawInput { time: Some(10.0), ..Default::default() }, |ui| app.advance_playback(ui.ctx()));
+        output.textures_delta.clear();
+        assert!(!app.playback.audio_clock);
+        assert_eq!(app.playback.anchor_tick, displayed);
+        assert_eq!(app.session.playhead(), displayed);
+        assert!(app.ui.status.contains("Audio output failed"));
+        app.stop();
     }
 }
