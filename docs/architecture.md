@@ -635,7 +635,10 @@ any other value is a parameter error and nothing is written. For AAF and
 OMF the engine (`engine::aaf_omf`) first prepares the audio the document references: it lists the
 used ranges (`interchange::essence::audio_needs`), decodes or renders them (clip effects through the
 export audio pipeline), embeds them or writes WAV / AIFF files, and optionally renders a video
-mixdown.
+mixdown. A nested sequence is exported the way Premiere Pro does it: a composition of its own in
+AAF (the media of the clips inside it is prepared with the rest), its sound mixed into the document
+in OMF, a nested sequence in FCP7 XML, FCPXML and OTIO, and one `AX` event in an EDL (table in the
+[interchange README](../crates/interchange/README.md)).
 
 ## 7. Automation surfaces
 

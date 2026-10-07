@@ -99,6 +99,21 @@ impl MediaOptions {
     }
 }
 
+/// What [`audio_needs`] lists for a nested sequence on an audio track.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum NestNeeds {
+    /// Nothing.
+    #[default]
+    Skip,
+    /// The nested sequence's own sound over the range the clip uses, as one [`EssenceKey::Clip`]
+    /// range per clip (its `item` is the nested sequence) for the caller to mix. OMF: Premiere Pro
+    /// renders the sound of a nested sequence into the document.
+    Render,
+    /// What the clips inside the nested sequence need, like those of the sequence itself. AAF: a
+    /// nested sequence is written as a composition of its own.
+    Inside,
+}
+
 /// How [`audio_needs`] groups ranges.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct NeedOptions {
@@ -109,42 +124,75 @@ pub struct NeedOptions {
     pub per_clip: bool,
     /// Whole media instead of the used range (embedding / copying without trimming).
     pub whole_media: bool,
+    /// Nested sequences on the audio tracks.
+    #[serde(default)]
+    pub nests: NestNeeds,
 }
+
+/// Nested sequences deeper than this are not followed.
+const MAX_NESTING: usize = 16;
 
 /// The audio ranges the audio tracks of `sequence` reference, in a stable order.
 pub fn audio_needs(project: &Project, sequence: ItemId, opts: &NeedOptions) -> Vec<AudioNeed> {
-    let Some(seq) = project.sequence(sequence) else { return Vec::new() };
     let mut by_item: BTreeMap<EssenceKey, AudioNeed> = BTreeMap::new();
+    collect_needs(project, sequence, opts, &mut Vec::new(), &mut by_item);
+    by_item.into_values().collect()
+}
+
+fn collect_needs(project: &Project, sequence: ItemId, opts: &NeedOptions, open: &mut Vec<ItemId>, by_item: &mut BTreeMap<EssenceKey, AudioNeed>) {
+    let Some(seq) = project.sequence(sequence) else { return };
+    // (a sequence cannot be inside itself, but a damaged project may claim so)
+    if open.contains(&sequence) || open.len() >= MAX_NESTING {
+        return;
+    }
+    open.push(sequence);
     for t in seq.tracks(TrackKind::Audio) {
         for c in &t.items {
             let item = crate::common::base_item(project, c.item);
-            let Some(m) = project.item(item).and_then(|i| match &i.kind {
-                ItemKind::Media(m) => Some(m),
-                _ => None,
-            }) else {
-                continue;
-            };
-            let Some(a) = m.info.audio.as_ref() else { continue };
-            let path = match &m.media {
-                MediaRef::File { path } => Some(path.clone()),
-                MediaRef::Generator(_) => None,
-            };
-            let dur = m.info.duration;
             let (lo, hi) = if c.speed < 0.0 || c.reverse { (c.source_out(), c.source_in) } else { (c.source_in, c.source_out()) };
             let (lo, hi) = (lo.min(hi), lo.max(hi));
             let (mut start, mut end) = ((lo - opts.handles).max(Tick::ZERO), hi + opts.handles);
-            if dur > Tick::ZERO {
-                end = end.min(dur);
+            match project.item(item).map(|i| &i.kind) {
+                Some(ItemKind::Media(m)) => {
+                    let Some(a) = m.info.audio.as_ref() else { continue };
+                    let path = match &m.media {
+                        MediaRef::File { path } => Some(path.clone()),
+                        MediaRef::Generator(_) => None,
+                    };
+                    let dur = m.info.duration;
+                    if dur > Tick::ZERO {
+                        end = end.min(dur);
+                    }
+                    if opts.whole_media {
+                        start = Tick::ZERO;
+                        end = dur.max(end);
+                    }
+                    let key = if opts.per_clip { EssenceKey::Clip(c.id) } else { EssenceKey::Media(item) };
+                    let e = by_item.entry(key).or_insert_with(|| AudioNeed { key, item, path, start, end, channels: a.channels, sample_rate: a.sample_rate });
+                    e.start = e.start.min(start);
+                    e.end = e.end.max(end);
+                }
+                Some(ItemKind::Sequence(nested)) => match opts.nests {
+                    NestNeeds::Skip => {}
+                    NestNeeds::Inside => collect_needs(project, item, opts, open, by_item),
+                    NestNeeds::Render => {
+                        // a clip longer than its sequence plays silence past the end: nothing to supply
+                        end = end.min(nested.duration());
+                        if end <= start {
+                            continue;
+                        }
+                        let channels = match t.channels {
+                            filmcraft_project::AudioChannels::Mono => 1,
+                            filmcraft_project::AudioChannels::Surround51 => 6,
+                            _ => 2,
+                        };
+                        let key = EssenceKey::Clip(c.id);
+                        by_item.insert(key, AudioNeed { key, item, path: None, start, end, channels, sample_rate: nested.settings.sample_rate.max(1) });
+                    }
+                },
+                _ => {}
             }
-            if opts.whole_media {
-                start = Tick::ZERO;
-                end = dur.max(end);
-            }
-            let key = if opts.per_clip { EssenceKey::Clip(c.id) } else { EssenceKey::Media(item) };
-            let e = by_item.entry(key).or_insert_with(|| AudioNeed { key, item, path, start, end, channels: a.channels, sample_rate: a.sample_rate });
-            e.start = e.start.min(start);
-            e.end = e.end.max(end);
         }
     }
-    by_item.into_values().collect()
+    open.pop();
 }

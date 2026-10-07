@@ -19,8 +19,8 @@ use std::sync::{Arc, Mutex};
 
 use serde_json::{Value, json};
 
-use filmcraft_interchange::essence::{AudioEssence, AudioNeed, EssenceData, EssenceKey, MediaOptions, MixdownVideo, NeedOptions, audio_needs};
-use filmcraft_project::{ItemId, Project, SequenceSettings, TrackKind};
+use filmcraft_interchange::essence::{AudioEssence, AudioNeed, EssenceData, EssenceKey, MediaOptions, MixdownVideo, NeedOptions, NestNeeds, audio_needs};
+use filmcraft_project::{ClipId, ItemId, Project, Sequence, SequenceSettings, Track, TrackItem, TrackKind};
 use filmcraft_time::{Tick, TimeRange};
 
 use crate::commands::{bad, bool_p, str_p, u64_p};
@@ -50,6 +50,10 @@ pub struct AudioPlan {
     pub handles: Tick,
     pub render_effects: bool,
     pub breakout: bool,
+    /// Nested sequences on the audio tracks. OMF: their sound is rendered into the export, as
+    /// Premiere Pro does. AAF: they are written as compositions, so the media of the clips inside
+    /// them is prepared like the rest.
+    pub nests: NestNeeds,
 }
 
 fn plan_from(s: &Session, p: &Value, seq: ItemId, cmd: &str, omf: bool) -> Result<AudioPlan> {
@@ -85,6 +89,7 @@ fn plan_from(s: &Session, p: &Value, seq: ItemId, cmd: &str, omf: bool) -> Resul
         handles: q.settings.frame_rate.tick_of(frames),
         render_effects: bool_p(p, "renderAudioEffects").unwrap_or(false),
         breakout: bool_p(p, "breakoutToMono").unwrap_or(false),
+        nests: if omf { NestNeeds::Render } else { NestNeeds::Inside },
     })
 }
 
@@ -154,12 +159,8 @@ fn decode(s: &Session, need: &AudioNeed, sample_rate: u32) -> Result<Vec<Vec<f32
 /// pipeline's audio mixer.
 fn render_clip(s: &Session, seq: ItemId, need: &AudioNeed, sample_rate: u32, bits: u16) -> Result<Vec<Vec<f32>>> {
     let EssenceKey::Clip(clip_id) = need.key else { return decode(s, need, sample_rate) };
-    let q = s.project.sequence(seq).ok_or(EngineError::NoSequence)?;
-    let (track, c) = q
-        .tracks(TrackKind::Audio)
-        .iter()
-        .find_map(|t| t.items.iter().find(|c| c.id == clip_id).map(|c| (t, c.clone())))
-        .ok_or_else(|| EngineError::Other("clip not found".into()))?;
+    let (q, track, c) = audio_clip(&s.project, seq, clip_id).ok_or_else(|| EngineError::Other("clip not found".into()))?;
+    let c = c.clone();
     let mut p: Project = (*s.project).clone();
     let settings = SequenceSettings { sample_rate, ..q.settings.clone() };
     let rs = p.new_sequence("AAF audio render", settings, 0, 1, None);
@@ -204,6 +205,19 @@ fn render_clip(s: &Session, seq: ItemId, need: &AudioNeed, sample_rate: u32, bit
     Ok(dequantize(&pcm, ch as usize, b))
 }
 
+/// The audio clip `clip` with its track and sequence: in `seq`, or in a sequence nested in it
+/// (clip ids are unique in a project).
+fn audio_clip(p: &Project, seq: ItemId, clip: ClipId) -> Option<(&Sequence, &Track, &TrackItem)> {
+    let first = p.sequence(seq).into_iter();
+    let others = p.sequences().filter(|i| i.id != seq).filter_map(|i| p.sequence(i.id));
+    for q in first.chain(others) {
+        if let Some((t, c)) = q.tracks(TrackKind::Audio).iter().find_map(|t| t.items.iter().find(|c| c.id == clip).map(|c| (t, c))) {
+            return Some((q, t, c));
+        }
+    }
+    None
+}
+
 fn safe_name(s: &str) -> String {
     let n: String = s.chars().map(|c| if c.is_alphanumeric() || " -_.".contains(c) { c } else { '_' }).collect();
     let n = n.trim().trim_matches('.').to_string();
@@ -221,19 +235,24 @@ pub fn prepare_audio(s: &Session, seq: ItemId, plan: &AudioPlan, media_dir: &str
     if plan.mode == AudioMode::Linked && !plan.trim && !plan.render_effects {
         return Ok((Vec::new(), Vec::new()));
     }
-    let needs =
-        audio_needs(&s.project, seq, &NeedOptions { handles: plan.handles, per_clip: plan.render_effects, whole_media: !plan.trim && !plan.render_effects });
+    let needs = audio_needs(
+        &s.project,
+        seq,
+        &NeedOptions { handles: plan.handles, per_clip: plan.render_effects, whole_media: !plan.trim && !plan.render_effects, nests: plan.nests },
+    );
     let mut essence = Vec::new();
     let mut files = Vec::new();
     let mut used = std::collections::HashSet::new();
     for need in &needs {
-        let planar = if plan.render_effects { render_clip(s, seq, need, plan.sample_rate, plan.bits)? } else { decode(s, need, plan.sample_rate)? };
+        // a nested sequence has no file to read: its sound is mixed, with what is on the clip
+        let nest = s.project.sequence(need.item).is_some();
+        let planar = if plan.render_effects || nest { render_clip(s, seq, need, plan.sample_rate, plan.bits)? } else { decode(s, need, plan.sample_rate)? };
         let frames = planar.first().map_or(0, Vec::len) as u64;
         let groups: Vec<(Option<u32>, Vec<&Vec<f32>>)> =
             if plan.breakout { planar.iter().enumerate().map(|(c, x)| (Some(c as u32), vec![x])).collect() } else { vec![(None, planar.iter().collect())] };
         let base = match need.key {
             EssenceKey::Clip(c) => {
-                let name = s.project.sequence(seq).and_then(|q| q.find_item(c)).map(|(_, ti)| ti.name.clone()).unwrap_or_default();
+                let name = audio_clip(&s.project, seq, c).map(|(_, _, ti)| ti.name.clone()).unwrap_or_default();
                 format!("{} {}", safe_name(&name), c.0)
             }
             EssenceKey::Media(_) => safe_name(
@@ -302,7 +321,7 @@ pub fn prepare_audio(s: &Session, seq: ItemId, plan: &AudioPlan, media_dir: &str
                 bits: plan.bits,
                 channels: n,
                 data,
-                effects_rendered: plan.render_effects,
+                effects_rendered: plan.render_effects || nest,
             });
         }
     }
