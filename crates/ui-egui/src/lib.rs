@@ -1313,7 +1313,12 @@ impl FilmcraftApp {
                     }
                 }
                 dock::DockAction::PanelMenu(p, pos) => {
-                    ui.ctx().data_mut(|d| d.insert_temp(egui::Id::new("panel-menu"), (p, pos)));
+                    // (with the frame it opened in: the click that opens it is not a click elsewhere)
+                    let frame = ui.ctx().cumulative_frame_nr();
+                    ui.ctx().data_mut(|d| {
+                        d.insert_temp(egui::Id::new("panel-menu"), (p, pos));
+                        d.insert_temp(egui::Id::new("panel-menu-opened"), frame);
+                    });
                 }
             }
         }
