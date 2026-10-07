@@ -2219,12 +2219,33 @@ fn build() -> Vec<CommandSpec> {
             Ok(Value::Null)
         }),
         cmd!("project.delete", "Clear", [], Some("Delete"), r#"{"items":[id]?}"#, has_project_selection, |s, p| {
-            let items: Vec<ItemId> = p
+            let asked: Vec<ItemId> = p
                 .get("items")
                 .and_then(Value::as_array)
                 .map(|a| a.iter().filter_map(|v| v.as_u64().map(ItemId)).collect())
                 .unwrap_or_else(|| s.state.project_selection.clone());
+            // A bin named here goes with everything in it, as in the Project panel of any editor.
+            let root = s.project.root.id;
+            let named: Vec<filmcraft_project::BinId> =
+                asked.iter().map(|i| filmcraft_project::BinId(i.0)).filter(|b| *b != root && s.project.root.find_bin(*b).is_some()).collect();
+            // a bin inside another named bin goes with that one
+            let bins: Vec<filmcraft_project::BinId> = named
+                .iter()
+                .copied()
+                .filter(|b| !named.iter().any(|o| o != b && s.project.root.find_bin(*o).is_some_and(|o| o.find_bin(*b).is_some())))
+                .collect();
+            let mut items: Vec<ItemId> = asked.iter().copied().filter(|i| !named.contains(&filmcraft_project::BinId(i.0))).collect();
+            for b in &bins {
+                if let Some(bin) = s.project.root.find_bin(*b) {
+                    bin.all_items(&mut items);
+                }
+            }
+            items.sort_by_key(|i| i.0);
+            items.dedup();
             s.edit("Clear", |pr, st| {
+                for b in &bins {
+                    pr.root.remove_bin(*b);
+                }
                 for i in &items {
                     pr.items.remove(i);
                     pr.root.remove_item(*i);
@@ -2246,7 +2267,7 @@ fn build() -> Vec<CommandSpec> {
                 s.media.remove(*i);
             }
             s.fix_state();
-            Ok(Value::Null)
+            Ok(json!({"items": items.len(), "bins": bins.len()}))
         }),
         cmd!("project.moveToBin", "Move to Bin", [], None, r#"{"items":[id]?,"bin":binId|null}"#, always, |s, p| {
             let items: Vec<ItemId> = match p.get("items").and_then(Value::as_array) {
