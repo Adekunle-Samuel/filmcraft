@@ -179,6 +179,46 @@ fn export_mode_settings_and_summary() {
 }
 
 #[test]
+fn the_status_bar_and_the_queue_show_the_time_left() {
+    use std::sync::atomic::Ordering;
+    use std::time::Duration;
+
+    use filmcraft_engine::Job;
+    use filmcraft_engine::export_tools::QueueStatus;
+    let mut d = Driver::new("eta");
+    d.ok("ui.set", json!({"mode": "export"}));
+    d.frames(3);
+    d.exec(
+        "export.queue.add",
+        json!({"preset": "Waveform Audio 48 kHz 16-bit", "path": d.path("eta.wav"), "range": "custom", "startSeconds": 0.0, "endSeconds": 0.25}),
+    );
+    // a job at 25 %, doing 50 units a second: 750 left, 15 s (readings from the near future, because
+    // the app reads the real clock, which is then behind them)
+    let job = Job { id: 900, label: "Exporting".into(), progress: Default::default(), result: Default::default() };
+    job.progress.total.store(1000, Ordering::Relaxed);
+    let t0 = web_time::Instant::now() + Duration::from_secs(60);
+    for i in 0..=50u64 {
+        job.progress.done.store(i * 5, Ordering::Relaxed);
+        job.progress.eta_at(t0 + Duration::from_millis(i * 100));
+    }
+    d.app().session.jobs.push(job);
+    {
+        let item = &mut d.app().session.export_queue.items[0];
+        item.status = QueueStatus::Encoding;
+        item.job = Some(900);
+    }
+    d.frames(4);
+    // the status bar says it next to the percentage, and agents read it from the same label
+    let label = d.ok("ui.elements", json!({"prefix": "status.job.progress"}))[0]["label"].as_str().unwrap().to_string();
+    assert_eq!(label, "25% · 15 s left");
+    // the queue item has it too
+    let item = d.queue().into_iter().next().unwrap();
+    assert!((item["etaSeconds"].as_f64().unwrap() - 15.0).abs() < 0.5, "{item}");
+    assert_eq!(item["status"], "encoding");
+    d.snapshot("export-eta");
+}
+
+#[test]
 fn preset_manager_search_favourite_save_apply() {
     let mut d = Driver::new("manager");
     d.ok("ui.set", json!({"mode": "export"}));

@@ -364,6 +364,47 @@ fn queue_cancels_a_running_export_and_retries_a_failed_one() {
 }
 
 #[test]
+fn jobs_and_queue_items_report_the_time_they_have_left() {
+    use std::sync::atomic::Ordering;
+    use std::time::Duration;
+
+    use crate::export_tools::QueueStatus;
+    let mut s = demo();
+    let dir = Scratch::new("eta");
+    let job = crate::Job { id: 77, label: "Exporting".into(), progress: Default::default(), result: Default::default() };
+    job.progress.total.store(1000, Ordering::Relaxed);
+    assert!(job.to_json()["etaSeconds"].is_null(), "no speed measured yet");
+    // 50 units a second for 5 s, read from the near future (the JSON reads the real clock, which is then behind them)
+    let t0 = web_time::Instant::now() + Duration::from_secs(60);
+    for i in 0..=50u64 {
+        job.progress.done.store(i * 5, Ordering::Relaxed);
+        job.progress.eta_at(t0 + Duration::from_millis(i * 100));
+    }
+    let eta = job.to_json()["etaSeconds"].as_f64().expect("a number once the job has a speed");
+    assert!((eta - 15.0).abs() < 0.5, "750 units left at 50 a second: {eta}");
+    s.jobs.push(job);
+
+    // a queue item encoding that job shows it; one that waits shows nothing
+    for name in ["a.wav", "b.wav"] {
+        s.execute(
+            "export.queue.add",
+            json!({"preset": "Waveform Audio 48 kHz 16-bit", "path": dir.path(name), "range": "custom", "startSeconds": 0, "endSeconds": 0.25}),
+        )
+        .unwrap();
+    }
+    s.export_queue.items[0].status = QueueStatus::Encoding;
+    s.export_queue.items[0].job = Some(77);
+    let items = queue(&mut s);
+    assert!((items[0]["etaSeconds"].as_f64().expect("encoding") - 15.0).abs() < 0.5, "{}", items[0]);
+    assert_eq!(items[0]["status"], "encoding");
+    assert!(items[1]["etaSeconds"].is_null(), "{}", items[1]);
+    // and `jobs.list` carries it too
+    let jobs = s.execute("jobs.list", json!({})).unwrap();
+    let listed = jobs["jobs"].as_array().or(jobs.as_array()).expect("a list of jobs").iter().find(|j| j["id"] == 77).cloned().expect("the job is listed");
+    assert!(listed["etaSeconds"].as_f64().is_some(), "{listed}");
+}
+
+#[test]
 fn queue_exports_several_sequences_and_ranges() {
     let mut s = demo();
     let dir = Scratch::new("queue-many");

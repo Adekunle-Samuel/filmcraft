@@ -410,3 +410,20 @@ fn aac_bitrate_is_capped_for_low_sample_rates() {
         assert!(enc.is_ok(), "{rate} Hz × {ch}: {:?}", enc.err());
     }
 }
+
+#[test]
+fn a_time_left_reads_like_a_clock() {
+    use std::time::Duration;
+    let f = |ms: u64| format_eta(Duration::from_millis(ms));
+    assert_eq!(f(0), "0 s");
+    assert_eq!(f(1), "1 s", "rounded up: never say 0 s while there is time left");
+    assert_eq!(f(45_000), "45 s");
+    assert_eq!(f(59_001), "1:00");
+    assert_eq!(f(60_000), "1:00");
+    assert_eq!(f(125_000), "2:05");
+    assert_eq!(f(3_599_000), "59:59");
+    assert_eq!(f(3_600_000), "1:00:00");
+    assert_eq!(f(3_725_000), "1:02:05");
+    assert_eq!(f(100 * 3600 * 1000), "100:00:00");
+    assert!(!format_eta(Duration::MAX).is_empty(), "the largest duration cannot overflow");
+}

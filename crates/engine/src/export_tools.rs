@@ -516,6 +516,7 @@ fn item_json(s: &Session, it: &QueueItem) -> Value {
         "range": it.settings.range,
         "status": it.status,
         "progress": progress,
+        "etaSeconds": job.filter(|_| it.status == QueueStatus::Encoding).and_then(|j| j.progress.eta()).map(|d| d.as_secs_f64()),
         "statusText": status_text,
         "job": it.job,
         "error": it.error,

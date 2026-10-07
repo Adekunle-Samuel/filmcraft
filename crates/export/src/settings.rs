@@ -537,6 +537,16 @@ impl ExportSettings {
     }
 }
 
+/// A time left, rounded up to the second: `45 s`, `2:05`, `1:02:05`.
+pub fn format_eta(d: std::time::Duration) -> String {
+    let s = d.as_secs().saturating_add(u64::from(d.subsec_nanos() > 0));
+    match s {
+        0..=59 => format!("{s} s"),
+        60..=3599 => format!("{}:{:02}", s / 60, s % 60),
+        _ => format!("{}:{:02}:{:02}", s / 3600, s % 3600 / 60, s % 60),
+    }
+}
+
 /// `1.2 GB`, `350 MB`, `12 KB`.
 pub fn format_bytes(b: u64) -> String {
     let b = b as f64;
