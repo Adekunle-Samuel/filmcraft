@@ -23,20 +23,21 @@
   <url type="help">https://github.com/storytold/filmcraft</url>
   <url type="contact">https://discord.gg/artcraft</url>
   <categories>
-    <category>Graphics</category>
-    <category>RasterGraphics</category>
-    <category>Photography</category>
+    <category>AudioVideo</category>
+    <category>Video</category>
+    <category>AudioVideoEditing</category>
   </categories>
   <keywords>
-    <keyword>photo</keyword>
-    <keyword>image editor</keyword>
-    <keyword>psd</keyword>
-    <keyword>layers</keyword>
+    <keyword>video</keyword>
+    <keyword>video editor</keyword>
+    <keyword>timeline</keyword>
+    <keyword>color grading</keyword>
+    <keyword>nle</keyword>
   </keywords>
   <screenshots>
     <screenshot type="default">
-      <caption>Editing The Great Wave off Kanagawa with type layers and adjustment layers</caption>
-      <image>https://raw.githubusercontent.com/storytold/filmcraft/main/docs/images/filmcraft-demo.jpg</image>
+      <caption>Color workspace: a documentary cut with Lumetri Color, scopes, captions and loudness meters</caption>
+      <image>https://raw.githubusercontent.com/storytold/filmcraft/main/docs/images/filmcraft-hero.png</image>
     </screenshot>
   </screenshots>
   <branding>

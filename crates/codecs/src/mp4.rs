@@ -154,8 +154,8 @@ impl Mp4Source {
                 codec: codec_label(&entry.codec),
                 pixel_format: pixfmt_label(&entry.codec),
                 color,
-                has_alpha: matches!(&entry.codec, CodecConfig::ProRes { fourcc } if fourcc.0 == *b"ap4h" || fourcc.0 == *b"ap4x")
-                    || matches!(&entry.codec, CodecConfig::Apv(a) if a.chroma_format_idc == 4),
+                // ProRes 4444 alpha comes from its first frame header (`open_reader`)
+                has_alpha: matches!(&entry.codec, CodecConfig::Apv(a) if a.chroma_format_idc == 4),
                 bitrate,
                 hdr: entry.video.as_ref().and_then(|v| hdr_metadata(v.mastering_display.as_ref(), v.content_light)),
             };
@@ -177,6 +177,19 @@ impl Mp4Source {
                     info.has_alpha = h.alpha;
                 }
             }
+            if matches!(entry.codec, CodecConfig::ProRes { .. }) {
+                // a 4444 fourcc doesn't mean the frames carry alpha (alpha_channel_type does): read the first frame header
+                let s0 = &t.samples[0];
+                if let Some(h) = filmcraft_media::reader::read_range(&*bytes.0, s0.offset, s0.size as usize).ok().and_then(|d| filmcraft_prores::probe(&d).ok())
+                {
+                    info.has_alpha = h.alpha != filmcraft_prores::AlphaType::None;
+                    let sub = match h.chroma {
+                        filmcraft_prores::ChromaFormat::Yuv422 => "4:2:2 10-bit",
+                        filmcraft_prores::ChromaFormat::Yuv444 => "4:4:4 12-bit",
+                    };
+                    info.pixel_format = format!("{} {sub}", if info.has_alpha { "YUVA" } else { "YUV" });
+                }
+            }
             info
         });
         let audio = atrack.map(|i| {
@@ -195,17 +208,7 @@ impl Mp4Source {
             };
             AudioStreamInfo { sample_rate: rate.max(1), channels: ch.max(1), codec: codec_label(&entry.codec), bits_per_sample: bits }
         });
-        let duration = {
-            let v = vtrack.map(|i| {
-                let t = &file.tracks[i];
-                Tick::from_rational(t.duration as i64, 1, t.timescale as i64)
-            });
-            let a = atrack.map(|i| {
-                let t = &file.tracks[i];
-                Tick::from_rational(t.duration as i64, 1, t.timescale as i64)
-            });
-            v.or(a).unwrap_or_default()
-        };
+        let duration = vtrack.or(atrack).and_then(|i| file.tracks.get(i)).map(|t| presentation_duration(&file, t)).unwrap_or_default();
         let start_timecode = file.tracks.iter().find_map(|t| match t.codec() {
             Some(CodecConfig::Timecode(tc)) => tc.start_frame.map(|f| f as i64),
             _ => None,
@@ -268,8 +271,10 @@ impl Mp4Source {
     fn video_at(&self, t: Tick) -> crate::Result<Arc<VideoFrame>> {
         let ti = self.vtrack.ok_or_else(|| CodecError::Unsupported("no video".into()))?;
         let ts = self.file.tracks[ti].timescale as i64;
-        let late = filmcraft_media::cancel::catch_up().map(|m| (t - m).to_rational_floor(1, ts));
-        self.video.frame_late(&Mp4Video { src: self, track: ti }, t.to_rational_floor(1, ts), late)
+        // Nearest, not floor: with a coarse timescale (1000) sample times are rounded, and a
+        // floored lookup lands one unit short of every frame whose time was rounded up.
+        let late = filmcraft_media::cancel::catch_up().map(|m| (t - m).to_rational_round(1, ts));
+        self.video.frame_late(&Mp4Video { src: self, track: ti }, t.to_rational_round(1, ts), late)
     }
 
     fn audio_packet(&self, st: &mut AudioState, i: usize) -> crate::Result<Arc<Vec<Vec<f32>>>> {
@@ -464,14 +469,37 @@ fn codec_label(c: &CodecConfig) -> String {
     }
 }
 
+/// "YUV 4:2:2 10-bit" from an H.264 / HEVC `chroma_format_idc` and bit depth.
+fn yuv_label(chroma_format_idc: u32, bits: u32) -> String {
+    let sub = match chroma_format_idc {
+        0 => "4:0:0",
+        1 => "4:2:0",
+        2 => "4:2:2",
+        _ => "4:4:4",
+    };
+    format!("YUV {sub} {bits}-bit")
+}
+
+/// `chroma_format_idc` and luma bit depth of an H.264 track: from the `avcC` High-profile extension
+/// (ISO/IEC 14496-15 §5.3.3), else from its first SPS. The profile alone can't say (High 4:2:2 is
+/// 8 or 10-bit, High 10 can be 8-bit).
+fn avc_format(a: &filmcraft_isobmff::AvcConfig) -> Option<(u32, u32)> {
+    // reserved bits set: '111111' chroma_format, '11111' bit_depth_luma_minus8 (else not an extension)
+    if !matches!(a.profile, 66 | 77 | 88)
+        && let &[chroma, depth, ..] = a.ext.as_slice()
+        && chroma & 0xFC == 0xFC
+        && depth & 0xF8 == 0xF8
+    {
+        return Some(((chroma & 3) as u32, (depth & 7) as u32 + 8));
+    }
+    let sps = filmcraft_h264::params::Sps::parse(&filmcraft_bitstream::unescape_rbsp(a.sps.first()?.get(1..)?)).ok()?;
+    Some((sps.chroma_format_idc, sps.bit_depth_luma))
+}
+
 fn pixfmt_label(c: &CodecConfig) -> String {
     match c {
-        CodecConfig::Avc(a) => match a.profile {
-            110 => "YUV 4:2:0 10-bit".into(),
-            122 => "YUV 4:2:2".into(),
-            244 => "YUV 4:4:4".into(),
-            _ => "YUV 4:2:0 8-bit".into(),
-        },
+        CodecConfig::Avc(a) => avc_format(a).map(|(chroma, bits)| yuv_label(chroma, bits)).unwrap_or_default(),
+        CodecConfig::Hevc(h) => yuv_label(h.chroma_format_idc as u32, h.bit_depth_luma as u32),
         CodecConfig::Vp9(c) => {
             let sub = match c.chroma_subsampling {
                 2 => "4:2:2",
@@ -484,7 +512,8 @@ fn pixfmt_label(c: &CodecConfig) -> String {
             let chroma = filmcraft_apv::ChromaFormat::from_idc(a.chroma_format_idc).unwrap_or(filmcraft_apv::ChromaFormat::Yuv422);
             crate::apv::apv_pixfmt_label(chroma, a.bit_depth_minus8.saturating_add(8))
         }
-        CodecConfig::ProRes { fourcc } if fourcc.0[2] == b'4' => "YUVA 4:4:4 12-bit".into(),
+        // 4444 until the first frame header says whether it codes alpha (`open_reader`)
+        CodecConfig::ProRes { fourcc } if fourcc.0[2] == b'4' => "YUV 4:4:4 12-bit".into(),
         CodecConfig::ProRes { .. } => "YUV 4:2:2 10-bit".into(),
         CodecConfig::Jpeg { .. } => "YUV 4:2:x 8-bit".into(),
         _ => String::new(),
@@ -496,6 +525,25 @@ pub fn opener(name: &str, bytes: Arc<[u8]>) -> Option<Result<SharedSource, Media
         return None;
     }
     Some(Mp4Source::open(name, bytes).map(|s| Arc::new(s) as SharedSource).map_err(Into::into))
+}
+
+/// How long a track plays. With an edit list that is the sum of its edits (ISO/IEC 14496-12
+/// §8.6.6, movie timescale), as `tkhd` records it. The media duration (`mdhd`) runs on the decode
+/// timeline: it is longer than the presentation by the B-frame delay an edit skips (`media_time`, one
+/// extra frame on every ffmpeg / x264 MP4 with B-frames) and shorter by a leading empty edit (the last
+/// frame of a delayed video track was never shown). Fragmented files, and edit lists that add up to
+/// nothing or to more than a [`Tick`] holds, keep the media duration.
+fn presentation_duration(file: &Mp4File, t: &filmcraft_isobmff::Track) -> Tick {
+    let media = Tick::from_rational(t.duration as i64, 1, t.timescale as i64);
+    if file.fragmented || t.edits.is_empty() || file.timescale == 0 {
+        return media;
+    }
+    let edits = t.edits.iter().fold(0u128, |a, e| a.saturating_add(e.segment_duration as u128));
+    let ticks = edits.saturating_mul(filmcraft_time::TICKS_PER_SECOND as u128) / file.timescale as u128;
+    match i64::try_from(ticks) {
+        Ok(t) if t > 0 => Tick(t),
+        _ => media,
+    }
 }
 
 /// [`filmcraft_media::ReaderOpener`] for MP4/MOV.
@@ -533,6 +581,45 @@ mod tests {
             b[m + j * 4..m + j * 4 + 4].copy_from_slice(&v.to_be_bytes());
         }
         b.into()
+    }
+
+    /// A four-frame 25 fps ProRes MOV (64×32) whose video track carries `edits`.
+    fn mov_with_edits(edits: Vec<filmcraft_isobmff::Edit>) -> Arc<[u8]> {
+        let fr = filmcraft_prores::Frame::new(64, 32, filmcraft_prores::ChromaFormat::Yuv422, 10, false);
+        let data = filmcraft_prores::Encoder::new(filmcraft_prores::Profile::Hq, 64, 32).encode(&fr).expect("encode");
+        let mut mux = Mp4Writer::new(std::io::Cursor::new(Vec::new()), WriterOptions::new(Brand::Mov)).expect("writer");
+        let mut cfg = TrackConfig::new(SampleEntry::prores(FourCc(*b"apch"), 64, 32), 25);
+        cfg.edits = edits;
+        let t = mux.add_track(cfg).expect("track");
+        for _ in 0..4 {
+            mux.write_sample(t, WriteSample { data: &data, duration: 1, composition_offset: 0, is_sync: true }).expect("sample");
+        }
+        mux.finish().expect("finish").into_inner().into()
+    }
+
+    /// A clip lasts as long as its edit list presents it, not as long as its media (`mdhd`) runs.
+    /// Every ffmpeg / x264 MP4 with B-frames skips its reorder delay with an edit and imported one
+    /// frame too long; a video track delayed by an empty edit lost its last frame.
+    #[test]
+    fn duration_follows_the_edit_list() {
+        use filmcraft_isobmff::Edit;
+        let frames = |s: &Mp4Source| s.info().duration.to_rational_floor(1, 25);
+        // no edit list: the media duration
+        assert_eq!(frames(&Mp4Source::open("plain.mov", mov_with_edits(Vec::new())).expect("open")), 4);
+        // skip the first frame (B-frame delay style): three frames play (movie timescale 1000 ms)
+        let skip = vec![Edit { segment_duration: 120, media_time: 1, media_rate: 0x10000 }];
+        assert_eq!(frames(&Mp4Source::open("skip.mov", mov_with_edits(skip)).expect("open")), 3);
+        // a one-frame empty edit, then all four frames: five frames, and the last one is there
+        let delayed =
+            vec![Edit { segment_duration: 40, media_time: -1, media_rate: 0x10000 }, Edit { segment_duration: 160, media_time: 0, media_rate: 0x10000 }];
+        let s = Mp4Source::open("delayed.mov", mov_with_edits(delayed)).expect("open");
+        assert_eq!(frames(&s), 5);
+        assert!(s.video_frame(FrameRequest::full(Tick::from_rational(4, 1, 25))).is_ok());
+        // hostile segment durations fall back to the media duration instead of wrapping
+        let huge = vec![Edit { segment_duration: u64::MAX, media_time: 0, media_rate: 0x10000 }];
+        assert_eq!(frames(&Mp4Source::open("huge.mov", mov_with_edits(huge)).expect("open")), 4);
+        let zero = vec![Edit { segment_duration: 0, media_time: 0, media_rate: 0x10000 }];
+        assert_eq!(frames(&Mp4Source::open("zero.mov", mov_with_edits(zero)).expect("open")), 4);
     }
 
     /// Overwrite the big-endian u32 `skip` bytes after the first `fourcc` box type.
@@ -617,5 +704,82 @@ mod tests {
         // a scaled quarter turn is still a quarter turn
         let s = Mp4Source::open("cw2.mov", rotated_mov([0, 2 * ONE, 0, -2 * ONE, 0, 0, 64 * ONE, 0, W])).expect("open");
         assert_eq!(s.info().video.as_ref().map(|v| (v.width, v.height)), Some((32, 64)));
+    }
+
+    #[test]
+    fn hevc_pixel_format_comes_from_hvcc() {
+        for (chroma, bits, want) in [(1, 8, "YUV 4:2:0 8-bit"), (1, 10, "YUV 4:2:0 10-bit"), (2, 8, "YUV 4:2:2 8-bit"), (2, 10, "YUV 4:2:2 10-bit")] {
+            let c = filmcraft_isobmff::HevcConfig { general_profile_idc: 1, chroma_format_idc: chroma, bit_depth_luma: bits, ..Default::default() };
+            assert_eq!(pixfmt_label(&CodecConfig::Hevc(c)), want);
+        }
+    }
+
+    /// A High-profile SPS NAL unit (ITU-T H.264 §7.3.2.1.1) with the given chroma format and bit depth, 16×16.
+    fn high_sps(profile: u8, chroma: u32, bits: u32) -> Vec<u8> {
+        let mut w = filmcraft_bitstream::BitWriter::new();
+        w.write_bits(0x67, 8);
+        w.write_bits(profile as u32, 8);
+        w.write_bits(0, 8); // constraint flags
+        w.write_bits(30, 8); // level
+        w.write_ue(0); // seq_parameter_set_id
+        w.write_ue(chroma);
+        if chroma == 3 {
+            w.write_bit(false); // separate_colour_plane_flag
+        }
+        w.write_ue(bits - 8); // luma
+        w.write_ue(bits - 8); // chroma
+        w.write_bits(0, 2); // no transform bypass, no scaling matrices
+        w.write_ue(0); // log2_max_frame_num_minus4
+        w.write_ue(2); // pic_order_cnt_type
+        w.write_ue(1); // max_num_ref_frames
+        w.write_bit(false); // gaps_in_frame_num_allowed
+        w.write_ue(0); // pic_width_in_mbs_minus1
+        w.write_ue(0); // pic_height_in_map_units_minus1
+        w.write_bits(0b110, 3); // frame_mbs_only, direct_8x8_inference, no cropping
+        w.write_bit(false); // no VUI
+        w.rbsp_trailing();
+        w.finish()
+    }
+
+    #[test]
+    fn avc_pixel_format_comes_from_avcc_not_the_profile() {
+        let avc =
+            |profile: u8, sps: Vec<u8>, ext: Vec<u8>| CodecConfig::Avc(filmcraft_isobmff::AvcConfig { profile, sps: vec![sps], ext, ..Default::default() });
+        // High 4:2:2 at 10 and 8 bits, from the avcC extension (chroma_format 2, bit_depth_luma_minus8)
+        assert_eq!(pixfmt_label(&avc(122, high_sps(122, 2, 10), vec![0xFE, 0xFA, 0xFA, 0])), "YUV 4:2:2 10-bit");
+        assert_eq!(pixfmt_label(&avc(122, high_sps(122, 2, 8), vec![0xFE, 0xF8, 0xF8, 0])), "YUV 4:2:2 8-bit");
+        // no extension (or not a valid one): the SPS says
+        assert_eq!(pixfmt_label(&avc(122, high_sps(122, 2, 10), Vec::new())), "YUV 4:2:2 10-bit");
+        assert_eq!(pixfmt_label(&avc(110, high_sps(110, 1, 10), vec![0, 0, 0, 0])), "YUV 4:2:0 10-bit");
+        assert_eq!(pixfmt_label(&avc(244, high_sps(244, 3, 10), Vec::new())), "YUV 4:4:4 10-bit");
+        // an unreadable SPS and no extension: unknown, not a guess
+        assert_eq!(pixfmt_label(&avc(122, vec![0x67, 122], Vec::new())), "");
+    }
+
+    /// A one-frame 32×16 ProRes MOV with the given profile, chroma format and fourcc.
+    fn prores_mov(profile: filmcraft_prores::Profile, fourcc: &[u8; 4], chroma: filmcraft_prores::ChromaFormat, alpha: bool) -> Arc<[u8]> {
+        let (w, h) = (32u32, 16u32);
+        let fr = filmcraft_prores::Frame::new(w, h, chroma, if chroma == filmcraft_prores::ChromaFormat::Yuv444 { 12 } else { 10 }, alpha);
+        let data = filmcraft_prores::Encoder::new(profile, w, h).encode(&fr).expect("encode");
+        let mut mux = Mp4Writer::new(std::io::Cursor::new(Vec::new()), WriterOptions::new(Brand::Mov)).expect("writer");
+        let t = mux.add_track(TrackConfig::new(SampleEntry::prores(FourCc(*fourcc), w as u16, h as u16), 25)).expect("track");
+        mux.write_sample(t, WriteSample { data: &data, duration: 1, composition_offset: 0, is_sync: true }).expect("sample");
+        mux.finish().expect("finish").into_inner().into()
+    }
+
+    /// `ap4h` / `ap4x` don't imply alpha: the frame header's alpha_channel_type does.
+    #[test]
+    fn prores_alpha_comes_from_the_frame_header() {
+        use filmcraft_prores::{ChromaFormat, Profile};
+        for (profile, fourcc, chroma, alpha, want) in [
+            (Profile::P4444, b"ap4h", ChromaFormat::Yuv444, false, "YUV 4:4:4 12-bit"),
+            (Profile::P4444, b"ap4h", ChromaFormat::Yuv444, true, "YUVA 4:4:4 12-bit"),
+            (Profile::P4444Xq, b"ap4x", ChromaFormat::Yuv444, false, "YUV 4:4:4 12-bit"),
+            (Profile::Hq, b"apch", ChromaFormat::Yuv422, false, "YUV 4:2:2 10-bit"),
+        ] {
+            let s = Mp4Source::open("p.mov", prores_mov(profile, fourcc, chroma, alpha)).expect("open");
+            let v = s.info().video.as_ref().expect("video");
+            assert_eq!((v.pixel_format.as_str(), v.has_alpha), (want, alpha), "{}", String::from_utf8_lossy(fourcc));
+        }
     }
 }

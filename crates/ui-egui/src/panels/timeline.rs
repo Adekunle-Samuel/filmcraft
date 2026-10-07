@@ -103,7 +103,9 @@ pub enum Drag {
     },
     Divider,
     ZoomBar {
+        /// Where the pointer was pressed, and the view's left edge (seconds) at that moment.
         grab: f32,
+        start: f64,
         mode: u8,
     },
 }
@@ -124,6 +126,8 @@ pub struct Layout {
     pub rows: Vec<Row>,
     pub pps: f64,
     pub scroll: f64,
+    /// The y of the divider between the video tracks (above) and the audio tracks (below).
+    pub split_y: f32,
 }
 
 impl Layout {
@@ -136,6 +140,21 @@ impl Layout {
     pub fn row_at(&self, y: f32) -> Option<&Row> {
         self.rows.iter().find(|r| r.rect.min.y <= y && y < r.rect.max.y)
     }
+}
+
+/// How far the Timeline reaches, in seconds: ten minutes past the end of the sequence. Premiere
+/// Pro's Timeline does the same (on a 6 s sequence its view stops with 00:10:06 at the right
+/// edge). The view cannot be scrolled past it and the scroll bar spans it.
+pub fn timeline_extent(sequence_seconds: f64) -> f64 {
+    sequence_seconds.max(0.0) + 600.0
+}
+
+/// The latest time the left edge of a view `width` points wide can show at `pps` points a second.
+pub fn max_scroll(sequence_seconds: f64, width: f32, pps: f64) -> f64 {
+    if pps <= 0.0 || !pps.is_finite() {
+        return 0.0;
+    }
+    (timeline_extent(sequence_seconds) - width as f64 / pps).max(0.0)
 }
 
 /// Zoom about a time (keeps it under the same screen x).
@@ -229,6 +248,17 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
             v.scroll = v.target_scroll;
         }
     }
+    // The view stays inside the Timeline's extent, however it was moved (wheel, scroll bar, zoom,
+    // a script): scrolled past it, nothing is in view and the scroll bar has nowhere to show it.
+    {
+        let v = &mut app.ui.timeline;
+        let seconds = seq.duration().seconds();
+        if !v.scroll.is_finite() || !v.target_scroll.is_finite() {
+            (v.scroll, v.target_scroll) = (0.0, 0.0);
+        }
+        v.scroll = v.scroll.clamp(0.0, max_scroll(seconds, content.width(), v.pps));
+        v.target_scroll = v.target_scroll.clamp(0.0, max_scroll(seconds, content.width(), v.target_pps));
+    }
     let pps = app.ui.timeline.pps;
     let scroll = app.ui.timeline.scroll;
 
@@ -261,7 +291,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         let top = audio_area.min.y + i as f32 * ah - app.ui.timeline.a_scroll;
         rows.push(Row { track: tr.id, kind: TrackKind::Audio, index: i, rect: Rect::from_min_max(pos2(content.min.x, top), pos2(content.max.x, top + ah)) });
     }
-    let layout = Layout { content, ruler, rows: rows.clone(), pps, scroll };
+    let layout = Layout { content, ruler, rows: rows.clone(), pps, scroll, split_y };
     app.tl.layout = Some(layout.clone());
 
     // ---- backgrounds
@@ -405,7 +435,13 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     }
 
     // ---- scroll bars
-    zoom_scrollbar(app, ui, Rect::from_min_max(pos2(content.min.x, rect.max.y - SCROLLBAR_H + 2.0), pos2(content.max.x, rect.max.y - 2.0)), dur_s, &t);
+    zoom_scrollbar(
+        app,
+        ui,
+        Rect::from_min_max(pos2(content.min.x, rect.max.y - SCROLLBAR_H + 2.0), pos2(content.max.x, rect.max.y - 2.0)),
+        seq.duration().seconds(),
+        &t,
+    );
     vertical_scrollbar(
         ui,
         Rect::from_min_max(pos2(content.max.x + 2.0, video_area.min.y), pos2(rect.max.x - 1.0, video_area.max.y)),
@@ -1109,15 +1145,32 @@ fn draw_top(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, seq: &Sequenc
     app.auto.add("timeline.ruler", ruler, "time ruler");
 }
 
-fn zoom_scrollbar(app: &mut FilmcraftApp, ui: &mut egui::Ui, bar: Rect, dur_s: f64, t: &Tokens) {
+/// The narrowest the zoom scroll bar's thumb gets: room for its two handles and a part between
+/// them to grab.
+const MIN_THUMB_W: f32 = 34.0;
+
+/// Where the zoom scroll bar's thumb is: (left edge, width, seconds of scroll per point of thumb
+/// travel). The thumb is as wide as the share of the Timeline in view (never narrower than
+/// [`MIN_THUMB_W`]) and its travel covers the whole scroll range, so it reaches both ends of the
+/// bar and moves with the pointer when dragged.
+fn zoom_thumb(bar: Rect, seq_seconds: f64, scroll: f64, pps: f64) -> (f32, f32, f64) {
+    let vis = bar.width() as f64 / pps.max(1e-9);
+    let total = timeline_extent(seq_seconds).max(vis);
+    let w = ((vis / total) as f32 * bar.width()).clamp(MIN_THUMB_W.min(bar.width()), bar.width());
+    let travel = (bar.width() - w).max(0.0);
+    let range = (total - vis).max(0.0);
+    let at = if range > 0.0 { (scroll / range).clamp(0.0, 1.0) as f32 * travel } else { 0.0 };
+    (bar.min.x + at, w, if travel > 0.5 { range / travel as f64 } else { 0.0 })
+}
+
+fn zoom_scrollbar(app: &mut FilmcraftApp, ui: &mut egui::Ui, bar: Rect, seq_seconds: f64, t: &Tokens) {
     let p = ui.painter();
     p.rect_filled(bar, bar.height() / 2.0, t.separator);
     let v = &mut app.ui.timeline;
-    let total = (dur_s * 1.15).max(v.scroll + bar.width() as f64 / v.pps);
     let vis = bar.width() as f64 / v.pps;
-    let a = bar.min.x + (v.scroll / total) as f32 * bar.width();
-    let b = bar.min.x + ((v.scroll + vis) / total).min(1.0) as f32 * bar.width();
-    let thumb = Rect::from_min_max(pos2(a, bar.min.y), pos2(b.max(a + 20.0), bar.max.y));
+    let total = timeline_extent(seq_seconds).max(vis);
+    let (left, w, per_point) = zoom_thumb(bar, seq_seconds, v.scroll, v.pps);
+    let thumb = Rect::from_min_max(pos2(left, bar.min.y), pos2(left + w, bar.max.y));
     let hover = ui.rect_contains_pointer(thumb);
     p.rect_filled(thumb, thumb.height() / 2.0, if hover { Color32::from_rgb(0x6a, 0x6a, 0x6a) } else { Color32::from_rgb(0x4b, 0x4b, 0x4b) });
     for x in [thumb.min.x + thumb.height() / 2.0, thumb.max.x - thumb.height() / 2.0] {
@@ -1125,40 +1178,64 @@ fn zoom_scrollbar(app: &mut FilmcraftApp, ui: &mut egui::Ui, bar: Rect, dur_s: f
         p.circle_stroke(pos2(x, thumb.center().y), 4.5, Stroke::new(1.5, Color32::from_rgb(0xd1, 0xd1, 0xd1)));
     }
     app.auto.add("timeline.zoomBar", thumb, "zoom scroll bar");
-    let resp = ui.interact(bar, egui::Id::new("tl-zoombar"), Sense::drag());
-    if resp.drag_started()
-        && let Some(pos) = resp.interact_pointer_pos()
+    app.auto.add("timeline.zoomBar.track", bar, "zoom scroll bar track");
+    let resp = ui.interact(bar, egui::Id::new("tl-zoombar"), Sense::click_and_drag());
+    let range = (total - vis).max(0.0);
+    // a press beside the thumb brings the thumb's middle under the pointer (and a drag goes on
+    // from there)
+    let jump = |v: &mut crate::state::TimelineView, x: f32| {
+        if per_point > 0.0 {
+            v.target_scroll = ((x - bar.min.x - w / 2.0) as f64 * per_point).clamp(0.0, range);
+            v.scroll = v.target_scroll;
+        }
+    };
+    if resp.clicked()
+        && let Some(pos) = resp.interact_pointer_pos().filter(|pos| !thumb.contains(*pos))
     {
-        let mode = if (pos.x - thumb.min.x).abs() < 9.0 {
+        jump(&mut app.ui.timeline, pos.x);
+    }
+    // (a drag is known to be one only after the pointer has moved: what was grabbed is what was
+    // under the pointer when the button went down)
+    if resp.drag_started()
+        && let Some(pos) = ui.input(|i| i.pointer.press_origin()).or(resp.interact_pointer_pos())
+    {
+        let mode = if !thumb.expand2(vec2(0.0, 4.0)).contains(pos) {
+            jump(&mut app.ui.timeline, pos.x);
+            0
+        } else if (pos.x - thumb.min.x).abs() < 9.0 {
             1
         } else if (pos.x - thumb.max.x).abs() < 9.0 {
             2
         } else {
             0
         };
-        app.tl.drag = Some(Drag::ZoomBar { grab: pos.x, mode });
+        app.tl.drag = Some(Drag::ZoomBar { grab: pos.x, start: app.ui.timeline.target_scroll, mode });
     }
-    if let Some(Drag::ZoomBar { mode, .. }) = app.tl.drag.clone()
+    if let Some(Drag::ZoomBar { grab, start, mode }) = app.tl.drag.clone()
         && resp.dragged()
     {
-        let dx = resp.drag_delta().x as f64 / bar.width() as f64 * total;
         let v = &mut app.ui.timeline;
         match mode {
+            // the thumb's middle: scroll, the thumb staying under the pointer
             0 => {
-                v.target_scroll = (v.target_scroll + dx).max(0.0);
-                v.scroll = v.target_scroll;
+                if let Some(pos) = resp.interact_pointer_pos() {
+                    v.target_scroll = (start + (pos.x - grab) as f64 * per_point).clamp(0.0, range);
+                    v.scroll = v.target_scroll;
+                }
             }
-            1 => {
-                let end = v.scroll + vis;
-                let ns = (v.scroll + dx).clamp(0.0, end - 0.05);
-                v.pps = bar.width() as f64 / (end - ns);
-                v.target_pps = v.pps;
-                v.scroll = ns;
-                v.target_scroll = ns;
-            }
+            // a handle: zoom, the other end of the view staying where it is
             _ => {
-                let ne = (v.scroll + vis + dx).max(v.scroll + 0.05);
-                v.pps = bar.width() as f64 / (ne - v.scroll);
+                let dx = resp.drag_delta().x as f64 / bar.width().max(1.0) as f64 * total;
+                if mode == 1 {
+                    let end = v.scroll + vis;
+                    let ns = (v.scroll + dx).clamp(0.0, (end - 0.05).max(0.0));
+                    v.pps = (bar.width() as f64 / (end - ns).max(0.05)).clamp(0.05, 24_000.0);
+                    v.scroll = ns;
+                    v.target_scroll = ns;
+                } else {
+                    let ne = (v.scroll + vis + dx).max(v.scroll + 0.05);
+                    v.pps = (bar.width() as f64 / (ne - v.scroll)).clamp(0.05, 24_000.0);
+                }
                 v.target_pps = v.pps;
             }
         }
@@ -1386,6 +1463,46 @@ fn shift_track(seq: &Sequence, tid: TrackId, delta: i32) -> Option<TrackId> {
     Some(tid)
 }
 
+/// What the wheel and the trackpad did this frame.
+struct WheelInput {
+    /// Scroll in points (wheel lines and pages converted), positive = content moves right / down.
+    delta: egui::Vec2,
+    /// Pinch factor (1 = none).
+    pinch: f32,
+    command: bool,
+    alt: bool,
+    shift: bool,
+}
+
+/// The wheel events of this frame, read from the events themselves: egui turns Cmd + wheel into a
+/// zoom and Shift + wheel into a sideways scroll before anyone asks, and the Timeline has its own
+/// meaning for both. The modifiers are those of the events (a script's wheel carries its own).
+fn wheel_input(ctx: &egui::Context) -> WheelInput {
+    ctx.input(|i| {
+        let mut w = WheelInput { delta: egui::Vec2::ZERO, pinch: 1.0, command: false, alt: false, shift: false };
+        for e in &i.events {
+            match e {
+                egui::Event::MouseWheel { unit, delta, modifiers, .. } => {
+                    let points = match unit {
+                        egui::MouseWheelUnit::Point => 1.0,
+                        egui::MouseWheelUnit::Line => 40.0,
+                        egui::MouseWheelUnit::Page => 400.0,
+                    };
+                    if delta.x.is_finite() && delta.y.is_finite() {
+                        w.delta += *delta * points;
+                    }
+                    w.command |= modifiers.command || modifiers.mac_cmd || modifiers.ctrl;
+                    w.alt |= modifiers.alt;
+                    w.shift |= modifiers.shift;
+                }
+                egui::Event::Zoom(z) if z.is_finite() && *z > 0.0 => w.pinch *= *z,
+                _ => {}
+            }
+        }
+        w
+    })
+}
+
 fn interact(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, layout: &Layout, rect: Rect) {
     let ctx = ui.ctx().clone();
     let area = Rect::from_min_max(pos2(layout.content.min.x, layout.ruler.min.y), layout.content.max);
@@ -1395,27 +1512,42 @@ fn interact(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, layout: &
     let tool = app.ui.tool;
     let rate = seq.settings.frame_rate;
 
-    // ---- wheel: horizontal scroll; Alt/Cmd+wheel zoom about cursor; Shift+wheel vertical
-    if ui.rect_contains_pointer(rect) {
-        let (scroll, zoom) = ctx.input(|i| (i.smooth_scroll_delta, i.zoom_delta()));
-        if let Some(p) = ctx.pointer_hover_pos() {
-            if (zoom - 1.0).abs() > 1e-4 || ((mods.alt || mods.command) && scroll.y.abs() > 0.0) {
-                let f = if (zoom - 1.0).abs() > 1e-4 { zoom as f64 } else { (1.0 + scroll.y as f64 * 0.01).clamp(0.5, 2.0) };
-                let anchor_t = layout.tick_at(p.x).seconds();
-                let v = &mut app.ui.timeline;
-                v.target_pps = (v.target_pps * f).clamp(0.05, 24_000.0);
-                app.tl.zoom_anchor = Some((anchor_t, p.x));
-            } else if mods.shift && scroll.y.abs() > 0.0 {
-                if layout.rows.iter().find(|r| r.kind == TrackKind::Video).is_some_and(|r| p.y < r.rect.max.y + 200.0) && p.y < layout.content.center().y {
-                    app.ui.timeline.v_scroll -= scroll.y;
-                } else {
-                    app.ui.timeline.a_scroll -= scroll.y;
+    // ---- wheel, as in Premiere Pro on macOS (checked in 26.5.2):
+    //   wheel            the tracks under the pointer, up and down
+    //   Cmd + wheel      the Timeline, sideways
+    //   Option + wheel   zoom about the pointer
+    // Settings ▸ Timeline ▸ Timeline Mouse Scrolling "Horizontal" swaps the first two. A sideways
+    // gesture (trackpad swipe, tilt wheel, Shift + wheel) always scrolls sideways; a pinch zooms.
+    if ui.rect_contains_pointer(rect)
+        && let Some(p) = ctx.pointer_hover_pos()
+    {
+        let w = wheel_input(&ctx);
+        if (w.pinch - 1.0).abs() > 1e-4 || (w.alt && w.delta.y != 0.0) {
+            let f = if (w.pinch - 1.0).abs() > 1e-4 { w.pinch as f64 } else { (1.0_f64 + w.delta.y as f64 * 0.01).clamp(0.5, 2.0) };
+            let anchor_t = layout.tick_at(p.x).seconds();
+            let v = &mut app.ui.timeline;
+            v.target_pps = (v.target_pps * f).clamp(0.05, 24_000.0);
+            app.tl.zoom_anchor = Some((anchor_t, p.x));
+        } else if w.delta != egui::Vec2::ZERO {
+            let wheel_sideways = (app.session.prefs.timeline.mouse_scrolling == "horizontal") != w.command;
+            let sideways = if w.delta.x.abs() > w.delta.y.abs() {
+                Some(w.delta.x)
+            } else if wheel_sideways || w.shift {
+                Some(w.delta.y)
+            } else {
+                None
+            };
+            match sideways {
+                Some(d) => {
+                    let v = &mut app.ui.timeline;
+                    let limit = max_scroll(seq.duration().seconds(), layout.content.width(), v.pps);
+                    v.target_scroll = (v.target_scroll - d as f64 / v.pps).clamp(0.0, limit);
+                    v.scroll = v.target_scroll;
                 }
-            } else if scroll.x.abs() > 0.0 || scroll.y.abs() > 0.0 {
-                let d = if scroll.x.abs() > scroll.y.abs() { scroll.x } else { scroll.y };
-                let v = &mut app.ui.timeline;
-                v.target_scroll = (v.target_scroll - d as f64 / v.pps).max(0.0);
-                v.scroll = v.target_scroll;
+                // up and down: the video tracks above the divider, the audio tracks below it (the
+                // lowest video track is at the bottom, so wheeling up brings higher ones in)
+                None if p.y < layout.split_y => app.ui.timeline.v_scroll += w.delta.y,
+                None => app.ui.timeline.a_scroll -= w.delta.y,
             }
         }
     }
