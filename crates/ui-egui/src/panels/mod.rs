@@ -187,8 +187,16 @@ pub fn panel_menu_popup(app: &mut FilmcraftApp, ui: &mut egui::Ui) {
             // the Timeline's tabs are its open sequences: Close Panel closes the active one and
             // keeps the panel (Premiere's wording and behaviour)
             if p == PanelKind::Timeline && app.session.state.active_sequence.is_some() {
-                if ui.button("Close Panel").clicked() {
+                let r = ui.button("Close Panel");
+                app.auto.add("panel.menu.Timeline.close", r.rect, "Close Panel");
+                if r.clicked() {
                     let _ = app.session.execute("sequence.close", serde_json::json!({}));
+                    close = true;
+                }
+                let r = ui.add_enabled(app.session.state.open_sequences.len() > 1, egui::Button::new("Close Other Timeline Panels"));
+                app.auto.add("panel.menu.Timeline.closeOthers", r.rect, "Close Other Timeline Panels");
+                if r.clicked() {
+                    let _ = app.session.execute("sequence.closeOthers", serde_json::json!({}));
                     close = true;
                 }
             } else if ui.button("Close Panel").clicked() {
@@ -206,7 +214,9 @@ pub fn panel_menu_popup(app: &mut FilmcraftApp, ui: &mut egui::Ui) {
             }
             if p == PanelKind::Timeline {
                 ui.separator();
-                if ui.add_enabled(app.session.state.active_sequence.is_some(), egui::Button::new("Reveal Sequence in Project")).clicked() {
+                let r = ui.add_enabled(app.session.state.active_sequence.is_some(), egui::Button::new("Reveal Sequence in Project"));
+                app.auto.add("panel.menu.Timeline.revealSequence", r.rect, "Reveal Sequence in Project");
+                if r.clicked() {
                     let _ = app.session.execute("sequence.revealInProject", serde_json::json!({}));
                     close = true;
                 }

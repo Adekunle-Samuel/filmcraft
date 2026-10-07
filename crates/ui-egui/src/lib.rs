@@ -1307,6 +1307,11 @@ impl FilmcraftApp {
                         self.ui.status = e.to_string();
                     }
                 }
+                dock::DockAction::MoveSequence(id, index) => {
+                    if let Err(e) = self.session.execute("sequence.moveTab", json!({"item": id, "index": index})) {
+                        self.ui.status = e.to_string();
+                    }
+                }
                 dock::DockAction::PanelMenu(p, pos) => {
                     ui.ctx().data_mut(|d| d.insert_temp(egui::Id::new("panel-menu"), (p, pos)));
                 }

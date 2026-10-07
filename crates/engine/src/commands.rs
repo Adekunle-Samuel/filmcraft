@@ -1280,6 +1280,30 @@ fn build() -> Vec<CommandSpec> {
             }
             Ok(Value::Null)
         }),
+        cmd!("sequence.closeOthers", "Close Other Timeline Panels", [], None, r#"{"item":id?}"#, has_seq, |s, p| {
+            let id = item_p(p, "item").or(s.state.active_sequence).ok_or(EngineError::NoSequence)?;
+            if !s.state.open_sequences.contains(&id) {
+                return Err(bad("sequence.closeOthers", "that sequence is not open"));
+            }
+            let closed = s.state.open_sequences.len().saturating_sub(1);
+            s.state.open_sequences = vec![id];
+            if s.state.active_sequence != Some(id) {
+                s.state.active_sequence = Some(id);
+                s.state.selection.clear();
+                s.events.push(crate::Event::OpenSequence(id));
+            }
+            Ok(json!({"closed": closed}))
+        }),
+        cmd!("sequence.moveTab", "Move Sequence Tab", [], None, r#"{"item":id?,"index":int}"#, has_seq, |s, p| {
+            let id = item_p(p, "item").or(s.state.active_sequence).ok_or(EngineError::NoSequence)?;
+            let to = u64_p(p, "index").ok_or_else(|| bad("sequence.moveTab", "need `index`"))?;
+            let from = s.state.open_sequences.iter().position(|x| *x == id).ok_or_else(|| bad("sequence.moveTab", "that sequence is not open"))?;
+            // past the end is the end
+            let to = usize::try_from(to).unwrap_or(usize::MAX).min(s.state.open_sequences.len().saturating_sub(1));
+            let tab = s.state.open_sequences.remove(from);
+            s.state.open_sequences.insert(to, tab);
+            Ok(json!({"index": to}))
+        }),
         cmd!("sequence.addEdit", "Add Edit", ["Sequence"], Some("Cmd+K"), r#"{"time":ticks?}"#, has_seq, |s, p| {
             let t = time_p(s, p, "").unwrap_or(s.playhead());
             let tg = s.targeting().targeted;
