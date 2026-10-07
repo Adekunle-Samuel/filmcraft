@@ -470,6 +470,9 @@ pub struct UiState {
     /// Open guide dialog (Add Guide / Save Guides as Template / Manage Guides).
     #[serde(default)]
     pub guide_dialog: Option<GuideDialog>,
+    /// Open Text Properties dialog (the wrench in the Properties panel's Text section).
+    #[serde(default)]
+    pub text_props_dialog: Option<TextPropsDialog>,
     /// Open Window ▸ Workspaces dialog.
     #[serde(default)]
     pub workspace_dialog: Option<WorkspaceDialog>,
@@ -745,6 +748,20 @@ impl Default for DeleteTracksDraft {
     }
 }
 
+/// Draft of the Text Properties dialog of a text layer: its type (point text, or paragraph text
+/// wrapped in a box) and text styling.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct TextPropsDialog {
+    pub clip: u64,
+    pub layer: usize,
+    pub paragraph: bool,
+    /// Vertical text is always point text.
+    pub vertical: bool,
+    pub ligatures: bool,
+    /// Ligatures when the dialog opened.
+    pub ligatures_was: bool,
+}
+
 /// The text layer being edited on the Program monitor: caret and selection anchor are byte
 /// offsets into the layer's text.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -813,6 +830,7 @@ impl Default for UiState {
             multicam_record: true,
             edit_cameras: None,
             guide_dialog: None,
+            text_props_dialog: None,
             workspace_dialog: None,
             clip_dialog: None,
             extras: Default::default(),
