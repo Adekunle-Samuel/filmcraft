@@ -568,12 +568,12 @@ impl FilmcraftApp {
         let mut cursor = start_tick.to_units_floor(sr as i64);
         let cues = panels::voiceover::cues(&self.session, sr);
         previews.live.publish_project(project.clone());
+        let mut resampler = None;
         let fill = Box::new(move |buf: &mut [f32], ch: usize| {
             // the newest project snapshot: mixer moves and other edits are heard while playing
             let project = previews.live.project().filter(|p| p.sequence(seq_id).is_some()).unwrap_or_else(|| project.clone());
             let Some(seq) = project.sequence(seq_id) else { return };
             let n = buf.len() / ch.max(1);
-            // Mix at the sequence rate; convert when the device rate differs (nearest sample).
             let seq_sr = seq.settings.sample_rate;
             // a 5.1 Mix plays as six channels (L, R, C, LFE, Ls, Rs) on a device with at least six
             use filmcraft_audio_dsp::channels::Layout;
@@ -581,17 +581,15 @@ impl FilmcraftApp {
             let mix = if seq_sr == sr {
                 previews.mix_layout(&project, seq_id, cursor, n, &provider, layout, mixdown)
             } else {
-                let s0 = (cursor as i128 * seq_sr as i128 / sr as i128) as i64;
-                let m = n * seq_sr as usize / sr as usize + 2;
-                let b = previews.mix_layout(&project, seq_id, s0, m, &provider, layout, mixdown);
-                let mut out = filmcraft_frame::AudioBuffer::silence(sr, b.channels.len(), n);
-                for (o, c) in out.channels.iter_mut().zip(&b.channels) {
-                    for (i, x) in o.iter_mut().enumerate() {
-                        let j = (i * seq_sr as usize / sr as usize).min(m - 1);
-                        *x = c[j];
-                    }
+                // Mix at the sequence rate as one continuous stream, interpolated to the device rate.
+                // (started afresh when the rate or the channel layout changes while playing)
+                let key = (seq_sr, layout);
+                if resampler.as_ref().is_none_or(|(k, _)| *k != key) {
+                    resampler = Some((key, filmcraft_audio_dsp::resample::StreamResampler::new(seq_sr, sr)));
                 }
-                out
+                let Some((_, r)) = resampler.as_mut() else { return };
+                let channels = r.process(cursor, n, |s0, m| previews.mix_layout(&project, seq_id, s0, m, &provider, layout, mixdown).channels);
+                filmcraft_frame::AudioBuffer { sample_rate: sr, channels }
             };
             if layout == Layout::Surround51 {
                 buf.fill(0.0);
