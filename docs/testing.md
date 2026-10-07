@@ -70,6 +70,12 @@ are never linked or shipped ([AGENTS.md](../AGENTS.md) §2).
   Windows only) make their 640x360, 1080p and 2160p H.264 / HEVC / Main 10 fixtures with ffmpeg and skip
   without a Direct3D 11 video device or the HEVC Video Extensions.
 
+The NVENC tests (`crates/platform/tests/nvenc.rs` and `nvenc_export.rs`, Windows only) skip without an
+NVIDIA GPU with NVENC. The FFI layout tests in `crates/platform/src/nvenc/abi_tests.rs` were generated
+from a C program built with MSVC against NVIDIA's MIT-licensed `nvEncodeAPI.h` (12.1); to regenerate
+them, print the sizes, alignments, offsets, constants and GUIDs of `src/nvenc/ffi.rs` from that
+program and update the asserts.
+
 ### Pass criteria per codec
 
 | Crate | Oracle check | Criterion |

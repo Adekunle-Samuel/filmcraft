@@ -172,6 +172,26 @@ frame, about 8 cores busy); Auto uses a twentieth of that CPU but drops 2–3 of
 Draft playback (1/2 draft: 410–416 → 93–105 CPU ms/frame) is dominated by the draft plan's decimation,
 as on macOS, because the hardware ignores draft mode.
 
+## Results (HW4: Windows NVENC H.264 export, software → hardware)
+
+Same machine as the HW2 results (Xeon E5-2680 v4, 28 threads, RTX 5060, driver 617.14, idle,
+2026-10-07). `cargo xtask bench --sections export --only h264 --hw off|auto --repeat 3`: the export
+of 8 s of a 1080p23.976 H.264 clip (191 frames) to H.264 with the default preset, VBR one pass.
+`--hw off` runs the software encoder; `--hw auto` sets `hardwareEncoding` to auto and runs NVENC
+(preset P5, high-quality tuning). Every NVENC row had `hw frames` = 573 = 191 × 3 repeats.
+
+| encoder | fps | CPU ms/frame | MB |
+|---|---|---|---|
+| software | 15.0 (12.7–12.8 s) | 1050 | 20.4 |
+| **NVENC** | **44** (4.3 s) | **356–373** | 21.7 |
+
+- The remaining CPU is the compositing and render of the frames and the RGBA → YUV conversion, not
+  the encoder.
+- The NVENC file is slightly larger at the same settings (21.7 vs 20.4 MB). The bitrate is not
+  matched, so these rows are not a quality comparison.
+
+Quality at equal bitrate: see the PR description.
+
 ## Results (GPU1: blend modes on the GPU compositor, #30, before → after)
 
 Before = this change with the old whole-frame CPU fallback for non-Normal blend modes put back

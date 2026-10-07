@@ -50,6 +50,15 @@ let availability = filmcraft_platform::register(); // Available("VideoToolbox") 
   - After a `flush` (which drains the MFT) the MFT only restarts at an IDR picture; the GOP cache
     always seeks after a flush, and a caller that continues from the middle of a GOP gets an error
     that `HybridDecoder` answers by replaying the run in software.
+- **Windows: NVIDIA NVENC H.264 encoding** (`nvenc/`), 8-bit SDR 4:2:0 for Export. The driver's
+  `nvEncodeAPI64.dll` (API 12.1, no CUDA or SDK) is loaded at run time, so machines without NVIDIA
+  still start. RGBA is converted with the software encoder's own BT.709 limited conversion into NV12
+  input buffers (a ring of eight); the encoder runs preset P5 with high-quality tuning, CABAC (CAVLC
+  for Baseline), one B-frame when the profile and GPU allow it, and an IDR at every keyframe
+  distance; the parameter sets go into `avcC`. Export ▸ Hardware encoding (off by default) selects it.
+  It declines two-pass VBR, HDR, MXF, interlaced output, sizes outside NVENC's limits and systems
+  without an NVIDIA GPU or driver, and the software encoder runs instead. A failure during an export
+  ends it with an error, since a hardware stream cannot be finished in software.
 - **Other systems:** `register()` does nothing and returns `Availability::Unavailable`.
 - **`HybridDecoder`** (`hybrid.rs`, safe code): the hardware decoder plus the means to build our
   software decoder for the same `SampleEntry` (`filmcraft_codecs::software_video_decoder`). On a
@@ -74,7 +83,7 @@ let availability = filmcraft_platform::register(); // Available("VideoToolbox") 
   `catch_unwind`; every `unsafe` block has a `// SAFETY:` comment; the public API is safe.
 - **Counted:** `perf.stats` `decode.hardware` (frames, software frames, sessions, declined,
   fallbacks; `filmcraft_codecs::hw::hw_stats`) and `backend` (the registered backend's name,
-  `filmcraft_codecs::hw::hw_backend`).
+  `filmcraft_codecs::hw::hw_backend`). `export.hardware` counts the NVENC encoder's frames, sessions and declines.
 
 ## Tests
 
@@ -83,6 +92,9 @@ let availability = filmcraft_platform::register(); // Available("VideoToolbox") 
 | `tests/videotoolbox.rs` (macOS) | H.264 High, HEVC Main (open GOP: CRA + RASL) and HEVC Main 10, 640×360 (coded 368: cropping) with B-frames: every picture **bit-exact** with our software decoder, same pts order, count, colour and aspect, also after `reset` + reseek to every later sync sample, mid-stream `flush`, and a full pass after resets; forced mid-stream failures (`VtDecoder::fail_after`) at five points continue with the software decoder's exact output; seeded mutation of samples and parameter sets (bit flips, truncation, corrupt length prefixes) never panics or hangs; HEVC 4:2:2 10-bit is bit-exact with ffmpeg's decode |
 | `tests/fallback.rs` (every OS) | `HybridDecoder` with a stand-in hardware decoder failing after N samples (every sync sample ± a few, first / last sample, after a seek): output identical to the software decoder; in-band parameter sets identical to the sample entry's stay in hardware, different ones switch to software |
 | `tests/setting.rs` | Hardware decoding Off gives the software decoder through `make_video_decoder` and the media stack (no hardware frames); Auto gives VideoToolbox where available |
+| `tests/nvenc.rs` (Windows, NVIDIA) | H.264 from NVENC (1280×720, 6 Mbps, 72 frames) decodes with our decoder at worst 46.9 dB luma PSNR; IDR at 0, 24 and 48; dts / pts right |
+| `tests/nvenc_export.rs` (Windows, NVIDIA) | Export with hardware encoding against the software encoder through the export pipeline: the two decoded files at worst 54.8 dB luma PSNR; ffmpeg decodes the file without errors; declined cases go to the software encoder; the counters |
+| `src/nvenc/abi_tests.rs` (Windows) | FFI structs' sizes, alignments, field offsets, constants and GUIDs against a C compiler's view of NVIDIA's `nvEncodeAPI.h` (12.1) |
 
 Fixtures are made with ffmpeg into `target/fixtures/platform/` (generator only, never linked);
 tests skip without ffmpeg or without a hardware decoder.
@@ -96,5 +108,6 @@ playback with no dropped frames at Full, 1/2 and 1/4. Details in
 
 ## Not yet
 
-Zero-copy upload of `CVPixelBuffer`s into wgpu textures; hardware encoding; Media Foundation /
-D3D11 (Windows) and VA-API (Linux) decoders; field-coded H.264.
+Zero-copy upload of decoded pictures into wgpu textures (`CVPixelBuffer`s on macOS, Direct3D 11
+textures on Windows); HEVC and AV1 encoding, 10-bit and HDR hardware encoding, and encoders from
+other vendors (through Media Foundation); VA-API (Linux) decoders; field-coded H.264.
