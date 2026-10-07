@@ -446,9 +446,7 @@ pub fn draw_group_chrome(ui: &mut egui::Ui, g: &Group, focused: PanelKind, t: &T
                 let mresp = ui.interact(mr.expand(3.0), egui::Id::new(("tab-menu", g.path.clone())), Sense::click());
                 reg.add(&format!("panel.menu.{}", p.id()), mr, "panel menu");
                 let mc = if mresp.hovered() { t.tab_text_active } else { t.tab_text };
-                for dy in [-3.5, 0.0, 3.5] {
-                    painter.line_segment([pos2(mr.min.x, mr.center().y + dy), pos2(mr.max.x, mr.center().y + dy)], Stroke::new(1.5, mc));
-                }
+                icons::paint(&painter, Rect::from_center_size(mr.center(), vec2(16.0, 16.0)), Icon::Hamburger, mc);
                 // 1 pt underline spanning label + ≡, 23 pt below the frame top
                 let uy = strip.min.y + 23.0;
                 painter.line_segment([pos2(label_x, uy), pos2(mr.max.x, uy)], Stroke::new(1.0, t.tab_text_active));
