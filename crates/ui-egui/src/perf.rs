@@ -20,6 +20,11 @@ pub fn stats(app: &FilmcraftApp) -> Value {
         "resolution": app.ui.program.res.label(),
         "draftDecode": app.session.prefs.playback.draft_decode,
     });
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let sr = app.audio.as_ref().map_or(0, |a| a.sample_rate());
+        v["playback"]["audio"] = app.playback.audio_stats.to_json(sr);
+    }
     let mut frames = app.frames.stats().to_json();
     frames["workers"] = json!(app.frames.workers());
     frames["queued"] = json!(app.frames.queue_len());

@@ -27,7 +27,7 @@
 //! takes its own range and lands offset by the difference of the In points (J- and L-cuts).
 
 use filmcraft_edit as edit;
-use filmcraft_project::{ClipId, ItemId, Label, Marker, MarkerId, MarkerKind, SplitMarks, TrackId, TrackItem, TrackKind};
+use filmcraft_project::{AudioChannels, ClipId, ItemId, Label, Marker, MarkerId, MarkerKind, SplitMarks, TrackId, TrackItem, TrackKind};
 use filmcraft_time::{Tick, TimeRange};
 use serde_json::{Value, json};
 
@@ -584,6 +584,114 @@ pub(crate) fn place_sequence_clips(
 
 /// Sequence ▸ Delete Tracks…: delete all empty video / audio tracks (`"empty"`) or one track per
 /// kind. A sequence always keeps at least one video and one audio track.
+/// The most tracks one `sequence.addTracks` adds of a kind, and the most a sequence may then
+/// have of it. (Amounts come from dialogs, scripts and the control channel: never trusted.)
+const MAX_ADDED_TRACKS: u64 = 99;
+const MAX_TRACKS: usize = 999;
+
+/// Where `sequence.addTracks` puts new tracks among the `len` tracks of their kind: the number of
+/// tracks before them. `key` holds `"first"` (Before First Track), a track of that kind by name
+/// (`"V2"`: after Video 2; `letter` is V, A or S) or a number (after that many tracks); without it
+/// they go after the last track.
+fn placement(p: &Value, key: &str, letter: char, len: usize) -> Result<usize> {
+    let cmd = "sequence.addTracks";
+    let after = match p.get(key) {
+        None | Some(Value::Null) => return Ok(len),
+        Some(v) => match (v.as_u64(), v.as_str()) {
+            (Some(n), _) => usize::try_from(n).ok(),
+            (None, Some(x)) if matches!(x.to_ascii_lowercase().as_str(), "first" | "before" | "beforefirst") => Some(0),
+            (None, Some(x)) if matches!(x.to_ascii_lowercase().as_str(), "last" | "end") => Some(len),
+            (None, Some(x)) => {
+                let mut rest = x.chars();
+                rest.next().filter(|c| c.eq_ignore_ascii_case(&letter)).and_then(|_| rest.as_str().parse::<usize>().ok())
+            }
+            (None, None) => None,
+        },
+    };
+    after.filter(|n| *n <= len).ok_or_else(|| bad(cmd, format!("`{key}` must be \"first\", a track ({letter}1–{letter}{len}) or how many tracks come before")))
+}
+
+/// Give the tracks that still carry a default name (`<prefix> <number>`) the number of their
+/// place, as Premiere numbers its tracks; a track the user named keeps its name.
+fn renumber(tracks: &mut [filmcraft_project::Track], prefix: &str) {
+    for (i, t) in tracks.iter_mut().enumerate() {
+        let default = t.name.strip_prefix(prefix).and_then(|r| r.strip_prefix(' ')).is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()));
+        if default {
+            t.name = format!("{prefix} {}", i + 1);
+        }
+    }
+}
+
+/// Sequence ▸ Add Tracks…: `video` / `audio` / `submix` tracks, each kind at its own place
+/// (`videoAfter`, `audioAfter`, `submixAfter`; after the last track when not given), audio tracks
+/// of `audioType` (Standard unless given) and submix tracks of `submixType` (Stereo). One undo
+/// step. Tracks are numbered by their place, so default names after the new tracks move up.
+pub(crate) fn add_tracks(s: &mut Session, p: &Value) -> Result<Value> {
+    use crate::commands::u64_p;
+    let cmd = "sequence.addTracks";
+    let q = s.active_sequence().ok_or(EngineError::NoSequence)?;
+    let amount = |key: &str, default: u64, have: usize| -> Result<usize> {
+        let n = match p.get(key) {
+            None | Some(Value::Null) => default,
+            Some(_) => u64_p(p, key).ok_or_else(|| bad(cmd, format!("`{key}` must be a number of tracks")))?,
+        };
+        if n > MAX_ADDED_TRACKS {
+            return Err(bad(cmd, format!("`{key}`: at most {MAX_ADDED_TRACKS} tracks at a time")));
+        }
+        if have.saturating_add(n as usize) > MAX_TRACKS {
+            return Err(bad(cmd, format!("`{key}`: a sequence has at most {MAX_TRACKS} tracks of a kind")));
+        }
+        Ok(n as usize)
+    };
+    let (nv, na, ns) = (amount("video", 1, q.video_tracks.len())?, amount("audio", 0, q.audio_tracks.len())?, amount("submix", 0, q.submix_tracks.len())?);
+    let (at_v, at_a, at_s) = (
+        placement(p, "videoAfter", 'V', q.video_tracks.len())?,
+        placement(p, "audioAfter", 'A', q.audio_tracks.len())?,
+        placement(p, "submixAfter", 'S', q.submix_tracks.len())?,
+    );
+    let channels = |key: &str, default: AudioChannels| match p.get(key).and_then(Value::as_str) {
+        None => Ok(default),
+        Some(x) => crate::mixer::channels_from(x).ok_or_else(|| bad(cmd, format!("`{key}`: unknown track type {x:?} (standard, stereo, 5.1, adaptive, mono)"))),
+    };
+    let (audio_type, submix_type) = (channels("audioType", AudioChannels::Stereo)?, channels("submixType", AudioChannels::Stereo)?);
+    if nv + na + ns == 0 {
+        return Err(bad(cmd, "no tracks to add"));
+    }
+    let added = s.edit_sequence("Add Tracks", |q, ctx, _| {
+        let mut new = |kind: TrackKind, prefix: &str, channels: Option<AudioChannels>| {
+            let mut t = filmcraft_project::Track::new(TrackId(ctx.alloc()), kind, format!("{prefix} 0"));
+            if let Some(c) = channels {
+                t.channels = c;
+            }
+            t
+        };
+        let mut ids: [Vec<u64>; 3] = Default::default();
+        for (k, (tracks, n, at, kind, prefix, ch)) in [
+            (&mut q.video_tracks, nv, at_v, TrackKind::Video, "Video", None),
+            (&mut q.audio_tracks, na, at_a, TrackKind::Audio, "Audio", Some(audio_type)),
+            (&mut q.submix_tracks, ns, at_s, TrackKind::Audio, "Submix", Some(submix_type)),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let at = at.min(tracks.len());
+            for i in 0..n {
+                let t = new(kind, prefix, ch);
+                if let Some(slot) = ids.get_mut(k) {
+                    slot.push(t.id.0);
+                }
+                tracks.insert(at + i, t);
+            }
+            if n > 0 {
+                renumber(tracks, prefix);
+            }
+        }
+        Ok(ids)
+    })?;
+    let [video, audio, submix] = added;
+    Ok(json!({"video": video, "audio": audio, "submix": submix}))
+}
+
 fn delete_tracks(s: &mut Session, p: &Value) -> Result<Value> {
     let seq_id = s.state.active_sequence.ok_or(EngineError::NoSequence)?;
     let q = s.active_sequence().ok_or(EngineError::NoSequence)?;

@@ -422,6 +422,9 @@ pub struct UiState {
     /// Audio Gain dialog draft (mode, dB values).
     #[serde(default)]
     pub audio_gain: AudioGainDraft,
+    /// Add Tracks dialog draft.
+    #[serde(default)]
+    pub add_tracks: AddTracksDraft,
     /// Delete Tracks dialog draft.
     #[serde(default)]
     pub delete_tracks: DeleteTracksDraft,
@@ -701,6 +704,30 @@ pub struct AudioGainDraft {
     pub all_peaks_db: f64,
 }
 
+/// The Add Tracks dialog (Sequence ▸ Add Tracks…): for video, audio and audio submix tracks, how
+/// many to add and where (`*_after`: how many tracks of the kind come before the new ones; 0 is
+/// "Before First Track"), and the type of the audio and submix tracks (`standard` / `stereo`,
+/// `5.1`, `adaptive`, `mono`). Premiere's defaults: one video track and one audio track after the
+/// last ones, no submix track.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AddTracksDraft {
+    pub video: u32,
+    pub video_after: usize,
+    pub audio: u32,
+    pub audio_after: usize,
+    pub audio_type: String,
+    pub submix: u32,
+    pub submix_after: usize,
+    pub submix_type: String,
+}
+
+impl Default for AddTracksDraft {
+    fn default() -> Self {
+        Self { video: 1, video_after: 0, audio: 1, audio_after: 0, audio_type: "standard".into(), submix: 0, submix_after: 0, submix_type: "stereo".into() }
+    }
+}
+
 /// The Delete Tracks dialog (Sequence ▸ Delete Tracks…): per kind, whether to delete and which
 /// track (`"empty"` = All Empty Tracks, or a track name such as `"V2"`).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -770,6 +797,7 @@ impl Default for UiState {
             mixer_meter_input_only: false,
             settings: None,
             audio_gain: AudioGainDraft::default(),
+            add_tracks: AddTracksDraft::default(),
             delete_tracks: DeleteTracksDraft::default(),
             gfx_edit: None,
             pen_points: vec![],

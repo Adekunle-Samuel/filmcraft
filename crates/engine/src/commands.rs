@@ -1427,22 +1427,15 @@ fn build() -> Vec<CommandSpec> {
             s.state.sequences_as_clips = !nest;
             Ok(json!({"nest": nest}))
         }),
-        cmd!("sequence.addTracks", "Add Tracks…", ["Sequence"], None, r#"{"video":n=1,"audio":n=0}"#, has_seq, |s, p| {
-            let nv = u64_p(p, "video").unwrap_or(1) as usize;
-            let na = u64_p(p, "audio").unwrap_or(0) as usize;
-            s.edit_sequence("Add Tracks", |q, ctx, _| {
-                for _ in 0..nv {
-                    let n = q.video_tracks.len() + 1;
-                    q.video_tracks.push(filmcraft_project::Track::new(TrackId(ctx.alloc()), TrackKind::Video, format!("Video {n}")));
-                }
-                for _ in 0..na {
-                    let n = q.audio_tracks.len() + 1;
-                    q.audio_tracks.push(filmcraft_project::Track::new(TrackId(ctx.alloc()), TrackKind::Audio, format!("Audio {n}")));
-                }
-                Ok(())
-            })?;
-            Ok(Value::Null)
-        }),
+        cmd!(
+            "sequence.addTracks",
+            "Add Tracks…",
+            ["Sequence"],
+            None,
+            r#"{"video":n=1,"audio":n=0,"submix":n=0,"videoAfter":"first"|"V2"|n?,"audioAfter":"first"|"A2"|n?,"submixAfter":"first"|"S1"|n?,"audioType":"standard|5.1|adaptive|mono"?,"submixType":"stereo|5.1|adaptive|mono"?}"#,
+            has_seq,
+            crate::sequence_tools::add_tracks
+        ),
         cmd!("sequence.deleteTrack", "Delete Track", [], None, r#"{"track":"V3"|id}"#, has_seq, |s, p| {
             let tr = track_p(s, p, "track", "sequence.deleteTrack")?.ok_or_else(|| bad("sequence.deleteTrack", "need `track`"))?;
             s.edit_sequence("Delete Track", |q, _, _| {
