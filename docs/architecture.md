@@ -254,7 +254,8 @@ file ──► codecs (MP4/MOV, MKV, audio)        demux + decode, GOP-aware see
   samples): the `avcC` / `hvcC` sample becomes Annex B, the MFT is given the process's Direct3D 11
   video device through an `IMFDXGIDeviceManager` so it decodes with DXVA, and its NV12 (8-bit) /
   P010 (10-bit) texture is read back through a staging texture (the one GPU to CPU copy) into
-  planar `Yuv8` / `Yuv16`. H.264 Baseline / Main / High and HEVC Main / Main 10, 4:2:0, progressive;
+  planar `Yuv8` / `Yuv16`. H.264 Baseline / Main / High, HEVC Main / Main 10, VP9 profiles 0 / 2 and AV1 main
+  (8- and 10-bit), 4:2:0, progressive (VP9 / AV1 samples go in as they are, not as Annex B);
   everything else, and any stream the GPU's DXVA decoder does not list, is declined. A decoder that
   would hand back system-memory pictures (Microsoft's decoder MFTs do that when DXVA is not
   available) fails the stream, so the hybrid continues with our decoder and Windows' software

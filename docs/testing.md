@@ -68,7 +68,8 @@ are never linked or shipped ([AGENTS.md](../AGENTS.md) §2).
   H.264 and HEVC fixtures need ffmpeg built with libx264 and libx265. VideoToolbox fixtures are
   generated only on macOS. The Media Foundation parity tests (`crates/platform/tests/media_foundation.rs`,
   Windows only) make their 640x360, 1080p and 2160p H.264 / HEVC / Main 10 fixtures with ffmpeg and skip
-  without a Direct3D 11 video device or the HEVC Video Extensions.
+  without a Direct3D 11 video device or the HEVC / VP9 / AV1 codec extensions of the Microsoft Store. The VP9 and
+  AV1 fixtures (libvpx-vp9, libaom-av1; 360p, 1080p, 2160p, hidden alt-ref frames, two GOPs) need an ffmpeg with those encoders.
 
 ### Pass criteria per codec
 

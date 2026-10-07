@@ -50,6 +50,8 @@ const X265_MAIN10: &[&str] = &[
     "-x265-params",
     "log-level=error",
 ];
+/// AV1 where ffmpeg has libaom but not SVT-AV1 (the Windows builds): slower to encode, same role.
+const AV1_AOM: &[&str] = &["-c:v", "libaom-av1", "-crf", "35", "-b:v", "0", "-cpu-used", "8", "-row-mt", "1", "-g", "48", "-pix_fmt", "yuv420p"];
 const PRORES: &[&str] = &["-c:v", "prores_ks", "-profile:v", "3", "-pix_fmt", "yuv422p10le", "-vendor", "apl0"];
 
 const SPECS: &[Spec] = &[
@@ -78,6 +80,11 @@ const SPECS: &[Spec] = &[
     Spec { name: "clip360.mp4", src: "testsrc2=s=640x360:r=24000/1001:d=20", secs: 20, audio: true, codec: X264 },
 ];
 
+/// Whether this ffmpeg lists `encoder`.
+fn has_encoder(ffmpeg: &Path, encoder: &str) -> bool {
+    Command::new(ffmpeg).args(["-hide_banner", "-encoders"]).output().is_ok_and(|o| String::from_utf8_lossy(&o.stdout).contains(encoder))
+}
+
 /// The fixture `name`, generating it on first use (None when ffmpeg or its encoder is missing).
 pub fn fixture(name: &str) -> Option<PathBuf> {
     let dir = fixtures_dir();
@@ -87,6 +94,7 @@ pub fn fixture(name: &str) -> Option<PathBuf> {
     }
     let ff = ffmpeg()?;
     let spec = SPECS.iter().find(|f| f.name == name)?;
+    let codec = if std::ptr::eq(spec.codec, AV1) && !has_encoder(&ff, "libsvtav1") { AV1_AOM } else { spec.codec };
     std::fs::create_dir_all(&dir).ok()?;
     eprintln!("generating {}", path.display());
     // Write under a temporary name and rename, so a concurrent run never sees half a file.
@@ -98,7 +106,7 @@ pub fn fixture(name: &str) -> Option<PathBuf> {
     if spec.audio {
         c.args(["-f", "lavfi", "-i", &format!("sine=f=440:d={}", spec.secs), "-c:a", "aac", "-shortest"]);
     }
-    c.args(spec.codec);
+    c.args(codec);
     if ext != "webm" {
         c.args(["-movflags", "+faststart"]);
     }
