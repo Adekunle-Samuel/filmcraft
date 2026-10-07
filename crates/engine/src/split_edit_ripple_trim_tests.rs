@@ -85,3 +85,31 @@ fn ripple_trim_is_refused_when_the_early_sound_has_no_room() {
     assert_eq!(*s.project, *before, "a refused trim changes nothing");
     assert_eq!(start(&s, second) - start(&s, sound), rate.tick_of(12));
 }
+
+/// The mirror, an L cut: the first clip's sound runs 6 frames on into the second picture. Shortening
+/// the second clip's head was refused as a sync-lock conflict, because the first clip's sound crossed
+/// the cut. The first clip never moves, so its sound stays and the L cut still ends where it did.
+#[test]
+fn shortening_the_head_after_an_l_cut_keeps_the_earlier_sound_in_place() {
+    let mut s = Session::default();
+    let (first, second, sound) = j_cut(&mut s);
+    let rate = s.sequence_rate();
+    // undo the J cut, then run the first clip's sound (A1) 6 frames past its picture
+    s.execute("sequence.linkedSelection", json!({"on": false})).unwrap();
+    s.execute("timeline.trim", json!({"clip": sound.0, "edge": "in", "mode": "regular", "deltaFrames": 12})).unwrap();
+    let first_sound = s.active_sequence().unwrap().audio_tracks[0].items[0].id;
+    s.execute("timeline.trim", json!({"clip": first_sound.0, "edge": "out", "mode": "regular", "deltaFrames": 6})).unwrap();
+    s.execute("sequence.linkedSelection", json!({"on": true})).unwrap();
+    let end = |s: &Session, c: ClipId| s.active_sequence().unwrap().find_item(c).map(|(_, i)| i.end()).unwrap();
+    assert_eq!(end(&s, first_sound), start(&s, second) + rate.tick_of(6), "the L cut runs 6 frames into the second picture");
+    let (l_cut_ends, picture_at, picture_ends) = (end(&s, first_sound), start(&s, second), end(&s, second));
+    let before = s.project.clone();
+    s.execute("timeline.trim", json!({"clip": second.0, "edge": "in", "mode": "ripple", "deltaFrames": 3})).unwrap();
+    assert_eq!(end(&s, first_sound), l_cut_ends, "the L cut still ends where it did");
+    assert_eq!((start(&s, first), start(&s, first_sound)), (Tick::ZERO, Tick::ZERO));
+    assert_eq!((start(&s, second), end(&s, second)), (picture_at, picture_ends - rate.tick_of(3)), "the second picture is 3 frames shorter");
+    assert_eq!((start(&s, sound), end(&s, sound)), (start(&s, second), end(&s, second)), "its own sound with it");
+    s.active_sequence().unwrap().check().unwrap();
+    s.execute("edit.undo", json!({})).unwrap();
+    assert_eq!(*s.project, *before, "one undo step puts it back");
+}

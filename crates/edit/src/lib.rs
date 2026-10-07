@@ -672,13 +672,31 @@ pub fn ripple_trim_group(seq: &mut Sequence, clips: &[ClipId], edge: Edge, delta
         let later = tr.items.iter().filter(|i| !clips.contains(&i.id) && i.start >= *from);
         shifting_links.extend(later.filter_map(|i| i.link).filter(|l| !own_links.contains(l)));
     }
+    // links that tie two or more clips together
+    let mut seen: Vec<u64> = Vec::new();
+    let mut paired: Vec<u64> = Vec::new();
+    for l in work.all_tracks().flat_map(|tr| tr.items.iter().filter_map(|i| i.link)) {
+        if seen.contains(&l) {
+            paired.push(l);
+        } else {
+            seen.push(l);
+        }
+    }
     for (tid, from, member) in rippling {
         let Some(tr) = work.track_mut(tid) else { continue };
         let follows = |i: &TrackItem| i.start < from && i.end() > from && i.link.is_some_and(|l| shifting_links.contains(&l));
+        // An L cut: the sound of a clip before the cut runs on into the shortened head. Its clip stays
+        // put, so the sound stays with it and the L cut still ends where it did. (Unlinked material
+        // across the cut, a music bed, still refuses.)
+        let stays = |i: &TrackItem| {
+            edge == Edge::In
+                && i.start < from - Tick(1)
+                && i.link.is_some_and(|l| paired.contains(&l) && !shifting_links.contains(&l) && !own_links.contains(&l))
+        };
         if !member && shift < Tick::ZERO {
             let at = if edge == Edge::In { from - Tick(1) } else { from };
             let closing = TimeRange::new(at + shift, -shift);
-            if tr.items.iter().any(|i| i.range().overlaps(&closing) && !follows(i)) {
+            if tr.items.iter().any(|i| i.range().overlaps(&closing) && !follows(i) && !stays(i)) {
                 return Err(EditError::SyncLockConflict);
             }
         }
