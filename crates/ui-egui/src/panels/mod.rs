@@ -185,7 +185,22 @@ pub fn panel_menu_popup(app: &mut FilmcraftApp, ui: &mut egui::Ui) {
     let area = egui::Area::new(id.with("area")).order(egui::Order::Foreground).fixed_pos(pos).show(ui.ctx(), |ui| {
         egui::Frame::popup(ui.style()).show(ui, |ui| {
             ui.set_min_width(190.0);
-            if ui.button("Close Panel").clicked() {
+            // the Timeline's tabs are its open sequences: Close Panel closes the active one and
+            // keeps the panel (Premiere's wording and behaviour)
+            if p == PanelKind::Timeline && app.session.state.active_sequence.is_some() {
+                let r = ui.button("Close Panel");
+                app.auto.add("panel.menu.Timeline.close", r.rect, "Close Panel");
+                if r.clicked() {
+                    let _ = app.session.execute("sequence.close", serde_json::json!({}));
+                    close = true;
+                }
+                let r = ui.add_enabled(app.session.state.open_sequences.len() > 1, egui::Button::new("Close Other Timeline Panels"));
+                app.auto.add("panel.menu.Timeline.closeOthers", r.rect, "Close Other Timeline Panels");
+                if r.clicked() {
+                    let _ = app.session.execute("sequence.closeOthers", serde_json::json!({}));
+                    close = true;
+                }
+            } else if ui.button("Close Panel").clicked() {
                 app.ui.dock.close(p);
                 close = true;
             }
@@ -200,6 +215,12 @@ pub fn panel_menu_popup(app: &mut FilmcraftApp, ui: &mut egui::Ui) {
             }
             if p == PanelKind::Timeline {
                 ui.separator();
+                let r = ui.add_enabled(app.session.state.active_sequence.is_some(), egui::Button::new("Reveal Sequence in Project"));
+                app.auto.add("panel.menu.Timeline.revealSequence", r.rect, "Reveal Sequence in Project");
+                if r.clicked() {
+                    let _ = app.session.execute("sequence.revealInProject", serde_json::json!({}));
+                    close = true;
+                }
                 ui.checkbox(&mut app.ui.timeline.show_thumbnails, "Video Thumbnails");
                 ui.checkbox(&mut app.ui.timeline.show_waveforms, "Audio Waveforms");
             }
@@ -213,7 +234,10 @@ pub fn panel_menu_popup(app: &mut FilmcraftApp, ui: &mut egui::Ui) {
             }
         });
     });
-    if close || (area.response.clicked_elsewhere() && ui.input(|i| i.pointer.any_pressed())) {
+    // A click elsewhere or Escape closes the menu. The click that opened it is over the tab, not
+    // the menu, and must not close it again in the same frame.
+    let fresh = ui.ctx().data(|d| d.get_temp::<u64>(egui::Id::new("panel-menu-opened"))) == Some(ui.ctx().cumulative_frame_nr());
+    if close || (!fresh && area.response.clicked_elsewhere()) || ui.input(|i| i.key_pressed(egui::Key::Escape)) {
         ui.ctx().data_mut(|d| d.remove::<(PanelKind, egui::Pos2)>(id));
     }
 }

@@ -37,6 +37,7 @@ pub(crate) mod cls {
     pub const FILLER: Auid = class(0x09);
     pub const OPERATION_GROUP: Auid = class(0x0A);
     pub const NESTED_SCOPE: Auid = class(0x0B);
+    pub const SCOPE_REFERENCE: Auid = class(0x0D);
     pub const SELECTOR: Auid = class(0x0E);
     pub const SEQUENCE: Auid = class(0x0F);
     pub const SOURCE_CLIP: Auid = class(0x11);

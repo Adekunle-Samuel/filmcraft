@@ -395,6 +395,7 @@ impl R<'_, '_> {
                     tc_rate: tc.map(|t| t.1).unwrap_or(FrameRate::FPS_25),
                     embedded: None,
                     markers: Vec::new(),
+                    nested: None,
                 };
                 if let Some(d) = self.media.get(&id) {
                     if let Some((pcm, ch, sr, b)) = crate::wav::parse_wav(d).or_else(|| crate::wav::parse_aiff(d)) {

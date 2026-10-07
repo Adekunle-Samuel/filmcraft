@@ -6,7 +6,7 @@ use filmcraft_time::Tick;
 
 use super::ids::{META_DICTIONARY, ROOT, cls, ddef, def, path, pid};
 use super::store::{self, Auid, Obj, Value, rational, utf16z};
-use crate::comp::{CItem, CKind, CMarker, Document, Gain, Source, ticks_to_units};
+use crate::comp::{CItem, CKind, CMarker, Composition, Document, Gain, Source, ticks_to_units};
 use crate::{Error, Report, Result};
 
 /// UMID-style mob id (SMPTE 330 basic UMID): label, length 0x13, instance 0, material number.
@@ -117,6 +117,9 @@ pub(crate) fn write(doc: &Document, version: filmcraft_cfb::Version, report: &mu
     // ---- media: master mobs (one per source key), file mobs (one per file and kind), tape mobs
     let mut groups: Vec<(String, Vec<usize>)> = Vec::new();
     for (i, s) in doc.sources.iter().enumerate() {
+        if s.nested.is_some() {
+            continue; // a nested composition: it has a composition mob, not media mobs (below)
+        }
         match groups.iter_mut().find(|(k, _)| *k == s.key) {
             Some((_, v)) => v.push(i),
             None => groups.push((s.key.clone(), vec![i])),
@@ -240,184 +243,30 @@ pub(crate) fn write(doc: &Document, version: filmcraft_cfb::Version, report: &mu
         }
     }
 
-    // ---- the composition
-    let crate_rate = (comp.rate.num, comp.rate.den);
-    let mut slots = Vec::new();
-    let total = comp
-        .tracks
-        .iter()
-        .map(|t| {
-            let mut c = Tick::ZERO;
-            for i in &t.items {
-                match i {
-                    CItem::Transition(x) => c -= x.len,
-                    other => c += other.len(),
-                }
-            }
-            c
-        })
-        .max()
-        .unwrap_or(Tick::ZERO);
-    let total_units = w.u(total, crate_rate);
-    slots.push(timeline_slot(
-        1,
-        "TC1",
-        0,
-        crate_rate,
-        Obj::new(cls::TIMECODE)
-            .with(pid::DATA_DEFINITION, weak(path::DATA_DEFS, ddef::TIMECODE))
-            .data_prop(pid::LENGTH, total_units.to_le_bytes().to_vec())
-            .data_prop(pid::TC_START, comp.start_tc.to_le_bytes().to_vec())
-            .data_prop(pid::TC_FPS, (comp.rate.timecode_base().clamp(1, u16::MAX as i64) as u16).to_le_bytes().to_vec())
-            .data_prop(pid::TC_DROP, vec![comp.drop as u8]),
-    ));
-    let mut slot_id = 2u32;
-    for t in &comp.tracks {
-        let rate = match t.kind {
-            CKind::Picture => crate_rate,
+    // ---- nested compositions: a clip refers to one as it does to a master mob, through the
+    // composition's first track of the clip's kind (a broken-out channel: that channel's track)
+    let mut refs = Refs { mobs: master_ref, rates: HashMap::new() };
+    let nested_ids: Vec<[u8; 32]> = doc.nested.iter().map(|_| new_id()).collect();
+    for (si, s) in doc.sources.iter().enumerate() {
+        let Some((comp, id)) = s.nested.and_then(|n| Some((doc.nested.get(n)?, nested_ids.get(n)?))) else { continue };
+        let of_kind: Vec<usize> = comp.tracks.iter().enumerate().filter(|(_, t)| t.kind == s.kind).map(|(i, _)| i).collect();
+        let Some(&track) = s.channel.and_then(|c| of_kind.get(c as usize)).or(of_kind.first()) else { continue };
+        let rate = match s.kind {
+            CKind::Picture => (comp.rate.num, comp.rate.den),
             CKind::Sound => (comp.sample_rate.max(1) as i64, 1),
         };
-        let dd = data_def(t.kind);
-        let mut comps = Vec::new();
-        let mut cursor = Tick::ZERO;
-        for it in &t.items {
-            match it {
-                CItem::Filler(l) => {
-                    let n = w.u(cursor + *l, rate) - w.u(cursor, rate);
-                    cursor += *l;
-                    comps.push(Obj::new(cls::FILLER).with(pid::DATA_DEFINITION, weak(path::DATA_DEFS, dd)).data_prop(pid::LENGTH, n.to_le_bytes().to_vec()));
-                }
-                CItem::Clip(c) => {
-                    let n = w.u(cursor + c.len, rate) - w.u(cursor, rate);
-                    let s = &doc.sources[c.source];
-                    let (mid, mslot) = master_ref.get(&c.source).copied().unwrap_or(([0; 32], 0));
-                    let start = w.u(c.start, rate);
-                    let mut sc = source_clip(t.kind, n, mid, mslot, start);
-                    if !c.name.is_empty() && c.name != s.name {
-                        sc.set(pid::COMPONENT_USER_COMMENTS, Value::StrongVec(vec![tagged("Clip Name", &c.name)]));
-                    }
-                    let seg = match (&c.gain, t.kind) {
-                        (Some(g), CKind::Sound) => {
-                            if !used_ops.contains(&def::MONO_AUDIO_GAIN) {
-                                used_ops.push(def::MONO_AUDIO_GAIN);
-                            }
-                            let param = match g {
-                                Gain::Constant(a) => Obj::new(cls::CONSTANT_VALUE)
-                                    .data_prop(pid::PARAMETER_DEFINITION, def::PARAM_AMPLITUDE.to_vec())
-                                    .data_prop(pid::CONSTANT_VALUE, indirect(def::TYPE_RATIONAL, &gain_rational(*a))),
-                                Gain::Varying { linear, points } => {
-                                    uses_varying = true;
-                                    let pts = points
-                                        .iter()
-                                        .map(|(off, a)| {
-                                            let o = w.u(cursor + *off, rate) - w.u(cursor, rate);
-                                            Obj::new(cls::CONTROL_POINT)
-                                                .data_prop(pid::CP_TIME, rational(o, n.max(1)))
-                                                .data_prop(pid::CP_VALUE, indirect(def::TYPE_RATIONAL, &gain_rational(*a)))
-                                                .data_prop(pid::CP_EDIT_HINT, vec![0])
-                                        })
-                                        .collect();
-                                    Obj::new(cls::VARYING_VALUE)
-                                        .data_prop(pid::PARAMETER_DEFINITION, def::PARAM_AMPLITUDE.to_vec())
-                                        .with(
-                                            pid::INTERPOLATION,
-                                            weak(path::INTERPOLATION_DEFS, if *linear { def::INTERP_LINEAR } else { def::INTERP_CONSTANT }),
-                                        )
-                                        .with(pid::POINT_LIST, Value::StrongVec(pts))
-                                }
-                            };
-                            Obj::new(cls::OPERATION_GROUP)
-                                .with(pid::DATA_DEFINITION, weak(path::DATA_DEFS, dd))
-                                .data_prop(pid::LENGTH, n.to_le_bytes().to_vec())
-                                .with(pid::OPERATION, weak(path::OPERATION_DEFS, def::MONO_AUDIO_GAIN))
-                                .with(pid::INPUT_SEGMENTS, Value::StrongVec(vec![sc]))
-                                .with(pid::PARAMETERS, Value::StrongVec(vec![param]))
-                        }
-                        _ => sc,
-                    };
-                    comps.push(seg);
-                    cursor += c.len;
-                }
-                CItem::Transition(x) => {
-                    let ts = cursor - x.len;
-                    let n = w.u(cursor, rate) - w.u(ts, rate);
-                    let cut = w.u(ts + x.cut, rate) - w.u(ts, rate);
-                    cursor = ts;
-                    let op = transition_op(t.kind, &x.effect);
-                    if !used_ops.contains(&op) {
-                        used_ops.push(op);
-                    }
-                    let mut og = Obj::new(cls::OPERATION_GROUP)
-                        .with(pid::DATA_DEFINITION, weak(path::DATA_DEFS, dd))
-                        .data_prop(pid::LENGTH, n.to_le_bytes().to_vec())
-                        .with(pid::OPERATION, weak(path::OPERATION_DEFS, op))
-                        .with(pid::COMPONENT_USER_COMMENTS, Value::StrongVec(vec![tagged("FilmCraft Effect", &x.effect)]));
-                    if op == def::VIDEO_DISSOLVE {
-                        uses_varying = true;
-                        let pts = [(0, 0), (1, 1)]
-                            .iter()
-                            .map(|&(t, v)| {
-                                Obj::new(cls::CONTROL_POINT)
-                                    .data_prop(pid::CP_TIME, rational(t, 1))
-                                    .data_prop(pid::CP_VALUE, indirect(def::TYPE_RATIONAL, &rational(v, 1)))
-                                    .data_prop(pid::CP_EDIT_HINT, vec![0])
-                            })
-                            .collect();
-                        og.set(
-                            pid::PARAMETERS,
-                            Value::StrongVec(vec![
-                                Obj::new(cls::VARYING_VALUE)
-                                    .data_prop(pid::PARAMETER_DEFINITION, def::PARAM_LEVEL.to_vec())
-                                    .with(pid::INTERPOLATION, weak(path::INTERPOLATION_DEFS, def::INTERP_LINEAR))
-                                    .with(pid::POINT_LIST, Value::StrongVec(pts)),
-                            ]),
-                        );
-                    }
-                    comps.push(
-                        Obj::new(cls::TRANSITION)
-                            .with(pid::DATA_DEFINITION, weak(path::DATA_DEFS, dd))
-                            .data_prop(pid::LENGTH, n.to_le_bytes().to_vec())
-                            .data_prop(pid::CUT_POINT, cut.to_le_bytes().to_vec())
-                            .with(pid::OPERATION_GROUP, Value::Strong(Box::new(og))),
-                    );
-                }
-            }
-        }
-        let len: i64 = comps
-            .iter()
-            .map(|c| {
-                let l = c.i64(pid::LENGTH).unwrap_or(0);
-                if c.class == cls::TRANSITION { -l } else { l }
-            })
-            .sum();
-        let seq = Obj::new(cls::SEQUENCE)
-            .with(pid::DATA_DEFINITION, weak(path::DATA_DEFS, dd))
-            .data_prop(pid::LENGTH, len.to_le_bytes().to_vec())
-            .with(pid::COMPONENTS, Value::StrongVec(comps));
-        slots.push(timeline_slot(slot_id, &t.name, t.number, rate, seq));
-        slot_id += 1;
+        refs.mobs.insert(si, (*id, track as u32 + 2));
+        refs.rates.insert(si, rate);
     }
-    if !comp.markers.is_empty() {
-        slots.push(event_slot(&mut w, slot_id, crate_rate, &comp.markers));
-    }
+
+    // ---- the compositions: the exported sequence first
     let comp_id = new_id();
-    mobs.insert(
-        0,
-        Obj::new(cls::COMPOSITION_MOB)
-            .data_prop(pid::MOB_ID, comp_id.to_vec())
-            .data_prop(pid::MOB_NAME, utf16z(&comp.name))
-            .data_prop(pid::MOB_LAST_MODIFIED, timestamp())
-            .data_prop(pid::MOB_CREATION_TIME, timestamp())
-            .data_prop(pid::USAGE_CODE, def::USAGE_TOP_LEVEL.to_vec())
-            .with(pid::SLOTS, Value::StrongVec(slots))
-            .with(
-                pid::MOB_USER_COMMENTS,
-                Value::StrongVec(vec![
-                    tagged("FilmCraft Frame Size", &format!("{}x{}", comp.width, comp.height)),
-                    tagged("FilmCraft Audio Sample Rate", &comp.sample_rate.to_string()),
-                ]),
-            ),
-    );
+    let top = composition_mob(&mut w, doc, comp, comp_id, true, &refs, &mut used_ops, &mut uses_varying);
+    mobs.insert(0, top);
+    for (k, (nested, id)) in doc.nested.iter().zip(&nested_ids).enumerate() {
+        let mob = composition_mob(&mut w, doc, nested, *id, false, &refs, &mut used_ops, &mut uses_varying);
+        mobs.insert(1 + k, mob);
+    }
     if w.inexact {
         w.report.info("some times are not on whole edit units and were rounded");
     }
@@ -504,6 +353,205 @@ pub(crate) fn write(doc: &Document, version: filmcraft_cfb::Version, report: &mu
         .with(pid::ROOT_META_DICTIONARY, Value::Strong(Box::new(Obj::new(META_DICTIONARY))))
         .with(pid::ROOT_HEADER, Value::Strong(Box::new(header)));
     store::write(&root, version).map_err(Error::Other)
+}
+
+/// Where clips find their sources: source index → (mob id, slot id), and for nested compositions
+/// the edit rate of that slot.
+#[derive(Default)]
+struct Refs {
+    mobs: HashMap<usize, ([u8; 32], u32)>,
+    rates: HashMap<usize, (i64, i64)>,
+}
+
+/// The composition mob of `comp`. Slot 1 is its timecode; its tracks follow from slot 2 in order.
+#[allow(clippy::too_many_arguments)]
+fn composition_mob(
+    w: &mut W,
+    doc: &Document,
+    comp: &Composition,
+    id: [u8; 32],
+    top: bool,
+    refs: &Refs,
+    used_ops: &mut Vec<Auid>,
+    uses_varying: &mut bool,
+) -> Obj {
+    let crate_rate = (comp.rate.num, comp.rate.den);
+    let mut slots = Vec::new();
+    let total = comp
+        .tracks
+        .iter()
+        .map(|t| {
+            let mut c = Tick::ZERO;
+            for i in &t.items {
+                match i {
+                    CItem::Transition(x) => c -= x.len,
+                    other => c += other.len(),
+                }
+            }
+            c
+        })
+        .max()
+        .unwrap_or(Tick::ZERO);
+    let total_units = w.u(total, crate_rate);
+    slots.push(timeline_slot(
+        1,
+        "TC1",
+        0,
+        crate_rate,
+        Obj::new(cls::TIMECODE)
+            .with(pid::DATA_DEFINITION, weak(path::DATA_DEFS, ddef::TIMECODE))
+            .data_prop(pid::LENGTH, total_units.to_le_bytes().to_vec())
+            .data_prop(pid::TC_START, comp.start_tc.to_le_bytes().to_vec())
+            .data_prop(pid::TC_FPS, (comp.rate.timecode_base().clamp(1, u16::MAX as i64) as u16).to_le_bytes().to_vec())
+            .data_prop(pid::TC_DROP, vec![comp.drop as u8]),
+    ));
+    let mut slot_id = 2u32;
+    for t in &comp.tracks {
+        let rate = match t.kind {
+            CKind::Picture => crate_rate,
+            CKind::Sound => (comp.sample_rate.max(1) as i64, 1),
+        };
+        let dd = data_def(t.kind);
+        let mut comps = Vec::new();
+        let mut cursor = Tick::ZERO;
+        for it in &t.items {
+            match it {
+                CItem::Filler(l) => {
+                    let n = w.u(cursor + *l, rate) - w.u(cursor, rate);
+                    cursor += *l;
+                    comps.push(Obj::new(cls::FILLER).with(pid::DATA_DEFINITION, weak(path::DATA_DEFS, dd)).data_prop(pid::LENGTH, n.to_le_bytes().to_vec()));
+                }
+                CItem::Clip(c) => {
+                    let n = w.u(cursor + c.len, rate) - w.u(cursor, rate);
+                    let s = &doc.sources[c.source];
+                    let (mid, mslot) = refs.mobs.get(&c.source).copied().unwrap_or(([0; 32], 0));
+                    // (a nested composition counts the start in its own slot's edit units)
+                    let start = w.u(c.start, refs.rates.get(&c.source).copied().unwrap_or(rate));
+                    let mut sc = source_clip(t.kind, n, mid, mslot, start);
+                    if !c.name.is_empty() && c.name != s.name {
+                        sc.set(pid::COMPONENT_USER_COMMENTS, Value::StrongVec(vec![tagged("Clip Name", &c.name)]));
+                    }
+                    let seg = match (&c.gain, t.kind) {
+                        (Some(g), CKind::Sound) => {
+                            if !used_ops.contains(&def::MONO_AUDIO_GAIN) {
+                                used_ops.push(def::MONO_AUDIO_GAIN);
+                            }
+                            let param = match g {
+                                Gain::Constant(a) => Obj::new(cls::CONSTANT_VALUE)
+                                    .data_prop(pid::PARAMETER_DEFINITION, def::PARAM_AMPLITUDE.to_vec())
+                                    .data_prop(pid::CONSTANT_VALUE, indirect(def::TYPE_RATIONAL, &gain_rational(*a))),
+                                Gain::Varying { linear, points } => {
+                                    *uses_varying = true;
+                                    let pts = points
+                                        .iter()
+                                        .map(|(off, a)| {
+                                            let o = w.u(cursor + *off, rate) - w.u(cursor, rate);
+                                            Obj::new(cls::CONTROL_POINT)
+                                                .data_prop(pid::CP_TIME, rational(o, n.max(1)))
+                                                .data_prop(pid::CP_VALUE, indirect(def::TYPE_RATIONAL, &gain_rational(*a)))
+                                                .data_prop(pid::CP_EDIT_HINT, vec![0])
+                                        })
+                                        .collect();
+                                    Obj::new(cls::VARYING_VALUE)
+                                        .data_prop(pid::PARAMETER_DEFINITION, def::PARAM_AMPLITUDE.to_vec())
+                                        .with(
+                                            pid::INTERPOLATION,
+                                            weak(path::INTERPOLATION_DEFS, if *linear { def::INTERP_LINEAR } else { def::INTERP_CONSTANT }),
+                                        )
+                                        .with(pid::POINT_LIST, Value::StrongVec(pts))
+                                }
+                            };
+                            Obj::new(cls::OPERATION_GROUP)
+                                .with(pid::DATA_DEFINITION, weak(path::DATA_DEFS, dd))
+                                .data_prop(pid::LENGTH, n.to_le_bytes().to_vec())
+                                .with(pid::OPERATION, weak(path::OPERATION_DEFS, def::MONO_AUDIO_GAIN))
+                                .with(pid::INPUT_SEGMENTS, Value::StrongVec(vec![sc]))
+                                .with(pid::PARAMETERS, Value::StrongVec(vec![param]))
+                        }
+                        _ => sc,
+                    };
+                    comps.push(seg);
+                    cursor += c.len;
+                }
+                CItem::Transition(x) => {
+                    let ts = cursor - x.len;
+                    let n = w.u(cursor, rate) - w.u(ts, rate);
+                    let cut = w.u(ts + x.cut, rate) - w.u(ts, rate);
+                    cursor = ts;
+                    let op = transition_op(t.kind, &x.effect);
+                    if !used_ops.contains(&op) {
+                        used_ops.push(op);
+                    }
+                    let mut og = Obj::new(cls::OPERATION_GROUP)
+                        .with(pid::DATA_DEFINITION, weak(path::DATA_DEFS, dd))
+                        .data_prop(pid::LENGTH, n.to_le_bytes().to_vec())
+                        .with(pid::OPERATION, weak(path::OPERATION_DEFS, op))
+                        .with(pid::COMPONENT_USER_COMMENTS, Value::StrongVec(vec![tagged("FilmCraft Effect", &x.effect)]));
+                    if op == def::VIDEO_DISSOLVE {
+                        *uses_varying = true;
+                        let pts = [(0, 0), (1, 1)]
+                            .iter()
+                            .map(|&(t, v)| {
+                                Obj::new(cls::CONTROL_POINT)
+                                    .data_prop(pid::CP_TIME, rational(t, 1))
+                                    .data_prop(pid::CP_VALUE, indirect(def::TYPE_RATIONAL, &rational(v, 1)))
+                                    .data_prop(pid::CP_EDIT_HINT, vec![0])
+                            })
+                            .collect();
+                        og.set(
+                            pid::PARAMETERS,
+                            Value::StrongVec(vec![
+                                Obj::new(cls::VARYING_VALUE)
+                                    .data_prop(pid::PARAMETER_DEFINITION, def::PARAM_LEVEL.to_vec())
+                                    .with(pid::INTERPOLATION, weak(path::INTERPOLATION_DEFS, def::INTERP_LINEAR))
+                                    .with(pid::POINT_LIST, Value::StrongVec(pts)),
+                            ]),
+                        );
+                    }
+                    comps.push(
+                        Obj::new(cls::TRANSITION)
+                            .with(pid::DATA_DEFINITION, weak(path::DATA_DEFS, dd))
+                            .data_prop(pid::LENGTH, n.to_le_bytes().to_vec())
+                            .data_prop(pid::CUT_POINT, cut.to_le_bytes().to_vec())
+                            .with(pid::OPERATION_GROUP, Value::Strong(Box::new(og))),
+                    );
+                }
+            }
+        }
+        let len: i64 = comps
+            .iter()
+            .map(|c| {
+                let l = c.i64(pid::LENGTH).unwrap_or(0);
+                if c.class == cls::TRANSITION { -l } else { l }
+            })
+            .sum();
+        let seq = Obj::new(cls::SEQUENCE)
+            .with(pid::DATA_DEFINITION, weak(path::DATA_DEFS, dd))
+            .data_prop(pid::LENGTH, len.to_le_bytes().to_vec())
+            .with(pid::COMPONENTS, Value::StrongVec(comps));
+        slots.push(timeline_slot(slot_id, &t.name, t.number, rate, seq));
+        slot_id += 1;
+    }
+    if !comp.markers.is_empty() {
+        slots.push(event_slot(w, slot_id, crate_rate, &comp.markers));
+    }
+    let mut mob = Obj::new(cls::COMPOSITION_MOB)
+        .data_prop(pid::MOB_ID, id.to_vec())
+        .data_prop(pid::MOB_NAME, utf16z(&comp.name))
+        .data_prop(pid::MOB_LAST_MODIFIED, timestamp())
+        .data_prop(pid::MOB_CREATION_TIME, timestamp());
+    // only the exported sequence is a top-level composition; a nested sequence is found through
+    // the clips that use it
+    if top {
+        mob.set(pid::USAGE_CODE, Value::Data(def::USAGE_TOP_LEVEL.to_vec()));
+    }
+    mob.with(pid::SLOTS, Value::StrongVec(slots)).with(
+        pid::MOB_USER_COMMENTS,
+        Value::StrongVec(vec![
+            tagged("FilmCraft Frame Size", &format!("{}x{}", comp.width, comp.height)),
+            tagged("FilmCraft Audio Sample Rate", &comp.sample_rate.to_string()),
+        ]),
+    )
 }
 
 fn slot_name(kind: CKind, n: u32) -> String {

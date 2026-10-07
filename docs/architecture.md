@@ -265,7 +265,9 @@ file ──► codecs (MP4/MOV, MKV, audio)        demux + decode, GOP-aware see
   working image at the size the CPU decodes it, each effect runs as compute passes with the CPU
   reference's math (effects, then Motion, then Opacity / blend, as on the CPU), and the result is
   placed like any layer. Other standard effects, effect and opacity masks, adjustment layers,
-  nested sequences and non-dissolve transitions are rendered on the CPU for that layer or frame
+  nested sequences (except a plain one, whose own layers go into the plan: same frame size and
+  colour settings as its parent, nothing on the clip that changes the picture, every layer inside
+  blended normally) and non-dissolve transitions are rendered on the CPU for that layer or frame
   and handed to the GPU as an image (a layer image keeps its clip's blend mode), so both paths
   give the same picture. Setting `FILMCRAFT_CPU_COMPOSITE=1`
   forces the CPU path in the desktop app.
@@ -635,7 +637,10 @@ any other value is a parameter error and nothing is written. For AAF and
 OMF the engine (`engine::aaf_omf`) first prepares the audio the document references: it lists the
 used ranges (`interchange::essence::audio_needs`), decodes or renders them (clip effects through the
 export audio pipeline), embeds them or writes WAV / AIFF files, and optionally renders a video
-mixdown.
+mixdown. A nested sequence is exported the way Premiere Pro does it: a composition of its own in
+AAF (the media of the clips inside it is prepared with the rest), its sound mixed into the document
+in OMF, a nested sequence in FCP7 XML, FCPXML and OTIO, and one `AX` event in an EDL (table in the
+[interchange README](../crates/interchange/README.md)).
 
 ## 7. Automation surfaces
 

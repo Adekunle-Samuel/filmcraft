@@ -53,7 +53,7 @@ use filmcraft_time::Tick;
 use rayon::prelude::*;
 
 use crate::SourceProvider;
-use crate::audio::{pan_gains, track_input_live};
+use crate::audio::{pan_gains, track_input_at};
 use crate::audio_fx::{Mapping, mapping};
 
 /// Strip id of the Mix (master) track in [`LiveMix`] and commands.
@@ -830,6 +830,20 @@ fn run_strip(plan: &Plan, si: usize, st: &mut StripState, mut buf: Bus, x0: i64,
 /// Mix's width (2 channels, or 6 in L, R, C, LFE, Ls, Rs order for a 5.1 Mix). `live` adds the UI's
 /// held controls and receives the meters.
 pub fn mix_graph(project: &Project, seq: &Sequence, start: i64, frames: usize, sources: &dyn SourceProvider, live: Option<&LiveMix>) -> AudioBuffer {
+    mix_graph_at(project, seq, start, frames, sources, live, 0)
+}
+
+/// [`mix_graph`] for a sequence `depth` nests down from the one being mixed (see
+/// [`crate::MAX_NEST_DEPTH`]).
+pub(crate) fn mix_graph_at(
+    project: &Project,
+    seq: &Sequence,
+    start: i64,
+    frames: usize,
+    sources: &dyn SourceProvider,
+    live: Option<&LiveMix>,
+    depth: u32,
+) -> AudioBuffer {
     let sr = seq.settings.sample_rate.max(1);
     let ovs = live.filter(|l| l.is_active()).map(LiveMix::overrides).unwrap_or_default();
     let plan = Plan::build(seq, &ovs);
@@ -870,7 +884,7 @@ pub fn mix_graph(project: &Project, seq: &Sequence, start: i64, frames: usize, s
                 return None;
             }
             let input = if has_clips {
-                let mut v = track_input_live(project, &s.track, x0, total, sr, sources, &ovs).channels;
+                let mut v = track_input_at(project, &s.track, x0, total, sr, sources, &ovs, depth).channels;
                 v.resize(s.width, vec![0.0; total]);
                 v
             } else {

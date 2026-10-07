@@ -76,4 +76,6 @@ also splits captions.
 The Program monitor shows the visible caption tracks. On export, `file.exportMedia`
 `{"burnCaptions": true}` (Export mode: **Burn Captions Into Video**) draws them into every frame.
 Captions are set in Inter SemiBold (OFL, bundled) by the text engine (`crates/text`: shaping,
-kerning, bidi); italics/bold markup is not yet drawn differently. Nested sequences do not burn in their own captions.
+kerning, bidi); italics/bold markup is not yet drawn differently. The captions of a nested sequence
+are part of the nest's picture: they are drawn wherever the nest is shown, in the Program monitor
+and in every export, whether or not the outer sequence shows or burns in its own.

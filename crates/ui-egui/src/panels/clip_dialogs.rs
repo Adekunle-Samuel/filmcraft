@@ -1,6 +1,6 @@
 //! Edit / Clip / File menu dialogs (M3.10): Paste Attributes, Remove Attributes, Offline File,
 //! Make Subclip, Edit Subclip, Modify ▸ Audio Channels, Modify ▸ Timecode, Frame Hold Options,
-//! Field Options, and the Close Project "save changes?" prompt.
+//! Field Options, Nest… (Nested Sequence Name), and the Close Project "save changes?" prompt.
 //!
 //! The open dialog lives in `UiState::clip_dialog` (serde): the engine command it runs and the
 //! parameters being edited — the same JSON the command takes — so agents can open a dialog from
@@ -14,6 +14,7 @@
 //! - Remove Attributes `removeAttributes.*`: the same without `scaleTimes`;
 //! - Offline File `offlineFile.*`: `fileName`, `name`, `tapeName`, `video`, `audio`, `width`,
 //!   `height`, `fps`, `timecode`, `seconds`, `description`;
+//! - Nested Sequence Name `nest.*`: `name`;
 //! - Make Subclip `makeSubclip.*`: `name`, `startFrame`, `endFrame`, `restrictTrims`;
 //! - Edit Subclip `editSubclip.*`: `startFrame`, `endFrame`, `restrictTrims`, `convertToMaster`;
 //! - Audio Channels `audioChannels.*`: `format.<mono|stereo|5.1|adaptive>`, `count`,
@@ -43,6 +44,7 @@ fn meta(command: &str) -> Option<(&'static str, &'static str)> {
         "edit.pasteAttributes" => ("Paste Attributes", "pasteAttributes"),
         "edit.removeAttributes" => ("Remove Attributes", "removeAttributes"),
         "file.newOfflineFile" => ("New Offline File", "offlineFile"),
+        "clip.nest" => ("Nested Sequence Name", "nest"),
         "clip.makeSubclip" => ("Make Subclip", "makeSubclip"),
         "clip.editSubclip" => ("Edit Subclip", "editSubclip"),
         "clip.audioChannels" => ("Modify Clip: Audio Channels", "audioChannels"),
@@ -130,6 +132,7 @@ fn defaults(app: &FilmcraftApp, id: &str) -> (Value, Value) {
                 Value::Null,
             )
         }
+        "clip.nest" => (json!({"name": filmcraft_engine::commands::next_nested_name(s)}), Value::Null),
         "clip.makeSubclip" => {
             let d = filmcraft_engine::clip_ops::subclip_defaults(s, &json!({})).unwrap_or_else(|| json!({}));
             (json!({"name": d["name"], "startFrame": d["startFrame"], "endFrame": d["endFrame"], "restrictTrims": true}), json!({"fps": d["fps"]}))
@@ -317,6 +320,27 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
                 text(ui, &mut elems, pre, p, "timecode", "Media Start:", 120.0);
                 number(ui, &mut elems, pre, p, "seconds", "Duration:", 0.05..=86_400.0, " s");
             }
+            "clip.nest" => {
+                // the name is ready to type over, and Enter accepts it
+                let mut v = p["name"].as_str().unwrap_or_default().to_string();
+                ui.horizontal(|ui| {
+                    ui.label("Name:");
+                    let id = egui::Id::new("nest-name");
+                    let r = ui.add(egui::TextEdit::singleline(&mut v).desired_width(240.0).id(id));
+                    push(&mut elems, format!("{pre}.name"), &r, "Name:");
+                    if r.changed() {
+                        p["name"] = json!(v);
+                    }
+                    if r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                        action = Some("ok");
+                    }
+                    let first = egui::Id::new("nest-name-focused");
+                    if !ui.data(|d| d.get_temp::<bool>(first).unwrap_or(false)) {
+                        ui.data_mut(|d| d.insert_temp(first, true));
+                        r.request_focus();
+                    }
+                });
+            }
             "clip.makeSubclip" | "clip.editSubclip" => {
                 let fps = d.info["fps"].as_f64().unwrap_or(24.0);
                 if d.command == "clip.makeSubclip" {
@@ -486,6 +510,9 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
     }
     if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
         action = Some("cancel");
+    }
+    if action.is_some() {
+        ctx.data_mut(|d| d.remove::<bool>(egui::Id::new("nest-name-focused")));
     }
     match action {
         Some("cancel") => {

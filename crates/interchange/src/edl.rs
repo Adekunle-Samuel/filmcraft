@@ -637,6 +637,10 @@ impl Exp<'_> {
                     "AX".to_string()
                 }
             }
+        } else if self.p.sequence(base).is_some() {
+            // a nested sequence has no tape and no file: reel AX in every reel mode (Premiere Pro
+            // writes the same); its name is in the clip name comment
+            "AX".to_string()
         } else {
             match self.opts.edl.reel_mode {
                 ReelMode::Ax => "AX".to_string(),

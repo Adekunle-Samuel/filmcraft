@@ -39,6 +39,11 @@ pub struct TlState {
     snap_x: Option<f32>,
     pub peaks: Arc<Mutex<HashMap<ItemId, Arc<Vec<(f32, f32)>>>>>,
     peaks_pending: Arc<Mutex<Vec<ItemId>>>,
+    /// Nested sequences have waveforms too, of their mix. Unlike media a sequence changes: this is
+    /// the content key (see [`sequence_audio_key`]) the cached peaks of each sequence were made
+    /// from, and the key worked out for the session revision last seen.
+    seq_peak_keys: Arc<Mutex<HashMap<ItemId, u64>>>,
+    seq_keys_seen: HashMap<ItemId, (u64, u64)>,
     /// Source peak of each cached peak list (keyed by the list's address), for the waveform
     /// display gain: scanning the whole source per clip per frame cost more than drawing.
     peak_max: HashMap<ItemId, (usize, f32)>,
@@ -52,6 +57,8 @@ impl TlState {
     pub fn reset_media_caches(&mut self) {
         self.peaks = Default::default();
         self.peaks_pending = Default::default();
+        self.seq_peak_keys = Default::default();
+        self.seq_keys_seen.clear();
         self.peak_max.clear();
     }
 }
@@ -343,6 +350,17 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
             let body = Rect::from_min_max(pos2(x0, r.rect.min.y + 1.0), pos2(x1.max(x0 + 1.0), r.rect.max.y - 1.0));
             draw_clip(app, &ctx, &p, body, it, r.kind, selection.contains(&it.id), &t, rate);
             app.auto.add(&format!("timeline.clip.{}", it.id.0), body.intersect(content), &it.name);
+            // a nest that runs past the end of its sequence's contents: that part is empty
+            if !previews.contains_key(&it.id)
+                && let Some(empty) = app.session.project.nest_overhang(it)
+            {
+                let er = Rect::from_min_max(pos2(layout.x_of(empty.start), body.min.y), pos2(layout.x_of(empty.end()), body.max.y)).intersect(body);
+                if er.width() > 0.0 {
+                    p.with_clip_rect(er.intersect(p.clip_rect())).rect_filled(er, 0.0, Color32::from_black_alpha(110));
+                    paint_hatch(&p, er);
+                    app.auto.add(&format!("timeline.clip.{}.empty", it.id.0), er.intersect(content), "past the end of the nested sequence");
+                }
+            }
         }
         // items dragged onto this track from another
         for (cid, (start, dur, mt)) in &previews {
@@ -474,6 +492,10 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
 fn empty_state(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let t = app.tokens;
     ui.painter().text(rect.center() - vec2(0.0, 12.0), Align2::CENTER_CENTER, "Drop media here to create sequence.", Tokens::ui(13.0), t.text_dim);
+    if app.session.project.items.values().any(|i| matches!(i.kind, filmcraft_project::ItemKind::Sequence(_))) {
+        let hint = "Double-click a sequence in the Project panel to open it here.";
+        ui.painter().text(rect.center() + vec2(0.0, 50.0), Align2::CENTER_CENTER, hint, Tokens::ui(12.0), t.text_dim);
+    }
     let b = Rect::from_center_size(rect.center() + vec2(0.0, 20.0), vec2(170.0, 26.0));
     let resp = ui.interact(b, egui::Id::new("tl-open-demo"), Sense::click());
     app.auto.add("timeline.openDemo", b, "Open Demo Project");
@@ -712,7 +734,86 @@ fn waveform_display_gain(source_peak: f32, clip_gain_db: f64) -> f32 {
     filmcraft_render::audio::db_to_gain(clip_gain_db) * boost
 }
 
+/// A key that changes when the sound of sequence `item` does: its audio segments (clips,
+/// transitions, mixer state; see `filmcraft_render::preview::audio_segments`) and its length.
+fn sequence_audio_key(project: &filmcraft_project::Project, item: ItemId) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    for seg in filmcraft_render::preview::audio_segments(project, item) {
+        (seg.first_sample, seg.samples, seg.hash).hash(&mut h);
+    }
+    project.sequence(item).map(|q| (q.duration().0, q.settings.sample_rate)).hash(&mut h);
+    h.finish()
+}
+
+/// Waveform peaks of a nested sequence's mix, in the same form as a media item's (min, max per
+/// 256 samples at 48 kHz). They are mixed in the background, and again whenever the sequence's
+/// sound changes; until the new ones are ready the old ones stay on show.
+fn request_sequence_peaks(app: &mut FilmcraftApp, item: ItemId) -> Option<Arc<Vec<(f32, f32)>>> {
+    let revision = app.session.revision;
+    let key = match app.tl.seq_keys_seen.get(&item) {
+        Some(&(rev, key)) if rev == revision => key,
+        _ => {
+            let key = sequence_audio_key(&app.session.project, item);
+            app.tl.seq_keys_seen.insert(item, (revision, key));
+            key
+        }
+    };
+    let have = app.tl.peaks.lock().unwrap_or_else(|e| e.into_inner()).get(&item).cloned();
+    let current = app.tl.seq_peak_keys.lock().unwrap_or_else(|e| e.into_inner()).get(&item) == Some(&key);
+    if current && have.is_some() {
+        return have;
+    }
+    {
+        let mut pend = app.tl.peaks_pending.lock().unwrap_or_else(|e| e.into_inner());
+        if pend.contains(&item) {
+            return have;
+        }
+        pend.push(item);
+    }
+    let (peaks, keys, pending) = (app.tl.peaks.clone(), app.tl.seq_peak_keys.clone(), app.tl.peaks_pending.clone());
+    let project = app.session.project.clone();
+    let provider = app.session.media.provider(project.clone(), app.session.services.clone());
+    let run = move || {
+        // a panic in the mix must not take the app down with it, nor leave the item pending for good
+        let mixed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let seq = project.sequence(item)?;
+            let sr = seq.settings.sample_rate.max(1);
+            let total = seq.duration().to_units_floor(sr as i64).max(0) as usize;
+            // one peak per 256 samples at 48 kHz, whatever the sequence's own rate
+            let bucket = ((256u64 * sr as u64) / 48_000).max(1) as usize;
+            let chunk = (bucket * 750).max(1);
+            let mut out = Vec::with_capacity(total / bucket + 1);
+            let mut s = 0usize;
+            while s < total {
+                let n = chunk.min(total - s);
+                let buf = filmcraft_render::audio::mix_sequence(&project, seq, s as i64, n, &provider);
+                let ch = buf.channels.first()?;
+                for c in ch.chunks(bucket) {
+                    let (lo, hi) = c.iter().fold((0f32, 0f32), |(l, h), v| (l.min(*v), h.max(*v)));
+                    out.push((lo, hi));
+                }
+                s += n;
+            }
+            Some(out)
+        }));
+        if let Ok(Some(out)) = mixed {
+            peaks.lock().unwrap_or_else(|e| e.into_inner()).insert(item, Arc::new(out));
+            keys.lock().unwrap_or_else(|e| e.into_inner()).insert(item, key);
+        }
+        pending.lock().unwrap_or_else(|e| e.into_inner()).retain(|i| *i != item);
+    };
+    #[cfg(not(target_arch = "wasm32"))]
+    std::thread::spawn(run);
+    #[cfg(target_arch = "wasm32")]
+    run();
+    have
+}
+
 pub(crate) fn request_peaks(app: &mut FilmcraftApp, item: ItemId) -> Option<Arc<Vec<(f32, f32)>>> {
+    if app.session.project.sequence(item).is_some() {
+        return request_sequence_peaks(app, item);
+    }
     if let Some(p) = app.tl.peaks.lock().unwrap_or_else(|e| e.into_inner()).get(&item) {
         return Some(p.clone());
     }
@@ -758,16 +859,21 @@ pub(crate) fn request_peaks(app: &mut FilmcraftApp, item: ItemId) -> Option<Arc<
     None
 }
 
-fn draw_transition(p: &egui::Painter, r: Rect, trn: &filmcraft_project::Transition, _t: &Tokens) {
+/// 45° hatching over `r` (transitions, and the empty end of a nested sequence clip).
+fn paint_hatch(p: &egui::Painter, r: Rect) {
     let cp = p.with_clip_rect(r.intersect(p.clip_rect()));
-    cp.rect_filled(r, 0.0, Color32::from_black_alpha(90));
-    // 45° hatching
     let step = 4.0;
     let mut x = r.min.x - r.height();
     while x < r.max.x {
         cp.line_segment([pos2(x, r.max.y), pos2(x + r.height(), r.min.y)], Stroke::new(1.0, Color32::from_rgba_unmultiplied(0xd9, 0xd9, 0xd9, 110)));
         x += step;
     }
+}
+
+fn draw_transition(p: &egui::Painter, r: Rect, trn: &filmcraft_project::Transition, _t: &Tokens) {
+    let cp = p.with_clip_rect(r.intersect(p.clip_rect()));
+    cp.rect_filled(r, 0.0, Color32::from_black_alpha(90));
+    paint_hatch(p, r);
     let audio = matches!(trn.effect.def().map(|d| d.kind), Some(filmcraft_project::EffectKind::AudioTransition));
     if audio {
         // crossing fade curves
@@ -982,7 +1088,7 @@ fn draw_top(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, seq: &Sequenc
     let mut x = rect.min.x + 12.0;
     let y = rect.min.y + 26.0;
     let toggles: [(Icon, &str, bool, bool, &str); 6] = [
-        (Icon::Nest, "nest", true, true, "Insert and overwrite sequences as nests or individual clips"),
+        (Icon::Nest, "nest", !app.session.state.sequences_as_clips, true, "Insert and overwrite sequences as nests or individual clips"),
         (Icon::Magnet, "snap", app.session.state.snapping, true, "Snap in Timeline (S)"),
         (Icon::Link, "linked", app.session.state.linked_selection, true, "Linked Selection"),
         (Icon::Captions, "captions", false, false, "Caption track options"),
@@ -1001,6 +1107,7 @@ fn draw_top(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, seq: &Sequenc
         icons::paint(&p, r.shrink(7.0), icon, if toggle && on { t.text } else { t.text_dim });
         if resp.clicked() {
             let _ = match key {
+                "nest" => app.session.execute("sequence.nestSequences", json!({})),
                 "snap" => app.session.execute("sequence.snap", json!({})),
                 "linked" => app.session.execute("sequence.linkedSelection", json!({})),
                 "marker" => app.session.execute("markers.add", json!({})),
@@ -1463,6 +1570,88 @@ fn shift_track(seq: &Sequence, tid: TrackId, delta: i32) -> Option<TrackId> {
     Some(tid)
 }
 
+/// The clip context menu: groups (separated by rules) of (label, command id). Entries marked `…`
+/// open their dialog through `menus::invoke`, like the same item in the Clip menu.
+const CLIP_MENU: &[&[(&str, &str)]] = &[
+    &[
+        ("Cut", "edit.cut"),
+        ("Copy", "edit.copy"),
+        ("Paste Attributes…", "edit.pasteAttributes"),
+        ("Remove Attributes…", "edit.removeAttributes"),
+        ("Clear", "edit.clear"),
+        ("Ripple Delete", "edit.rippleDelete"),
+    ],
+    &[("Edit Original", "edit.editOriginal"), ("Replace With Clip From Source Monitor", "clip.replaceFromSource")],
+    &[
+        ("Enable", "clip.enable"),
+        ("Link", "clip.link"),
+        ("Group", "clip.group"),
+        ("Ungroup", "clip.ungroup"),
+        ("Synchronize…", "clip.synchronize"),
+        ("Merge Clips…", "clip.mergeClips"),
+        ("Nest…", "clip.nest"),
+        ("Make Subsequence", "sequence.makeSubsequence"),
+        ("Reveal Nested Sequence", "sequence.revealNested"),
+        ("Multi-Camera", "clip.multicam"),
+    ],
+    &[("Label", "edit.label")],
+    &[("Speed/Duration…", "clip.speedDuration")],
+    &[
+        ("Frame Hold Options…", "clip.frameHoldOptions"),
+        ("Add Frame Hold", "clip.frameHold"),
+        ("Insert Frame Hold Segment", "clip.insertFrameHoldSegment"),
+        ("Field Options…", "clip.fieldOptions"),
+        ("Scale to Frame Size", "clip.scaleToFrameSize"),
+        ("Fit to frame", "clip.fitToFrame"),
+        ("Fill frame", "clip.fillFrame"),
+    ],
+    &[("Reveal in Project", "clip.revealInProject"), ("Join Through Edits", "sequence.joinThroughEdits")],
+];
+
+/// The clip menu's Multi-Camera submenu: Enable, Flatten, and the cameras of the selected nested
+/// sequence clips (greyed out when none of the selected clips is a nested sequence).
+fn multicam_menu(app: &mut FilmcraftApp, ui: &mut egui::Ui, picked: &[&TrackItem]) {
+    let nests: Vec<&TrackItem> = picked.iter().copied().filter(|it| app.session.project.sequence(it.item).is_some()).collect();
+    let enabled = !nests.is_empty() && nests.iter().all(|it| it.multicam.is_some_and(|m| m.enabled));
+    // camera names of the first selected nest, and the angle it shows
+    let cameras: Vec<(usize, String)> = nests
+        .first()
+        .and_then(|it| app.session.project.sequence(it.item))
+        .map(|q| q.cameras().video_angles().map(|(i, c)| (i, c.name.clone())).collect())
+        .unwrap_or_default();
+    let shown = nests.first().and_then(|it| it.multicam).filter(|m| m.enabled).map(|m| m.angle as usize);
+    let mut run: Option<(&str, Value)> = None;
+    ui.add_enabled_ui(!nests.is_empty(), |ui| {
+        let r = ui.menu_button("Multi-Camera", |ui| {
+            for (label, cmd) in [(if enabled { "✓ Enable" } else { "Enable" }, "clip.multicamEnable"), ("Flatten", "clip.multicamFlatten")] {
+                let r = ui.add_enabled(app.session.is_enabled(cmd), egui::Button::new(label));
+                app.auto.add(&format!("timeline.clipMenu.{cmd}"), r.rect, label);
+                if r.clicked() {
+                    run = Some((cmd, json!({})));
+                }
+            }
+            if enabled && !cameras.is_empty() {
+                ui.separator();
+                for (angle, name) in &cameras {
+                    let label = if shown == Some(*angle) { format!("✓ {name}") } else { name.clone() };
+                    let r = ui.button(&label);
+                    app.auto.add(&format!("timeline.clipMenu.multicam.camera.{angle}"), r.rect, &label);
+                    if r.clicked() {
+                        run = Some(("multicam.switchAngle", json!({"angle": angle, "clips": nests.iter().map(|it| it.id.0).collect::<Vec<_>>()})));
+                    }
+                }
+            }
+        });
+        app.auto.add("timeline.clipMenu.clip.multicam", r.response.rect, "Multi-Camera");
+    });
+    if let Some((cmd, params)) = run {
+        if let Err(e) = app.session.execute(cmd, params) {
+            app.ui.status = e.to_string();
+        }
+        ui.close();
+    }
+}
+
 /// What the wheel and the trackpad did this frame.
 struct WheelInput {
     /// Scroll in points (wheel lines and pages converted), positive = content moves right / down.
@@ -1848,43 +2037,72 @@ fn interact(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, layout: &
         }
     }
 
-    // ---- context menu on clips
-    resp.context_menu(|ui| {
-        ui.set_min_width(200.0);
-        let sel_n = app.session.state.selection.len();
-        let items: [(&str, &str); 11] = [
-            ("Cut", "edit.cut"),
-            ("Copy", "edit.copy"),
-            ("Clear", "edit.clear"),
-            ("Ripple Delete", "edit.rippleDelete"),
-            ("Enable", "clip.enable"),
-            ("Unlink", "clip.link"),
-            ("Group", "clip.group"),
-            ("Speed/Duration…", "clip.speedDuration"),
-            ("Nest…", "clip.nest"),
-            ("Scale to Frame Size", "clip.scaleToFrameSize"),
-            ("Join Through Edits", "sequence.joinThroughEdits"),
-        ];
-        for (label, cmd) in items {
-            if ui.add_enabled(sel_n > 0 && app.session.is_enabled(cmd), egui::Button::new(label)).clicked() {
-                if cmd == "clip.speedDuration" {
-                    app.dialog = None;
-                    let _ = app.session.execute(cmd, json!({"speed": 50.0}));
-                } else if let Err(e) = app.session.execute(cmd, json!({})) {
-                    app.ui.status = e.to_string();
-                }
-                ui.close();
-            }
+    // ---- double-click a nested sequence clip: open it in its own Timeline tab
+    if resp.double_clicked()
+        && tool == Tool::Selection
+        && let Some(p) = resp.interact_pointer_pos()
+        && let Hit::Clip { clip, .. } = hit(seq, layout, p)
+        && seq.find_item(clip).is_some_and(|(_, it)| app.session.project.sequence(it.item).is_some())
+    {
+        let _ = app.session.execute("timeline.select", json!({"clips": [clip.0]}));
+        if let Err(e) = app.session.execute("sequence.revealNested", json!({})) {
+            app.ui.status = e.to_string();
         }
-        ui.separator();
-        ui.menu_button("Label", |ui| {
-            for l in filmcraft_project::Label::ALL {
-                if ui.button(l.name()).clicked() {
-                    let _ = app.session.execute("edit.label", json!({"label": l.name()}));
+    }
+
+    // ---- context menu on clips (right-clicking an unselected clip selects it first)
+    if resp.secondary_clicked()
+        && let Some(p) = resp.interact_pointer_pos()
+        && let Hit::Clip { clip, .. } = hit(seq, layout, p)
+        && !app.session.state.selection.contains(&clip)
+    {
+        let _ = app.session.execute("timeline.select", json!({"clips": [clip.0]}));
+    }
+    resp.context_menu(|ui| {
+        ui.set_min_width(220.0);
+        let sel = app.session.state.selection.clone();
+        let picked: Vec<&filmcraft_project::TrackItem> = sel.iter().filter_map(|c| seq.find_item(*c).map(|(_, it)| it)).collect();
+        let all_enabled = !picked.is_empty() && picked.iter().all(|it| it.enabled);
+        let linked = picked.iter().any(|it| it.link.is_some());
+        let mut first = true;
+        for group in CLIP_MENU {
+            if !std::mem::take(&mut first) {
+                ui.separator();
+            }
+            for &(label, cmd) in *group {
+                if cmd == "edit.label" {
+                    ui.menu_button(label, |ui| {
+                        for l in filmcraft_project::Label::ALL {
+                            if ui.button(l.name()).clicked() {
+                                let _ = app.session.execute("edit.label", json!({"label": l.name()}));
+                                ui.close();
+                            }
+                        }
+                    });
+                    continue;
+                }
+                if cmd == "clip.multicam" {
+                    multicam_menu(app, ui, &picked);
+                    continue;
+                }
+                let label = match cmd {
+                    "clip.enable" if all_enabled => "✓ Enable",
+                    "clip.link" if linked => "Unlink",
+                    _ => label,
+                };
+                let r = ui.add_enabled(!sel.is_empty() && app.session.is_enabled(cmd), egui::Button::new(label));
+                app.auto.add(&format!("timeline.clipMenu.{cmd}"), r.rect, label);
+                if r.clicked() {
+                    if cmd == "clip.speedDuration" {
+                        app.dialog = None;
+                        let _ = app.session.execute(cmd, json!({"speed": 50.0}));
+                    } else if let Err(e) = crate::menus::invoke(app, &ctx, cmd, json!({})) {
+                        app.ui.status = e;
+                    }
                     ui.close();
                 }
             }
-        });
+        }
     });
 
     // ---- drops: project items and effects
