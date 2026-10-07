@@ -27,12 +27,16 @@ SUBCOMMANDS
   inspect [project|sequence]    project tree or active sequence as JSON (default: both)
   import <file>...              import media into the project
   export <out> [--preset name] [--format f] [--range r] [--start s --end s] [--settings json]
+         [--scale f] [--quality 0-100] [--no-audio] [--queue]
                                 export the active sequence and wait for it to finish: with an
                                 export preset (`export --list-presets`; built-in or the user's), or
-                                a format (h264|prores|dnxhr|mjpeg|mxf-op1a|mxf-opatom|png|tiff|bmp|gif|wav|aiff, guessed
+                                a format (h264|prores|dnxhr|apv|mjpeg|mxf-op1a|mxf-opatom|png|tiff|bmp|gif|wav|aiff, guessed
                                 from the extension); --range entire|inOut|workArea, or a custom
                                 range in seconds; --settings is ExportSettings JSON merged over the
-                                preset; --queue adds to the export queue and runs it instead
+                                preset; --scale renders at a fraction of the frame size (0.5 =
+                                half); --quality 0-100 for the formats that take one; --no-audio
+                                leaves the sound out; --queue adds to the export queue and runs it
+                                instead
   export --list-presets [query] list export presets (name, category, format) as JSON
   render --seconds S --out f.png [--scale 0.5]   render one Program frame to PNG
   probe <media> [--image-sequence]
