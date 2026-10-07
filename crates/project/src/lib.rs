@@ -1100,6 +1100,42 @@ pub struct Project {
     pub source_graphics: BTreeMap<ItemId, SourceGraphic>,
 }
 
+/// How a sequence is shown in the Timeline panel: its zoom, scroll position and track heights.
+/// Each open sequence keeps its own (as Premiere's sequence tabs do).
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct SequenceView {
+    /// Zoom: points per second.
+    pub pps: f64,
+    /// Time at the left edge, in seconds.
+    pub scroll: f64,
+    /// Vertical scroll of the video and audio halves, in points.
+    #[serde(default)]
+    pub v_scroll: f32,
+    #[serde(default)]
+    pub a_scroll: f32,
+    pub video_track_h: f32,
+    pub audio_track_h: f32,
+}
+
+impl SequenceView {
+    /// The view with every number brought into a usable range, or `None` when a number is not
+    /// finite. Views are read from project files, so nothing in them is trusted.
+    pub fn checked(self) -> Option<SequenceView> {
+        let all = [self.pps, self.scroll, self.v_scroll as f64, self.a_scroll as f64, self.video_track_h as f64, self.audio_track_h as f64];
+        if all.iter().any(|x| !x.is_finite()) {
+            return None;
+        }
+        Some(SequenceView {
+            pps: self.pps.clamp(1e-3, 1e5),
+            scroll: self.scroll.clamp(0.0, 1e7),
+            v_scroll: self.v_scroll.clamp(0.0, 1e6),
+            a_scroll: self.a_scroll.clamp(0.0, 1e6),
+            video_track_h: self.video_track_h.clamp(8.0, 600.0),
+            audio_track_h: self.audio_track_h.clamp(8.0, 600.0),
+        })
+    }
+}
+
 /// A LUT imported into the project (`lut.import`). Lumetri refers to it as `lib:<id>`.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ProjectLut {

@@ -178,6 +178,10 @@ pub struct FilmcraftApp {
     fonts_ready: bool,
     pub integrated_titlebar: bool,
     pub last_timeline_width: f32,
+    /// The sequence whose view `ui.timeline` holds, and that view as it was last exchanged with
+    /// `session.state.timeline_views` (see `sync_timeline_view`).
+    timeline_view_of: Option<filmcraft_engine::project::ItemId>,
+    timeline_view_last: Option<filmcraft_engine::project::SequenceView>,
     pub fps: f32,
     last_time: f64,
     bindings: Vec<menus::KeyBinding>,
@@ -358,6 +362,8 @@ impl FilmcraftApp {
             fonts_ready: false,
             integrated_titlebar: false,
             last_timeline_width: 1000.0,
+            timeline_view_of: None,
+            timeline_view_last: None,
             fps: 60.0,
             last_time: 0.0,
             bindings: Vec::new(),
@@ -438,6 +444,60 @@ impl FilmcraftApp {
             }
         }
         self.applied_prefs = Some(p);
+    }
+
+    /// Every sequence has its own Timeline view (zoom, scroll, track heights), as Premiere's
+    /// sequence tabs do. `ui.timeline` holds the active sequence's; the views of all sequences are
+    /// in `session.state.timeline_views`, which is saved with the project. Each frame this
+    /// - gives `ui.timeline` the view of a sequence that has just become active (a sequence shown
+    ///   for the first time is fitted, with default track heights),
+    /// - writes a change made in the panel to the session,
+    /// - and takes over a view that was changed in the session (by a command or the control
+    ///   channel).
+    fn sync_timeline_view(&mut self) {
+        let Some(active) = self.session.state.active_sequence else {
+            self.timeline_view_of = None;
+            return;
+        };
+        let stored = self.session.state.timeline_views.get(&active).copied();
+        let v = &mut self.ui.timeline;
+        let shown = filmcraft_engine::project::SequenceView {
+            pps: v.target_pps,
+            scroll: v.target_scroll,
+            v_scroll: v.v_scroll,
+            a_scroll: v.a_scroll,
+            video_track_h: v.video_track_h,
+            audio_track_h: v.audio_track_h,
+        };
+        let show = |v: &mut state::TimelineView, s: filmcraft_engine::project::SequenceView| {
+            (v.pps, v.target_pps, v.scroll, v.target_scroll) = (s.pps, s.pps, s.scroll, s.scroll);
+            (v.v_scroll, v.a_scroll, v.video_track_h, v.audio_track_h) = (s.v_scroll, s.a_scroll, s.video_track_h, s.audio_track_h);
+            (v.fit_pending, v.fit_empty) = (false, None);
+        };
+        if self.timeline_view_of != Some(active) {
+            self.timeline_view_of = Some(active);
+            match stored.and_then(|s| s.checked()) {
+                Some(s) => {
+                    show(v, s);
+                    self.timeline_view_last = Some(s);
+                }
+                None => {
+                    let d = state::TimelineView::default();
+                    (v.v_scroll, v.a_scroll, v.video_track_h, v.audio_track_h) = (0.0, 0.0, d.video_track_h, d.audio_track_h);
+                    (v.fit_pending, v.fit_empty) = (true, None);
+                    self.timeline_view_last = None;
+                }
+            }
+        } else if v.fit_pending {
+            // the panel has not fitted the sequence yet: nothing to keep
+        } else if self.timeline_view_last != Some(shown) {
+            self.session.state.timeline_views.insert(active, shown);
+            self.timeline_view_last = Some(shown);
+        } else if let Some(s) = stored.filter(|s| *s != shown).and_then(|s| s.checked()) {
+            show(v, s);
+            self.timeline_view_last = Some(s);
+            self.session.state.timeline_views.insert(active, s);
+        }
     }
 
     pub fn set_workspace(&mut self, name: &str) {
@@ -1067,7 +1127,8 @@ impl FilmcraftApp {
         for ev in self.session.drain_events() {
             match ev {
                 filmcraft_engine::Event::OpenSequence(_) => {
-                    self.ui.timeline.fit_pending = true;
+                    // show the sequence with its own view (or fitted, the first time)
+                    self.timeline_view_of = None;
                     self.ui.dock.restore_timeline();
                     self.ui.dock.activate(PanelKind::Timeline);
                 }
@@ -1079,6 +1140,7 @@ impl FilmcraftApp {
                 filmcraft_engine::Event::ProjectChanged { .. } => {}
             }
         }
+        self.sync_timeline_view();
         self.handle_drops(&ctx);
         if let Some(rx) = self.command_inbox.take() {
             while let Ok(id) = rx.try_recv() {

@@ -240,6 +240,11 @@ pub struct EditorState {
     pub sequences_as_clips: bool,
     /// Open sequences (timeline tabs), in tab order.
     pub open_sequences: Vec<ItemId>,
+    /// How each sequence is shown in the Timeline panel (zoom, scroll, track heights): every
+    /// sequence keeps its own. The frontend writes the active sequence's view here as it changes
+    /// and takes a sequence's view from here when it becomes the active one.
+    #[serde(default)]
+    pub timeline_views: std::collections::BTreeMap<ItemId, filmcraft_project::SequenceView>,
     /// Timeline clipboard (serialized track items with their relative track index).
     #[serde(skip)]
     pub clipboard: Vec<(TrackKind, usize, filmcraft_project::TrackItem)>,
@@ -802,6 +807,7 @@ impl Session {
             self.state.active_sequence = p.sequences().next().map(|i| i.id);
         }
         self.state.open_sequences.retain(|s| p.sequence(*s).is_some());
+        self.state.timeline_views.retain(|s, _| p.sequence(*s).is_some());
         if let Some(s) = self.state.source_item
             && p.item(s).is_none()
         {
@@ -989,6 +995,8 @@ mod ripple_delete_tests;
 mod scopes_tests;
 #[cfg(test)]
 mod sequence_inspect_tests;
+#[cfg(test)]
+mod sequence_tabs_tests;
 #[cfg(test)]
 mod sequence_tools_tests;
 #[cfg(test)]
