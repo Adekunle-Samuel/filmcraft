@@ -920,6 +920,7 @@ pub fn set_speed_group(seq: &mut Sequence, clips: &[ClipId], speed: f64, reverse
     if ripple {
         transitions_follow_cuts(seq, &mut work);
     }
+    work.check().map_err(EditError::Other)?;
     *seq = work;
     Ok(())
 }

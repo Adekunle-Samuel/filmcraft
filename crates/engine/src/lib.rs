@@ -923,7 +923,7 @@ impl Session {
     /// Render the active sequence at the playhead in its working colour space (HDR values kept;
     /// for scopes and analysis).
     pub fn render_program_working(&self, scale: f32) -> Option<filmcraft_render::Image> {
-        let seq = self.state.active_sequence?;
+        let seq = self.renderable_sequence(scale)?;
         let provider = self.media.provider(self.project.clone(), self.services.clone());
         let opts = filmcraft_render::RenderOptions { scale, working_output: true, ..Default::default() };
         Some(filmcraft_render::render_sequence(&self.project, seq, self.playhead(), opts, &provider))
@@ -937,11 +937,27 @@ impl Session {
     /// Render the active sequence at `t` (snapped to its frame, as the playhead would be) without
     /// moving the playhead (CPU reference path).
     pub fn render_program_at(&self, scale: f32, t: Tick) -> Option<filmcraft_render::Image> {
-        let seq = self.state.active_sequence?;
+        let seq = self.renderable_sequence(scale)?;
         let t = self.sequence_rate().snap(t.max(Tick::ZERO));
         let provider = self.media.provider(self.project.clone(), self.services.clone());
         let opts = filmcraft_render::RenderOptions { scale, captions: true, ..Default::default() };
         Some(filmcraft_render::render_sequence(&self.project, seq, t, opts, &provider))
+    }
+
+    fn renderable_sequence(&self, scale: f32) -> Option<ItemId> {
+        let id = self.state.active_sequence?;
+        let seq = self.project.sequence(id)?;
+        if !scale.is_finite() || scale <= 0.0 {
+            eprintln!("filmcraft: render scale must be finite and positive");
+            return None;
+        }
+        let (w, h) = filmcraft_render::output_size(seq, scale);
+        let valid = u32::try_from(w).ok().zip(u32::try_from(h).ok()).is_some_and(|(w, h)| filmcraft_project::validate_frame_size(w, h).is_ok());
+        if !valid {
+            eprintln!("filmcraft: requested render frame exceeds the image size limits");
+            return None;
+        }
+        Some(id)
     }
 }
 

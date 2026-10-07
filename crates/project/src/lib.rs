@@ -786,6 +786,17 @@ impl Track {
     }
     /// Invariant check: items do not overlap.
     pub fn check(&self) -> Result<(), String> {
+        // Validate before calling end(), including on a single-item track.
+        for item in &self.items {
+            if !bounded_time_range(item.start, item.duration) {
+                return Err(format!("{}: item {:?} is outside supported time bounds", self.name, item.id));
+            }
+        }
+        for transition in &self.transitions {
+            if !bounded_time_range(transition.start, transition.duration) {
+                return Err(format!("{}: transition {:?} is outside supported time bounds", self.name, transition.id));
+            }
+        }
         for w in self.items.windows(2) {
             if w[0].end() > w[1].start {
                 return Err(format!("{}: items {:?} and {:?} overlap", self.name, w[0].id, w[1].id));
@@ -844,6 +855,36 @@ impl Default for SequenceSettings {
             working_space: "Rec. 709".into(),
             color: filmcraft_color::ColorPipeline::REC709,
         }
+    }
+}
+
+/// Bound working-frame allocations while retaining standard 8K and wide panoramic frames.
+pub fn validate_frame_size(width: u32, height: u32) -> Result<(), String> {
+    if width == 0 || height == 0 || width > 16_384 || height > 16_384 || u64::from(width) * u64::from(height) > 67_108_864 {
+        return Err("frame size must be positive, at most 16384 pixels per side and 67108864 pixels total".into());
+    }
+    Ok(())
+}
+
+impl SequenceSettings {
+    pub fn validate(&self) -> Result<(), String> {
+        validate_frame_size(self.width, self.height)?;
+        if self.frame_rate.num <= 0
+            || self.frame_rate.den <= 0
+            || self.frame_rate.as_f64() > 1000.0
+            || self.frame_rate.num > i64::from(u32::MAX)
+            || self.frame_rate.den > i64::from(u32::MAX)
+            || (i128::from(TICKS_PER_SECOND) * i128::from(self.frame_rate.den) / i128::from(self.frame_rate.num.max(1))) > i128::from(Tick::MAX.0)
+        {
+            return Err("frame rate must be positive, at most 1000 fps, with unsigned 32-bit rational components".into());
+        }
+        if self.sample_rate == 0 || self.sample_rate > 384_000 {
+            return Err("sample rate must be between 1 and 384000 Hz".into());
+        }
+        if self.par.0 == 0 || self.par.1 == 0 {
+            return Err("pixel aspect ratio must be positive".into());
+        }
+        Ok(())
     }
 }
 
@@ -976,6 +1017,12 @@ impl Sequence {
         v
     }
     pub fn check(&self) -> Result<(), String> {
+        self.settings.validate()?;
+        if self.mark_in.into_iter().chain(self.mark_out).any(|t| t < Tick::MIN || t > Tick::MAX)
+            || self.work_area.is_some_and(|r| !bounded_time_range(r.start, r.duration))
+        {
+            return Err("sequence marks or work area are outside supported time bounds".into());
+        }
         for t in self.all_tracks() {
             t.check()?;
         }
@@ -984,6 +1031,13 @@ impl Sequence {
         }
         Ok(())
     }
+}
+
+/// Bound persisted timeline arithmetic before any start + duration operation. Negative timeline
+/// positions remain supported; empty ranges are valid metadata (track items/captions also require
+/// a positive duration in their own invariant checks).
+pub(crate) fn bounded_time_range(start: Tick, duration: Tick) -> bool {
+    start >= Tick::MIN && start <= Tick::MAX && duration.0 >= 0 && start.0.checked_add(duration.0).is_some_and(|end| end <= Tick::MAX.0)
 }
 
 /// Project-level settings.
@@ -1623,6 +1677,36 @@ mod tests {
         let q = Project::from_json(&s).unwrap();
         assert_eq!(p, q);
         assert!(q.sequence(seq).unwrap().check().is_ok());
+    }
+
+    #[test]
+    fn hostile_frame_rates_are_rejected_before_frame_arithmetic() {
+        for frame_rate in [FrameRate { num: i64::MAX, den: i64::MAX }, FrameRate { num: 1, den: i64::from(u32::MAX) }] {
+            let settings = SequenceSettings { frame_rate, ..Default::default() };
+            assert!(settings.validate().is_err());
+        }
+        assert!(SequenceSettings { width: 7680, height: 4320, ..Default::default() }.validate().is_ok());
+    }
+
+    #[test]
+    fn corrupt_timeline_times_are_rejected_before_end_arithmetic() {
+        let (mut project, media, seq) = demo_project();
+        let rate = project.sequence(seq).unwrap().settings.frame_rate;
+        let range = TimeRange::new(Tick::ZERO, rate.tick_of(24));
+        let first = project.make_track_item(media, TrackKind::Video, Tick::ZERO, range, rate).unwrap();
+        let second = project.make_track_item(media, TrackKind::Video, rate.tick_of(24), range, rate).unwrap();
+        project.sequence_mut(seq).unwrap().video_tracks[0].items = vec![first, second];
+        for start in [Tick(i64::MAX), Tick(i64::MIN), Tick::MAX] {
+            project.sequence_mut(seq).unwrap().video_tracks[0].items[0].start = start;
+            let result = std::panic::catch_unwind(|| project.sequence(seq).unwrap().check());
+            assert!(result.is_ok());
+            assert!(result.unwrap().is_err());
+        }
+        project.sequence_mut(seq).unwrap().video_tracks[0].items[0].start = Tick::ZERO;
+        for mark in [Tick(i64::MAX), Tick(i64::MIN)] {
+            project.sequence_mut(seq).unwrap().mark_out = Some(mark);
+            assert!(project.sequence(seq).unwrap().check().is_err());
+        }
     }
 
     #[test]

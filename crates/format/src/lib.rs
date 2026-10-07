@@ -198,12 +198,21 @@ pub fn decode(bytes: &[u8]) -> Result<Loaded, FormatError> {
     if found == SCHEMA_VERSION {
         // Fast path: deserialize straight into the model.
         let env: EnvelopeIn = serde_json::from_slice(bytes).map_err(|e| FormatError::Corrupt(e.to_string()))?;
-        return Ok(env.loaded(found));
+        return validate_loaded(env.loaded(found));
     }
     let doc: Value = serde_json::from_slice(bytes).map_err(|e| FormatError::Corrupt(e.to_string()))?;
     let doc = migrate_with(MIGRATIONS, doc, found)?;
     let env: EnvelopeIn = serde_json::from_value(doc).map_err(|e| FormatError::Corrupt(format!("after upgrading from schema v{found}: {e}")))?;
-    Ok(env.loaded(found))
+    validate_loaded(env.loaded(found))
+}
+
+fn validate_loaded(loaded: Loaded) -> Result<Loaded, FormatError> {
+    for item in loaded.project.sequences() {
+        if let filmcraft_project::ItemKind::Sequence(sequence) = &item.kind {
+            sequence.check().map_err(|e| FormatError::Corrupt(format!("sequence `{}`: {e}", item.name)))?;
+        }
+    }
+    Ok(loaded)
 }
 
 fn check_supported(found: u32) -> Result<(), FormatError> {
@@ -311,6 +320,17 @@ mod tests {
     #[test]
     fn schema_version_matches_table() {
         assert_eq!(SCHEMA_VERSION, 12);
+    }
+
+    #[test]
+    fn damaged_sequence_settings_are_rejected_before_rendering() {
+        let mut p = Project::new("Invalid sequence");
+        let id = p.new_sequence("Bad", filmcraft_project::SequenceSettings::default(), 1, 1, None);
+        for (width, height, sample_rate) in [(0, 90, 48000), (160, 0, 48000), (160, 90, 0), (16384, 16384, 48000)] {
+            let settings = &mut p.sequence_mut(id).unwrap().settings;
+            (settings.width, settings.height, settings.sample_rate) = (width, height, sample_rate);
+            assert!(matches!(decode(&encode(&p, false)), Err(FormatError::Corrupt(_))));
+        }
     }
 
     #[test]
