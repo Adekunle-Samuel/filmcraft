@@ -1274,7 +1274,7 @@ impl Project {
             return Some(clip.range());
         }
         // source time past the contents, as timeline time
-        let len = Tick(((past.0 as f64 / speed).round() as i64).clamp(0, clip.duration.0));
+        let len = Tick(((past.0 as f64 / speed).round() as i64).clamp(0, clip.duration.0.max(0)));
         if len <= Tick::ZERO {
             return None;
         }

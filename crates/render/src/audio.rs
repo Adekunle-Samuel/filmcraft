@@ -265,7 +265,8 @@ fn mix_item(
 /// `depth` is the nesting depth of the sequence the nest is in.
 #[allow(clippy::too_many_arguments)]
 fn nested_mix(project: &Project, nested: &Sequence, m0: i64, len: usize, sr: u32, sources: &dyn SourceProvider, w: usize, depth: u32) -> AudioBuffer {
-    let own = nested.settings.sample_rate.max(1);
+    // a damaged project can claim any rate: keep the buffer below sized by a real one
+    let own = nested.settings.sample_rate.clamp(1_000, 768_000);
     let sr = sr.max(1);
     // the nested sequence's samples that cover [m0, m0 + len) at `sr`
     let at = |i: i64| i as f64 * own as f64 / sr as f64;

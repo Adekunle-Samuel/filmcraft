@@ -9,7 +9,7 @@
 //!    rendered video file as [`MediaOptions::mixdown_video`]) to [`crate::aaf::export`] /
 //!    [`crate::omf::export`].
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use filmcraft_project::{ClipId, ItemId, ItemKind, MediaRef, Project, TrackKind};
 use filmcraft_time::Tick;
@@ -135,14 +135,23 @@ const MAX_NESTING: usize = 16;
 /// The audio ranges the audio tracks of `sequence` reference, in a stable order.
 pub fn audio_needs(project: &Project, sequence: ItemId, opts: &NeedOptions) -> Vec<AudioNeed> {
     let mut by_item: BTreeMap<EssenceKey, AudioNeed> = BTreeMap::new();
-    collect_needs(project, sequence, opts, &mut Vec::new(), &mut by_item);
+    collect_needs(project, sequence, opts, &mut Vec::new(), &mut BTreeSet::new(), &mut by_item);
     by_item.into_values().collect()
 }
 
-fn collect_needs(project: &Project, sequence: ItemId, opts: &NeedOptions, open: &mut Vec<ItemId>, by_item: &mut BTreeMap<EssenceKey, AudioNeed>) {
+fn collect_needs(
+    project: &Project,
+    sequence: ItemId,
+    opts: &NeedOptions,
+    open: &mut Vec<ItemId>,
+    done: &mut BTreeSet<ItemId>,
+    by_item: &mut BTreeMap<EssenceKey, AudioNeed>,
+) {
     let Some(seq) = project.sequence(sequence) else { return };
+    // a nest's needs do not depend on the clip that uses it: each sequence is listed once, so a
+    // crafted project with many clips of the same nest on every level cannot multiply the work
     // (a sequence cannot be inside itself, but a damaged project may claim so)
-    if open.contains(&sequence) || open.len() >= MAX_NESTING {
+    if open.contains(&sequence) || done.contains(&sequence) || open.len() >= MAX_NESTING {
         return;
     }
     open.push(sequence);
@@ -174,7 +183,7 @@ fn collect_needs(project: &Project, sequence: ItemId, opts: &NeedOptions, open: 
                 }
                 Some(ItemKind::Sequence(nested)) => match opts.nests {
                     NestNeeds::Skip => {}
-                    NestNeeds::Inside => collect_needs(project, item, opts, open, by_item),
+                    NestNeeds::Inside => collect_needs(project, item, opts, open, done, by_item),
                     NestNeeds::Render => {
                         // a clip longer than its sequence plays silence past the end: nothing to supply
                         end = end.min(nested.duration());
@@ -195,4 +204,5 @@ fn collect_needs(project: &Project, sequence: ItemId, opts: &NeedOptions, open: 
         }
     }
     open.pop();
+    done.insert(sequence);
 }
