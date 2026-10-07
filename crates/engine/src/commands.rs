@@ -858,6 +858,10 @@ fn build() -> Vec<CommandSpec> {
             if !image_sequences.is_empty() {
                 out["imageSequences"] = json!(image_sequences);
             }
+            // Newly imported files may resolve paths the project already listed as offline
+            // (issue #110): rebuild s.offline.missing so the slate / "Media missing" badge clear
+            // without the user having to reopen the project or relink item-by-item.
+            crate::relink::refresh(s);
             Ok(out)
         }),
         cmd!(
