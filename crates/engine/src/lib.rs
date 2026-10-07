@@ -929,10 +929,17 @@ impl Session {
 
     /// Render the active sequence at the playhead (CPU reference path).
     pub fn render_program(&self, scale: f32) -> Option<filmcraft_render::Image> {
+        self.render_program_at(scale, self.playhead())
+    }
+
+    /// Render the active sequence at `t` (snapped to its frame, as the playhead would be) without
+    /// moving the playhead (CPU reference path).
+    pub fn render_program_at(&self, scale: f32, t: Tick) -> Option<filmcraft_render::Image> {
         let seq = self.state.active_sequence?;
+        let t = self.sequence_rate().snap(t.max(Tick::ZERO));
         let provider = self.media.provider(self.project.clone(), self.services.clone());
         let opts = filmcraft_render::RenderOptions { scale, captions: true, ..Default::default() };
-        Some(filmcraft_render::render_sequence(&self.project, seq, self.playhead(), opts, &provider))
+        Some(filmcraft_render::render_sequence(&self.project, seq, t, opts, &provider))
     }
 }
 
