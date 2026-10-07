@@ -1136,6 +1136,19 @@ impl SequenceView {
     }
 }
 
+/// What was open when a project was saved: the Timeline's sequence tabs in order, the active one
+/// and how each sequence was shown. Stored beside the project in its file, not in it: it is not
+/// part of the edit and never an undo step.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct ProjectView {
+    #[serde(default)]
+    pub open_sequences: Vec<ItemId>,
+    #[serde(default)]
+    pub active_sequence: Option<ItemId>,
+    #[serde(default)]
+    pub sequences: BTreeMap<ItemId, SequenceView>,
+}
+
 /// A LUT imported into the project (`lut.import`). Lumetri refers to it as `lib:<id>`.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ProjectLut {

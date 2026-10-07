@@ -3061,7 +3061,9 @@ fn write_project(s: &mut Session, path: &str, adopt: bool) -> Result<Value> {
     {
         name_project(std::sync::Arc::make_mut(&mut s.project), name);
     }
-    let bytes = filmcraft_format::encode(&s.project, false);
+    // what is open (sequence tabs, how each is shown) goes into the file beside the project
+    let view = s.project_view();
+    let bytes = filmcraft_format::encode_with_view(&s.project, Some(&view), false);
     let mut backup = None;
     if adopt && s.path.as_deref() == Some(path) && s.loaded_schema < filmcraft_format::SCHEMA_VERSION {
         let b = schema_backup_path(path, s.loaded_schema);
@@ -3119,6 +3121,13 @@ fn open_project(s: &mut Session, path: &str) -> Result<Value> {
     let loaded = filmcraft_format::decode(&bytes).map_err(|e| EngineError::Other(format!("{path}: {e}")))?;
     let (from, migrated) = (loaded.schema_version, loaded.migrated());
     install_project(s, loaded.project, Some(path.to_string()), true);
+    if let Some(view) = loaded.view.filter(|_| s.prefs.timeline.restore_open_sequences) {
+        s.restore_project_view(view);
+    }
+    // the frontend shows the project's active sequence (with its own view, when one was restored)
+    if let Some(seq) = s.state.active_sequence {
+        s.events.push(crate::Event::OpenSequence(seq));
+    }
     s.note_recent_project();
     s.loaded_schema = from;
     if migrated {
@@ -3139,6 +3148,9 @@ fn recover(s: &mut Session, id: Option<&str>) -> Result<Value> {
     let saved_at = per.local_time(c.meta.saved_unix);
     let loaded = crate::autosave::load_candidate(&c).map_err(EngineError::Other)?;
     install_project(s, loaded.project, c.meta.project_path.clone(), false);
+    if let Some(seq) = s.state.active_sequence {
+        s.events.push(crate::Event::OpenSequence(seq));
+    }
     crate::relink::on_open(s);
     // Our own journal must hold the recovered state before the old one is deleted.
     s.sync_persistence();

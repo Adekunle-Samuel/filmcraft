@@ -1,6 +1,7 @@
 //! Headless UI tests of the Timeline's sequence tabs: every sequence keeps its own zoom, scroll
 //! and track heights; a right-click on a tab opens its menu; tabs are reordered by dragging; tabs
-//! that do not fit are in a list. Premiere's behaviour was observed in Premiere Pro 26.5.2.
+//! that do not fit are in a list; a project reopens with its tabs. Premiere's behaviour was
+//! observed in Premiere Pro 26.5.2.
 
 use std::path::PathBuf;
 use std::sync::mpsc::{Sender, channel};
@@ -231,4 +232,34 @@ fn tabs_that_do_not_fit_are_reached_through_a_list() {
     assert!(d.has(&format!("timeline.tabs.list.{last}")));
     d.click("panel.Program");
     assert!(!d.has(&format!("timeline.tabs.list.{last}")));
+}
+
+#[test]
+fn a_reopened_project_shows_its_tabs_as_they_were_left() {
+    let dir = std::env::temp_dir().join(format!("filmcraft-tabs-ui-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("tabs.fcproj").to_string_lossy().to_string();
+
+    let mut d = Driver::new();
+    let main = d.active();
+    d.ok("ui.set", json!({"timeline": {"pps": 250.0, "scroll": 2.0, "videoTrackHeight": 80.0}}));
+    d.frames(3);
+    let other = d.new_sequence("Other");
+    d.ok("ui.set", json!({"timeline": {"pps": 15.0, "scroll": 0.5}}));
+    d.frames(3);
+    d.exec("sequence.moveTab", json!({"item": other, "index": 0}));
+    d.exec("file.saveAs", json!({"path": path}));
+
+    // another window of the app opens the file
+    let mut e = Driver::new();
+    e.ok("ui.set", json!({"timeline": {"pps": 77.0, "scroll": 9.0}}));
+    e.frames(3);
+    e.exec("file.open", json!({"path": path}));
+    e.frames(3);
+    assert_eq!((e.open(), e.active()), (vec![other, main], other));
+    assert_eq!(e.view(), (15.0, 0.5, 60.0));
+    e.click(&format!("timeline.tab.{main}"));
+    assert_eq!(e.view(), (250.0, 2.0, 80.0));
+    let _ = std::fs::remove_dir_all(&dir);
 }

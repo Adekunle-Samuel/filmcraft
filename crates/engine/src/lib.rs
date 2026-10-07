@@ -697,6 +697,36 @@ impl Session {
         commands::find(id).is_some_and(|c| (c.enabled)(self).is_ok())
     }
 
+    /// What is open, to store beside the project when it is saved.
+    pub fn project_view(&self) -> filmcraft_project::ProjectView {
+        let is_seq = |id: &ItemId| self.project.sequence(*id).is_some();
+        filmcraft_project::ProjectView {
+            open_sequences: self.state.open_sequences.iter().copied().filter(is_seq).collect(),
+            active_sequence: self.state.active_sequence.filter(is_seq),
+            sequences: self.state.timeline_views.iter().filter(|(id, _)| is_seq(id)).map(|(id, v)| (*id, *v)).collect(),
+        }
+    }
+
+    /// Open what was open when the project was saved. Nothing in `view` is trusted: ids that are
+    /// not sequences of this project are dropped (also a second mention of the same sequence),
+    /// and numbers are brought into range. A view without any open sequence leaves the project
+    /// on its first sequence: a project saved by a session that never showed one (a script, the
+    /// CLI) should not open on an empty Timeline.
+    pub fn restore_project_view(&mut self, view: filmcraft_project::ProjectView) {
+        let mut open: Vec<ItemId> = Vec::new();
+        for id in view.open_sequences {
+            if self.project.sequence(id).is_some() && !open.contains(&id) {
+                open.push(id);
+            }
+        }
+        if !open.is_empty() {
+            self.state.active_sequence = view.active_sequence.filter(|id| open.contains(id)).or(open.first().copied());
+            self.state.open_sequences = open;
+        }
+        self.state.timeline_views =
+            view.sequences.into_iter().filter(|(id, _)| self.project.sequence(*id).is_some()).filter_map(|(id, v)| Some((id, v.checked()?))).collect();
+    }
+
     /// Every edit passes through here: one that would put a sequence inside itself (directly or
     /// through another nested sequence) is refused, whichever command asked for it. A project that
     /// was opened with such a sequence already in it can still be edited (and repaired).
