@@ -27,6 +27,7 @@ log = { workspace = true }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 filmcraft-color = { workspace = true }
+filmcraft-export = { workspace = true }
 filmcraft-frame = { workspace = true }
 filmcraft-time = { workspace = true }
 objc2-core-foundation = "0.3.2"
@@ -38,3 +39,8 @@ objc2-video-toolbox = "0.3.2"
 filmcraft-testkit = { workspace = true }
 filmcraft-media = { workspace = true }
 filmcraft-frame = { workspace = true }
+
+[target.'cfg(target_os = "macos")'.dev-dependencies]
+filmcraft-project = { workspace = true }
+filmcraft-render = { workspace = true }
+filmcraft-time = { workspace = true }

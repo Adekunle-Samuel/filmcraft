@@ -22,8 +22,8 @@
 use egui::{Align2, Color32, Rect, Sense, pos2, vec2};
 use filmcraft_engine::export::presets::{DEFAULT_PRESET, preset_key};
 use filmcraft_engine::export::{
-    AudioCodec, BitrateMode, ExportSettings, FieldOrder, Format, H264Profile, Multiplexer, MxfVideoCodec, Placement, Scaling, TextOverlay, builtin_presets,
-    format_bytes,
+    AudioCodec, BitrateMode, ExportSettings, FieldOrder, Format, H264Profile, HardwareEncoding, Multiplexer, MxfVideoCodec, Placement, Scaling, TextOverlay,
+    builtin_presets, format_bytes,
 };
 use filmcraft_engine::time::{FrameRate, Tick};
 use serde::{Deserialize, Serialize};
@@ -651,6 +651,14 @@ fn video_section(ui: &mut egui::Ui, reg: &mut Reg, s: &mut ExportSettings, t: &T
                     let mut v = *k as f64;
                     drag(ui, reg, "export.video.keyframe", &mut v, 1.0..=600.0, 1.0, " frames", 0);
                     *k = v as u32;
+                }
+            });
+            // The operating system's hardware encoder where there is one (macOS); everything it does
+            // not take (two-pass, HDR, MXF) and every machine without one keeps the built-in encoder.
+            row(ui, t, "Hardware Encoding", |ui| {
+                let mut on = s.hardware_encoding == HardwareEncoding::Auto;
+                if check(ui, reg, "export.video.hardwareEncoding", &mut on, "Use the hardware encoder when available") {
+                    s.hardware_encoding = if on { HardwareEncoding::Auto } else { HardwareEncoding::Off };
                 }
             });
         }

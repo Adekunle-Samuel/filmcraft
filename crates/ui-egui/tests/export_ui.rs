@@ -141,6 +141,7 @@ fn export_mode_settings_and_summary() {
         "export.section.multiplexer",
         "export.video.matchSize",
         "export.video.bitrateMode",
+        "export.video.hardwareEncoding",
         "export.video.maxQuality",
         "export.audio.sampleRate",
         "export.range",

@@ -1,7 +1,8 @@
 # filmcraft-platform
 
 OS media integration for FilmCraft (layer L5): hardware video decoding through the operating
-system's codecs, behind `filmcraft_codecs::VideoDecoder`. It holds OS media FFI and nothing else.
+system's codecs, behind `filmcraft_codecs::VideoDecoder`, and hardware H.264 encoding, behind
+`filmcraft_export::VideoEncoder`. It holds OS media FFI and nothing else.
 It is the one crate of the workspace allowed to contain `unsafe`, under the rules of
 [ADR 0001](../../docs/adr/0001-platform-ffi.md) and [AGENTS.md](../../AGENTS.md) §0.3.
 
@@ -31,6 +32,31 @@ let availability = filmcraft_platform::register(); // Available("VideoToolbox") 
   log is bounded (600 samples / 256 MB); beyond it one error is returned and the next seek restarts
   in software. Streams our decoders cannot decode (HEVC 4:2:2) have no fallback: the error stands.
 
+## Hardware H.264 encoding (macOS)
+
+`videotoolbox_encode.rs` (FFI) wraps a VideoToolbox compression session with a hardware encoder
+*required*; `hardware_encode.rs` (safe code) is the `VideoEncoder` adapter and the factory that
+`register()` puts in front of the built-in encoders (`filmcraft_export::register_encoder`).
+
+- **Opt-in per export:** `ExportSettings::hardware_encoding` (`Off` | `Auto`; Export ▸ Video ▸
+  Hardware Encoding, `"hardwareEncoding": "off|auto"` in `file.exportMedia`), off by default. The built-in encoder's
+  output is byte-identical on every machine; a hardware encoder's depends on the machine.
+- **What it takes:** H.264 in MP4 / MOV, 8-bit SDR, even picture sizes up to 8192, Baseline / Main /
+  High (the level is chosen by the OS), constant or one-pass variable bitrate with the settings'
+  target and ceiling, the keyframe distance (closed GOPs: every keyframe is an IDR picture).
+  Pictures are converted exactly like the built-in encoder's (BT.709, limited range), 4:2:0 NV12.
+- **No B-frames.** On real 1080p footage the quality is the same with and without them (±0.3 dB at
+  equal bitrate) and the bitrate lands closer to the target without them, so frame reordering is
+  off: compressed frames come out in presentation order, with no composition offsets or edit list.
+- **What it declines** (the built-in encoder is used, nothing fails): the setting off, other formats,
+  MXF (Annex B), two-pass VBR, HDR, odd sizes (4:2:0 cannot crop an odd number of samples),
+  non-square pixels, and any configuration VideoToolbox cannot create a hardware session for
+  (logged at `info`).
+- **A hardware encoder that fails in the middle of an export is an error**, unlike the decoder:
+  an encoder cannot hand a half-written stream to another one, so the export stops with the reason.
+- The first frame is completed straight away: the SPS / PPS the container needs come with the first
+  compressed frame, and the muxer asks for them after the first group of pictures.
+
 ## Guarantees
 
 - **Never undecodable:** the factory declines (returns `None`, so the software decoder is used)
@@ -52,11 +78,20 @@ let availability = filmcraft_platform::register(); // Available("VideoToolbox") 
 | `tests/videotoolbox.rs` (macOS) | H.264 High, HEVC Main (open GOP: CRA + RASL) and HEVC Main 10, 640×360 (coded 368: cropping) with B-frames: every picture **bit-exact** with our software decoder, same pts order, count, colour and aspect, also after `reset` + reseek to every later sync sample, mid-stream `flush`, and a full pass after resets; forced mid-stream failures (`VtDecoder::fail_after`) at five points continue with the software decoder's exact output; seeded mutation of samples and parameter sets (bit flips, truncation, corrupt length prefixes) never panics or hangs; HEVC 4:2:2 10-bit is bit-exact with ffmpeg's decode |
 | `tests/fallback.rs` (every OS) | `HybridDecoder` with a stand-in hardware decoder failing after N samples (every sync sample ± a few, first / last sample, after a seek): output identical to the software decoder; in-band parameter sets identical to the sample entry's stay in hardware, different ones switch to software |
 | `tests/setting.rs` | Hardware decoding Off gives the software decoder through `make_video_decoder` and the media stack (no hardware frames); Auto gives VideoToolbox where available |
+| `tests/hardware_encode.rs` (macOS) | what the hardware path takes and declines; round trip through our software decoder (every picture, in order, luma PSNR above 30 dB, keyframes no further apart than asked, no composition offsets); an export through `filmcraft_export` that decodes in our decoder and in ffmpeg / ffprobe (profile, size, frame count, BT.709); the built-in encoder still exporting everything hardware declines; exact output size at sizes that are not multiples of 16; hostile configurations (zero, huge, odd sizes, frame rates, bitrates, keyframe intervals, wrong planes) give errors and never panic; encoders dropped at any point do not crash or hang |
 
 Fixtures are made with ffmpeg into `target/fixtures/platform/` (generator only, never linked);
 tests skip without ffmpeg or without a hardware decoder.
 
 ## Performance
+
+Hardware H.264 encoding, Apple M1 (8 cores), single runs: 1080p25 camera footage through the
+encoder alone 200 fps at 4, 8 and 16 Mb/s (8× real time); a 9:29 timeline (camera clip, ProRes 4444
+overlays, AAC, loudness) exported in 311 s against 793 s with the built-in encoder (84 s against 395 s
+for its densest 134 s), the outputs at SSIM 0.990 / PSNR 46.5 dB. Details in
+[docs/performance.md](../../docs/performance.md).
+
+Hardware decoding, M4 Pro:
 
 M4 Pro, load 150–190 (`cargo xtask bench --hw off|auto`): CPU per decoded frame H.264 2160p
 119 → 4.2 ms, HEVC 2160p 86 → 3.7 ms; decode 35 → 107 fps and 49 → 217 fps; 4K H.264 and HEVC
@@ -65,5 +100,5 @@ playback with no dropped frames at Full, 1/2 and 1/4. Details in
 
 ## Not yet
 
-Zero-copy upload of `CVPixelBuffer`s into wgpu textures; hardware encoding; Media Foundation /
+Zero-copy upload of `CVPixelBuffer`s into wgpu textures; hardware HEVC encoding and B-frames; Media Foundation /
 D3D11 (Windows) and VA-API (Linux) decoders; field-coded H.264.

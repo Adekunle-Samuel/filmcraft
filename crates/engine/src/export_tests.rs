@@ -364,6 +364,26 @@ fn queue_cancels_a_running_export_and_retries_a_failed_one() {
 }
 
 #[test]
+fn hardware_encoding_is_off_unless_asked_for() {
+    use filmcraft_export::HardwareEncoding::{Auto, Off};
+    let s = demo();
+    let setting = |p: Value| crate::export_tools::settings_from_params(&s, &p, "file.exportMedia").map(|(_, st)| st.hardware_encoding);
+    assert_eq!(setting(json!({"path": "x.mp4"})).unwrap(), Off);
+    assert_eq!(setting(json!({"path": "x.mp4", "hardwareEncoding": "auto"})).unwrap(), Auto);
+    assert_eq!(setting(json!({"path": "x.mp4", "hardwareEncoding": "off"})).unwrap(), Off);
+    // a boolean is understood too: true is auto
+    assert_eq!(setting(json!({"path": "x.mp4", "hardwareEncoding": true})).unwrap(), Auto);
+    assert_eq!(setting(json!({"path": "x.mp4", "hardwareEncoding": false})).unwrap(), Off);
+    // anything else names the choices
+    let e = setting(json!({"path": "x.mp4", "hardwareEncoding": "gpu"})).unwrap_err().to_string();
+    assert!(e.contains("off | auto"), "{e}");
+    // and it travels in the settings object, with the default filling in when it is missing
+    assert_eq!(setting(json!({"path": "x.mp4", "settings": {"hardwareEncoding": "auto"}})).unwrap(), Auto);
+    let old: filmcraft_export::ExportSettings = serde_json::from_value(json!({"format": "h264"})).unwrap();
+    assert_eq!(old.hardware_encoding, Off);
+}
+
+#[test]
 fn queue_exports_several_sequences_and_ranges() {
     let mut s = demo();
     let dir = Scratch::new("queue-many");

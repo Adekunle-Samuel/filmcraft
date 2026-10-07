@@ -125,6 +125,62 @@ the draft plan's box decimation of the planes, cheap next to software decoding, 
 CPU cost. Zero-copy upload of the decoded `CVPixelBuffer` into wgpu (no copy-out at all) is the
 next step (issue #30).
 
+## Results (HW2: VideoToolbox hardware H.264 encoding, built-in → hardware)
+
+Apple M1 (8 cores, 16 GB), 2026-10-06, single runs on an otherwise idle machine, release build.
+Hardware encoding is opt-in per export (`hardware_encoding: auto`); the built-in encoder is unchanged.
+
+### The encoder alone (100 frames of 1920×1080 25 fps camera footage, High, one-pass VBR, keyframe every 50)
+
+Frames go in as planar Y'CbCr and out as compressed frames (NV12 fill, `VTCompressionSessionEncodeFrame`,
+flush); quality is the luma PSNR of our software decoder's output against the input.
+
+| target | B-frames | real bitrate | luma PSNR | frames/s |
+|---|---|---|---|---|
+| 4 Mb/s | off | 3982 kb/s | 41.66 dB | 202 |
+| 8 Mb/s | off | 7987 kb/s | 43.44 dB | 202 |
+| 16 Mb/s | off | 15972 kb/s | 45.55 dB | 202 |
+| 4 Mb/s | on | 4220 kb/s | 41.37 dB | 183 |
+| 8 Mb/s | on | 8268 kb/s | 43.41 dB | 197 |
+| 16 Mb/s | on | 16388 kb/s | 45.66 dB | 199 |
+
+B-frames buy nothing measurable here (±0.3 dB) and overshoot the target by up to 5 %, so the hardware
+encoder runs without them: frames come out in presentation order and the muxer needs no composition
+offsets or edit list.
+
+### Whole exports (1080p25 camera clip with ProRes 4444 overlays with alpha, AAC, loudness normalised to −14 LUFS)
+
+A 9:29 timeline (569 s, 14 227 frames): the camera clip, an intro, six banners, three subscribe bars
+and an outro.
+
+| encoder | wall time | frames/s | vs real time | file |
+|---|---|---|---|---|
+| built-in (`filmcraft-h264enc`) | 793 s | 17.9 | 1.4× slower | 1445 MB, 20.0 Mb/s |
+| hardware (VideoToolbox) | **311 s** | **45.7** | 1.8× faster | 1417 MB, 19.6 Mb/s |
+
+2.5× faster. The first 134 s of the same timeline, where the overlays are densest (intro, a banner, a
+subscribe bar and the outro in 134 s):
+
+| encoder | wall time | frames/s | vs real time | file |
+|---|---|---|---|---|
+| built-in (`filmcraft-h264enc`) | 395 s | 8.5 | 2.9× slower | 340 MB, 20.0 Mb/s |
+| hardware (VideoToolbox) | **84 s** | **39.9** | 1.6× faster | 312 MB, 18.3 Mb/s |
+
+4.7× faster there. The gain depends on what else an export spends its time on: with the encoder
+off the CPU, what is left is decoding the camera clip, the CPU compositor (every layer, alpha
+included) and the RGBA → Y'CbCr conversion.
+
+The pairs of files have the same frame count and duration, decode in ffmpeg without a message, and
+compare at SSIM 0.990 / PSNR 46.7 dB over the 134 s (lowest frame: 45.1 dB) and SSIM 0.989–0.990 /
+PSNR 46.3–46.6 dB at six 3-second spots of the full export. Audio is identical.
+
+Where the built-in export's time goes (`sample` on the process during a 20 s export, inclusive CPU
+time in the call tree; the figures overlap because work-stealing mixes the tasks): about two thirds
+of the busy CPU is in the encoder, about a third in compositing and layer decoding. Moving the encoder to
+the media engine removes most of the first and lets the next batch render while the previous one
+encodes (the exporter renders a batch of frames in parallel, then encodes it). What is left is the
+CPU compositor, the next target of #30 ("GPU export").
+
 ## Results (GPU1: blend modes on the GPU compositor, #30, before → after)
 
 Before = this change with the old whole-frame CPU fallback for non-Normal blend modes put back

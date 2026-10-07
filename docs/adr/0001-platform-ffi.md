@@ -63,3 +63,23 @@ Registering a hardware decoder never makes a file undecodable, and never changes
   operating system, which carries the licences, wherever hardware decoding is used.
 - A new review burden: changes to `crates/platform` need the same scrutiny as any FFI code.
   Anything else that wants `unsafe` needs a new decision, not an extension of this one.
+
+## Addendum (2026-10-06): hardware H.264 encoding
+
+The crate's second use of the FFI is the one this decision named, hardware encoding: a VideoToolbox
+H.264 encoder behind `filmcraft_export::VideoEncoder` (`videotoolbox_encode`, with the same
+containment rules; `hardware_encode` is safe code). It differs from decoding in two ways, both
+deliberate:
+
+- **It is opt-in per export** (`ExportSettings::hardware_encoding`, `Off` by default). Exports from
+  the built-in encoder are byte-identical across machines; a hardware encoder's output depends on the
+  machine, so it must be asked for.
+- **There is no mid-stream fallback.** A decoder can replay samples through another decoder; an
+  encoder cannot hand a half-written stream to another one. The factory declines up front (the
+  built-in encoder is used) for everything the hardware path does not take, and for any machine
+  where the OS cannot create a hardware session; a hardware encoder that fails during an export
+  stops it with an error.
+
+Everything else in this record applies unchanged: `unsafe` stays in `crates/platform`, every block
+has a `// SAFETY:` comment, no panic crosses the FFI boundary, the public API is safe, and the crate
+compiles everywhere (`register()` is a no-op off macOS).
