@@ -31,9 +31,26 @@ pub(crate) enum CKind {
 /// A whole document: compositions and the media they reference.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub(crate) struct Document {
+    /// The top-level compositions.
     pub compositions: Vec<Composition>,
     pub sources: Vec<Source>,
+    /// Compositions that are only used inside others (nested sequences); a [`Source`] refers to
+    /// one by its index here. They may nest further.
+    pub nested: Vec<Composition>,
 }
+
+/// How a nested sequence is written. Premiere Pro writes one as a composition of its own in AAF
+/// (clips refer to it the way they refer to media) and renders its sound in OMF, which has no
+/// picture and whose readers do not follow compositions.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Nests {
+    Compositions,
+    Rendered,
+}
+
+/// Nested sequences deeper than this are left as gaps (a sequence cannot be inside itself, but a
+/// damaged project may claim so).
+const MAX_NESTING: usize = 16;
 
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct Composition {
@@ -146,6 +163,9 @@ pub(crate) struct Source {
     pub tc_rate: FrameRate,
     pub embedded: Option<Vec<u8>>,
     pub markers: Vec<CMarker>,
+    /// Not media but a nested composition: its index in [`Document::nested`]. `start` of a clip
+    /// that uses it is a time in that composition.
+    pub nested: Option<usize>,
 }
 
 impl Source {
@@ -174,102 +194,221 @@ struct Exporter<'a> {
     memo: HashMap<(String, CKind, Option<u32>), usize>,
     report: &'a mut Report,
     seq_rate: FrameRate,
+    nests: Nests,
+    /// Nested sequences already written: their index in `doc.nested`.
+    nested: HashMap<ItemId, usize>,
+    /// The sequences being written, outermost first.
+    open: Vec<ItemId>,
 }
 
-pub(crate) fn from_project(p: &Project, seq_id: ItemId, name: &str, media: &MediaOptions, report: &mut Report) -> crate::Result<Document> {
+pub(crate) fn from_project(p: &Project, seq_id: ItemId, name: &str, media: &MediaOptions, nests: Nests, report: &mut Report) -> crate::Result<Document> {
     let seq = p.sequence(seq_id).ok_or(crate::Error::NoSequence(seq_id))?;
     let rate = seq.settings.frame_rate;
-    let mut ex = Exporter { p, media, doc: Document::default(), memo: HashMap::new(), report, seq_rate: rate };
-    let mut comp = Composition {
-        name: name.to_string(),
-        rate,
-        sample_rate: seq.settings.sample_rate.max(1),
-        width: seq.settings.width,
-        height: seq.settings.height,
-        start_tc: seq.start_timecode,
-        drop: seq.settings.drop_frame,
-        tracks: Vec::new(),
-        markers: seq
-            .markers
-            .iter()
-            .map(|m| CMarker {
-                start: m.start,
-                duration: m.duration,
-                name: m.name.clone(),
-                comment: m.comment.clone(),
-                color: Some(m.color.name().to_string()),
-            })
-            .collect(),
-    };
-    if !media.audio_only {
-        if let Some(mix) = &media.mixdown_video {
-            let src = ex.doc.sources.len();
-            ex.doc.sources.push(Source {
-                key: "mixdown".into(),
-                name: format!("{name} (video mixdown)"),
-                kind: CKind::Picture,
-                path: Some(mix.path.clone()),
-                channel: None,
-                channels: 0,
-                file_channels: 0,
-                width: mix.width,
-                height: mix.height,
-                frame_rate: rate,
-                sample_rate: 0,
-                bits: 0,
-                length: mix.duration,
-                offset: Tick::ZERO,
-                start_tc: Some(seq.start_timecode + rate.frame_at(mix.start)),
-                tc_rate: rate,
-                embedded: None,
-                markers: Vec::new(),
-            });
-            let mut items = Vec::new();
-            if mix.start > Tick::ZERO {
-                items.push(CItem::Filler(mix.start));
-            }
-            items.push(CItem::Clip(CClip { len: mix.duration, source: src, start: Tick::ZERO, gain: None, name: format!("{name} (video mixdown)") }));
-            comp.tracks.push(CTrack { kind: CKind::Picture, name: "V1".into(), number: 1, channels: 0, items });
-        } else {
-            for (i, t) in seq.video_tracks.iter().enumerate() {
-                let items = ex.track(t, TrackKind::Video, None);
-                comp.tracks.push(CTrack { kind: CKind::Picture, name: format!("V{}", i + 1), number: i as u32 + 1, channels: 0, items });
-            }
-        }
-    }
-    let mut n = 0;
-    for t in &seq.audio_tracks {
-        let ch = match t.channels {
-            AudioChannels::Mono => 1,
-            AudioChannels::Surround51 => 6,
-            AudioChannels::Stereo | AudioChannels::Adaptive => 2,
-        };
-        if media.breakout_to_mono {
-            for c in 0..ch {
-                n += 1;
-                let items = ex.track(t, TrackKind::Audio, Some(c));
-                comp.tracks.push(CTrack { kind: CKind::Sound, name: format!("A{n}"), number: n, channels: 1, items });
-            }
-        } else {
-            n += 1;
-            let items = ex.track(t, TrackKind::Audio, None);
-            comp.tracks.push(CTrack { kind: CKind::Sound, name: format!("A{n}"), number: n, channels: ch, items });
-        }
-    }
+    let mut ex =
+        Exporter { p, media, doc: Document::default(), memo: HashMap::new(), report, seq_rate: rate, nests, nested: HashMap::new(), open: vec![seq_id] };
+    let comp = ex.composition(seq, name, true);
     ex.doc.compositions.push(comp);
     Ok(ex.doc)
 }
 
 impl Exporter<'_> {
+    /// `seq` as a composition. `top`: the exported sequence itself (a video mixdown replaces its
+    /// video tracks; a nested sequence under a mixdown has no video tracks left to show).
+    fn composition(&mut self, seq: &Sequence, name: &str, top: bool) -> Composition {
+        let rate = seq.settings.frame_rate;
+        let outer_rate = std::mem::replace(&mut self.seq_rate, rate);
+        let media = self.media;
+        let mut comp = Composition {
+            name: name.to_string(),
+            rate,
+            sample_rate: seq.settings.sample_rate.max(1),
+            width: seq.settings.width,
+            height: seq.settings.height,
+            start_tc: seq.start_timecode,
+            drop: seq.settings.drop_frame,
+            tracks: Vec::new(),
+            markers: seq
+                .markers
+                .iter()
+                .map(|m| CMarker {
+                    start: m.start,
+                    duration: m.duration,
+                    name: m.name.clone(),
+                    comment: m.comment.clone(),
+                    color: Some(m.color.name().to_string()),
+                })
+                .collect(),
+        };
+        if !media.audio_only {
+            if let Some(mix) = media.mixdown_video.as_ref().filter(|_| top) {
+                let src = self.doc.sources.len();
+                self.doc.sources.push(Source {
+                    key: "mixdown".into(),
+                    name: format!("{name} (video mixdown)"),
+                    kind: CKind::Picture,
+                    path: Some(mix.path.clone()),
+                    channel: None,
+                    channels: 0,
+                    file_channels: 0,
+                    width: mix.width,
+                    height: mix.height,
+                    frame_rate: rate,
+                    sample_rate: 0,
+                    bits: 0,
+                    length: mix.duration,
+                    offset: Tick::ZERO,
+                    start_tc: Some(seq.start_timecode + rate.frame_at(mix.start)),
+                    tc_rate: rate,
+                    embedded: None,
+                    markers: Vec::new(),
+                    nested: None,
+                });
+                let mut items = Vec::new();
+                if mix.start > Tick::ZERO {
+                    items.push(CItem::Filler(mix.start));
+                }
+                items.push(CItem::Clip(CClip { len: mix.duration, source: src, start: Tick::ZERO, gain: None, name: format!("{name} (video mixdown)") }));
+                comp.tracks.push(CTrack { kind: CKind::Picture, name: "V1".into(), number: 1, channels: 0, items });
+            } else if media.mixdown_video.is_none() {
+                for (i, t) in seq.video_tracks.iter().enumerate() {
+                    let items = self.track(t, TrackKind::Video, None);
+                    comp.tracks.push(CTrack { kind: CKind::Picture, name: format!("V{}", i + 1), number: i as u32 + 1, channels: 0, items });
+                }
+            }
+        }
+        let mut n = 0;
+        for t in &seq.audio_tracks {
+            let ch = match t.channels {
+                AudioChannels::Mono => 1,
+                AudioChannels::Surround51 => 6,
+                AudioChannels::Stereo | AudioChannels::Adaptive => 2,
+            };
+            if media.breakout_to_mono {
+                for c in 0..ch {
+                    n += 1;
+                    let items = self.track(t, TrackKind::Audio, Some(c));
+                    comp.tracks.push(CTrack { kind: CKind::Sound, name: format!("A{n}"), number: n, channels: 1, items });
+                }
+            } else {
+                n += 1;
+                let items = self.track(t, TrackKind::Audio, None);
+                comp.tracks.push(CTrack { kind: CKind::Sound, name: format!("A{n}"), number: n, channels: ch, items });
+            }
+        }
+        self.seq_rate = outer_rate;
+        comp
+    }
+
+    /// The source behind a clip of the nested sequence `nested` (project item `item`): the
+    /// sequence's sound as the caller rendered it for this clip, or the sequence as a composition
+    /// of its own.
+    fn nest_source(&mut self, c: &TrackItem, item: ItemId, name: &str, nested: &Sequence, ckind: CKind, channel: Option<u32>) -> Option<usize> {
+        let clip_key = EssenceKey::Clip(c.id);
+        if ckind == CKind::Sound
+            && let Some(e) = self.media.essence_for(clip_key, channel).cloned()
+        {
+            let memo_key = (format!("clip:{}", c.id.0), ckind, channel);
+            if let Some(&i) = self.memo.get(&memo_key) {
+                return Some(i);
+            }
+            let (path, embedded) = match e.data {
+                EssenceData::Embedded(d) => (None, Some(d)),
+                EssenceData::File { path } => (Some(path), None),
+            };
+            let s = Source {
+                key: memo_key.0.clone(),
+                // (Premiere names the rendered clip after the nested sequence)
+                name: name.to_string(),
+                kind: ckind,
+                path,
+                channel: None,
+                channels: e.channels.max(1),
+                file_channels: e.channels.max(1),
+                width: 0,
+                height: 0,
+                frame_rate: self.seq_rate,
+                sample_rate: e.sample_rate.max(1),
+                bits: e.bits,
+                length: Tick::from_units(e.frames as i64, e.sample_rate.max(1) as i64),
+                offset: e.start,
+                start_tc: None,
+                tc_rate: self.seq_rate,
+                embedded,
+                markers: c.markers.iter().map(marker_out).collect(),
+                nested: None,
+            };
+            let i = self.doc.sources.len();
+            self.doc.sources.push(s);
+            self.memo.insert(memo_key, i);
+            return Some(i);
+        }
+        if self.nests == Nests::Rendered {
+            self.report.warn(format!("the sound of the nested sequence \"{name}\" was not rendered (left as a gap)"));
+            return None;
+        }
+        let memo_key = (format!("seq:{}", item.0), ckind, channel);
+        if let Some(&i) = self.memo.get(&memo_key) {
+            return Some(i);
+        }
+        let index = match self.nested.get(&item) {
+            Some(&i) => i,
+            None => {
+                if self.open.contains(&item) || self.open.len() >= MAX_NESTING {
+                    self.report.warn(format!("the nested sequence \"{name}\" is inside itself or nested too deeply (left as a gap)"));
+                    return None;
+                }
+                self.open.push(item);
+                let comp = self.composition(nested, name, false);
+                self.open.pop();
+                let i = self.doc.nested.len();
+                self.doc.nested.push(comp);
+                self.nested.insert(item, i);
+                i
+            }
+        };
+        // nothing to show or play on this kind of track: a gap (as in the sequence itself)
+        let comp = self.doc.nested.get(index)?;
+        if !comp.tracks.iter().any(|t| t.kind == ckind) {
+            return None;
+        }
+        let channels = if ckind == CKind::Sound { 2 } else { 0 };
+        let s = Source {
+            key: memo_key.0.clone(),
+            name: name.to_string(),
+            kind: ckind,
+            path: None,
+            channel: if ckind == CKind::Sound { channel } else { None },
+            channels: if channel.is_some() { 1 } else { channels },
+            file_channels: channels,
+            width: comp.width,
+            height: comp.height,
+            frame_rate: comp.rate,
+            sample_rate: comp.sample_rate.max(1),
+            bits: 16,
+            length: nested.duration(),
+            offset: Tick::ZERO,
+            start_tc: None,
+            tc_rate: comp.rate,
+            embedded: None,
+            markers: Vec::new(),
+            nested: Some(index),
+        };
+        let i = self.doc.sources.len();
+        self.doc.sources.push(s);
+        self.memo.insert(memo_key, i);
+        Some(i)
+    }
+
     /// The source behind `c` on a track of `kind` (`sub`: broken-out channel slot), if exportable.
     fn source_of(&mut self, c: &TrackItem, kind: TrackKind, sub: Option<u32>) -> Option<usize> {
         let item = base_item(self.p, c.item);
         let it = self.p.item(item)?;
         let m = match &it.kind {
             ItemKind::Media(m) => m,
-            ItemKind::Sequence(_) => {
-                self.report.warn("nested sequences are not exported (left as gaps); render and replace them first");
-                return None;
+            ItemKind::Sequence(nested) => {
+                let ckind = if kind == TrackKind::Video { CKind::Picture } else { CKind::Sound };
+                let channel = sub.map(|s| c.source_channels.get(s as usize).map(|&x| x as u32).unwrap_or(s));
+                return self.nest_source(c, item, &it.name, nested, ckind, channel);
             }
             _ => {
                 match crate::common::uncarried_clip(self.p, c, self.seq_rate) {
@@ -334,6 +473,7 @@ impl Exporter<'_> {
             tc_rate: frame_rate,
             embedded: None,
             markers,
+            nested: None,
         };
         if ckind == CKind::Sound {
             s.file_channels = audio.map_or(2, |a| a.channels.max(1));
@@ -541,6 +681,9 @@ pub(crate) fn to_project(doc: Document, opts: &ImportOptions, report: &mut Repor
     let mut item_of: HashMap<usize, ItemId> = HashMap::new();
     let mut groups: Vec<((String, Option<String>), Vec<usize>)> = Vec::new();
     for (i, s) in doc.sources.iter().enumerate() {
+        if s.nested.is_some() {
+            continue; // a nested composition, not media: a sequence (below)
+        }
         let k = (s.key.clone(), s.path.clone().or_else(|| s.embedded.is_some().then(|| format!("embedded:{i}"))));
         match groups.iter_mut().find(|(g, _)| *g == k) {
             Some((_, v)) => v.push(i),
@@ -611,40 +754,67 @@ pub(crate) fn to_project(doc: Document, opts: &ImportOptions, report: &mut Repor
             item_of.insert(i, id);
         }
     }
-    for comp in &doc.compositions {
+    // nested compositions are sequences that clips use as their source: reserve them all first
+    // (they may use each other), then build them
+    let settings_of = |comp: &Composition| {
         let mut settings = settings_for(comp.rate, comp.width.max(16), comp.height.max(16), comp.drop);
         settings.sample_rate = comp.sample_rate.max(1);
-        let seq_id = b.reserve_sequence(&comp.name, settings.clone(), None);
-        let mut seq = crate::common::empty_sequence(settings);
-        seq.start_timecode = comp.start_tc;
-        seq.markers = comp.markers.iter().map(|m| marker_in(&mut b, m)).collect();
-        for t in &comp.tracks {
-            let kind = if t.kind == CKind::Picture { TrackKind::Video } else { TrackKind::Audio };
-            let idx = seq.tracks(kind).len();
-            let mut track = b.track(kind, idx);
-            if kind == TrackKind::Audio {
-                track.channels = match t.channels {
-                    1 => AudioChannels::Mono,
-                    6 => AudioChannels::Surround51,
-                    _ => AudioChannels::Stereo,
-                };
-            }
-            build_track(&mut b, &mut track, kind, t, &doc.sources, &item_of, report);
-            seq.tracks_mut(kind).push(track);
+        settings
+    };
+    let nested_ids: Vec<ItemId> = doc.nested.iter().map(|comp| b.reserve_sequence(&comp.name, settings_of(comp), None)).collect();
+    for (i, s) in doc.sources.iter().enumerate() {
+        if let Some(&id) = s.nested.and_then(|n| nested_ids.get(n)) {
+            item_of.insert(i, id);
         }
-        if seq.video_tracks.is_empty() {
-            let t = b.track(TrackKind::Video, 0);
-            seq.video_tracks.push(t);
-        }
-        if seq.audio_tracks.is_empty() {
-            let t = b.track(TrackKind::Audio, 0);
-            seq.audio_tracks.push(t);
-        }
-        link_clips(&mut b, &mut seq);
+    }
+    for (comp, &seq_id) in doc.nested.iter().zip(&nested_ids) {
+        let seq = build_sequence(&mut b, comp, settings_of(comp), &doc.sources, &item_of, report);
+        b.put_sequence(seq_id, seq);
+    }
+    for comp in &doc.compositions {
+        let seq_id = b.reserve_sequence(&comp.name, settings_of(comp), None);
+        let seq = build_sequence(&mut b, comp, settings_of(comp), &doc.sources, &item_of, report);
         b.put_sequence(seq_id, seq);
         b.top.push(seq_id);
     }
     Ok((b.finish(), extracted))
+}
+
+fn build_sequence(
+    b: &mut Builder,
+    comp: &Composition,
+    settings: filmcraft_project::SequenceSettings,
+    sources: &[Source],
+    item_of: &HashMap<usize, ItemId>,
+    report: &mut Report,
+) -> Sequence {
+    let mut seq = crate::common::empty_sequence(settings);
+    seq.start_timecode = comp.start_tc;
+    seq.markers = comp.markers.iter().map(|m| marker_in(b, m)).collect();
+    for t in &comp.tracks {
+        let kind = if t.kind == CKind::Picture { TrackKind::Video } else { TrackKind::Audio };
+        let idx = seq.tracks(kind).len();
+        let mut track = b.track(kind, idx);
+        if kind == TrackKind::Audio {
+            track.channels = match t.channels {
+                1 => AudioChannels::Mono,
+                6 => AudioChannels::Surround51,
+                _ => AudioChannels::Stereo,
+            };
+        }
+        build_track(b, &mut track, kind, t, sources, item_of, report);
+        seq.tracks_mut(kind).push(track);
+    }
+    if seq.video_tracks.is_empty() {
+        let t = b.track(TrackKind::Video, 0);
+        seq.video_tracks.push(t);
+    }
+    if seq.audio_tracks.is_empty() {
+        let t = b.track(TrackKind::Audio, 0);
+        seq.audio_tracks.push(t);
+    }
+    link_clips(b, &mut seq);
+    seq
 }
 
 enum Placed {
@@ -680,7 +850,7 @@ fn build_track(b: &mut Builder, track: &mut Track, kind: TrackKind, t: &CTrack, 
                 let mut ti = b.clip(item, kind, if c.name.is_empty() { &sources[c.source].name } else { &c.name }, pos, c.len, c.start);
                 if kind == TrackKind::Audio {
                     let src = &sources[c.source];
-                    if t.channels == 1 {
+                    if t.channels == 1 && src.nested.is_none() {
                         ti.source_channels = vec![src.channel.unwrap_or(0) as u16];
                     }
                     if let Some(g) = &c.gain {

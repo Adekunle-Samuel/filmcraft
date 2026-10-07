@@ -7,7 +7,9 @@ references are strings and audio essence is supplied by the caller (the engine).
 ## Specifications
 
 Clean-room: written from public specifications only. The AAF SDK, pyaaf2, the OMF Toolkit and
-other implementations were not consulted.
+other implementations were not consulted. Where a specification leaves a layout open (how a
+nested sequence is written, how several video tracks share a slot), what Premiere Pro does was
+read off files it exports, never from the application itself.
 
 | Format | Document | Edition | Used for |
 |---|---|---|---|
@@ -35,9 +37,31 @@ Embedded / consolidated audio (`essence`): `audio_needs` lists the media ranges 
 references (per media item or per clip, with handles); the engine decodes or renders them and
 passes `AudioEssence` (embedded PCM or a written file) back in `MediaOptions`.
 
-Not represented: speed changes and frame holds (exported at 100 % with a report entry), nested
-sequences, graphics and synthetic media (gaps), video effects other than transitions, clip
+Not represented: speed changes and frame holds (exported at 100 % with a report entry),
+graphics and synthetic media (gaps), video effects other than transitions, clip
 markers (written to the master mob, so they come back as media markers), OMF video and markers.
+
+## Nested sequences
+
+For the formats Premiere Pro exports (FCP7 XML, OTIO, EDL, AAF, OMF) a nested sequence is written
+the way Premiere Pro 26.5.2 writes it, as seen in the files it exports for a sequence with a nest.
+Premiere Pro does not write FCPXML.
+
+| Format | Written as | On import into FilmCraft |
+|---|---|---|
+| FCP7 XML | a clip item holding the nested `<sequence>` (by id after the first use) | a sequence the clips use |
+| FCPXML | a `ref-clip` to a `media` resource holding the sequence | a sequence the clips use |
+| OTIO | a `Stack` inside the track | a sequence the clips use |
+| EDL | one event: reel `AX` in every reel mode, the nested sequence's name as the clip name, its own time as source timecode (the report says the nest's edit is not in the EDL) | an ordinary clip of that name |
+| AAF | a composition mob of its own (not tagged top-level); the nest's clips are source clips that point at it, at its first track of their kind. With embedded or consolidated audio the media inside the nest is prepared too (`NestNeeds::Inside`) | a sequence the clips use, read once however many clips use it |
+| OMF | the nested sequence's sound, mixed by the engine with what is on the clip (`NestNeeds::Render`), as one clip named after the sequence. Without that essence: a gap, and the report names the sequence | media in the document |
+
+A sequence that claims to be inside itself (a damaged project or file) is a gap with a report
+entry in both directions; nothing recurses without a bound.
+
+The AAF reader also accepts Premiere Pro's layout of a composition: all video tracks in ONE slot
+(a nested scope with a segment per track, lowest first), and "top-level" tagged on nested
+compositions too (the top-level ones are those no other composition uses).
 
 ## Graphics and adjustment layers
 
@@ -62,7 +86,9 @@ OMF carries no video at all.
   gain, media markers and timecode); 512-byte sectors; breakout to mono; embedded trimmed audio
   (sample data and source offsets); separate consolidated files with a video mixdown; OMF round
   trips with embedded audio, separate AIFF files and breakout; empty sequences; truncation and
-  random corruption never panic.
+  random corruption never panic. Nested sequences: AAF round trips as compositions (nests in
+  nests, a nest used twice, another frame and sample rate, breakout to mono), OMF with the
+  rendered sound, the audio needs of nests, a sequence inside itself.
 - `tests/uncarried_clips.rs`: every format's export report names each graphic clip and adjustment
   layer once, as a warning; a sequence without them reports nothing; what a re-import gives back
   matches the report; the FCP7 XML import names a clip item whose file is not defined.
@@ -70,6 +96,7 @@ OMF carries no video at all.
   written (Header, Identification, Mobs, slots, components, descriptors), weak references
   resolving into the dictionary, source clips resolving to mobs and slots, the Edit Protocol
   transition rules and sequence length arithmetic; every stored form round-trips through the
-  container.
+  container; a file rewritten into Premiere Pro's layout (video tracks as layers of one slot,
+  nested compositions tagged top-level) reads back as the same edit.
 - `src/omf/tests.rs`: the Bento label and TOC, the required properties of every OMF class
   written, reference resolution, embedded WAVE data, sequence lengths in samples.

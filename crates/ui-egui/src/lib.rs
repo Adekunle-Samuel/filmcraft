@@ -189,6 +189,10 @@ pub struct FilmcraftApp {
     fonts_ready: bool,
     pub integrated_titlebar: bool,
     pub last_timeline_width: f32,
+    /// The sequence whose view `ui.timeline` holds, and that view as it was last exchanged with
+    /// `session.state.timeline_views` (see `sync_timeline_view`).
+    timeline_view_of: Option<filmcraft_engine::project::ItemId>,
+    timeline_view_last: Option<filmcraft_engine::project::SequenceView>,
     pub fps: f32,
     last_time: f64,
     bindings: Vec<menus::KeyBinding>,
@@ -376,6 +380,8 @@ impl FilmcraftApp {
             fonts_ready: false,
             integrated_titlebar: false,
             last_timeline_width: 1000.0,
+            timeline_view_of: None,
+            timeline_view_last: None,
             fps: 60.0,
             last_time: 0.0,
             bindings: Vec::new(),
@@ -468,6 +474,60 @@ impl FilmcraftApp {
         self.applied_prefs = Some(p);
     }
 
+    /// Every sequence has its own Timeline view (zoom, scroll, track heights), as Premiere's
+    /// sequence tabs do. `ui.timeline` holds the active sequence's; the views of all sequences are
+    /// in `session.state.timeline_views`, which is saved with the project. Each frame this
+    /// - gives `ui.timeline` the view of a sequence that has just become active (a sequence shown
+    ///   for the first time is fitted, with default track heights),
+    /// - writes a change made in the panel to the session,
+    /// - and takes over a view that was changed in the session (by a command or the control
+    ///   channel).
+    fn sync_timeline_view(&mut self) {
+        let Some(active) = self.session.state.active_sequence else {
+            self.timeline_view_of = None;
+            return;
+        };
+        let stored = self.session.state.timeline_views.get(&active).copied();
+        let v = &mut self.ui.timeline;
+        let shown = filmcraft_engine::project::SequenceView {
+            pps: v.target_pps,
+            scroll: v.target_scroll,
+            v_scroll: v.v_scroll,
+            a_scroll: v.a_scroll,
+            video_track_h: v.video_track_h,
+            audio_track_h: v.audio_track_h,
+        };
+        let show = |v: &mut state::TimelineView, s: filmcraft_engine::project::SequenceView| {
+            (v.pps, v.target_pps, v.scroll, v.target_scroll) = (s.pps, s.pps, s.scroll, s.scroll);
+            (v.v_scroll, v.a_scroll, v.video_track_h, v.audio_track_h) = (s.v_scroll, s.a_scroll, s.video_track_h, s.audio_track_h);
+            (v.fit_pending, v.fit_empty) = (false, None);
+        };
+        if self.timeline_view_of != Some(active) {
+            self.timeline_view_of = Some(active);
+            match stored.and_then(|s| s.checked()) {
+                Some(s) => {
+                    show(v, s);
+                    self.timeline_view_last = Some(s);
+                }
+                None => {
+                    let d = state::TimelineView::default();
+                    (v.v_scroll, v.a_scroll, v.video_track_h, v.audio_track_h) = (0.0, 0.0, d.video_track_h, d.audio_track_h);
+                    (v.fit_pending, v.fit_empty) = (true, None);
+                    self.timeline_view_last = None;
+                }
+            }
+        } else if v.fit_pending {
+            // the panel has not fitted the sequence yet: nothing to keep
+        } else if self.timeline_view_last != Some(shown) {
+            self.session.state.timeline_views.insert(active, shown);
+            self.timeline_view_last = Some(shown);
+        } else if let Some(s) = stored.filter(|s| *s != shown).and_then(|s| s.checked()) {
+            show(v, s);
+            self.timeline_view_last = Some(s);
+            self.session.state.timeline_views.insert(active, s);
+        }
+    }
+
     fn workspaces_path(&self) -> Option<std::path::PathBuf> {
         self.session.prefs_path.as_ref().and_then(|p| p.parent()).map(|d| d.join(dock::WORKSPACES_FILE))
     }
@@ -497,6 +557,9 @@ impl FilmcraftApp {
     }
 
     pub fn show_panel(&mut self, p: PanelKind) {
+        if p == PanelKind::Timeline {
+            self.ui.dock.restore_timeline();
+        }
         if !self.ui.dock.contains(p) {
             let near = match p {
                 PanelKind::LumetriColor | PanelKind::EssentialGraphics | PanelKind::EssentialSound | PanelKind::Properties => PanelKind::Program,
@@ -515,6 +578,48 @@ impl FilmcraftApp {
         }
         self.ui.dock.activate(p);
         self.ui.focused = p;
+    }
+
+    /// Reveal in Project: bring the Project panel forward, showing the bin that holds `item` with
+    /// the search cleared, so the (already selected) item is on show.
+    fn reveal_in_project(&mut self, item: filmcraft_project::ItemId) {
+        // the bins on the way down to the item (bounded: a project file can nest bins arbitrarily deep)
+        fn path(b: &filmcraft_project::Bin, item: filmcraft_project::ItemId, depth: usize, out: &mut Vec<u64>) -> bool {
+            if depth > 256 {
+                return false;
+            }
+            for c in &b.children {
+                match c {
+                    filmcraft_project::BinEntry::Item(i) if *i == item => return true,
+                    filmcraft_project::BinEntry::Bin(inner) => {
+                        out.push(inner.id.0);
+                        if path(inner, item, depth + 1, out) {
+                            return true;
+                        }
+                        out.pop();
+                    }
+                    _ => {}
+                }
+            }
+            false
+        }
+        let mut bins = Vec::new();
+        let found = path(&self.session.project.root, item, 0, &mut bins);
+        // the list shows the whole tree: open the bins on the way. Icons and freeform show one bin
+        // at a time: go into the one that holds the item.
+        let list = self.session.prefs.project_panel.view.mode == filmcraft_engine::project_panel::ViewMode::List;
+        self.ui.project_panel.bin = if list || !found { None } else { bins.last().copied() };
+        if list {
+            for b in bins {
+                if !self.ui.expanded_bins.contains(&b) {
+                    self.ui.expanded_bins.push(b);
+                }
+            }
+        }
+        self.ui.project_panel.active_tab = None;
+        self.ui.project_panel.selected_bin = None;
+        self.ui.project_search.clear();
+        self.show_panel(PanelKind::Project);
     }
 
     pub fn status(&mut self, s: impl Into<String>) {
@@ -1039,16 +1144,20 @@ impl FilmcraftApp {
         for ev in self.session.drain_events() {
             match ev {
                 filmcraft_engine::Event::OpenSequence(_) => {
-                    self.ui.timeline.fit_pending = true;
+                    // show the sequence with its own view (or fitted, the first time)
+                    self.timeline_view_of = None;
+                    self.ui.dock.restore_timeline();
                     self.ui.dock.activate(PanelKind::Timeline);
                 }
                 filmcraft_engine::Event::OpenSource(_) => {
                     self.ui.dock.activate(PanelKind::Source);
                 }
+                filmcraft_engine::Event::RevealInProject(item) => self.reveal_in_project(item),
                 filmcraft_engine::Event::Toast { message, .. } => self.toast = Some((message, ctx.input(|i| i.time))),
                 filmcraft_engine::Event::ProjectChanged { .. } => {}
             }
         }
+        self.sync_timeline_view();
         self.handle_drops(&ctx);
         if let Some(rx) = self.command_inbox.take() {
             while let Ok(id) = rx.try_recv() {
@@ -1171,8 +1280,20 @@ impl FilmcraftApp {
         let mut groups = Vec::new();
         dock::layout(ui, &mut dock, body, &t, "", &mut groups, &mut self.auto);
         let mut actions = Vec::new();
+        let seqs = dock::SeqTabs {
+            open: self
+                .session
+                .state
+                .open_sequences
+                .iter()
+                .filter_map(|id| {
+                    self.session.project.item(*id).filter(|i| matches!(i.kind, filmcraft_project::ItemKind::Sequence(_))).map(|i| (id.0, i.name.clone()))
+                })
+                .collect(),
+            active: self.session.state.active_sequence.map(|i| i.0),
+        };
         for g in &groups {
-            actions.extend(dock::draw_group_chrome(ui, g, self.ui.focused, &t, &mut self.auto));
+            actions.extend(dock::draw_group_chrome(ui, g, self.ui.focused, &seqs, &t, &mut self.auto));
         }
         if maximized.is_none() {
             self.ui.dock = dock;
@@ -1191,8 +1312,30 @@ impl FilmcraftApp {
                 }
                 dock::DockAction::Focus(p) => self.ui.focused = p,
                 dock::DockAction::Close(p) => self.ui.dock.close(p),
+                dock::DockAction::OpenSequence(id) => {
+                    if self.session.state.active_sequence.map(|i| i.0) != Some(id)
+                        && let Err(e) = self.session.execute("sequence.open", json!({"item": id}))
+                    {
+                        self.ui.status = e.to_string();
+                    }
+                }
+                dock::DockAction::CloseSequence(id) => {
+                    if let Err(e) = self.session.execute("sequence.close", json!({"item": id})) {
+                        self.ui.status = e.to_string();
+                    }
+                }
+                dock::DockAction::MoveSequence(id, index) => {
+                    if let Err(e) = self.session.execute("sequence.moveTab", json!({"item": id, "index": index})) {
+                        self.ui.status = e.to_string();
+                    }
+                }
                 dock::DockAction::PanelMenu(p, pos) => {
-                    ui.ctx().data_mut(|d| d.insert_temp(egui::Id::new("panel-menu"), (p, pos)));
+                    // (with the frame it opened in: the click that opens it is not a click elsewhere)
+                    let frame = ui.ctx().cumulative_frame_nr();
+                    ui.ctx().data_mut(|d| {
+                        d.insert_temp(egui::Id::new("panel-menu"), (p, pos));
+                        d.insert_temp(egui::Id::new("panel-menu-opened"), frame);
+                    });
                 }
             }
         }

@@ -358,6 +358,26 @@ impl DockNode {
             *active = (*active).min(panels.len().saturating_sub(1));
         }
     }
+    /// Put the Timeline panel back where the workspaces keep it (left of the audio meters) after
+    /// it was closed, so opening a sequence always has somewhere to show it.
+    pub fn restore_timeline(&mut self) {
+        if self.contains(PanelKind::Timeline) {
+            return;
+        }
+        fn beside_meters(n: &mut DockNode) -> bool {
+            match n {
+                DockNode::Split { a, b, .. } => beside_meters(a) || beside_meters(b),
+                DockNode::Tabs { panels, .. } if panels.as_slice() == [PanelKind::AudioMeters] => {
+                    *n = hsplit(SplitSize::FixedB(116.0), tabs(&[PanelKind::Timeline], 0), tabs(&[PanelKind::AudioMeters], 0));
+                    true
+                }
+                DockNode::Tabs { .. } => false,
+            }
+        }
+        if !beside_meters(self) {
+            self.open_near(PanelKind::Timeline, PanelKind::Project);
+        }
+    }
     /// Add a panel as a tab next to `near` (or into the first group).
     pub fn open_near(&mut self, p: PanelKind, near: PanelKind) {
         if self.contains(p) {
@@ -400,6 +420,11 @@ pub enum DockAction {
     Focus(PanelKind),
     Close(PanelKind),
     PanelMenu(PanelKind, egui::Pos2),
+    /// A sequence tab of the Timeline panel was clicked / closed (project item id).
+    OpenSequence(u64),
+    CloseSequence(u64),
+    /// A sequence tab was dragged past a neighbour: its new place among the sequence tabs.
+    MoveSequence(u64, usize),
 }
 
 /// Size of a split's first child in `avail` points: the requested size, keeping both children at
@@ -469,7 +494,21 @@ pub fn layout(ui: &mut egui::Ui, node: &mut DockNode, rect: Rect, t: &Tokens, pa
 }
 
 /// Draw a group's frame + tab strip. Returns actions (tab clicks, panel menu, focus).
-pub fn draw_group_chrome(ui: &mut egui::Ui, g: &Group, focused: PanelKind, t: &Tokens, reg: &mut crate::automation::Registry) -> Vec<DockAction> {
+/// The sequences open in the Timeline panel, in tab order: `(project item id, name)`.
+#[derive(Debug, Clone, Default)]
+pub struct SeqTabs {
+    pub open: Vec<(u64, String)>,
+    pub active: Option<u64>,
+}
+
+pub fn draw_group_chrome(
+    ui: &mut egui::Ui,
+    g: &Group,
+    focused: PanelKind,
+    seqs: &SeqTabs,
+    t: &Tokens,
+    reg: &mut crate::automation::Registry,
+) -> Vec<DockAction> {
     let mut actions = Vec::new();
     let painter = ui.painter().clone();
     painter.rect_filled(g.rect, t.radius, t.panel_bg);
@@ -483,31 +522,115 @@ pub fn draw_group_chrome(ui: &mut egui::Ui, g: &Group, focused: PanelKind, t: &T
         }
     } else {
         let strip = Rect::from_min_size(g.rect.min, vec2(g.rect.width(), t.tab_h));
-        let mut x = strip.min.x + 12.0;
-        let text_y = strip.min.y + 16.0;
+        // the Timeline panel shows one tab per open sequence (its own tab names the sequence)
+        struct Tab {
+            panel: PanelKind,
+            seq: Option<u64>,
+            title: String,
+            active: bool,
+        }
+        let mut tabs: Vec<Tab> = Vec::new();
         for (i, p) in g.panels.iter().enumerate() {
-            let is_active = i == g.active;
-            let galley = painter.layout_no_wrap(p.title().to_string(), Tokens::ui(12.0), if is_active { t.tab_text_active } else { t.tab_text });
-            let menu_w = if is_active { 20.0 } else { 0.0 };
-            let w = galley.size().x + 16.0 + menu_w;
-            if x + w > strip.max.x - 20.0 && i > g.active {
-                let r = Rect::from_min_size(pos2(strip.max.x - 22.0, strip.min.y + 6.0), vec2(18.0, 20.0));
-                let resp = ui.interact(r, egui::Id::new(("tab-overflow", g.path.clone())), Sense::click());
-                icons::paint(&painter, r.shrink(4.0).translate(vec2(-2.0, 0.0)), Icon::ChevronRight, t.tab_text);
-                icons::paint(&painter, r.shrink(4.0).translate(vec2(2.0, 0.0)), Icon::ChevronRight, t.tab_text);
-                if resp.clicked() {
-                    let next = g.panels[(g.active + 1) % g.panels.len()];
-                    actions.push(DockAction::Activate(next));
-                }
-                break;
+            let active = i == g.active;
+            if *p == PanelKind::Timeline && active && !seqs.open.is_empty() {
+                tabs.extend(seqs.open.iter().map(|(id, name)| Tab { panel: *p, seq: Some(*id), title: name.clone(), active: seqs.active == Some(*id) }));
+            } else if *p == PanelKind::Timeline {
+                let name = seqs.open.iter().find(|(id, _)| seqs.active == Some(*id)).map(|(_, n)| n.clone());
+                tabs.push(Tab { panel: *p, seq: None, title: name.unwrap_or_else(|| "Timeline: (no sequences)".into()), active });
+            } else {
+                tabs.push(Tab { panel: *p, seq: None, title: p.title().to_string(), active });
             }
-            let tab = Rect::from_min_size(pos2(x, strip.min.y), vec2(w, t.tab_h));
-            let resp = ui.interact(tab, egui::Id::new(("tab", g.path.clone(), i)), Sense::click());
-            reg.add(&format!("panel.tab.{}", p.id()), tab, p.title());
-            let label_x = tab.min.x + 8.0;
+        }
+        let activate = |tab: &Tab, actions: &mut Vec<DockAction>| match tab.seq {
+            Some(id) => actions.push(DockAction::OpenSequence(id)),
+            None => actions.push(DockAction::Activate(tab.panel)),
+        };
+        let active_at = tabs.iter().position(|tab| tab.active).unwrap_or(0);
+        let text_y = strip.min.y + 16.0;
+        // Which tabs fit. The active tab is always shown: tabs before it are left out until it
+        // fits, then as many after it as there is room for. Tabs that are left out are reached
+        // through the » list at the right end of the strip.
+        let widths: Vec<f32> = tabs
+            .iter()
+            .map(|tab| {
+                let label = painter.layout_no_wrap(tab.title.clone(), Tokens::ui(12.0), t.tab_text).size().x;
+                label + 16.0 + if tab.active { 20.0 } else { 0.0 } + if tab.active && tab.seq.is_some() { 16.0 } else { 0.0 }
+            })
+            .collect();
+        let span = |from: usize, to: usize| widths.get(from..=to).map_or(0.0, |w| w.iter().sum::<f32>() + 8.0 * w.len() as f32);
+        let room = strip.width() - 12.0;
+        let all_fit = span(0, tabs.len().saturating_sub(1)) <= room;
+        let room = if all_fit { room } else { room - 24.0 };
+        let mut first = 0;
+        while first < active_at && span(first, active_at) > room {
+            first += 1;
+        }
+        let mut last = active_at.max(first);
+        while last + 1 < tabs.len() && span(first, last + 1) <= room {
+            last += 1;
+        }
+        let list_id = egui::Id::new(("tab-list", g.path.clone()));
+        let more = (!all_fit).then(|| Rect::from_min_size(pos2(strip.max.x - 22.0, strip.min.y + 6.0), vec2(18.0, 20.0)));
+        let mut list_opened = false;
+        if let Some(r) = more {
+            let resp = ui.interact(r, egui::Id::new(("tab-overflow", g.path.clone())), Sense::click());
+            let name = if g.panels.contains(&PanelKind::Timeline) { "timeline.tabs.more".to_string() } else { format!("panel.tabs.more.{}", g.path) };
+            reg.add(&name, r, "more tabs");
+            let c = if resp.hovered() { t.tab_text_active } else { t.tab_text };
+            icons::paint(&painter, r.shrink(4.0).translate(vec2(-2.0, 0.0)), Icon::ChevronRight, c);
+            icons::paint(&painter, r.shrink(4.0).translate(vec2(2.0, 0.0)), Icon::ChevronRight, c);
+            if resp.clicked() {
+                let open = ui.ctx().data(|d| d.get_temp::<bool>(list_id)).unwrap_or(false);
+                ui.ctx().data_mut(|d| d.insert_temp(list_id, !open));
+                list_opened = !open;
+            }
+        }
+        let mut x = strip.min.x + 12.0;
+        // sequence tabs as drawn (for dragging one past its neighbours), and the one being dragged
+        let mut seq_rects: Vec<(u64, Rect)> = Vec::new();
+        let mut dragged: Option<u64> = None;
+        for (i, tab) in tabs.iter().enumerate().take(last + 1).skip(first) {
+            let p = &tab.panel;
+            let is_active = tab.active;
+            let galley = painter.layout_no_wrap(tab.title.clone(), Tokens::ui(12.0), if is_active { t.tab_text_active } else { t.tab_text });
+            let close_w = if is_active && tab.seq.is_some() { 16.0 } else { 0.0 };
+            let w = widths.get(i).copied().unwrap_or(0.0);
+            let tab_rect = Rect::from_min_size(pos2(x, strip.min.y), vec2(w, t.tab_h));
+            // a sequence tab keeps its identity when the tabs are reordered under the pointer
+            let resp = match tab.seq {
+                Some(id) => ui.interact(tab_rect, egui::Id::new(("tab-seq", g.path.clone(), id)), Sense::click_and_drag()),
+                None => ui.interact(tab_rect, egui::Id::new(("tab", g.path.clone(), i)), Sense::click()),
+            };
+            if let Some(id) = tab.seq {
+                seq_rects.push((id, tab_rect));
+                if resp.dragged() {
+                    dragged = Some(id);
+                }
+            }
+            if let Some(id) = tab.seq {
+                reg.add(&format!("timeline.tab.{id}"), tab_rect, &tab.title);
+            }
+            if tab.seq.is_none() || is_active {
+                reg.add(&format!("panel.tab.{}", p.id()), tab_rect, p.title());
+            }
+            let label_x = tab_rect.min.x + 8.0 + close_w;
             let label_w = galley.size().x;
             let col = if is_active || resp.hovered() { t.tab_text_active } else { t.tab_text };
             painter.galley_with_override_text_color(pos2(label_x, text_y - galley.size().y / 2.0), galley, col);
+            let mut closed = false;
+            if let Some(id) = tab.seq.filter(|_| is_active) {
+                // × closes the sequence's tab (the sequence stays in the project)
+                let cr = Rect::from_center_size(pos2(tab_rect.min.x + 10.0, text_y), vec2(8.0, 8.0));
+                let cresp = ui.interact(cr.expand(4.0), egui::Id::new(("tab-close", g.path.clone(), id)), Sense::click());
+                reg.add(&format!("timeline.tab.{id}.close"), cr.expand(4.0), "close sequence");
+                let cc = if cresp.hovered() { t.tab_text_active } else { t.tab_text };
+                painter.line_segment([cr.left_top(), cr.right_bottom()], Stroke::new(1.2, cc));
+                painter.line_segment([cr.right_top(), cr.left_bottom()], Stroke::new(1.2, cc));
+                if cresp.clicked() {
+                    actions.push(DockAction::CloseSequence(id));
+                    closed = true;
+                }
+            }
             if is_active {
                 let mr = Rect::from_center_size(pos2(label_x + label_w + 12.0, text_y), vec2(12.0, 10.0));
                 let mresp = ui.interact(mr.expand(3.0), egui::Id::new(("tab-menu", g.path.clone())), Sense::click());
@@ -521,14 +644,76 @@ pub fn draw_group_chrome(ui: &mut egui::Ui, g: &Group, focused: PanelKind, t: &T
                     actions.push(DockAction::PanelMenu(*p, mr.left_bottom()));
                 }
             }
-            if resp.clicked() {
-                actions.push(DockAction::Activate(*p));
+            if (resp.clicked() || resp.drag_started()) && !closed {
+                activate(tab, &mut actions);
                 actions.push(DockAction::Focus(*p));
             }
+            // a right-click shows the tab and opens its panel menu (as in Premiere)
+            if resp.secondary_clicked() {
+                activate(tab, &mut actions);
+                actions.push(DockAction::Focus(*p));
+                let at = resp.interact_pointer_pos().unwrap_or(tab_rect.left_bottom());
+                actions.push(DockAction::PanelMenu(*p, at));
+            }
             if resp.middle_clicked() {
-                actions.push(DockAction::Close(*p));
+                // a sequence tab closes its sequence; the Timeline panel itself stays
+                match tab.seq.or(seqs.active.filter(|_| *p == PanelKind::Timeline)) {
+                    Some(id) => actions.push(DockAction::CloseSequence(id)),
+                    None => actions.push(DockAction::Close(*p)),
+                }
             }
             x += w + 8.0;
+        }
+        // Dragging a sequence tab sideways: it changes places with a neighbour when the pointer
+        // passes that neighbour's middle.
+        if let Some(id) = dragged
+            && let Some(px) = ui.input(|i| i.pointer.latest_pos()).map(|p| p.x)
+            && let Some(at) = seq_rects.iter().position(|(s, _)| *s == id)
+            && let Some(index) = seqs.open.iter().position(|(s, _)| *s == id)
+        {
+            let before = at.checked_sub(1).and_then(|k| seq_rects.get(k));
+            let after = seq_rects.get(at + 1);
+            if before.is_some_and(|(_, r)| px < r.center().x) {
+                actions.push(DockAction::MoveSequence(id, index.saturating_sub(1)));
+            } else if after.is_some_and(|(_, r)| px > r.center().x) {
+                actions.push(DockAction::MoveSequence(id, index + 1));
+            }
+        }
+        // the » list: every tab of the group, the shown one ticked
+        let list_open = ui.ctx().data(|d| d.get_temp::<bool>(list_id)).unwrap_or(false);
+        if let Some(r) = more.filter(|_| list_open) {
+            let mut picked = None;
+            let area = egui::Area::new(list_id.with("area")).order(egui::Order::Foreground).pivot(Align2::RIGHT_TOP).fixed_pos(r.right_bottom()).show(
+                ui.ctx(),
+                |ui| {
+                    egui::Frame::popup(ui.style()).show(ui, |ui| {
+                        ui.set_min_width(160.0);
+                        // many open sequences: the list scrolls instead of leaving the window
+                        egui::ScrollArea::vertical().max_height(360.0).show(ui, |ui| {
+                            for tab in &tabs {
+                                let label = if tab.active { format!("✓ {}", tab.title) } else { tab.title.clone() };
+                                let resp = ui.button(label);
+                                match tab.seq {
+                                    Some(id) => reg.add(&format!("timeline.tabs.list.{id}"), resp.rect, &tab.title),
+                                    None => reg.add(&format!("panel.tabs.list.{}", tab.panel.id()), resp.rect, &tab.title),
+                                }
+                                if resp.clicked() {
+                                    picked = Some(tab);
+                                }
+                            }
+                        });
+                    });
+                },
+            );
+            if let Some(tab) = picked {
+                activate(tab, &mut actions);
+                actions.push(DockAction::Focus(tab.panel));
+            }
+            if picked.is_some() || (!list_opened && area.response.clicked_elsewhere()) {
+                ui.ctx().data_mut(|d| d.remove::<bool>(list_id));
+            }
+        } else if list_open {
+            ui.ctx().data_mut(|d| d.remove::<bool>(list_id));
         }
     }
     // focus outline

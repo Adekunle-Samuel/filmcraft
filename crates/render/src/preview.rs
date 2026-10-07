@@ -344,6 +344,8 @@ fn hash_source(h: &mut Fnv128, project: &Project, id: ItemId, depth: u32) {
         ItemKind::Graphic { .. } => h.json(&("graphic", &pi.kind)),
         ItemKind::Sequence(s) => {
             h.json(&("sequence", &s.settings));
+            // a nested sequence's captions are drawn into its picture
+            h.json(&("captions", &s.caption_tracks));
             for (ti, tr) in s.video_tracks.iter().enumerate() {
                 h.json(&("track", ti, tr.enabled, tr.items.len()));
                 for it in &tr.items {

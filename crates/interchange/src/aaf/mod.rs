@@ -16,14 +16,20 @@
 //!   `Amplitude` **ConstantValue** or **VaryingValue** (keyframes as control points),
 //! - sequence markers as **CommentMarker**s in an event slot;
 //!
+//! a **CompositionMob** without a usage code for every nested sequence, built the same way (a
+//! clip of the nested sequence is a **SourceClip** that points at that mob, at its first slot of
+//! the clip's kind, with its start in that slot's edit units; Premiere Pro writes nested sequences
+//! this way);
+//!
 //! and for every media item a **MasterMob**, a file **SourceMob** per essence (a CDCI or PCM
 //! descriptor with a network locator to the file, or `EssenceData` holding embedded PCM) and a
 //! tape **SourceMob** carrying the media's start timecode. Clip and media markers become comment
 //! markers on the master mob.
 //!
-//! Import reads the same structures (and the common variations: nested sequences, selectors,
-//! operation groups around clips, legacy data definitions, essence groups) into FilmCraft
-//! sequences, media items (linked by path; embedded audio is returned as WAV files for the
+//! Import reads the same structures (and the common variations: sequences inside sequences,
+//! selectors, operation groups around clips, legacy data definitions, essence groups, and Premiere
+//! Pro's one video slot holding a nested scope with a segment per video track) into FilmCraft
+//! sequences (a composition that others use becomes a nested sequence), media items (linked by path; embedded audio is returned as WAV files for the
 //! caller to write) and markers.
 
 mod ids;
@@ -53,7 +59,7 @@ pub struct AafOptions {
 pub fn export(project: &Project, sequence: ItemId, opts: &AafOptions) -> Result<(Vec<u8>, Report)> {
     let mut report = Report::default();
     let name = opts.name.clone().or_else(|| project.item(sequence).map(|i| i.name.clone())).unwrap_or_else(|| "Sequence".into());
-    let doc = comp::from_project(project, sequence, &name, &opts.media, &mut report)?;
+    let doc = comp::from_project(project, sequence, &name, &opts.media, comp::Nests::Compositions, &mut report)?;
     let version = if opts.small_sectors { filmcraft_cfb::Version::V3 } else { filmcraft_cfb::Version::V4 };
     let bytes = write::write(&doc, version, &mut report)?;
     Ok((bytes, report))

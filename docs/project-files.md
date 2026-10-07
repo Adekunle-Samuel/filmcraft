@@ -10,7 +10,8 @@ writing them is `crates/format` (`filmcraft-format`); the engine's `file.*` comm
   "format": "filmcraft.project",
   "schema_version": 12,
   "generator": "FilmCraft 0.1.0",
-  "project": { "name": "…", "settings": { … }, "root": { … }, "items": { … }, "next_id": 48 }
+  "project": { "name": "…", "settings": { … }, "root": { … }, "items": { … }, "next_id": 48 },
+  "view": { "open_sequences": [21, 50], "active_sequence": 50, "sequences": { "21": { "pps": 40.0, "scroll": 0.0, … } } }
 }
 ```
 
@@ -19,6 +20,14 @@ writing them is `crates/format` (`filmcraft-format`); the engine's `file.*` comm
 - `project` is the serialized `filmcraft_project::Project` (bins, media clips, sequences, tracks,
   clips, effects, keyframes, markers). Media is referenced by path, never embedded.
 - Files are written compact (no indentation). A 2,000-clip project is about 1.4 MB.
+- `view` (optional) is what was open when the project was saved: the Timeline's sequence tabs in
+  order, the active one, and each sequence's zoom, scroll and track heights
+  (`filmcraft_project::ProjectView`). It is beside the project, not in it: it is not part of the
+  edit, never an undo step, and changing it does not mark the project as changed. Opening a
+  project restores it when the Timeline preference "Restore open sequences when opening projects"
+  is on. It is outside the schema version: older builds ignore it, ids that are not sequences and
+  numbers out of range are dropped or clamped, and a `view` that cannot be read is ignored (the
+  project opens on its first sequence, as it does without one or with no open sequence in it).
 - A coordinate of an effect's point parameter may be `null`. Point parameters use NaN for "auto"
   (the frame centre, or the source centre for `anchor`), and JSON writes NaN as `null`; it reads back
   as "auto". Placing a clip resolves these points at once. An interchange import resolves them

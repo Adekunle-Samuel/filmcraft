@@ -11,6 +11,10 @@
 //! mob (`SMOB` with a `WAVD` / `AIFD` descriptor: embedded essence in a `WAVE` media data object,
 //! or a locator to a separate file) and a tape source mob carrying its timecode. Times are in
 //! samples (sound slots use the sample rate as edit rate) so edits are sample-exact.
+//!
+//! A nested sequence is not written as a composition: its sound, mixed by the caller for the clip
+//! ([`crate::essence::NestNeeds::Render`]), is media like any other, in a clip named after the
+//! sequence. Premiere Pro's OMF export does the same.
 
 pub(crate) mod bento;
 mod read;
@@ -40,7 +44,7 @@ pub fn export(project: &Project, sequence: ItemId, opts: &OmfOptions) -> Result<
     let mut media = opts.media.clone();
     media.audio_only = true;
     media.mixdown_video = None;
-    let doc = comp::from_project(project, sequence, &name, &media, &mut report)?;
+    let doc = comp::from_project(project, sequence, &name, &media, comp::Nests::Rendered, &mut report)?;
     if !doc.compositions[0].markers.is_empty() {
         report.info("sequence markers are not written to OMF");
     }

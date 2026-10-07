@@ -111,6 +111,27 @@ pub fn plan_frame(project: &Project, seq_id: ItemId, t: Tick, opts: RenderOption
         return FramePlan::Image(crate::render_sequence(project, seq_id, t, opts, sources));
     }
     // Whole-frame fallback: adjustment layers or complex transitions anywhere at t.
+    if !layered_at(project, seq, t) {
+        return FramePlan::Image(crate::render_sequence(project, seq_id, t, opts, sources));
+    }
+    let mut layers = Vec::new();
+    push_tracks(project, seq, t, opts, sources, 0, &mut layers);
+    if opts.captions {
+        for o in crate::caption_overlays(seq, t, w, h) {
+            layers.push(PlanLayer::new(
+                Arc::new(VideoFrame::rgba_f32(o.w as u32, o.h as u32, o.px)),
+                Affine::translate(o.x as f64, o.y as f64),
+                1.0,
+                Blend::Normal,
+            ));
+        }
+    }
+    FramePlan::Layers { width: w, height: h, layers }
+}
+
+/// Whether the frame of `seq` at `t` can be planned as layers: no adjustment layer and no
+/// transition the compositor cannot mix itself is showing.
+fn layered_at(project: &Project, seq: &Sequence, t: Tick) -> bool {
     for tr in &seq.video_tracks {
         if !tr.enabled {
             continue;
@@ -118,15 +139,21 @@ pub fn plan_frame(project: &Project, seq_id: ItemId, t: Tick, opts: RenderOption
         if let Some(trn) = tr.transitions.iter().find(|x| x.range().contains(t))
             && !simple_transition(&trn.effect.effect)
         {
-            return FramePlan::Image(crate::render_sequence(project, seq_id, t, opts, sources));
+            return false;
         }
         if let Some(it) = tr.item_at(t)
             && project.item(it.item).is_some_and(|p| matches!(p.kind, ItemKind::AdjustmentLayer { .. }))
         {
-            return FramePlan::Image(crate::render_sequence(project, seq_id, t, opts, sources));
+            return false;
         }
     }
-    let mut layers = Vec::new();
+    true
+}
+
+/// Push the layers of every video track of `seq` at `t`, bottom track first (`seq` must be
+/// [`layered_at`] `t`). `nest` counts the nested sequences already followed to reach `seq`.
+fn push_tracks(project: &Project, seq: &Sequence, t: Tick, opts: RenderOptions, sources: &dyn SourceProvider, nest: u32, layers: &mut Vec<PlanLayer>) {
+    let (w, h) = output_size(seq, opts.scale);
     for tr in &seq.video_tracks {
         if !tr.enabled {
             continue;
@@ -142,16 +169,16 @@ pub fn plan_frame(project: &Project, seq_id: ItemId, t: Tick, opts: RenderOption
                     layers.push(PlanLayer::new(Arc::new(VideoFrame::rgba_f32(1, 1, col.to_vec())), Affine::scale(w as f64, h as f64), 1.0, Blend::Normal));
                     let (it, k) = if p < 0.5 { (a, 1.0 - p * 2.0) } else { (b, (p - 0.5) * 2.0) };
                     if let Some(it) = it {
-                        push_item(project, seq, it, t, opts, sources, k, Some(Blend::Normal), &mut layers);
+                        push_item(project, seq, it, t, opts, sources, k, Some(Blend::Normal), nest, layers);
                     }
                 }
                 _ => {
                     // cross dissolve: A at full, B over it at p (premultiplied over == linear mix when A is opaque)
                     if let Some(it) = a {
-                        push_item(project, seq, it, t, opts, sources, 1.0 - if b.is_none() { p } else { 0.0 }, Some(Blend::Normal), &mut layers);
+                        push_item(project, seq, it, t, opts, sources, 1.0 - if b.is_none() { p } else { 0.0 }, Some(Blend::Normal), nest, layers);
                     }
                     if let Some(it) = b {
-                        push_item(project, seq, it, t, opts, sources, p, Some(Blend::Normal), &mut layers);
+                        push_item(project, seq, it, t, opts, sources, p, Some(Blend::Normal), nest, layers);
                     }
                 }
             }
@@ -161,23 +188,29 @@ pub fn plan_frame(project: &Project, seq_id: ItemId, t: Tick, opts: RenderOption
         if !item.enabled {
             continue;
         }
-        push_item(project, seq, item, t, opts, sources, 1.0, None, &mut layers);
+        push_item(project, seq, item, t, opts, sources, 1.0, None, nest, layers);
     }
-    if opts.captions {
-        for o in crate::caption_overlays(seq, t, w, h) {
-            layers.push(PlanLayer::new(
-                Arc::new(VideoFrame::rgba_f32(o.w as u32, o.h as u32, o.px)),
-                Affine::translate(o.x as f64, o.y as f64),
-                1.0,
-                Blend::Normal,
-            ));
-        }
-    }
-    FramePlan::Layers { width: w, height: h, layers }
+}
+
+/// Whether a nested sequence can be drawn by pushing its own layers into the plan of the sequence
+/// it is in, instead of being rendered to an image on the CPU first. Compositing its layers one
+/// by one over what is below gives the same picture as compositing them together first only when
+/// they all blend Normal, and the frame must be one that plans as layers in the same colour
+/// pipeline.
+fn nest_is_plain(project: &Project, seq: &Sequence, nested: &Sequence, ft: Tick) -> bool {
+    nested.settings.color == seq.settings.color
+        && (nested.settings.width, nested.settings.height) == (seq.settings.width, seq.settings.height)
+        && layered_at(project, nested, ft)
+        && nested.video_tracks.iter().filter(|tr| tr.enabled).all(|tr| {
+            tr.transitions.iter().any(|x| x.range().contains(ft))
+                || tr.item_at(ft).filter(|i| i.enabled).is_none_or(|i| crate::opacity_blend(i, i.effect_time_at(ft)).1 == Blend::Normal)
+        })
 }
 
 /// Push the layer(s) of `item`. `blend` overrides the item's own blend mode: inside a transition
 /// the CPU reference mixes the clips and composites the result Normal, ignoring their modes.
+/// `nest` counts the multi-camera clips already followed to reach `item` (see
+/// [`crate::MAX_NEST_DEPTH`]).
 #[allow(clippy::too_many_arguments)]
 fn push_item(
     project: &Project,
@@ -188,6 +221,7 @@ fn push_item(
     sources: &dyn SourceProvider,
     extra_opacity: f32,
     blend: Option<Blend>,
+    nest: u32,
     out: &mut Vec<PlanLayer>,
 ) {
     // frame time (`ft`) vs. effect time (`mt`): they differ inside a frame hold without Hold Filters
@@ -198,6 +232,7 @@ fn push_item(
     // A multi-camera clip that only shows its angle (no effects, untransformed, same frame size)
     // draws the angle's clip directly: no CPU pass over the nested sequence.
     if let Some(ItemKind::Sequence(nested)) = project.item(item.item).map(|p| &p.kind)
+        && nest < crate::MAX_NEST_DEPTH
         && let Some(angle) = item.multicam_angle(nested)
         && !(opts.effects && item.has_standard_effects())
         && (nested.settings.width, nested.settings.height) == (seq.settings.width, seq.settings.height)
@@ -209,7 +244,32 @@ fn push_item(
         // Inside the nested sequence the angle's clip is composited onto an empty canvas, where
         // every mode but Dissolve is Normal; the multicam clip's own mode then applies to it.
         if let Some(inner) = tr.item_at(ft).filter(|i| i.enabled) {
-            push_item(project, nested, inner, ft, opts, sources, extra_opacity * op, Some(bl), out);
+            push_item(project, nested, inner, ft, opts, sources, extra_opacity * op, Some(bl), nest + 1, out);
+        }
+        return;
+    }
+    // A nested sequence that is only shown (no effects, untransformed, fully opaque, blending
+    // Normal) contributes its own layers: the compositor draws them like the clips of this
+    // sequence, with no CPU pass over the nested sequence. Its captions are part of its picture.
+    if let Some(ItemKind::Sequence(nested)) = project.item(item.item).map(|p| &p.kind)
+        && nest < crate::MAX_NEST_DEPTH
+        && item.multicam_angle(nested).is_none()
+        && !(opts.effects && item.has_standard_effects())
+        && !item.has_opacity_masks()
+        && bl == Blend::Normal
+        && extra_opacity * op >= 1.0 - 1e-6
+        && near_identity(&motion_matrix(seq, item, (nested.settings.width, nested.settings.height), mt))
+        && nest_is_plain(project, seq, nested, ft)
+    {
+        push_tracks(project, nested, ft, opts, sources, nest + 1, out);
+        let (w, h) = output_size(nested, opts.scale);
+        for o in crate::caption_overlays(nested, ft, w, h) {
+            out.push(PlanLayer::new(
+                Arc::new(VideoFrame::rgba_f32(o.w as u32, o.h as u32, o.px)),
+                Affine::translate(o.x as f64, o.y as f64),
+                1.0,
+                Blend::Normal,
+            ));
         }
         return;
     }
