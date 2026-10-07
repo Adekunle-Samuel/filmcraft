@@ -67,6 +67,10 @@ pub enum Format {
     /// QuickTime, Avid DNxHR (HQ unless the settings pick another profile) + PCM.
     #[serde(rename = "dnxhr", alias = "DnxHr")]
     DnxHr,
+    /// QuickTime, APV (Advanced Professional Video, RFC 9924; 422-10 unless the settings pick
+    /// another profile) + PCM.
+    #[serde(rename = "apv", alias = "Apv")]
+    Apv,
     /// QuickTime, Motion-JPEG + PCM.
     #[serde(rename = "mjpeg", alias = "Mjpeg")]
     Mjpeg,
@@ -100,6 +104,7 @@ impl Format {
             "h264" | "mp4" | "avc" | "m4v" => Format::H264,
             "prores" | "mov" | "appleprores" => Format::ProRes,
             "dnxhr" | "dnxhd" | "dnx" | "avid" | "aviddnxhr" | "aviddnxhd" | "vc3" => Format::DnxHr,
+            "apv" | "apv1" => Format::Apv,
             "mxf" | "mxfop1a" | "op1a" => Format::MxfOp1a,
             "mxfopatom" | "opatom" | "mxfatom" | "avidmxf" => Format::MxfOpAtom,
             "mjpeg" | "motionjpeg" | "jpeg" => Format::Mjpeg,
@@ -118,6 +123,7 @@ impl Format {
             Format::H264 => "h264",
             Format::ProRes => "prores",
             Format::DnxHr => "dnxhr",
+            Format::Apv => "apv",
             Format::Mjpeg => "mjpeg",
             Format::PngSequence => "png",
             Format::TiffSequence => "tiff",
@@ -132,7 +138,7 @@ impl Format {
     pub fn extension(self) -> &'static str {
         match self {
             Format::H264 => "mp4",
-            Format::ProRes | Format::DnxHr | Format::Mjpeg => "mov",
+            Format::ProRes | Format::DnxHr | Format::Apv | Format::Mjpeg => "mov",
             Format::PngSequence => "png",
             Format::TiffSequence => "tif",
             Format::BmpSequence => "bmp",
@@ -147,6 +153,7 @@ impl Format {
             Format::H264 => "H.264",
             Format::ProRes => "Apple ProRes",
             Format::DnxHr => "Avid DNxHR",
+            Format::Apv => "APV",
             Format::Mjpeg => "QuickTime (Motion JPEG)",
             Format::PngSequence => "PNG",
             Format::TiffSequence => "TIFF",
@@ -162,10 +169,11 @@ impl Format {
     pub fn is_mxf(self) -> bool {
         matches!(self, Format::MxfOp1a | Format::MxfOpAtom)
     }
-    pub const ALL: [Format; 12] = [
+    pub const ALL: [Format; 13] = [
         Format::H264,
         Format::ProRes,
         Format::DnxHr,
+        Format::Apv,
         Format::Mjpeg,
         Format::PngSequence,
         Format::TiffSequence,
@@ -215,6 +223,9 @@ pub struct ExportSettings {
     /// DNxHR profile: `lb`, `sq`, `hq` or `hqx` (empty = HQ).
     #[serde(default)]
     pub dnx_profile: String,
+    /// APV profile: `422-10`, `422-12`, `444-10` or `444-12` (empty = `422-10`).
+    #[serde(default)]
+    pub apv_profile: String,
     /// Video codec of the MXF formats (DNxHR unless set; the ProRes / DNxHR profile fields apply).
     #[serde(default)]
     pub mxf_video_codec: MxfVideoCodec,
@@ -407,6 +418,7 @@ impl Default for ExportSettings {
             part_of_batch: false,
             prores_profile: String::new(),
             dnx_profile: String::new(),
+            apv_profile: String::new(),
             mxf_video_codec: MxfVideoCodec::default(),
             sdr: false,
             frame_size: None,
@@ -534,7 +546,7 @@ pub type AudioEncoderFactory = fn(format: Format, sample_rate: u32, channels: u3
 
 fn video_factories() -> &'static RwLock<Vec<EncoderFactory>> {
     static F: OnceLock<RwLock<Vec<EncoderFactory>>> = OnceLock::new();
-    F.get_or_init(|| RwLock::new(vec![h264_factory, prores_factory, dnx_factory, mjpeg_factory]))
+    F.get_or_init(|| RwLock::new(vec![h264_factory, prores_factory, dnx_factory, apv_factory, mjpeg_factory]))
 }
 fn audio_factories() -> &'static RwLock<Vec<AudioEncoderFactory>> {
     static F: OnceLock<RwLock<Vec<AudioEncoderFactory>>> = OnceLock::new();
@@ -616,7 +628,10 @@ impl AudioEncoder for AacEncoder {
 }
 
 fn aac_factory(_format: Format, sample_rate: u32, channels: u32, s: &ExportSettings) -> Option<Result<Box<dyn AudioEncoder>>> {
-    let bps = s.audio.bitrate_kbps.clamp(32, 512) * 1000;
+    // AAC caps a frame at 6144 bits per channel (ISO/IEC 14496-3 §4.5.3.2): 6 bits per sample, so
+    // 264.6 kbps for stereo at 22.05 kHz; a higher setting is capped instead of refused
+    let max = (6 * sample_rate as u64 * channels.max(1) as u64).min(u32::MAX as u64) as u32;
+    let bps = (s.audio.bitrate_kbps.clamp(32, 512) * 1000).min(max);
     Some(
         filmcraft_aac::Encoder::new(filmcraft_aac::EncoderConfig::cbr(sample_rate, channels as usize, bps))
             .map(|enc| Box::new(AacEncoder { enc, rate: sample_rate, channels }) as Box<dyn AudioEncoder>)
@@ -791,6 +806,99 @@ fn dnx_factory(format: Format, w: u32, h: u32, rate: FrameRate, s: &ExportSettin
         }
         let enc = filmcraft_dnx::Encoder::with_config(cfg).map_err(|e| ExportError::Encode(e.to_string()))?;
         Ok(Box::new(DnxEncoder { enc, w, h, rate, signal: s.signal }) as Box<dyn VideoEncoder>)
+    })
+}
+
+/// The APV profile named by [`ExportSettings::apv_profile`].
+pub fn apv_profile(name: &str) -> filmcraft_apv::Profile {
+    use filmcraft_apv::Profile;
+    match name.to_ascii_lowercase().replace([' ', '_'], "-").trim_start_matches("apv-").trim_start_matches("apv") {
+        "422-12" | "42212" => Profile::P422_12,
+        "444-10" | "44410" => Profile::P444_10,
+        "444-12" | "44412" => Profile::P444_12,
+        "4444-10" | "444410" => Profile::P4444_10,
+        "4444-12" | "444412" => Profile::P4444_12,
+        "400-10" | "40010" => Profile::P400_10,
+        _ => Profile::P422_10,
+    }
+}
+
+/// APV encoder (RFC 9924: 10/12-bit 4:2:2 or 4:4:4 intra).
+struct ApvEncoder {
+    enc: filmcraft_apv::Encoder,
+    chroma: filmcraft_apv::ChromaFormat,
+    w: u32,
+    h: u32,
+    rate: FrameRate,
+    signal: ColorSignal,
+}
+
+impl VideoEncoder for ApvEncoder {
+    fn sample_entry(&self) -> SampleEntry {
+        let apvc = filmcraft_isobmff::ApvConfig::parse(&self.enc.decoder_config_record()).unwrap_or_default();
+        let mut e = SampleEntry::apv(apvc, self.w as u16, self.h as u16);
+        self.signal.apply_to(&mut e, true);
+        e
+    }
+    fn timescale(&self) -> u32 {
+        self.rate.num as u32
+    }
+    fn encode(&mut self, f: &EncoderFrame) -> Result<Vec<EncodedPacket>> {
+        let (w, h) = (f.width as usize, f.height as usize);
+        let mut fr = filmcraft_apv::Frame::new(f.width, f.height, self.chroma, 10, self.chroma == filmcraft_apv::ChromaFormat::Yuv4444);
+        let mut y422 = vec![0u16; w * h];
+        let cw = w.div_ceil(2);
+        let mut cb422 = vec![0u16; cw * h];
+        let mut cr422 = vec![0u16; cw * h];
+        match f.hdr {
+            Some(rgb) => {
+                let (kr, kb) = self.signal.kr_kb();
+                rgbf_to_yuv422_10(rgb, w, h, kr, kb, &mut y422, &mut cb422, &mut cr422);
+            }
+            None => rgba_to_yuv422_10(f.rgba, w, h, &mut y422, &mut cb422, &mut cr422),
+        }
+        fr.y = y422;
+        match self.chroma {
+            filmcraft_apv::ChromaFormat::Monochrome => {
+                fr.cb.clear();
+                fr.cr.clear();
+            }
+            filmcraft_apv::ChromaFormat::Yuv422 => {
+                fr.cb = cb422;
+                fr.cr = cr422;
+            }
+            filmcraft_apv::ChromaFormat::Yuv444 | filmcraft_apv::ChromaFormat::Yuv4444 => {
+                for row in 0..h {
+                    for x in 0..w {
+                        fr.cb[row * w + x] = cb422[row * cw + x / 2];
+                        fr.cr[row * w + x] = cr422[row * cw + x / 2];
+                    }
+                }
+                if let Some(a) = fr.alpha.as_mut() {
+                    for (i, dst) in a.iter_mut().enumerate() {
+                        *dst = f.rgba.get(i * 4 + 3).map_or(1023, |&v| ((v as u32 * 1023 + 127) / 255) as u16);
+                    }
+                }
+            }
+        }
+        let data = self.enc.encode_raw_au(&fr).map_err(|e| ExportError::Encode(e.to_string()))?;
+        Ok(vec![EncodedPacket { data, key: true, duration: self.rate.den as u32, composition_offset: 0 }])
+    }
+    fn flush(&mut self) -> Result<Vec<EncodedPacket>> {
+        Ok(Vec::new())
+    }
+}
+
+fn apv_factory(format: Format, w: u32, h: u32, rate: FrameRate, s: &ExportSettings) -> Option<Result<Box<dyn VideoEncoder>>> {
+    (format == Format::Apv).then(|| {
+        let profile = apv_profile(&s.apv_profile);
+        let mut cfg = filmcraft_apv::EncoderConfig::new(profile, w, h);
+        if s.signal.is_hdr() {
+            cfg.color = filmcraft_apv::ColorInfo { primaries: s.signal.primaries, transfer: s.signal.transfer, matrix: s.signal.matrix, full_range: false };
+        }
+        let chroma = cfg.chroma;
+        let enc = filmcraft_apv::Encoder::with_config(cfg).map_err(|e| ExportError::Encode(e.to_string()))?;
+        Ok(Box::new(ApvEncoder { enc, chroma, w, h, rate, signal: s.signal }) as Box<dyn VideoEncoder>)
     })
 }
 
@@ -1117,7 +1225,7 @@ pub fn export(project: &Arc<Project>, seq: ItemId, settings: &ExportSettings, so
             }
             (total, count)
         }
-        Format::H264 | Format::ProRes | Format::DnxHr | Format::Mjpeg | Format::MxfOp1a | Format::MxfOpAtom => {
+        Format::H264 | Format::ProRes | Format::DnxHr | Format::Apv | Format::Mjpeg | Format::MxfOp1a | Format::MxfOpAtom => {
             // Handled by the stepped exporter above; reaching here would be a dispatch bug.
             return Err(ExportError::Unsupported(format!("{:?} must run as a stepped export", settings.format)));
         }

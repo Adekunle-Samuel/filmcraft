@@ -27,7 +27,7 @@
 //! takes its own range and lands offset by the difference of the In points (J- and L-cuts).
 
 use filmcraft_edit as edit;
-use filmcraft_project::{ClipId, ItemId, Label, Marker, MarkerId, MarkerKind, SplitMarks, TrackId, TrackItem, TrackKind};
+use filmcraft_project::{AudioChannels, ClipId, ItemId, Label, Marker, MarkerId, MarkerKind, SplitMarks, TrackId, TrackItem, TrackKind};
 use filmcraft_time::{Tick, TimeRange};
 use serde_json::{Value, json};
 
@@ -348,6 +348,18 @@ fn join_through_edits(s: &mut Session, p: &Value) -> Result<Value> {
 /// Sequence ▸ Make Subsequence: a new sequence (same settings and track layout) holding copies of the
 /// selected clips, or of everything on targeted tracks between In and Out, trimmed to In/Out when
 /// they are set. The new sequence is added to the project and selected; the original is unchanged.
+/// Give a sequence made from part of `from` (Nest…, Make Subsequence) the track names and audio
+/// channel layouts of `from`'s tracks, track for track.
+pub(crate) fn lay_out_tracks_like(new: &mut filmcraft_project::Sequence, from: &filmcraft_project::Sequence) {
+    for (tr, src) in new.video_tracks.iter_mut().zip(&from.video_tracks) {
+        tr.name = src.name.clone();
+    }
+    for (tr, src) in new.audio_tracks.iter_mut().zip(&from.audio_tracks) {
+        tr.name = src.name.clone();
+        tr.channels = src.channels;
+    }
+}
+
 fn make_subsequence(s: &mut Session, p: &Value) -> Result<Value> {
     let seq_id = s.state.active_sequence.ok_or(EngineError::NoSequence)?;
     let q = s.active_sequence().ok_or(EngineError::NoSequence)?.clone();
@@ -420,13 +432,7 @@ fn make_subsequence(s: &mut Session, p: &Value) -> Result<Value> {
             }
         }
         let nq = pr.sequence_mut(nid).ok_or(EngineError::NoSequence)?;
-        for (i, tr) in nq.video_tracks.iter_mut().enumerate() {
-            tr.name = q.video_tracks[i].name.clone();
-        }
-        for (i, tr) in nq.audio_tracks.iter_mut().enumerate() {
-            tr.name = q.audio_tracks[i].name.clone();
-            tr.channels = q.audio_tracks[i].channels;
-        }
+        lay_out_tracks_like(nq, &q);
         for (kind, ti, it) in placed {
             nq.tracks_mut(kind)[ti].items.push(it);
         }
@@ -439,15 +445,253 @@ fn make_subsequence(s: &mut Session, p: &Value) -> Result<Value> {
         }
         nq.check().map_err(EngineError::Other)?;
         st.project_selection = vec![nid];
+        // like Premiere: the subsequence is loaded in the Source Monitor, ready to edit from
+        st.source_item = Some(nid);
+        st.source_playhead = Tick::ZERO;
         Ok(nid)
     })?;
+    s.events.push(crate::Event::OpenSource(id));
     Ok(json!({"sequence": id.0, "name": name}))
+}
+
+// ---------- a sequence edited in as its clips ----------
+
+/// The nest toggle off ("Insert and overwrite sequences as nests or individual clips"): edit the
+/// clips of sequence `item` that lie in `range` of it into the active sequence at `at`, instead of
+/// one nested clip. As in Premiere, the clips come with their transitions and links; the source's
+/// tracks that hold clips go to consecutive tracks from `vdest` / `adest` up (source V1 and V3
+/// land on the destination track and the one above it), and tracks that are missing are added.
+/// A kind without a destination track is left out.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn place_sequence_clips(
+    s: &mut Session,
+    item: ItemId,
+    range: TimeRange,
+    at: Tick,
+    vdest: Option<TrackId>,
+    adest: Option<TrackId>,
+    insert: bool,
+    label: &str,
+) -> Result<Vec<ClipId>> {
+    let seq_id = s.state.active_sequence.ok_or(EngineError::NoSequence)?;
+    let src = s.project.sequence(item).ok_or_else(|| bad(label, "not a sequence"))?.clone();
+    let dst = s.active_sequence().ok_or(EngineError::NoSequence)?;
+    // (kind, how many tracks above the destination track, the clip trimmed to the range)
+    let mut items: Vec<(TrackKind, usize, TrackItem)> = Vec::new();
+    // source track index → tracks above the destination track, per kind
+    // (TrackKind has no Hash: the maps are keyed by "is audio")
+    let audio = |k: TrackKind| k == TrackKind::Audio;
+    let mut lanes: std::collections::HashMap<(bool, usize), usize> = std::collections::HashMap::new();
+    let mut base: std::collections::HashMap<bool, usize> = std::collections::HashMap::new();
+    for (kind, tracks, dest) in [(TrackKind::Video, &src.video_tracks, vdest), (TrackKind::Audio, &src.audio_tracks, adest)] {
+        let Some(first) = dest.and_then(|d| dst.tracks(kind).iter().position(|t| t.id == d)) else { continue };
+        base.insert(audio(kind), first);
+        let mut lane = 0;
+        for (ti, tr) in tracks.iter().enumerate() {
+            let clips: Vec<TrackItem> = tr.items.iter().filter_map(|it| edit::through::clip_item_to(it, range)).collect();
+            if clips.is_empty() {
+                continue;
+            }
+            lanes.insert((audio(kind), ti), lane);
+            items.extend(clips.into_iter().map(|c| (kind, lane, c)));
+            lane += 1;
+        }
+    }
+    if items.is_empty() {
+        return Err(EngineError::Other("no destination track for this sequence's clips (check source patching)".into()));
+    }
+    let media = s.media.clone();
+    s.edit(label, |p, st| {
+        // copies with ids, links and transitions of their own, moved to `at`
+        let mut ids = std::collections::HashMap::new();
+        let mut links = std::collections::HashMap::new();
+        let mut placed: Vec<(TrackKind, usize, TrackItem)> = Vec::new();
+        for (kind, lane, mut it) in items.clone() {
+            let id = ClipId(p.alloc_id());
+            ids.insert(it.id, id);
+            it.id = id;
+            it.start = at + (it.start - range.start);
+            if let Some(l) = it.link {
+                it.link = Some(*links.entry(l).or_insert_with(|| p.alloc_id()));
+            }
+            placed.push((kind, lane, it));
+        }
+        let mut transitions = Vec::new();
+        for (kind, tracks) in [(TrackKind::Video, &src.video_tracks), (TrackKind::Audio, &src.audio_tracks)] {
+            for (ti, tr) in tracks.iter().enumerate() {
+                let Some(lane) = lanes.get(&(audio(kind), ti)).copied() else { continue };
+                for trn in &tr.transitions {
+                    let from = trn.from.map(|c| ids.get(&c).copied());
+                    let to = trn.to.map(|c| ids.get(&c).copied());
+                    if trn.start >= range.start && trn.end() <= range.end() && from != Some(None) && to != Some(None) {
+                        let mut t = trn.clone();
+                        t.id = filmcraft_project::TransitionId(p.alloc_id());
+                        (t.from, t.to) = (from.flatten(), to.flatten());
+                        t.start = at + (t.start - range.start);
+                        transitions.push((kind, lane, t));
+                    }
+                }
+            }
+        }
+        // tracks for every lane, added on top when the sequence has too few
+        let mut dest: std::collections::HashMap<(bool, usize), TrackId> = std::collections::HashMap::new();
+        for (is_audio, lane) in placed.iter().map(|x| (audio(x.0), x.1)).collect::<std::collections::BTreeSet<_>>() {
+            let kind = if is_audio { TrackKind::Audio } else { TrackKind::Video };
+            let index = base.get(&is_audio).copied().unwrap_or(0).saturating_add(lane);
+            while p.sequence(seq_id).ok_or(EngineError::NoSequence)?.tracks(kind).len() <= index {
+                let id = TrackId(p.alloc_id());
+                let tracks = p.sequence_mut(seq_id).ok_or(EngineError::NoSequence)?.tracks_mut(kind);
+                let (word, n) = (if kind == TrackKind::Video { "Video" } else { "Audio" }, tracks.len() + 1);
+                tracks.push(filmcraft_project::Track::new(id, kind, format!("{word} {n}")));
+            }
+            let id = p.sequence(seq_id).and_then(|q| q.tracks(kind).get(index)).map(|t| t.id).ok_or(EngineError::NoSequence)?;
+            dest.insert((is_audio, lane), id);
+        }
+        let placements: Vec<(TrackId, TrackItem)> = placed.into_iter().filter_map(|(k, lane, it)| Some((*dest.get(&(audio(k), lane))?, it))).collect();
+        let span = placements.iter().map(|x| x.1.start).min().zip(placements.iter().map(|x| x.1.end()).max());
+        let snapshot = std::sync::Arc::new(p.clone());
+        let snap = snapshot.clone();
+        let durations = move |id: ItemId| crate::media_duration(&snapshot, &media, id);
+        let starts = move |id: ItemId| crate::media_start(&snap, id);
+        let mut next = p.next_id;
+        let seq = p.sequence_mut(seq_id).ok_or(EngineError::NoSequence)?;
+        let min = seq.settings.frame_rate.frame_duration();
+        let mut ctx = edit::EditCtx { next_id: &mut next, media_duration: &durations, media_start: &starts, min_duration: min };
+        let new = if insert { edit::insert(seq, placements, &mut ctx)? } else { edit::overwrite(seq, placements, &mut ctx)? };
+        for (kind, lane, t) in transitions {
+            if let Some(tr) = dest.get(&(audio(kind), lane)).and_then(|id| seq.track_mut(*id)) {
+                tr.transitions.push(t);
+            }
+        }
+        for tr in seq.all_tracks_mut() {
+            tr.sort();
+            edit::remove_orphan_transitions(tr);
+        }
+        seq.check().map_err(EngineError::Other)?;
+        if insert
+            && st.ripple_sequence_markers
+            && let Some((a, b)) = span
+        {
+            ripple_markers(&mut seq.markers, a, b - a);
+        }
+        p.next_id = next;
+        st.selection = new.clone();
+        Ok(new)
+    })
 }
 
 // ---------- delete tracks ----------
 
 /// Sequence ▸ Delete Tracks…: delete all empty video / audio tracks (`"empty"`) or one track per
 /// kind. A sequence always keeps at least one video and one audio track.
+/// The most tracks one `sequence.addTracks` adds of a kind, and the most a sequence may then
+/// have of it. (Amounts come from dialogs, scripts and the control channel: never trusted.)
+const MAX_ADDED_TRACKS: u64 = 99;
+const MAX_TRACKS: usize = 999;
+
+/// Where `sequence.addTracks` puts new tracks among the `len` tracks of their kind: the number of
+/// tracks before them. `key` holds `"first"` (Before First Track), a track of that kind by name
+/// (`"V2"`: after Video 2; `letter` is V, A or S) or a number (after that many tracks); without it
+/// they go after the last track.
+fn placement(p: &Value, key: &str, letter: char, len: usize) -> Result<usize> {
+    let cmd = "sequence.addTracks";
+    let after = match p.get(key) {
+        None | Some(Value::Null) => return Ok(len),
+        Some(v) => match (v.as_u64(), v.as_str()) {
+            (Some(n), _) => usize::try_from(n).ok(),
+            (None, Some(x)) if matches!(x.to_ascii_lowercase().as_str(), "first" | "before" | "beforefirst") => Some(0),
+            (None, Some(x)) if matches!(x.to_ascii_lowercase().as_str(), "last" | "end") => Some(len),
+            (None, Some(x)) => {
+                let mut rest = x.chars();
+                rest.next().filter(|c| c.eq_ignore_ascii_case(&letter)).and_then(|_| rest.as_str().parse::<usize>().ok())
+            }
+            (None, None) => None,
+        },
+    };
+    after.filter(|n| *n <= len).ok_or_else(|| bad(cmd, format!("`{key}` must be \"first\", a track ({letter}1–{letter}{len}) or how many tracks come before")))
+}
+
+/// Give the tracks that still carry a default name (`<prefix> <number>`) the number of their
+/// place, as Premiere numbers its tracks; a track the user named keeps its name.
+fn renumber(tracks: &mut [filmcraft_project::Track], prefix: &str) {
+    for (i, t) in tracks.iter_mut().enumerate() {
+        let default = t.name.strip_prefix(prefix).and_then(|r| r.strip_prefix(' ')).is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()));
+        if default {
+            t.name = format!("{prefix} {}", i + 1);
+        }
+    }
+}
+
+/// Sequence ▸ Add Tracks…: `video` / `audio` / `submix` tracks, each kind at its own place
+/// (`videoAfter`, `audioAfter`, `submixAfter`; after the last track when not given), audio tracks
+/// of `audioType` (Standard unless given) and submix tracks of `submixType` (Stereo). One undo
+/// step. Tracks are numbered by their place, so default names after the new tracks move up.
+pub(crate) fn add_tracks(s: &mut Session, p: &Value) -> Result<Value> {
+    use crate::commands::u64_p;
+    let cmd = "sequence.addTracks";
+    let q = s.active_sequence().ok_or(EngineError::NoSequence)?;
+    let amount = |key: &str, default: u64, have: usize| -> Result<usize> {
+        let n = match p.get(key) {
+            None | Some(Value::Null) => default,
+            Some(_) => u64_p(p, key).ok_or_else(|| bad(cmd, format!("`{key}` must be a number of tracks")))?,
+        };
+        if n > MAX_ADDED_TRACKS {
+            return Err(bad(cmd, format!("`{key}`: at most {MAX_ADDED_TRACKS} tracks at a time")));
+        }
+        if have.saturating_add(n as usize) > MAX_TRACKS {
+            return Err(bad(cmd, format!("`{key}`: a sequence has at most {MAX_TRACKS} tracks of a kind")));
+        }
+        Ok(n as usize)
+    };
+    let (nv, na, ns) = (amount("video", 1, q.video_tracks.len())?, amount("audio", 0, q.audio_tracks.len())?, amount("submix", 0, q.submix_tracks.len())?);
+    let (at_v, at_a, at_s) = (
+        placement(p, "videoAfter", 'V', q.video_tracks.len())?,
+        placement(p, "audioAfter", 'A', q.audio_tracks.len())?,
+        placement(p, "submixAfter", 'S', q.submix_tracks.len())?,
+    );
+    let channels = |key: &str, default: AudioChannels| match p.get(key).and_then(Value::as_str) {
+        None => Ok(default),
+        Some(x) => crate::mixer::channels_from(x).ok_or_else(|| bad(cmd, format!("`{key}`: unknown track type {x:?} (standard, stereo, 5.1, adaptive, mono)"))),
+    };
+    let (audio_type, submix_type) = (channels("audioType", AudioChannels::Stereo)?, channels("submixType", AudioChannels::Stereo)?);
+    if nv + na + ns == 0 {
+        return Err(bad(cmd, "no tracks to add"));
+    }
+    let added = s.edit_sequence("Add Tracks", |q, ctx, _| {
+        let mut new = |kind: TrackKind, prefix: &str, channels: Option<AudioChannels>| {
+            let mut t = filmcraft_project::Track::new(TrackId(ctx.alloc()), kind, format!("{prefix} 0"));
+            if let Some(c) = channels {
+                t.channels = c;
+            }
+            t
+        };
+        let mut ids: [Vec<u64>; 3] = Default::default();
+        for (k, (tracks, n, at, kind, prefix, ch)) in [
+            (&mut q.video_tracks, nv, at_v, TrackKind::Video, "Video", None),
+            (&mut q.audio_tracks, na, at_a, TrackKind::Audio, "Audio", Some(audio_type)),
+            (&mut q.submix_tracks, ns, at_s, TrackKind::Audio, "Submix", Some(submix_type)),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let at = at.min(tracks.len());
+            for i in 0..n {
+                let t = new(kind, prefix, ch);
+                if let Some(slot) = ids.get_mut(k) {
+                    slot.push(t.id.0);
+                }
+                tracks.insert(at + i, t);
+            }
+            if n > 0 {
+                renumber(tracks, prefix);
+            }
+        }
+        Ok(ids)
+    })?;
+    let [video, audio, submix] = added;
+    Ok(json!({"video": video, "audio": audio, "submix": submix}))
+}
+
 fn delete_tracks(s: &mut Session, p: &Value) -> Result<Value> {
     let seq_id = s.state.active_sequence.ok_or(EngineError::NoSequence)?;
     let q = s.active_sequence().ok_or(EngineError::NoSequence)?;

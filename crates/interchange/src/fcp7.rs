@@ -192,6 +192,13 @@ impl<'a, 'i> Imp<'a, 'i, '_> {
         match file {
             Some(f) => {
                 let id = self.file(f, child_text(n, "name"), bin);
+                // A sequence's clip items file their media at the top level, so a sequence earlier in the
+                // document that used this file first left it there; the master clip's bin is its home.
+                if let (Some(item), Some(b)) = (id, bin)
+                    && self.b.p.root.parent_of(item) == Some(self.b.p.root.id)
+                {
+                    self.b.p.move_to_bin(&[item], Some(b));
+                }
                 if let Some(item) = id.and_then(|i| self.b.p.item_mut(i))
                     && let Some(l) = path_text(n, &["labels", "label2"]).and_then(label_from)
                 {

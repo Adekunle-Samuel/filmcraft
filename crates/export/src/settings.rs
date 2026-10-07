@@ -433,6 +433,15 @@ impl ExportSettings {
                 };
                 mbps * 1e6 * px / (1920.0 * 1080.0) * fps / 29.97
             }
+            Format::Apv => {
+                let bpp = match crate::apv_profile(&self.apv_profile) {
+                    filmcraft_apv::Profile::P422_12 => 3.6,
+                    filmcraft_apv::Profile::P444_10 => 4.2,
+                    filmcraft_apv::Profile::P444_12 | filmcraft_apv::Profile::P4444_10 | filmcraft_apv::Profile::P4444_12 => 5.0,
+                    _ => 3.0,
+                };
+                px * fps * bpp
+            }
             Format::Mjpeg => px * 8.0 * (0.4 + self.quality as f64 / 100.0 * 2.0) * fps / 8.0,
             Format::PngSequence => px * 4.0 * 0.45 * 8.0 * fps,
             Format::TiffSequence | Format::BmpSequence => px * if self.format == Format::BmpSequence { 3.0 } else { 4.0 } * 8.0 * fps,
@@ -495,6 +504,7 @@ impl ExportSettings {
                     }
                 }
                 Format::DnxHr => v += &format!(", DNxHR {}", if self.dnx_profile.is_empty() { "HQ".into() } else { self.dnx_profile.to_ascii_uppercase() }),
+                Format::Apv => v += &format!(", {}", crate::apv_profile(&self.apv_profile).name()),
                 Format::Mjpeg => v += &format!(", quality {}", self.quality),
                 _ => {}
             }
@@ -516,7 +526,7 @@ impl ExportSettings {
         let container = match self.format {
             Format::H264 if self.multiplexer == Multiplexer::Mov => "QuickTime",
             Format::H264 => "MP4",
-            Format::ProRes | Format::DnxHr | Format::Mjpeg => "QuickTime",
+            Format::ProRes | Format::DnxHr | Format::Apv | Format::Mjpeg => "QuickTime",
             Format::MxfOp1a | Format::MxfOpAtom => self.mxf_video_codec.label(),
             Format::PngSequence | Format::TiffSequence | Format::BmpSequence => "Image sequence",
             _ => "",

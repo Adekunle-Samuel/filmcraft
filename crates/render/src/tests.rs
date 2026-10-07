@@ -350,3 +350,22 @@ fn draft_reduced_resolution_plans_carry_decimated_yuv() {
         }
     }
 }
+
+/// A damaged project can hold a multi-camera clip whose angle is the clip itself. Planning and
+/// rendering its frame must end: the plan's multi-camera shortcut used to recurse until the stack
+/// overflowed.
+#[test]
+fn a_multicam_clip_showing_itself_plans_and_renders_to_an_end() {
+    let mut p = Project::new("cycle");
+    let a = p.new_sequence("a", SequenceSettings::default(), 1, 0, None);
+    let rate = FrameRate::default();
+    let mut it = p.make_track_item(a, TrackKind::Video, Tick::ZERO, TimeRange::new(Tick::ZERO, Tick(TICKS_PER_SECOND)), rate).unwrap();
+    it.multicam = Some(filmcraft_project::multicam::MulticamSel { enabled: true, angle: 0 });
+    p.sequence_mut(a).unwrap().video_tracks[0].items.push(it);
+    let opts = RenderOptions { scale: 0.1, ..Default::default() };
+    let sources = SourceMap::default();
+    let img = plan::execute_cpu(&plan::plan_frame(&p, a, Tick::ZERO, opts, &sources));
+    assert!(img.w > 0 && img.h > 0);
+    let img = render_sequence(&p, a, Tick::ZERO, opts, &sources);
+    assert!(img.w > 0 && img.h > 0);
+}

@@ -234,8 +234,17 @@ pub struct EditorState {
     pub targeting: std::collections::BTreeMap<ItemId, Targeting>,
     pub snapping: bool,
     pub linked_selection: bool,
+    /// The Timeline's "Insert and overwrite sequences as nests or individual clips" toggle, turned
+    /// off: a sequence edits in as its clips instead of one nested clip.
+    #[serde(default)]
+    pub sequences_as_clips: bool,
     /// Open sequences (timeline tabs), in tab order.
     pub open_sequences: Vec<ItemId>,
+    /// How each sequence is shown in the Timeline panel (zoom, scroll, track heights): every
+    /// sequence keeps its own. The frontend writes the active sequence's view here as it changes
+    /// and takes a sequence's view from here when it becomes the active one.
+    #[serde(default)]
+    pub timeline_views: std::collections::BTreeMap<ItemId, filmcraft_project::SequenceView>,
     /// Timeline clipboard (serialized track items with their relative track index).
     #[serde(skip)]
     pub clipboard: Vec<(TrackKind, usize, filmcraft_project::TrackItem)>,
@@ -295,10 +304,17 @@ pub struct EditorState {
 /// Events for frontends (drained each frame).
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub enum Event {
-    ProjectChanged { revision: u64 },
-    Toast { message: String, error: bool },
+    ProjectChanged {
+        revision: u64,
+    },
+    Toast {
+        message: String,
+        error: bool,
+    },
     OpenSequence(ItemId),
     OpenSource(ItemId),
+    /// Show this item in the Project panel (Reveal in Project).
+    RevealInProject(ItemId),
 }
 
 pub struct Session {
@@ -681,11 +697,55 @@ impl Session {
         commands::find(id).is_some_and(|c| (c.enabled)(self).is_ok())
     }
 
+    /// What is open, to store beside the project when it is saved.
+    pub fn project_view(&self) -> filmcraft_project::ProjectView {
+        let is_seq = |id: &ItemId| self.project.sequence(*id).is_some();
+        filmcraft_project::ProjectView {
+            open_sequences: self.state.open_sequences.iter().copied().filter(is_seq).collect(),
+            active_sequence: self.state.active_sequence.filter(is_seq),
+            sequences: self.state.timeline_views.iter().filter(|(id, _)| is_seq(id)).map(|(id, v)| (*id, *v)).collect(),
+        }
+    }
+
+    /// Open what was open when the project was saved. Nothing in `view` is trusted: ids that are
+    /// not sequences of this project are dropped (also a second mention of the same sequence),
+    /// and numbers are brought into range. A view without any open sequence leaves the project
+    /// on its first sequence: a project saved by a session that never showed one (a script, the
+    /// CLI) should not open on an empty Timeline.
+    pub fn restore_project_view(&mut self, view: filmcraft_project::ProjectView) {
+        let mut open: Vec<ItemId> = Vec::new();
+        for id in view.open_sequences {
+            if self.project.sequence(id).is_some() && !open.contains(&id) {
+                open.push(id);
+            }
+        }
+        if !open.is_empty() {
+            self.state.active_sequence = view.active_sequence.filter(|id| open.contains(id)).or(open.first().copied());
+            self.state.open_sequences = open;
+        }
+        self.state.timeline_views =
+            view.sequences.into_iter().filter(|(id, _)| self.project.sequence(*id).is_some()).filter_map(|(id, v)| Some((id, v.checked()?))).collect();
+    }
+
+    /// Every edit passes through here: one that would put a sequence inside itself (directly or
+    /// through another nested sequence) is refused, whichever command asked for it. A project that
+    /// was opened with such a sequence already in it can still be edited (and repaired).
+    fn refuse_self_nesting(&self, edited: &Project) -> Result<()> {
+        match edited.nest_cycle() {
+            Some(id) if self.project.nest_cycle().is_none() => {
+                let name = edited.item(id).map(|i| i.name.as_str()).unwrap_or_default();
+                Err(EngineError::Other(format!("a sequence cannot be nested inside itself (\u{201c}{name}\u{201d})")))
+            }
+            _ => Ok(()),
+        }
+    }
+
     /// Apply an undoable project edit. The closure gets a mutable copy; on error nothing changes.
     pub fn edit<R>(&mut self, label: &str, f: impl FnOnce(&mut Project, &mut EditorState) -> Result<R>) -> Result<R> {
         let mut p = (*self.project).clone();
         let mut st = self.state.clone();
         let r = f(&mut p, &mut st)?;
+        self.refuse_self_nesting(&p)?;
         let old = std::mem::replace(&mut self.project, Arc::new(p));
         self.history.undo.push((label.to_string(), old));
         if self.history.undo.len() > self.history.limit {
@@ -710,6 +770,7 @@ impl Session {
         let mut p = (*self.project).clone();
         let mut st = self.state.clone();
         let r = f(&mut p, &mut st)?;
+        self.refuse_self_nesting(&p)?;
         self.project = Arc::new(p);
         self.state = st;
         self.bump();
@@ -776,6 +837,7 @@ impl Session {
             self.state.active_sequence = p.sequences().next().map(|i| i.id);
         }
         self.state.open_sequences.retain(|s| p.sequence(*s).is_some());
+        self.state.timeline_views.retain(|s, _| p.sequence(*s).is_some());
         if let Some(s) = self.state.source_item
             && p.item(s).is_none()
         {
@@ -936,6 +998,12 @@ mod mixer_tests;
 #[cfg(test)]
 mod multicam_tests;
 #[cfg(test)]
+mod nest_editing_tests;
+#[cfg(test)]
+mod nest_fidelity_tests;
+#[cfg(test)]
+mod nesting_tests;
+#[cfg(test)]
 mod panels_tests;
 #[cfg(test)]
 mod presets_tests;
@@ -957,6 +1025,8 @@ mod ripple_delete_tests;
 mod scopes_tests;
 #[cfg(test)]
 mod sequence_inspect_tests;
+#[cfg(test)]
+mod sequence_tabs_tests;
 #[cfg(test)]
 mod sequence_tools_tests;
 #[cfg(test)]

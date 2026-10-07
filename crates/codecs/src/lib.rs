@@ -18,6 +18,7 @@
 
 #![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable))]
 
+pub mod apv;
 pub mod audio;
 pub mod gop;
 pub mod hw;
@@ -30,6 +31,7 @@ pub mod video;
 
 use std::sync::{Arc, RwLock};
 
+pub use apv::ApvSource;
 pub use audio::AudioFileSource;
 pub use gop::{FRAME_BUDGET, GopStats, cached_bytes, gop_stats, live_decoders};
 pub use mkv::MkvSource;
@@ -65,11 +67,12 @@ impl From<CodecError> for filmcraft_media::MediaError {
 }
 
 /// Our own (pure-Rust) decoders, in the order they are tried.
-const BUILTIN_FACTORIES: [VideoDecoderFactory; 8] = [
+const BUILTIN_FACTORIES: [VideoDecoderFactory; 9] = [
     video::h264_factory,
     video::hevc_factory,
     video::vp9_factory,
     video::av1_factory,
+    video::apv_factory,
     video::prores_factory,
     video::dnx_factory,
     video::mjpeg_factory,
@@ -117,14 +120,14 @@ pub fn software_video_decoder(entry: &filmcraft_isobmff::SampleEntry) -> Result<
 }
 
 /// Openers for the engine's media pool (MP4/MOV, Matroska/WebM, MXF, Ogg Opus/Vorbis, MPEG TS/PS and
-/// MPEG-1/2 video elementary streams, standalone audio).
+/// MPEG-1/2 video elementary streams, APV raw bitstreams, standalone audio).
 pub fn openers() -> Vec<filmcraft_media::Opener> {
-    vec![mp4::opener, mkv::opener, mxf::opener, ogg::opener, mpeg::opener, audio::opener]
+    vec![mp4::opener, mkv::opener, mxf::opener, ogg::opener, mpeg::opener, apv::opener, audio::opener]
 }
 
 fn reader_registry() -> &'static RwLock<Vec<filmcraft_media::ReaderOpener>> {
     static R: std::sync::OnceLock<RwLock<Vec<filmcraft_media::ReaderOpener>>> = std::sync::OnceLock::new();
-    R.get_or_init(|| RwLock::new(vec![mp4::reader_opener, mkv::reader_opener, mxf::reader_opener, ogg::reader_opener, mpeg::reader_opener]))
+    R.get_or_init(|| RwLock::new(vec![mp4::reader_opener, mkv::reader_opener, mxf::reader_opener, ogg::reader_opener, mpeg::reader_opener, apv::reader_opener]))
 }
 
 /// Openers that read containers through a [`filmcraft_media::ByteReader`] (index now, samples on
@@ -169,5 +172,7 @@ pub fn open_bytes(name: &str, bytes: Arc<[u8]>) -> std::result::Result<filmcraft
     filmcraft_media::open_bytes(name, bytes, &openers())
 }
 
+#[cfg(test)]
+mod rounded_pts_tests;
 #[cfg(test)]
 mod tests;

@@ -320,6 +320,19 @@ impl MonitorView {
     }
 }
 
+/// Window ▸ Workspaces dialogs: Save as New Workspace… and Edit Workspaces….
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub enum WorkspaceDialog {
+    SaveAs {
+        name: String,
+    },
+    /// `selected`: the workspace picked in the list; `name`: its new name being typed.
+    Edit {
+        selected: Option<String>,
+        name: String,
+    },
+}
+
 /// Guide dialogs (View ▸ Add Guide…, Guide Templates ▸ Save Guides as Template… / Manage Guides…).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum GuideDialog {
@@ -409,6 +422,9 @@ pub struct UiState {
     /// Audio Gain dialog draft (mode, dB values).
     #[serde(default)]
     pub audio_gain: AudioGainDraft,
+    /// Add Tracks dialog draft.
+    #[serde(default)]
+    pub add_tracks: AddTracksDraft,
     /// Delete Tracks dialog draft.
     #[serde(default)]
     pub delete_tracks: DeleteTracksDraft,
@@ -454,6 +470,9 @@ pub struct UiState {
     /// Open guide dialog (Add Guide / Save Guides as Template / Manage Guides).
     #[serde(default)]
     pub guide_dialog: Option<GuideDialog>,
+    /// Open Window ▸ Workspaces dialog.
+    #[serde(default)]
+    pub workspace_dialog: Option<WorkspaceDialog>,
     /// Edit / Clip / File menu dialog (Paste Attributes, Make Subclip, Frame Hold Options, …;
     /// open when Some). See `panels::clip_dialogs`.
     #[serde(default)]
@@ -685,6 +704,30 @@ pub struct AudioGainDraft {
     pub all_peaks_db: f64,
 }
 
+/// The Add Tracks dialog (Sequence ▸ Add Tracks…): for video, audio and audio submix tracks, how
+/// many to add and where (`*_after`: how many tracks of the kind come before the new ones; 0 is
+/// "Before First Track"), and the type of the audio and submix tracks (`standard` / `stereo`,
+/// `5.1`, `adaptive`, `mono`). Premiere's defaults: one video track and one audio track after the
+/// last ones, no submix track.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AddTracksDraft {
+    pub video: u32,
+    pub video_after: usize,
+    pub audio: u32,
+    pub audio_after: usize,
+    pub audio_type: String,
+    pub submix: u32,
+    pub submix_after: usize,
+    pub submix_type: String,
+}
+
+impl Default for AddTracksDraft {
+    fn default() -> Self {
+        Self { video: 1, video_after: 0, audio: 1, audio_after: 0, audio_type: "standard".into(), submix: 0, submix_after: 0, submix_type: "stereo".into() }
+    }
+}
+
 /// The Delete Tracks dialog (Sequence ▸ Delete Tracks…): per kind, whether to delete and which
 /// track (`"empty"` = All Empty Tracks, or a track name such as `"V2"`).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -754,6 +797,7 @@ impl Default for UiState {
             mixer_meter_input_only: false,
             settings: None,
             audio_gain: AudioGainDraft::default(),
+            add_tracks: AddTracksDraft::default(),
             delete_tracks: DeleteTracksDraft::default(),
             gfx_edit: None,
             pen_points: vec![],
@@ -769,6 +813,7 @@ impl Default for UiState {
             multicam_record: true,
             edit_cameras: None,
             guide_dialog: None,
+            workspace_dialog: None,
             clip_dialog: None,
             extras: Default::default(),
             gfx_templates: Default::default(),

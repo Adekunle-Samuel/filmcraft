@@ -758,7 +758,7 @@ fn seed_sweep() {
     ];
     for seed in 1..=8u64 {
         for c in cfgs {
-            check(Cfg { seed: (seed * 0x9E37_79B9_7F4A_7C15) ^ c.w as u64, ..c });
+            check(Cfg { seed: seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) ^ c.w as u64, ..c });
         }
     }
 }

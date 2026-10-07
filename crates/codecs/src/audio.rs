@@ -15,8 +15,8 @@ use symphonia::core::probe::Hint;
 use crate::{CodecError, Result};
 
 enum Inner {
-    /// Our own AAC-LC decoder.
-    Aac { dec: Box<filmcraft_aac::Decoder>, asc: Vec<u8> },
+    /// Our own AAC-LC decoder. `up` interpolates HE-AAC's core to the output rate (see [`Upsample2x`]).
+    Aac { dec: Box<filmcraft_aac::Decoder>, asc: Vec<u8>, up: Option<Box<Upsample2x>> },
     /// AAC whose configuration arrives with the first frame (ADTS / LATM).
     AacPending,
     /// Our own Opus decoder (always 48 kHz output; pre-skip is left to container timestamps).
@@ -82,11 +82,13 @@ impl PacketDecoder {
         let dec = symphonia::default::get_codecs().make(&p, &DecoderOptions::default()).map_err(|e| CodecError::Unsupported(e.to_string()))?;
         Ok(Self { inner: Inner::Symphonia(dec), channels: 0 })
     }
-    /// AAC: our decoder for AAC-LC; symphonia for other object types (HE-AAC…).
+    /// AAC: our decoder for AAC-LC and the AAC-LC core of HE-AAC (v1/v2); symphonia for other
+    /// object types. `sample_rate` is the stream's output rate: when it is twice the core rate
+    /// (HE-AAC, see [`aac_output_rate`]) the decoded core is upsampled to it.
     pub fn aac(asc: &[u8], sample_rate: u32) -> Result<Self> {
-        let lc = asc.first().map(|b| b >> 3) == Some(2);
-        if lc && let Ok(dec) = filmcraft_aac::Decoder::new(asc) {
-            return Ok(Self { inner: Inner::Aac { dec: Box::new(dec), asc: asc.to_vec() }, channels: 0 });
+        if let Ok(dec) = filmcraft_aac::Decoder::new(asc) {
+            let up = (dec.sample_rate().checked_mul(2) == Some(sample_rate)).then(|| Box::new(Upsample2x::new(dec.channels())));
+            return Ok(Self { inner: Inner::Aac { dec: Box::new(dec), asc: asc.to_vec(), up }, channels: 0 });
         }
         Self::new(CODEC_TYPE_AAC, sample_rate, Some(asc.to_vec()))
     }
@@ -119,7 +121,7 @@ impl PacketDecoder {
             return Ok(());
         }
         let dec = filmcraft_aac::Decoder::new(asc).map_err(|e| CodecError::Unsupported(format!("AAC: {e}")))?;
-        self.inner = Inner::Aac { dec: Box::new(dec), asc: asc.to_vec() };
+        self.inner = Inner::Aac { dec: Box::new(dec), asc: asc.to_vec(), up: None };
         Ok(())
     }
     /// AC-3 (ATSC A/52).
@@ -133,7 +135,7 @@ impl PacketDecoder {
     pub fn for_isobmff(c: &filmcraft_isobmff::CodecConfig, rate: u32) -> Result<Self> {
         use filmcraft_isobmff::CodecConfig as C;
         match c {
-            C::Aac(a) => Self::aac(&a.asc, if a.sample_rate > 0 { a.sample_rate } else { rate }),
+            C::Aac(a) => Self::aac(&a.asc, if rate > 0 { rate } else { a.sample_rate }),
             C::Mp3 => Self::new(CODEC_TYPE_MP3, rate, None),
             C::Ac3 { .. } => Self::ac3(),
             C::Alac { cookie } => Self::new(CODEC_TYPE_ALAC, rate, Some(cookie.clone())),
@@ -145,8 +147,11 @@ impl PacketDecoder {
     /// Decode one packet into planar channels.
     pub fn decode(&mut self, data: &[u8], ts: u64) -> Result<Vec<Vec<f32>>> {
         let dec = match &mut self.inner {
-            Inner::Aac { dec, .. } => {
-                let out = dec.decode(data).map_err(|e| CodecError::Decode(e.to_string()))?;
+            Inner::Aac { dec, up, .. } => {
+                let mut out = dec.decode(data).map_err(|e| CodecError::Decode(e.to_string()))?;
+                if let Some(up) = up {
+                    out = up.process(out);
+                }
                 self.channels = out.len();
                 return Ok(out);
             }
@@ -202,9 +207,12 @@ impl PacketDecoder {
     }
     pub fn reset(&mut self) {
         match &mut self.inner {
-            Inner::Aac { dec, asc } => {
+            Inner::Aac { dec, asc, up } => {
                 if let Ok(d) = filmcraft_aac::Decoder::new(asc) {
                     **dec = d;
+                }
+                if let Some(up) = up {
+                    up.reset();
                 }
             }
             Inner::Opus { dec, .. } => dec.reset(),
@@ -212,6 +220,94 @@ impl PacketDecoder {
             Inner::Ac3(d) => d.reset(),
             Inner::AacPending => {}
         }
+    }
+}
+
+/// The output rate of an AAC stream: twice the core rate for HE-AAC (ISO/IEC 14496-3 §1.6.5).
+/// Explicit signalling names the rate in the `AudioSpecificConfig`; with implicit signalling (an
+/// AAC-LC config at 24 kHz or less) SBR is only visible as fill-element data in the access units,
+/// so the first ones are decoded to look for it. `None` if `asc` is not one our decoder reads.
+pub fn aac_output_rate<'a>(asc: &[u8], first_units: impl IntoIterator<Item = &'a [u8]>) -> Option<u32> {
+    let mut dec = filmcraft_aac::Decoder::new(asc).ok()?;
+    let core = dec.sample_rate();
+    if let Some(ext) = dec.config().extension_sample_rate {
+        return Some(ext);
+    }
+    if core <= 24_000 {
+        for au in first_units {
+            let _ = dec.decode(au);
+            if dec.sbr() {
+                return Some(core * 2);
+            }
+        }
+    }
+    Some(core)
+}
+
+/// Taps on each side of the interpolation point in [`Upsample2x`].
+const UPSAMPLE_HALF: usize = 12;
+
+/// 2× upsampler for HE-AAC. Our decoder reconstructs the AAC-LC core at half the output rate and
+/// not yet the SBR high band, so the core is interpolated to the output rate: timing and pitch are
+/// right and the band above the core's Nyquist stays empty. Even outputs are the input samples,
+/// odd ones a Blackman-windowed sinc half-band interpolation over 2 × [`UPSAMPLE_HALF`] inputs.
+/// The look-ahead delays the output by `UPSAMPLE_HALF` input samples (0.5 ms at 24 kHz); the
+/// state carries across packets, so a seek primed with the preceding packet gives the same
+/// samples as continuous decoding.
+#[derive(Clone)]
+pub struct Upsample2x {
+    taps: [f32; 2 * UPSAMPLE_HALF],
+    /// The last `2 × UPSAMPLE_HALF` input samples per channel.
+    hist: Vec<Vec<f32>>,
+}
+
+impl Upsample2x {
+    pub fn new(channels: usize) -> Self {
+        let m = UPSAMPLE_HALF as f64;
+        let mut taps = [0f32; 2 * UPSAMPLE_HALF];
+        let mut sum = 0.0;
+        for (k, t) in taps.iter_mut().enumerate() {
+            // distance from the interpolation point (halfway between two inputs)
+            let x = k as f64 - m + 0.5;
+            let sinc = (std::f64::consts::PI * x).sin() / (std::f64::consts::PI * x);
+            let w = 0.42 + 0.5 * (std::f64::consts::PI * x / m).cos() + 0.08 * (2.0 * std::f64::consts::PI * x / m).cos();
+            *t = (sinc * w) as f32;
+            sum += sinc * w;
+        }
+        for t in &mut taps {
+            *t = (*t as f64 / sum) as f32;
+        }
+        Self { taps, hist: vec![vec![0.0; 2 * UPSAMPLE_HALF]; channels] }
+    }
+
+    pub fn reset(&mut self) {
+        for h in &mut self.hist {
+            h.fill(0.0);
+        }
+    }
+
+    pub fn process(&mut self, input: Vec<Vec<f32>>) -> Vec<Vec<f32>> {
+        if self.hist.len() < input.len() {
+            self.hist.resize(input.len(), vec![0.0; 2 * UPSAMPLE_HALF]);
+        }
+        let m = UPSAMPLE_HALF;
+        input
+            .into_iter()
+            .zip(&mut self.hist)
+            .map(|(x, hist)| {
+                let mut buf = std::mem::take(hist);
+                buf.extend_from_slice(&x);
+                let mut out = Vec::with_capacity(x.len() * 2);
+                // output pair i is centred on buf[i + m]: the sample itself, then the point halfway
+                // to the next one from buf[i + 1 ..= i + 2m]
+                for w in buf.windows(2 * m + 1).take(x.len()) {
+                    out.push(w[m]);
+                    out.push(w[1..].iter().zip(&self.taps).map(|(a, b)| a * b).sum());
+                }
+                *hist = buf.split_off(buf.len() - 2 * m);
+                out
+            })
+            .collect()
     }
 }
 
@@ -602,4 +698,44 @@ pub fn opener(name: &str, bytes: Arc<[u8]>) -> Option<std::result::Result<Shared
         return None;
     }
     Some(AudioFileSource::decode(name, bytes).map(|s| Arc::new(s) as SharedSource).map_err(Into::into))
+}
+
+#[cfg(test)]
+mod he_aac_tests {
+    use super::*;
+
+    /// AAC-LC config, 22.05 kHz stereo.
+    const LC_22K: [u8; 2] = [0x13, 0x90];
+    /// An access unit holding only a fill element with SBR data (ID_FIL, EXT_SBR_DATA, ID_END).
+    const SBR_FILL: [u8; 3] = [0b1100_0011, 0b1010_0001, 0b1100_0000];
+
+    #[test]
+    fn output_rate_doubles_for_he_aac() {
+        // explicit: the extension rate from the config
+        assert_eq!(aac_output_rate(&[0x2B, 0x92, 0x08, 0x00], []), Some(44_100));
+        // implicit: SBR data in the first access units of a ≤ 24 kHz AAC-LC stream
+        assert_eq!(aac_output_rate(&LC_22K, [&SBR_FILL[..]]), Some(44_100));
+        assert_eq!(aac_output_rate(&LC_22K, []), Some(22_050));
+        // AAC-LC at 44.1 kHz stays as it is, even with SBR-looking fill data
+        assert_eq!(aac_output_rate(&[0x12, 0x10], [&SBR_FILL[..]]), Some(44_100));
+    }
+
+    #[test]
+    fn upsampler_interpolates_continuously_across_packets() {
+        let f = 1000.0 / 22_050.0;
+        let x: Vec<f32> = (0..4096).map(|i| (2.0 * std::f32::consts::PI * f * i as f32).sin()).collect();
+        let mut up = Upsample2x::new(1);
+        let mut y = Vec::new();
+        for chunk in x.chunks(1024) {
+            y.extend(up.process(vec![chunk.to_vec()]).remove(0));
+        }
+        assert_eq!(y.len(), 8192);
+        // output 2k + 1 is input k − UPSAMPLE_HALF + ½ (the look-ahead delay), within 0.1 %
+        let d = UPSAMPLE_HALF as f32;
+        for k in 100..4000 {
+            let want = (2.0 * std::f32::consts::PI * f * (k as f32 - d + 0.5)).sin();
+            assert!((y[2 * k + 1] - want).abs() < 1e-3, "{k}: {} vs {want}", y[2 * k + 1]);
+            assert_eq!(y[2 * k], x[k - UPSAMPLE_HALF]);
+        }
+    }
 }

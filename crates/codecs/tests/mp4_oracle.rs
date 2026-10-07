@@ -37,3 +37,19 @@ fn aac_mp4_resampled_reads_follow_the_edit_list() {
     assert!(peak <= level * 1.01, "resampled peak {peak} above the source's {level}");
     assert!(worst < 1e-4, "resampled read differs from the source by {worst}");
 }
+
+/// ffmpeg's MP4 muxer skips the B-frame reorder delay with an edit list, so the media (`mdhd`) runs
+/// one frame past what plays. The clip must be as long as ffmpeg decodes it: 60 frames, not 61.
+#[test]
+fn bframe_mp4_duration_is_the_decoded_frame_count() {
+    let ff = filmcraft_testkit::require_ffmpeg!();
+    let args = ["-f", "lavfi", "-i", "testsrc2=size=160x96:rate=30:duration=2", "-c:v", "libx264", "-bf", "2", "-pix_fmt", "yuv420p"];
+    let Some(f) = fixture(&ff, "bframes_x264.mp4", &args) else {
+        eprintln!("SKIPPED: ffmpeg without libx264");
+        return;
+    };
+    let n = ffmpeg_frames(&ff, &f, "yuv420p").len() / (160 * 96 * 3 / 2);
+    assert_eq!(n, 60);
+    let src = filmcraft_codecs::open_bytes("bframes_x264.mp4", bytes(&f)).unwrap();
+    assert_eq!(src.info().duration, filmcraft_time::FrameRate::FPS_30.tick_of(n as i64));
+}

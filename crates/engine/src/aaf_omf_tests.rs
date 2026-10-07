@@ -208,6 +208,95 @@ fn omf_renders_clip_effects_into_embedded_audio() {
     let _ = std::fs::remove_dir_all(dir);
 }
 
+/// `setup`, with both clips nested into "Inner" (one linked picture + sound nest on V1 / A1) and
+/// −6.0206 dB (half amplitude) on the nest's sound clip.
+fn setup_nested(name: &str) -> (Session, Vec<ItemId>, ItemId, ItemId, std::path::PathBuf) {
+    let (mut s, items, seq, dir) = setup(name);
+    s.execute("sequence.open", json!({"item": seq.0})).unwrap();
+    let clips: Vec<u64> = s.project.sequence(seq).unwrap().all_tracks().flat_map(|t| t.items.iter().map(|c| c.id.0)).collect();
+    s.execute("timeline.select", json!({"clips": clips})).unwrap();
+    let inner = ItemId(s.execute("clip.nest", json!({"name": "Inner"})).unwrap()["sequence"].as_u64().unwrap());
+    let mut p = (*s.project).clone();
+    let q = p.sequence_mut(seq).unwrap();
+    assert_eq!((q.video_tracks[0].items.len(), q.audio_tracks[0].items.len()), (1, 1), "one linked nest");
+    q.audio_tracks[0].items[0].effect_mut("volume").unwrap().params.insert("level".into(), Param::new(ParamValue::Float(-6.020_599_913)));
+    s.project = Arc::new(p);
+    (s, items, seq, inner, dir)
+}
+
+/// Premiere Pro renders the sound of a nested sequence into an OMF as one clip named after the
+/// sequence (seen in an OMF it exported). So do we: the nest is mixed, with what is on its clip.
+#[test]
+fn omf_renders_the_sound_of_a_nested_sequence() {
+    let (mut s, items, seq, inner, dir) = setup_nested("omf-nest");
+    let nest = s.project.sequence(seq).unwrap().audio_tracks[0].items[0].clone();
+    let path = dir.join("nest.omf").to_string_lossy().into_owned();
+    let r = s.execute("file.exportOmf", json!({"path": path, "handles": 0, "sequence": seq.0})).unwrap();
+    assert!(!r["report"].to_string().contains("nested"), "{r}");
+    let r = s.execute("file.importAaf", json!({"path": path})).unwrap();
+    let q = s.project.sequence(imported_seq(&r)).unwrap().clone();
+    let a = &q.audio_tracks[0].items;
+    assert_eq!(a.len(), 1, "the nest is one clip");
+    assert_eq!((a[0].name.as_str(), a[0].start, a[0].duration), ("Inner", nest.start, nest.duration));
+    assert!(s.project.sequence(a[0].item).is_none(), "media in the document, not a sequence");
+    // what it plays: the nested sequence's two clips one after the other, at half amplitude
+    let inside = s.project.sequence(inner).unwrap().audio_tracks[0].items.clone();
+    assert_eq!(inside.len(), 2);
+    let got = audio_of(&s, a[0].item, a[0].source_in.to_units_floor(48_000), 96_000);
+    for (k, oc) in inside.iter().enumerate() {
+        let want = audio_of(&s, oc.item, oc.source_in.to_units_floor(48_000), 48_000);
+        assert_eq!(oc.item, items[k]);
+        let peak = want[0].iter().fold(0f32, |m, x| m.max(x.abs()));
+        assert!(peak > 0.01, "the demo scene has audio");
+        // (away from the cut between the two clips)
+        for i in 480..47_520 {
+            let g = got[0][k * 48_000 + i];
+            assert!((g - want[0][i] * 0.5).abs() < 2e-3, "clip {k} sample {i}: {g} vs {}", want[0][i] * 0.5);
+        }
+    }
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// An AAF holds a nested sequence as a composition of its own (as Premiere Pro's does): it comes
+/// back as a sequence that the nest clips use, with its own clips, and with embedded audio the
+/// media inside it is in the document too.
+#[test]
+fn aaf_keeps_a_nested_sequence_as_a_sequence() {
+    let (mut s, items, seq, inner, dir) = setup_nested("aaf-nest");
+    let path = dir.join("nest.aaf").to_string_lossy().into_owned();
+    let r = s.execute("file.exportAaf", json!({"path": path, "audio": "embedded", "trimAudio": true, "handles": 6, "sequence": seq.0})).unwrap();
+    assert!(!r["report"].to_string().contains("gap"), "{r}");
+    let r = s.execute("file.import", json!({"paths": [path]})).unwrap();
+    let q = s.project.sequence(imported_seq(&r)).unwrap().clone();
+    let (v, a) = (&q.video_tracks[0].items, &q.audio_tracks[0].items);
+    assert_eq!((v.len(), a.len()), (1, 1));
+    let nested = v[0].item;
+    assert_ne!(nested, inner, "a sequence of the imported document");
+    assert_eq!((a[0].item, s.project.item(nested).unwrap().name.as_str()), (nested, "Inner"));
+    assert!(v[0].link.is_some() && v[0].link == a[0].link, "picture and sound of the nest are linked");
+    let level = a[0].effect("volume").and_then(|e| e.param("level")).and_then(|p| p.value.as_f64()).unwrap();
+    assert!((level + 6.0206).abs() < 1e-2, "the level stays on the nest's clip: {level}");
+    // inside: the two clips, their picture linked to the movies, their sound in the document
+    let n = s.project.sequence(nested).unwrap().clone();
+    let orig = s.project.sequence(inner).unwrap().clone();
+    for kind in [TrackKind::Video, TrackKind::Audio] {
+        let got: Vec<_> = n.tracks(kind)[0].items.iter().map(|c| (c.start, c.duration)).collect();
+        let want: Vec<_> = orig.tracks(kind)[0].items.iter().map(|c| (c.start, c.duration)).collect();
+        assert_eq!(got, want, "{kind:?}");
+    }
+    assert_eq!(path_of(&s, n.video_tracks[0].items[0].item), path_of(&s, items[0]));
+    for (c, oc) in n.audio_tracks[0].items.iter().zip(&orig.audio_tracks[0].items) {
+        let p = path_of(&s, c.item);
+        assert!(p.ends_with(".wav") && std::path::Path::new(&p).exists(), "{p}");
+        let got = audio_of(&s, c.item, c.source_in.to_units_floor(48_000), 4800);
+        let want = audio_of(&s, oc.item, oc.source_in.to_units_floor(48_000), 4800);
+        for i in 0..4800 {
+            assert!((got[0][i] - want[0][i]).abs() <= 1.0 / 32_768.0 + 1e-6, "sample {i}");
+        }
+    }
+    let _ = std::fs::remove_dir_all(dir);
+}
+
 #[test]
 fn commands_are_registered_with_menus_and_validate_params() {
     for (id, menu) in [("file.exportAaf", &["File", "Export"][..]), ("file.exportOmf", &["File", "Export"][..]), ("file.importAaf", &[][..])] {

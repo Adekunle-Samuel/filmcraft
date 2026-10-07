@@ -1694,6 +1694,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "filmcraft-apv"
+version = "0.2.1"
+dependencies = [
+ "filmcraft-bitstream",
+ "filmcraft-testkit",
+ "rayon",
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "filmcraft-audio-dsp"
 version = "0.2.1"
 dependencies = [
@@ -1774,6 +1784,7 @@ version = "0.2.1"
 dependencies = [
  "filmcraft-aac",
  "filmcraft-ac3",
+ "filmcraft-apv",
  "filmcraft-av1",
  "filmcraft-bitstream",
  "filmcraft-color",
@@ -1866,6 +1877,7 @@ name = "filmcraft-export"
 version = "0.2.1"
 dependencies = [
  "filmcraft-aac",
+ "filmcraft-apv",
  "filmcraft-audio-dsp",
  "filmcraft-codecs",
  "filmcraft-color",

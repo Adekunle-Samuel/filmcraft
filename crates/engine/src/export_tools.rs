@@ -209,6 +209,9 @@ pub fn settings_from_params(s: &Session, p: &Value, cmd: &str) -> Result<(Option
     if let Some(v) = str_p(p, "dnxProfile") {
         settings.dnx_profile = v.to_string();
     }
+    if let Some(v) = str_p(p, "apvProfile") {
+        settings.apv_profile = v.to_string();
+    }
     if let Some(v) = str_p(p, "mxfVideoCodec") {
         settings.mxf_video_codec = serde_json::from_value(json!(v)).map_err(|_| bad(cmd, "mxfVideoCodec: dnxhr | proRes | h264"))?;
     }

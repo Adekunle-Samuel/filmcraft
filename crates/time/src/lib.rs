@@ -52,6 +52,19 @@ impl Tick {
     pub fn to_rational_floor(self, num: i64, den: i64) -> i64 {
         (self.0 as i128 * den as i128).checked_div_euclid(num as i128 * TICKS_PER_SECOND as i128).unwrap_or(0) as i64
     }
+    /// Inverse of [`Tick::from_rational`], rounded to the nearest timebase unit (halves up).
+    ///
+    /// For finding a sample by its timestamp: containers store timestamps rounded to their
+    /// timebase (Matroska usually to 1 ms), so a stamp can sit up to half a unit after the true
+    /// time. Flooring the requested time misses every frame whose stamp was rounded up.
+    pub fn to_rational_round(self, num: i64, den: i64) -> i64 {
+        let n = self.0 as i128 * den as i128;
+        let unit = num as i128 * TICKS_PER_SECOND as i128;
+        let (n, unit) = if unit < 0 { (-n, -unit) } else { (n, unit) };
+        let (Some(q), Some(r)) = (n.checked_div_euclid(unit), n.checked_rem_euclid(unit)) else { return 0 };
+        // 0 <= r < unit: round up from the halfway point
+        (if r * 2 >= unit { q + 1 } else { q }) as i64
+    }
     pub fn abs(self) -> Tick {
         Tick(self.0.abs())
     }
@@ -474,6 +487,12 @@ mod tests {
         assert_eq!(Tick::from_rational(100, 1, 0), Tick::ZERO);
         assert_eq!(Tick::from_units(100, 0), Tick::ZERO);
         assert_eq!(Tick(5).to_rational_floor(0, 1), 0);
+        assert_eq!(Tick(5).to_rational_round(0, 1), 0);
+        for t in [i64::MIN, -1, 0, 1, i64::MAX] {
+            for (n, d) in [(i64::MIN, 1), (-1, 1000), (1, i64::MAX), (i64::MAX, i64::MIN), (1, 0)] {
+                let _ = Tick(t).to_rational_round(n, d);
+            }
+        }
         assert_eq!(Tick(5).mul_ratio(1, 0), Tick::ZERO);
         assert_eq!(Tick(5).clamp(Tick(10), Tick(0)), Tick(0));
         let _ = format_timecode_frames(i64::MIN, FrameRate::FPS_29_97, true);
@@ -535,6 +554,19 @@ mod tests {
         let t = Tick::from_rational(90_000, 1, 90_000);
         assert_eq!(t.0, TICKS_PER_SECOND);
         assert_eq!(t.to_rational_floor(1, 90_000), 90_000);
+        assert_eq!(t.to_rational_round(1, 90_000), 90_000);
+        // 1 ms timebase (Matroska): to the nearest millisecond, halves up
+        let ms = |t: Tick| t.to_rational_round(1, 1000);
+        assert_eq!(ms(FrameRate::FPS_30.tick_of(1)), 33);
+        assert_eq!(ms(FrameRate::FPS_30.tick_of(2)), 67);
+        assert_eq!(FrameRate::FPS_30.tick_of(2).to_rational_floor(1, 1000), 66);
+        assert_eq!(ms(FrameRate::FPS_29_97.tick_of(15)), 501, "500.5 ms");
+        assert_eq!(ms(Tick::from_rational(-4, 1, 10_000)), 0, "-0.4 ms");
+        assert_eq!(ms(Tick::from_rational(-5, 1, 10_000)), 0, "-0.5 ms");
+        assert_eq!(ms(Tick::from_rational(-6, 1, 10_000)), -1, "-0.6 ms");
+        // a negative timebase is nonsense, but rounds the same way
+        assert_eq!(FrameRate::FPS_30.tick_of(2).to_rational_round(-1, -1000), 67);
+        assert_eq!(FrameRate::FPS_29_97.tick_of(15).to_rational_round(-1, -1000), 501);
         assert_eq!(FrameRate::from_f64(29.97), FrameRate::FPS_29_97);
         assert_eq!(FrameRate::FPS_23_976.label(), "23.976");
     }

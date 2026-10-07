@@ -14,7 +14,7 @@ struct U {
     p0: vec4<f32>,   // opacity, kind (0 rgba8 srgb straight, 1 rgba16f premul linear, 2 yuv), taps, transfer (0 srgb, 1 linear, 2 pq, 3 hlg)
     p1: vec4<f32>,   // y_off y_scale c_off c_scale (code units)
     p2: vec4<f32>,   // kr kb code_scale footprint
-    p3: vec4<f32>,   // blend mode (index into filmcraft_render::Blend::ALL), unused ×3
+    p3: vec4<f32>,   // blend mode (index into filmcraft_render::Blend::ALL), alpha-plane scale (0: none), unused ×2
 };
 
 @group(0) @binding(0) var<uniform> u: U;
@@ -23,6 +23,8 @@ struct U {
 @group(0) @binding(3) var tex2: texture_2d<f32>;
 // The accumulator under the layer (blend modes other than Normal / Dissolve only).
 @group(0) @binding(4) var backdrop: texture_2d<f32>;
+// The alpha plane of a Y'CbCr source (ProRes 4444, ...); a dummy texture when `u.p3.y` is 0.
+@group(0) @binding(5) var tex3: texture_2d<f32>;
 
 struct VOut {
     @builtin(position) pos: vec4<f32>,
@@ -103,7 +105,12 @@ fn sample(p: vec2<f32>) -> vec4<f32> {
     let R = y + 2.0 * (1.0 - kr) * r;
     let B = y + 2.0 * (1.0 - kb) * b;
     let G = (y - kr * R - kb * B) / kg;
-    return vec4(to_linear(vec3(R, G, B)), 1.0);
+    // straight alpha from the alpha plane (full resolution, like luma), premultiplied here
+    var a = 1.0;
+    if u.p3.y > 0.0 {
+        a = clamp(load4(tex3, p).r * u.p3.y, 0.0, 1.0);
+    }
+    return vec4(to_linear(vec3(R, G, B)) * a, a);
 }
 
 // The layer's premultiplied linear colour at this pixel, opacity applied.

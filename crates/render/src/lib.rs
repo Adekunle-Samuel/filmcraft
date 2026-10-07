@@ -54,13 +54,18 @@ impl<F: Fn(ItemId) -> Option<SharedSource> + Sync> SourceProvider for F {
     }
 }
 
+/// How many nested sequences deep the picture and the sound are followed. Deeper nests draw
+/// nothing and are silent, which also ends a sequence that contains itself (only a damaged project
+/// has one: the editor refuses the edit).
+pub const MAX_NEST_DEPTH: u32 = 8;
+
 #[derive(Clone, Copy, Debug)]
 pub struct RenderOptions {
     /// Output scale relative to the sequence frame size (1.0 = full, 0.5 = ½ resolution…).
     pub scale: f32,
     /// Skip standard effects (fast scrubbing / "Toggle Effects" off).
     pub effects: bool,
-    /// Nesting depth guard.
+    /// Nesting depth guard (see [`MAX_NEST_DEPTH`]).
     pub depth: u32,
     /// Draw the sequence's visible caption tracks over the picture (Program monitor, burn-in on
     /// export). Never applies to nested sequences.
@@ -96,7 +101,7 @@ fn render_seq(project: &Project, seq: &Sequence, t: Tick, opts: RenderOptions, s
 pub(crate) fn render_seq_tracks(project: &Project, seq: &Sequence, t: Tick, opts: RenderOptions, sources: &dyn SourceProvider, only: Option<usize>) -> Image {
     let (w, h) = output_size(seq, opts.scale);
     let mut canvas = Image::new(w, h);
-    if opts.depth > 8 {
+    if opts.depth > MAX_NEST_DEPTH {
         return canvas;
     }
     let tc = format_time(t, seq.settings.frame_rate, seq.settings.drop_frame, TimeDisplay::Timecode, seq.settings.sample_rate as i64);
@@ -179,7 +184,8 @@ pub(crate) fn render_seq_tracks(project: &Project, seq: &Sequence, t: Tick, opts
     if opts.depth == 0 && !opts.working_output {
         colorman::to_display(&mut canvas, &seq.settings.color);
     }
-    if opts.captions && opts.depth == 0 {
+    // (a nested sequence's captions are part of its picture: see `base_layer`)
+    if opts.captions {
         for o in caption_overlays(seq, t, w, h) {
             o.composite_onto(&mut canvas.px, w, h);
         }
@@ -390,7 +396,9 @@ pub(crate) fn base_layer(
                         Image::new(nw, nh)
                     }
                 },
-                None => render_seq(project, nested, ft, sub, sources),
+                // A nested sequence shows its captions wherever it is nested, as part of its
+                // picture (Premiere does the same), whether or not the outer sequence shows its own.
+                None => render_seq(project, nested, ft, RenderOptions { captions: true, ..sub }, sources),
             }
         }
         ItemKind::AdjustmentLayer { .. } => return None,
@@ -499,6 +507,9 @@ mod adjustment_tests;
 #[cfg(test)]
 #[path = "mixer_tests.rs"]
 mod mixer_tests;
+
+#[cfg(test)]
+mod nest_tests;
 
 #[cfg(test)]
 #[path = "preview_tests.rs"]

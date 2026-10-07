@@ -3,7 +3,7 @@
 mod support;
 
 use filmcraft_interchange::aaf::{self, AafOptions};
-use filmcraft_interchange::essence::{AudioEssence, EssenceData, MediaOptions, MixdownVideo, NeedOptions, audio_needs};
+use filmcraft_interchange::essence::{AudioEssence, EssenceData, EssenceKey, MediaOptions, MixdownVideo, NeedOptions, NestNeeds, audio_needs};
 use filmcraft_interchange::omf::{self, OmfOptions};
 use filmcraft_interchange::{Format, ImportOptions, Imported, detect};
 use filmcraft_project::{
@@ -191,7 +191,7 @@ fn pcm_ramp(frames: usize, channels: usize, seed: i32) -> Vec<u8> {
 fn aaf_embedded_trimmed_audio() {
     let (p, s) = sample(FrameRate::FPS_25, false);
     let handles = FrameRate::FPS_25.tick_of(5);
-    let needs = audio_needs(&p, s, &NeedOptions { handles, per_clip: false, whole_media: false });
+    let needs = audio_needs(&p, s, &NeedOptions { handles, ..Default::default() });
     assert_eq!(needs.len(), 3);
     let a = needs.iter().find(|n| n.path.as_deref() == Some("/media/A001.mov")).unwrap();
     // A001 is used at source 20..120 and 300..360 (+ 5 frame handles, plus the crossfade's 5 frames)
@@ -447,4 +447,232 @@ fn unsupported_clips_become_gaps_with_a_report() {
     let v = &imp.project.sequence(n).unwrap().video_tracks[0];
     assert_eq!(v.items.len(), 1);
     assert_eq!(v.items[0].start, FrameRate::FPS_25.tick_of(25));
+}
+
+// ---- nested sequences
+//
+// Premiere Pro 26.5.2 (observed in the files it exports): in AAF a nested sequence is a composition
+// of its own that clips point at; in OMF its sound is rendered into the document as one clip named
+// after the nested sequence.
+
+/// "Outer": a media clip, then a nest ("Inner", picture and linked sound, trimmed in, -4 dB on
+/// its sound clip), then the same nest again. "Inner": two clips with a dissolve, a second audio
+/// track, and a nest of its own ("Deep").
+fn nested(rate: FrameRate) -> (Project, [ItemId; 3]) {
+    let mut p = Project::new("n");
+    let a = media(&mut p, "/media/A001.mov", true, true, rate);
+    let b = media(&mut p, "/media/B002.mov", true, true, rate);
+    let m = media(&mut p, "/media/music.wav", false, true, rate);
+    let deep = sequence(&mut p, "Deep", rate, false);
+    clip(&mut p, deep, TrackKind::Video, 0, b, 0, 50, 200);
+    let inner = sequence(&mut p, "Inner", rate, false);
+    let i1 = clip(&mut p, inner, TrackKind::Video, 0, a, 0, 60, 10);
+    let i2 = clip(&mut p, inner, TrackKind::Video, 0, b, 60, 60, 100);
+    transition(&mut p, inner, TrackKind::Video, 0, "cross_dissolve", Some(i1), Some(i2), 54, 12, TransitionAlign::CenterAtCut);
+    clip(&mut p, inner, TrackKind::Video, 1, deep, 20, 30, 5);
+    let ia = clip(&mut p, inner, TrackKind::Audio, 0, a, 0, 60, 10);
+    clip(&mut p, inner, TrackKind::Audio, 1, m, 0, 120, 0);
+    link(&mut p, inner, &[i1, ia]);
+    let outer = sequence(&mut p, "Outer", rate, false);
+    let v0 = clip(&mut p, outer, TrackKind::Video, 0, a, 0, 40, 0);
+    let a0 = clip(&mut p, outer, TrackKind::Audio, 0, a, 0, 40, 0);
+    let v1 = clip(&mut p, outer, TrackKind::Video, 0, inner, 40, 70, 15);
+    let a1 = clip(&mut p, outer, TrackKind::Audio, 0, inner, 40, 70, 15);
+    let v2 = clip(&mut p, outer, TrackKind::Video, 1, inner, 150, 30, 0);
+    link(&mut p, outer, &[v0, a0]);
+    link(&mut p, outer, &[v1, a1]);
+    let (_, c) = p.sequence_mut(outer).unwrap().find_item_mut(a1).unwrap();
+    c.effect_mut("volume").unwrap().params.insert("level".into(), Param::new(ParamValue::Float(-4.0)));
+    let _ = v2;
+    (p, [outer, inner, deep])
+}
+
+fn sequence_named(p: &Project, name: &str) -> ItemId {
+    let mut found = p.items.values().filter(|i| i.name == name && matches!(i.kind, ItemKind::Sequence(_)));
+    let id = found.next().unwrap_or_else(|| panic!("no sequence {name}")).id;
+    assert!(found.next().is_none(), "{name} was imported more than once");
+    id
+}
+
+#[test]
+fn aaf_nested_sequences_round_trip_as_compositions() {
+    for rate in [FrameRate::FPS_25, FrameRate::FPS_23_976] {
+        let (p, [outer, inner, deep]) = nested(rate);
+        let (bytes, rep) = aaf::export(&p, outer, &AafOptions::default()).unwrap();
+        assert!(!rep.has_warnings(), "{rep}");
+        let (imp, _, rep) = aaf::import(&bytes, &ImportOptions { base_dir: Some("/proj".into()), ..Default::default() }).unwrap();
+        assert!(!rep.has_warnings(), "{rep}");
+        // one sequence is imported as the edit; the nested ones are sequences in the project that
+        // it uses (each once, however many clips use it)
+        let q = &imp.project;
+        let n = only_seq(&imp);
+        assert_eq!(q.item(n).unwrap().name, "Outer");
+        let (ni, nd) = (sequence_named(q, "Inner"), sequence_named(q, "Deep"));
+        for kind in [TrackKind::Video, TrackKind::Audio] {
+            assert_eq!(structure(q, n, kind), structure(&p, outer, kind), "{rate:?} Outer {kind:?}");
+            assert_eq!(structure(q, ni, kind), structure(&p, inner, kind), "{rate:?} Inner {kind:?}");
+            assert_eq!(structure(q, nd, kind), structure(&p, deep, kind), "{rate:?} Deep {kind:?}");
+        }
+        let top = q.sequence(n).unwrap();
+        assert_eq!((top.video_tracks[0].items[1].item, top.video_tracks[1].items[0].item, top.audio_tracks[0].items[1].item), (ni, ni, ni));
+        assert_eq!(q.sequence(ni).unwrap().video_tracks[1].items[0].item, nd);
+        // the nest's picture and sound are linked again, and the level on its sound clip is kept
+        assert_eq!(links(q, n), links(&p, outer));
+        assert!(close(level(q, n, 0, 1).value.as_f64().unwrap(), -4.0));
+        // the nested sequences keep their own settings
+        assert_eq!(q.sequence(ni).unwrap().settings.frame_rate, rate);
+        // reproducible
+        assert_eq!(bytes, aaf::export(&p, outer, &AafOptions::default()).unwrap().0);
+    }
+}
+
+#[test]
+fn aaf_nested_sequence_of_another_rate_and_broken_out_to_mono() {
+    // the nest runs at 25 fps and 44.1 kHz inside a 23.976 fps, 48 kHz sequence: a clip's start in
+    // it counts the nested composition's edit units
+    let (mut p, [outer, inner, _]) = nested(FrameRate::FPS_23_976);
+    {
+        let q = p.sequence_mut(inner).unwrap();
+        q.settings.frame_rate = FrameRate::FPS_25;
+        q.settings.sample_rate = 44_100;
+    }
+    let before = (structure(&p, outer, TrackKind::Video), structure(&p, outer, TrackKind::Audio));
+    for breakout in [false, true] {
+        let opts = AafOptions { media: MediaOptions { breakout_to_mono: breakout, ..Default::default() }, ..Default::default() };
+        let (bytes, _) = aaf::export(&p, outer, &opts).unwrap();
+        let (imp, _, rep) = aaf::import(&bytes, &ImportOptions::default()).unwrap();
+        let (q, n) = (&imp.project, only_seq(&imp));
+        // picture starts are stored in frames of the nested composition: within half of one
+        let picture = structure(q, n, TrackKind::Video);
+        assert_eq!(picture.len(), before.0.len(), "{rep}");
+        for (t, o) in picture.iter().zip(&before.0) {
+            assert_eq!(t.clips.len(), o.clips.len());
+            for (c, o) in t.clips.iter().zip(&o.clips) {
+                assert_eq!((c.start, c.dur, &c.media), (o.start, o.dur, &o.media));
+                let grid = if c.media == "seq:Inner" { FrameRate::FPS_25.frame_duration() } else { Tick(1) };
+                assert!((c.src - o.src).abs() <= Tick(grid.0 / 2), "{c:?} {o:?}");
+            }
+        }
+        let ni = sequence_named(q, "Inner");
+        assert_eq!((q.sequence(ni).unwrap().settings.frame_rate, q.sequence(ni).unwrap().settings.sample_rate), (FrameRate::FPS_25, 44_100));
+        let sound = structure(q, n, TrackKind::Audio);
+        if breakout {
+            // each stereo track became two mono tracks; the nest is on both, at the same place
+            assert_eq!(sound.len(), 2);
+            assert_eq!(sound[0], sound[1]);
+            assert_eq!(
+                sound[0].clips.iter().map(|c| (c.start, c.dur, c.media.as_str())).collect::<Vec<_>>(),
+                before.1[0].clips.iter().map(|c| (c.start, c.dur, c.media.as_str())).collect::<Vec<_>>()
+            );
+        } else {
+            // sound starts are stored in samples of the nested composition: within one sample
+            assert_eq!(sound.len(), before.1.len());
+            for (c, o) in sound[0].clips.iter().zip(&before.1[0].clips) {
+                assert_eq!((c.start, c.dur, &c.media), (o.start, o.dur, &o.media));
+                assert!((c.src - o.src).abs() <= Tick(filmcraft_time::TICKS_PER_SECOND / 44_100), "{c:?} {o:?}");
+            }
+        }
+    }
+}
+
+/// A project that claims a sequence is inside itself (FilmCraft refuses to make one, a damaged
+/// file may hold one) exports without looping: the clip is left as a gap and named in the report.
+#[test]
+fn a_sequence_inside_itself_exports_as_a_gap() {
+    let rate = FrameRate::FPS_25;
+    let (mut p, [outer, inner, deep]) = nested(rate);
+    clip(&mut p, deep, TrackKind::Video, 1, outer, 0, 20, 0);
+    clip(&mut p, deep, TrackKind::Audio, 0, outer, 0, 20, 0);
+    clip(&mut p, inner, TrackKind::Audio, 2, inner, 0, 20, 0);
+    let (bytes, rep) = aaf::export(&p, outer, &AafOptions::default()).unwrap();
+    assert!(rep.mentions("inside itself"), "{rep}");
+    let (imp, _, _) = aaf::import(&bytes, &ImportOptions::default()).unwrap();
+    let q = &imp.project;
+    assert!(q.sequence(sequence_named(q, "Deep")).unwrap().video_tracks[1].items.is_empty());
+    // the lists of what to prepare end too
+    for nests in [NestNeeds::Skip, NestNeeds::Inside, NestNeeds::Render] {
+        let needs = audio_needs(&p, outer, &NeedOptions { nests, ..Default::default() });
+        assert!(needs.len() < 16, "{nests:?}: {}", needs.len());
+    }
+    let (_, rep) = omf::export(&p, outer, &OmfOptions::default()).unwrap();
+    assert!(rep.mentions("was not rendered"), "{rep}");
+}
+
+#[test]
+fn audio_needs_of_nested_sequences() {
+    let rate = FrameRate::FPS_25;
+    let (p, [outer, inner, _]) = nested(rate);
+    let media_named = |name: &str| p.items.values().find(|i| i.name == name).unwrap().id;
+    let (a, m) = (media_named("A001.mov"), media_named("music.wav"));
+    let nest_clip = p.sequence(outer).unwrap().audio_tracks[0].items[1].clone();
+    // by default a nest needs nothing (as before)
+    let plain = audio_needs(&p, outer, &NeedOptions::default());
+    assert_eq!(plain.iter().map(|n| n.key).collect::<Vec<_>>(), [EssenceKey::Media(a)]);
+    // inside: the media of the clips in the nested sequence, each item once over all its uses
+    let inside = audio_needs(&p, outer, &NeedOptions { nests: NestNeeds::Inside, ..Default::default() });
+    assert_eq!(inside.iter().map(|n| n.key).collect::<Vec<_>>(), [EssenceKey::Media(a), EssenceKey::Media(m)]);
+    assert_eq!((inside[0].start, inside[0].end), (Tick::ZERO, rate.tick_of(70)), "0..40 in Outer and 10..70 in Inner");
+    // render: one range of the nested sequence per clip, with handles, not past the sequence's end
+    let handles = rate.tick_of(10);
+    let render = audio_needs(&p, outer, &NeedOptions { nests: NestNeeds::Render, handles, ..Default::default() });
+    let need = render.iter().find(|n| n.key == EssenceKey::Clip(nest_clip.id)).expect("the nest clip");
+    assert_eq!((need.item, need.path.as_deref()), (inner, None));
+    assert_eq!((need.start, need.end), (rate.tick_of(5), rate.tick_of(95)));
+    assert_eq!((need.channels, need.sample_rate), (2, 48_000));
+    let whole = audio_needs(&p, outer, &NeedOptions { nests: NestNeeds::Render, handles: rate.tick_of(100), ..Default::default() });
+    let need = whole.iter().find(|n| n.key == EssenceKey::Clip(nest_clip.id)).unwrap();
+    assert_eq!((need.start, need.end), (Tick::ZERO, p.sequence(inner).unwrap().duration()));
+}
+
+#[test]
+fn omf_carries_the_rendered_sound_of_a_nested_sequence() {
+    let rate = FrameRate::FPS_25;
+    let (p, [outer, _, _]) = nested(rate);
+    let nest_clip = p.sequence(outer).unwrap().audio_tracks[0].items[1].clone();
+    let needs = audio_needs(&p, outer, &NeedOptions { handles: rate.tick_of(5), nests: NestNeeds::Render, ..Default::default() });
+    assert_eq!(needs.len(), 2);
+    let essence: Vec<AudioEssence> = needs
+        .iter()
+        .enumerate()
+        .map(|(k, n)| {
+            let frames = ((n.end - n.start).0 / (filmcraft_time::TICKS_PER_SECOND / 48_000)) as u64;
+            AudioEssence {
+                key: n.key,
+                channel: None,
+                start: n.start,
+                frames,
+                sample_rate: 48_000,
+                bits: 16,
+                channels: 2,
+                data: EssenceData::Embedded(pcm_ramp(frames as usize, 2, k as i32 * 11)),
+                effects_rendered: matches!(n.key, EssenceKey::Clip(_)),
+            }
+        })
+        .collect();
+    let opts = OmfOptions { media: MediaOptions { essence: essence.clone(), ..Default::default() }, ..Default::default() };
+    let (bytes, rep) = omf::export(&p, outer, &opts).unwrap();
+    assert!(!rep.mentions("nested") && !rep.mentions("gap"), "{rep}");
+    let (imp, extracted, rep) = omf::import(&bytes, &ImportOptions { base_dir: Some("/x".into()), name: Some("o".into()), ..Default::default() }).unwrap();
+    let q = imp.project.sequence(only_seq(&imp)).unwrap();
+    let t = &q.audio_tracks[0];
+    assert_eq!(t.items.len(), 2, "{rep}");
+    // the nest is one clip named after the nested sequence, playing the rendered sound from where
+    // the clip starts in it (the render begins 5 frames earlier: the handle)
+    let c = &t.items[1];
+    assert_eq!((c.name.as_str(), imp.project.item(c.item).unwrap().name.as_str()), ("Inner", "Inner"));
+    assert_eq!((c.start, c.duration, c.source_in), (nest_clip.start, nest_clip.duration, rate.tick_of(5)));
+    assert!(matches!(imp.project.item(c.item).unwrap().kind, ItemKind::Media(_)), "media in the document, not a sequence");
+    // the clip's level is in the rendered sound, not written again
+    assert!(close(level(&imp.project, only_seq(&imp), 0, 1).value.as_f64().unwrap(), 0.0));
+    let nest_pcm = essence.iter().find(|e| e.key == EssenceKey::Clip(nest_clip.id)).map(|e| match &e.data {
+        EssenceData::Embedded(d) => d.clone(),
+        EssenceData::File { .. } => unreachable!(),
+    });
+    assert!(extracted.iter().any(|e| filmcraft_interchange::wav::parse_wav(&e.wav).map(|w| w.0) == nest_pcm));
+
+    // without the rendered sound the nest is a gap, and the report says which sequence
+    let (bytes, rep) = omf::export(&p, outer, &OmfOptions::default()).unwrap();
+    assert!(rep.mentions("\"Inner\" was not rendered"), "{rep}");
+    let (imp, _, _) = omf::import(&bytes, &ImportOptions::default()).unwrap();
+    assert_eq!(imp.project.sequence(only_seq(&imp)).unwrap().audio_tracks[0].items.len(), 1);
 }

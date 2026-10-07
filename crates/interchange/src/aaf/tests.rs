@@ -4,7 +4,7 @@
 use std::collections::HashSet;
 
 use filmcraft_project::{Project, SequenceSettings, TrackKind, TransitionAlign, TransitionId, find_effect};
-use filmcraft_time::{FrameRate, TimeRange};
+use filmcraft_time::{FrameRate, Tick, TimeRange};
 
 use super::ids::{self, cls, ddef, def, path, pid};
 use super::store::{self, Obj, Value};
@@ -264,4 +264,108 @@ fn store_round_trips_every_stored_form() {
     }
     // a data value longer than a property can hold is an error, not a panic
     assert!(store::write(&Obj::new(ids::ROOT).data_prop(1, vec![0; 70_000]), filmcraft_cfb::Version::V4).is_err());
+}
+
+/// The property `p` of `o` as a list of objects, to change.
+fn objs_mut(o: &mut Obj, p: u16) -> &mut Vec<Obj> {
+    match o.props.iter_mut().find(|(k, _)| *k == p).map(|(_, v)| v) {
+        Some(Value::StrongVec(v)) | Some(Value::StrongSet(v, _)) => v,
+        _ => panic!("no object list {p:#06x}"),
+    }
+}
+
+fn strong_mut(o: &mut Obj, p: u16) -> &mut Obj {
+    match o.props.iter_mut().find(|(k, _)| *k == p).map(|(_, v)| v) {
+        Some(Value::Strong(v)) => v,
+        _ => panic!("no object {p:#06x}"),
+    }
+}
+
+fn is_picture(o: &Obj) -> bool {
+    o.weak_key(pid::DATA_DEFINITION) == Some(&ddef::PICTURE[..])
+}
+
+/// How Premiere Pro 26.5.2 lays a sequence with a nested sequence out in AAF (seen in a file it
+/// exported): every composition is tagged top-level, the nested one too; all video tracks of a
+/// composition are in ONE slot, a nested scope with a segment per track, lowest first; a clip of
+/// the nested sequence is a source clip that points at its composition. Our own file is rewritten
+/// into that layout and must read back as the same edit.
+#[test]
+fn premiere_style_layers_and_nested_compositions_are_read() {
+    let (mut p, inner) = project();
+    let r = FrameRate::FPS_24;
+    let outer = p.new_sequence("Outer", SequenceSettings { frame_rate: r, ..Default::default() }, 3, 1, None);
+    let media = p.sequence(inner).unwrap().video_tracks[0].items[0].item;
+    for (kind, track, item, start, dur, src) in [
+        (TrackKind::Video, 0, media, 0, 30, 5),
+        (TrackKind::Video, 1, inner, 10, 40, 12),
+        (TrackKind::Audio, 0, inner, 10, 40, 12),
+        (TrackKind::Video, 2, media, 60, 20, 100),
+    ] {
+        let ti = p.make_track_item(item, kind, r.tick_of(start), TimeRange::new(r.tick_of(src), r.tick_of(dur)), r).unwrap();
+        p.sequence_mut(outer).unwrap().tracks_mut(kind)[track].items.push(ti);
+    }
+    let (ours, report) = export(&p, outer, &AafOptions::default()).unwrap();
+    assert!(!report.has_warnings(), "{report}");
+
+    let mut root = store::read(&ours).unwrap();
+    let content = strong_mut(strong_mut(&mut root, pid::ROOT_HEADER), pid::CONTENT);
+    let mut compositions = 0;
+    for mob in objs_mut(content, pid::MOBS).iter_mut().filter(|m| m.class == cls::COMPOSITION_MOB) {
+        compositions += 1;
+        mob.set(pid::USAGE_CODE, Value::Data(def::USAGE_TOP_LEVEL.to_vec()));
+        let slots = objs_mut(mob, pid::SLOTS);
+        let picture: Vec<usize> = slots.iter().enumerate().filter(|(_, s)| s.strong(pid::SEGMENT).is_some_and(is_picture)).map(|(i, _)| i).collect();
+        let layers: Vec<Obj> = picture.iter().map(|&i| slots[i].strong(pid::SEGMENT).unwrap().clone()).collect();
+        let length = layers.iter().filter_map(|l| l.i64(pid::LENGTH)).max().unwrap_or(0);
+        let scope = Obj::new(cls::NESTED_SCOPE)
+            .with(pid::DATA_DEFINITION, Value::Weak(path::DATA_DEFS.to_vec(), pid::IDENTIFICATION, ddef::PICTURE.to_vec()))
+            .data_prop(pid::LENGTH, length.to_le_bytes().to_vec())
+            .with(pid::NESTED_SLOTS, Value::StrongVec(layers));
+        // the first video slot keeps its id (clips of the nested sequence point at it) and holds
+        // every layer; the other video slots go
+        slots[picture[0]].set(pid::SEGMENT, Value::Strong(Box::new(scope)));
+        for &i in picture[1..].iter().rev() {
+            slots.remove(i);
+        }
+    }
+    assert_eq!(compositions, 2);
+    let theirs = store::write(&root, filmcraft_cfb::Version::V4).unwrap();
+    assert_ne!(theirs, ours);
+
+    let opts = ImportOptions::default();
+    let (want, _, _) = import(&ours, &opts).unwrap();
+    let (got, _, report) = import(&theirs, &opts).unwrap();
+    assert!(!report.has_warnings(), "{report}");
+    // one edit; the nested composition is a sequence it uses, not a second edit
+    assert_eq!(got.sequences.len(), 1);
+    let shape =
+        |imp: &Imported| {
+            let mut out = Vec::new();
+            for item in imp.project.items.values() {
+                let Some(q) = imp.project.sequence(item.id) else { continue };
+                for (kind, tracks) in [("V", &q.video_tracks), ("A", &q.audio_tracks)] {
+                    for (n, t) in tracks.iter().enumerate() {
+                        for c in &t.items {
+                            let source = imp.project.item(c.item).map(|i| i.name.clone()).unwrap_or_default();
+                            out.push((item.name.clone(), format!("{kind}{}", n + 1), source, c.start, c.duration, c.source_in, c.link.is_some()));
+                        }
+                        out.extend(t.transitions.iter().map(|x| {
+                            (item.name.clone(), format!("{kind}{} transition", n + 1), x.effect.effect.clone(), x.start, x.duration, Tick::ZERO, false)
+                        }));
+                    }
+                }
+            }
+            out.sort();
+            out
+        };
+    assert_eq!(shape(&got), shape(&want));
+    // and that edit is the one that was exported: three video tracks, the nest on the second
+    let q = got.project.sequence(got.sequences[0]).unwrap();
+    assert_eq!(q.video_tracks.iter().map(|t| t.items.len()).collect::<Vec<_>>(), [1, 1, 1]);
+    let nest = &q.video_tracks[1].items[0];
+    assert_eq!(got.project.item(nest.item).unwrap().name, "S");
+    assert_eq!((nest.start, nest.duration, nest.source_in), (r.tick_of(10), r.tick_of(40), r.tick_of(12)));
+    assert_eq!(nest.link, q.audio_tracks[0].items[0].link);
+    assert!(nest.link.is_some());
 }

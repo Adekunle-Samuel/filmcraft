@@ -72,7 +72,14 @@ struct R<'a> {
     doc: Document,
     /// (file mob id, slot id, master key) → source index
     sources: HashMap<(MobId, u32, String), usize>,
+    /// Composition mobs read as nested compositions: their index in `doc.nested`.
+    nests: HashMap<MobId, usize>,
+    /// The compositions being read, outermost first.
+    open: Vec<MobId>,
 }
+
+/// Compositions nested deeper than this are read as gaps.
+const MAX_NESTING: usize = 16;
 
 pub(crate) fn read(bytes: &[u8], report: &mut Report) -> Result<Document> {
     let root = store::read(bytes).map_err(|e| Error::Parse { format: "AAF", message: e })?;
@@ -90,21 +97,23 @@ pub(crate) fn read(bytes: &[u8], report: &mut Report) -> Result<Document> {
             essence.insert(id, d);
         }
     }
-    let mut r = R { report, mobs, essence, doc: Document::default(), sources: HashMap::new() };
-    // top-level compositions: not referenced by another composition (usage code wins when present)
+    let mut r = R { report, mobs, essence, doc: Document::default(), sources: HashMap::new(), nests: HashMap::new(), open: Vec::new() };
+    // Top-level compositions: those no other composition uses, among the ones tagged top-level
+    // when any are. (Premiere Pro tags a nested sequence's composition top-level too; it is still
+    // only a nested sequence.) Compositions that only use each other in a circle all count.
     let comps: Vec<&Obj> = content.objs(pid::MOBS).iter().filter(|m| m.class == cls::COMPOSITION_MOB).collect();
     let mut referenced = HashSet::new();
     for c in &comps {
         collect_refs(c, &mut referenced);
     }
     let tagged_top: Vec<&Obj> = comps.iter().copied().filter(|c| c.auid(pid::USAGE_CODE) == Some(def::USAGE_TOP_LEVEL)).collect();
-    let top: Vec<&Obj> = if !tagged_top.is_empty() {
-        tagged_top
-    } else {
-        comps.iter().copied().filter(|c| c.mob_id(pid::MOB_ID).is_none_or(|id| !referenced.contains(&id))).collect()
-    };
+    let pool = if tagged_top.is_empty() { comps } else { tagged_top };
+    let unused: Vec<&Obj> = pool.iter().copied().filter(|c| c.mob_id(pid::MOB_ID).is_none_or(|id| !referenced.contains(&id))).collect();
+    let top = if unused.is_empty() { pool } else { unused };
     for c in top {
+        r.open.extend(c.mob_id(pid::MOB_ID));
         let comp = r.composition(c);
+        r.open.clear();
         r.doc.compositions.push(comp);
     }
     if r.doc.compositions.is_empty() {
@@ -174,40 +183,60 @@ impl R<'_> {
                     if ckind == CKind::Sound && sample_rate == 0 && er.1 == 1 && er.0 >= 8000 {
                         sample_rate = er.0 as u32;
                     }
-                    let mut items = self.segment(seg, er, ckind, 0);
-                    if origin > 0 {
-                        // material before the origin is not shown
-                        trim_front(&mut items, units_to_ticks(origin, er.0, er.1));
+                    // Premiere Pro writes every video track into one slot: a nested scope with a
+                    // segment per track, the lowest track first. (A scope whose last segment
+                    // refers to the others is an effect over layers: one track, as before.)
+                    let layers: Vec<&Obj> = if ckind == CKind::Picture && seg.class == cls::NESTED_SCOPE && !refers_to_scope(seg, 0) {
+                        seg.objs(pid::NESTED_SLOTS).iter().collect()
+                    } else {
+                        Vec::new()
+                    };
+                    let layered = !layers.is_empty();
+                    let whole = units_to_ticks(len_of(seg), er.0, er.1);
+                    for layer in if layered { layers } else { vec![seg] } {
+                        let mut items = self.segment(layer, er, ckind, 0);
+                        if layered {
+                            fit(&mut items, whole);
+                        }
+                        if origin > 0 {
+                            // material before the origin is not shown
+                            trim_front(&mut items, units_to_ticks(origin, er.0, er.1));
+                        }
+                        let number = s.u32(pid::PHYSICAL_TRACK_NUMBER).unwrap_or(0);
+                        let name = s.string(pid::SLOT_NAME).unwrap_or_default();
+                        let channels = if ckind == CKind::Sound {
+                            items
+                                .iter()
+                                .filter_map(|i| match i {
+                                    CItem::Clip(c) => self.doc.sources.get(c.source).map(|s| s.channels),
+                                    _ => None,
+                                })
+                                .max()
+                                .unwrap_or(1)
+                                .min(6)
+                        } else {
+                            0
+                        };
+                        let n = if ckind == CKind::Picture {
+                            nv += 1;
+                            nv
+                        } else {
+                            na += 1;
+                            na
+                        };
+                        comp.tracks.push(CTrack { kind: ckind, name, number: if number > 0 && !layered { number } else { n }, channels, items });
                     }
-                    let number = s.u32(pid::PHYSICAL_TRACK_NUMBER).unwrap_or(0);
-                    let name = s.string(pid::SLOT_NAME).unwrap_or_default();
-                    let channels = if ckind == CKind::Sound {
-                        items
-                            .iter()
-                            .filter_map(|i| match i {
-                                CItem::Clip(c) => Some(self.doc.sources[c.source].channels),
-                                _ => None,
-                            })
-                            .max()
-                            .unwrap_or(1)
-                            .min(6)
-                    } else {
-                        0
-                    };
-                    let n = if ckind == CKind::Picture {
-                        nv += 1;
-                        nv
-                    } else {
-                        na += 1;
-                        na
-                    };
-                    comp.tracks.push(CTrack { kind: ckind, name, number: if number > 0 { number } else { n }, channels, items });
                 }
                 DataKind::Other => self.report.info("a slot of an unsupported data kind was skipped"),
             }
         }
         if width == 0 {
-            let pic = self.doc.sources.iter().find(|s| s.kind == CKind::Picture && s.width > 0);
+            // no size in the file: that of the first picture this composition shows, else of any
+            let own = comp.tracks.iter().filter(|t| t.kind == CKind::Picture).flat_map(|t| &t.items).find_map(|i| match i {
+                CItem::Clip(c) => self.doc.sources.get(c.source).filter(|s| s.kind == CKind::Picture && s.width > 0 && s.nested.is_none()),
+                _ => None,
+            });
+            let pic = own.or_else(|| self.doc.sources.iter().find(|s| s.kind == CKind::Picture && s.width > 0));
             (width, height) = pic.map_or((1920, 1080), |p| (p.width, p.height));
         }
         comp.width = width;
@@ -336,10 +365,83 @@ impl R<'_> {
         if id == [0; 32] {
             return CItem::Filler(len);
         }
+        if let Some(mob) = self.mobs.get(&id).copied().filter(|m| m.class == cls::COMPOSITION_MOB) {
+            return self.nest_clip(c, mob, id, slot, rate, kind, name);
+        }
         match self.resolve(id, slot, start, kind, master_key, 0) {
             Some((source, t)) => CItem::Clip(CClip { len, source, start: t, gain: None, name }),
             None => CItem::Filler(len),
         }
+    }
+
+    /// A source clip that points at a composition: a nested sequence (Premiere Pro writes its
+    /// nested sequences this way). The composition is read once, however many clips use it.
+    fn nest_clip(&mut self, c: &Obj, mob: &Obj, id: MobId, slot_id: u32, rate: (i64, i64), kind: CKind, name: String) -> CItem {
+        let len = units_to_ticks(len_of(c), rate.0, rate.1);
+        let index = match self.nests.get(&id) {
+            Some(&i) => i,
+            None => {
+                if self.open.contains(&id) || self.open.len() >= MAX_NESTING {
+                    self.report.warn("a composition nested in itself or nested too deeply was imported as a gap");
+                    return CItem::Filler(len);
+                }
+                self.open.push(id);
+                let comp = self.composition(mob);
+                self.open.pop();
+                let i = self.doc.nested.len();
+                self.doc.nested.push(comp);
+                self.nests.insert(id, i);
+                i
+            }
+        };
+        // the start counts edit units of the slot the clip points at
+        let slot_rate = mob.objs(pid::SLOTS).iter().find(|s| s.u32(pid::SLOT_ID) == Some(slot_id)).and_then(|s| rate_of(s, pid::EDIT_RATE)).unwrap_or(rate);
+        let start = units_to_ticks(c.i64(pid::START_TIME).unwrap_or(0), slot_rate.0, slot_rate.1);
+        let skey = (id, if kind == CKind::Picture { 0 } else { 1 }, "composition".to_string());
+        let source =
+            match self.sources.get(&skey) {
+                Some(&i) => i,
+                None => {
+                    let Some(comp) = self.doc.nested.get(index) else { return CItem::Filler(len) };
+                    let length =
+                        comp.tracks
+                            .iter()
+                            .map(|t| {
+                                Tick(t.items.iter().fold(0i64, |a, i| {
+                                    if matches!(i, CItem::Transition(_)) { a.saturating_sub(i.len().0) } else { a.saturating_add(i.len().0) }
+                                }))
+                            })
+                            .max()
+                            .unwrap_or(Tick::ZERO);
+                    let channels = if kind == CKind::Sound { 2 } else { 0 };
+                    let s = Source {
+                        key: format!("composition:{}", hex(&id)),
+                        name: comp.name.clone(),
+                        kind,
+                        path: None,
+                        channel: None,
+                        channels,
+                        file_channels: channels,
+                        width: comp.width,
+                        height: comp.height,
+                        frame_rate: comp.rate,
+                        sample_rate: comp.sample_rate,
+                        bits: 16,
+                        length,
+                        offset: Tick::ZERO,
+                        start_tc: None,
+                        tc_rate: comp.rate,
+                        embedded: None,
+                        markers: Vec::new(),
+                        nested: Some(index),
+                    };
+                    let i = self.doc.sources.len();
+                    self.doc.sources.push(s);
+                    self.sources.insert(skey, i);
+                    i
+                }
+            };
+        CItem::Clip(CClip { len, source, start, gain: None, name })
     }
 
     /// Follow a source reference to a file source mob: (source index, file time).
@@ -448,6 +550,7 @@ impl R<'_> {
             tc_rate: tc.map(|t| t.1).unwrap_or(fr),
             embedded: None,
             markers: Vec::new(),
+            nested: None,
         };
         if s.kind == CKind::Sound {
             s.frame_rate = FrameRate::FPS_25;
@@ -529,6 +632,21 @@ fn fit(items: &mut Vec<CItem>, len: Tick) {
             None => break,
         }
     }
+}
+
+/// Whether anything inside `o` is a scope reference (a nested scope used as an effect's layers).
+fn refers_to_scope(o: &Obj, depth: usize) -> bool {
+    if o.class == cls::SCOPE_REFERENCE {
+        return true;
+    }
+    if depth > 32 {
+        return false;
+    }
+    o.props.iter().any(|(_, v)| match v {
+        Value::Strong(c) => refers_to_scope(c, depth + 1),
+        Value::StrongVec(v) | Value::StrongSet(v, _) => v.iter().any(|c| refers_to_scope(c, depth + 1)),
+        _ => false,
+    })
 }
 
 fn first_clip(seg: &Obj) -> Option<&Obj> {

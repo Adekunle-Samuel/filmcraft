@@ -24,6 +24,7 @@ macro_rules! uic {
 pub const UI_COMMANDS: &[UiCommand] = &[
     uic!("app.language.english", "English", ["Edit", "Language"], None),
     uic!("app.language.japanese", "日本語", ["Edit", "Language"], None),
+    uic!("app.language.spanish", "Español", ["Edit", "Language"], None),
     uic!("playback.toggle", "Play/Stop", [], Some("Space")),
     uic!("playback.forward", "Shuttle Right", [], Some("L")),
     uic!("playback.stop", "Shuttle Stop", [], Some("K")),
@@ -96,6 +97,9 @@ pub const UI_COMMANDS: &[UiCommand] = &[
     uic!("window.workspace.captionsandgraphics", "Captions and Graphics", ["Window", "Workspaces"], Some("Alt+Shift+6")),
     uic!("window.workspace.allpanels", "All Panels", ["Window", "Workspaces"], None),
     uic!("window.workspace.reset", "Reset to Saved Layout", ["Window", "Workspaces"], Some("Alt+Shift+0")),
+    uic!("window.workspace.saveChanges", "Save Changes to this Workspace", ["Window", "Workspaces"], None),
+    uic!("window.workspace.saveAs", "Save as New Workspace…", ["Window", "Workspaces"], None),
+    uic!("window.workspace.edit", "Edit Workspaces…", ["Window", "Workspaces"], None),
     uic!("tool.selection", "Selection Tool", [], Some("V")),
     uic!("tool.trackSelectForward", "Track Select Forward Tool", [], Some("A")),
     uic!("tool.trackSelectBackward", "Track Select Backward Tool", [], Some("Shift+A")),
@@ -146,12 +150,16 @@ pub fn panel_command_id(p: PanelKind) -> String {
 
 /// Execute a UI or engine command by id.
 pub fn invoke(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, params: Value) -> Result<Value, String> {
-    if matches!(id, "app.language.english" | "app.language.japanese") {
+    if matches!(id, "app.language.english" | "app.language.japanese" | "app.language.spanish") {
         // Japanese needs the craft-fonts (built with CRAFT_FONTS_DIR) or a font installed on the system
         if id == "app.language.japanese" && !crate::i18n::install_japanese_font(ctx) {
             return Err("no Japanese font is installed on this system (for example Noto Sans CJK JP); the interface stays in English".into());
         }
-        app.ui.language = if id == "app.language.japanese" { crate::i18n::Language::Ja } else { crate::i18n::Language::En };
+        app.ui.language = match id {
+            "app.language.japanese" => crate::i18n::Language::Ja,
+            "app.language.spanish" => crate::i18n::Language::Es,
+            _ => crate::i18n::Language::En,
+        };
         let items = menu_items(app);
         if let Some(hook) = app.hooks.shortcuts_changed.as_mut() {
             hook(&items);
@@ -168,15 +176,8 @@ pub fn invoke(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, params: Val
         app.show_panel(p);
         return Ok(Value::Null);
     }
-    if let Some(ws) = id.strip_prefix("window.workspace.") {
-        if ws == "reset" {
-            let name = app.ui.workspace.clone();
-            app.set_workspace(&name);
-            return Ok(Value::Null);
-        }
-        let name = crate::dock::WORKSPACES.iter().find(|w| w.to_ascii_lowercase().replace(' ', "") == ws).ok_or_else(|| format!("unknown workspace `{ws}`"))?;
-        app.set_workspace(name);
-        return Ok(json!({"workspace": name}));
+    if let Some(r) = crate::panels::workspaces::route(app, id, &params) {
+        return r;
     }
     if let Some(t) = id.strip_prefix("tool.") {
         let tool = Tool::from_name(t).ok_or_else(|| format!("unknown tool `{t}`"))?;
@@ -326,6 +327,21 @@ pub fn invoke(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, params: Val
             filmcraft_engine::find_command(id).map_or(Ok(()), |c| (c.enabled)(&app.session))?;
             return crate::panels::remix::open(app, ctx);
         }
+        // Add Tracks… from the menu opens the dialog (new tracks after the last ones, as Premiere
+        // offers); with params it adds the tracks directly.
+        "sequence.addTracks" if params.as_object().is_none_or(|m| m.is_empty()) => {
+            filmcraft_engine::find_command(id).map_or(Ok(()), |c| (c.enabled)(&app.session))?;
+            let seq = app.session.active_sequence();
+            let count = |f: fn(&filmcraft_engine::project::Sequence) -> usize| seq.map_or(0, f);
+            app.ui.add_tracks = crate::state::AddTracksDraft {
+                video_after: count(|q| q.video_tracks.len()),
+                audio_after: count(|q| q.audio_tracks.len()),
+                submix_after: count(|q| q.submix_tracks.len()),
+                ..Default::default()
+            };
+            app.dialog = Some(crate::Dialog::AddTracks);
+            return Ok(json!({"dialog": "addTracks"}));
+        }
         "sequence.deleteTracks" if params.as_object().is_none_or(|m| m.is_empty()) => {
             filmcraft_engine::find_command(id).map_or(Ok(()), |c| (c.enabled)(&app.session))?;
             app.ui.delete_tracks = Default::default();
@@ -401,6 +417,7 @@ pub fn menu_items(app: &FilmcraftApp) -> Vec<MenuItem> {
         match it.id.as_str() {
             "app.language.english" => it.checked = Some(app.ui.language == crate::i18n::Language::En),
             "app.language.japanese" => it.checked = Some(app.ui.language == crate::i18n::Language::Ja),
+            "app.language.spanish" => it.checked = Some(app.ui.language == crate::i18n::Language::Es),
             _ => {}
         }
         if it.id.starts_with("view.") {
@@ -408,6 +425,7 @@ pub fn menu_items(app: &FilmcraftApp) -> Vec<MenuItem> {
             it.enabled &= crate::panels::monitor_view::enabled(app, &it.id);
         }
     }
+    crate::panels::workspaces::menu(app, &mut v);
     v
 }
 
