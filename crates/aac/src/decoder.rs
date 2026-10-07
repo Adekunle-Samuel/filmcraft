@@ -19,6 +19,10 @@ const ID_PCE: u32 = 5;
 const ID_FIL: u32 = 6;
 const ID_END: u32 = 7;
 
+/// `extension_type` of a fill element carrying SBR data (ISO/IEC 14496-3 §4.5.2.8.2, Table 4.121).
+const EXT_SBR_DATA: u32 = 13;
+const EXT_SBR_DATA_CRC: u32 = 14;
+
 /// One decoded `individual_channel_stream` before stereo processing and synthesis.
 struct Ics {
     info: IcsInfo,
@@ -45,6 +49,8 @@ pub struct Decoder {
     offsets: Vec<usize>,
     channels: Vec<ChannelState>,
     noise_state: u32,
+    /// A fill element carried SBR data (implicitly signalled HE-AAC).
+    sbr_seen: bool,
 }
 
 impl Decoder {
@@ -67,7 +73,7 @@ impl Decoder {
         if layout.is_empty() && asc.channel_config != 0 {
             return Err(Error::InvalidConfig("unsupported channel configuration"));
         }
-        let mut d = Decoder { asc, layout: Vec::new(), offsets: Vec::new(), channels: Vec::new(), noise_state: 0x2545_F491 };
+        let mut d = Decoder { asc, layout: Vec::new(), offsets: Vec::new(), channels: Vec::new(), noise_state: 0x2545_F491, sbr_seen: false };
         d.set_layout(layout);
         Ok(d)
     }
@@ -89,6 +95,12 @@ impl Decoder {
     }
     pub fn sample_rate(&self) -> u32 {
         self.asc.sample_rate
+    }
+    /// Whether the stream is HE-AAC: SBR signalled in the `AudioSpecificConfig` (explicit) or SBR
+    /// data seen in a fill element of a decoded access unit (implicit). Only the AAC-LC core is
+    /// decoded, at [`Self::sample_rate`]; the SBR high band is not reconstructed.
+    pub fn sbr(&self) -> bool {
+        self.asc.sbr || self.sbr_seen
     }
     pub fn channels(&self) -> usize {
         self.channels.len()
@@ -174,7 +186,11 @@ impl Decoder {
                         count += br.read_bits(8)? as usize;
                         count -= 1;
                     }
-                    br.skip(count * 8)?;
+                    if count > 0 {
+                        let ext = br.read_bits(4)?;
+                        self.sbr_seen |= matches!(ext, EXT_SBR_DATA | EXT_SBR_DATA_CRC);
+                        br.skip(count * 8 - 4)?;
+                    }
                 }
                 _ => break, // ID_END
             }
@@ -541,4 +557,28 @@ fn synth(state: &mut ChannelState, info: &IcsInfo, spec: &[f32]) -> Vec<f32> {
     state.overlap.copy_from_slice(&buf[1024..]);
     state.prev_shape = cur;
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Implicitly signalled HE-AAC (an AAC-LC config) is recognised from the SBR fill element.
+    #[test]
+    fn sbr_fill_element_marks_implicit_he_aac() {
+        // AAC-LC, 22.05 kHz, stereo
+        let mut dec = Decoder::new(&[0x13, 0x90]).unwrap();
+        assert!(!dec.sbr());
+        // ID_FIL, count 1, extension_type EXT_SBR_DATA (+ 4 bits of payload), ID_END
+        let _ = dec.decode(&[0b1100_0011, 0b1010_0001, 0b1100_0000]);
+        assert!(dec.sbr());
+        // other fill payloads (EXT_FILL) don't
+        let mut dec = Decoder::new(&[0x13, 0x90]).unwrap();
+        let _ = dec.decode(&[0b1100_0010, 0b0000_0001, 0b1100_0000]);
+        assert!(!dec.sbr());
+        // explicit signalling: AOT 5, core 22.05 kHz, stereo, extension 44.1 kHz, core AOT 2
+        let dec = Decoder::new(&[0x2B, 0x92, 0x08, 0x00]).unwrap();
+        assert!(dec.sbr());
+        assert_eq!(dec.sample_rate(), 22_050);
+    }
 }

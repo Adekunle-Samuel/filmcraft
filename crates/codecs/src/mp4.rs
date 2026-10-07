@@ -178,7 +178,16 @@ impl Mp4Source {
             let ap = entry.audio.clone().unwrap_or_default();
             let (rate, ch, bits) = match &entry.codec {
                 CodecConfig::Aac(a) => (
-                    if a.sample_rate > 0 { a.sample_rate } else { ap.sample_rate as u32 },
+                    {
+                        // HE-AAC plays at twice the core rate the AudioSpecificConfig starts with
+                        let units = t.samples.iter().take(8).filter_map(|x| filmcraft_media::reader::read_range(&*bytes.0, x.offset, x.size as usize).ok());
+                        let units: Vec<Vec<u8>> = units.collect();
+                        match crate::audio::aac_output_rate(&a.asc, units.iter().map(Vec::as_slice)) {
+                            Some(r) => r,
+                            None if a.sample_rate > 0 => a.sample_rate,
+                            None => ap.sample_rate as u32,
+                        }
+                    },
                     if a.channel_config > 0 { a.channel_config as u32 } else { ap.channels },
                     None,
                 ),
@@ -602,5 +611,42 @@ mod tests {
         // a scaled quarter turn is still a quarter turn
         let s = Mp4Source::open("cw2.mov", rotated_mov([0, 2 * ONE, 0, -2 * ONE, 0, 0, 64 * ONE, 0, W])).expect("open");
         assert_eq!(s.info().video.as_ref().map(|v| (v.width, v.height)), Some((32, 64)));
+    }
+}
+
+#[cfg(test)]
+mod he_aac_tests {
+    use filmcraft_isobmff::{Brand, Mp4Writer, SampleEntry, TrackConfig, WriteSample, WriterOptions};
+    use filmcraft_media::MediaSource;
+
+    /// #108: an HE-AAC MP4 (explicit SBR signalling, core 22.05 kHz, output 44.1 kHz, timescale
+    /// 44.1 kHz) built here from our AAC-LC encoder: the stream has no SBR data, which only the
+    /// high band would need. It was reported at the 22.05 kHz core rate, so sequences made from
+    /// such a clip were created at 22.05 kHz.
+    #[test]
+    fn he_aac_plays_at_the_output_rate() {
+        let core = 22_050u32;
+        let n = core as usize * 2;
+        let tone: Vec<f32> = (0..n).map(|i| 0.25 * (2.0 * std::f32::consts::PI * 1000.0 * i as f32 / core as f32).sin()).collect();
+        let mut enc = filmcraft_aac::Encoder::new(filmcraft_aac::EncoderConfig::cbr(core, 2, 64_000)).unwrap();
+        let mut aus = enc.encode(&[&tone, &tone]);
+        aus.extend(enc.flush());
+        // AOT 5, core 22.05 kHz, stereo, extension 44.1 kHz, core AOT 2
+        let asc = vec![0x2B, 0x92, 0x08, 0x00];
+        let mut mux = Mp4Writer::new(std::io::Cursor::new(Vec::new()), WriterOptions::new(Brand::Mp4)).unwrap();
+        let t = mux.add_track(TrackConfig::new(SampleEntry::aac(asc, 2, 44_100), 44_100)).unwrap();
+        for au in &aus {
+            mux.write_sample(t, WriteSample { data: au, duration: 2048, composition_offset: 0, is_sync: true }).unwrap();
+        }
+        let b = mux.finish().unwrap().into_inner();
+        let src = super::Mp4Source::open("he.mp4", b.into()).unwrap();
+        assert_eq!(src.info().audio.as_ref().unwrap().sample_rate, 44_100);
+        // one second from 0.5 s at 44.1 kHz: the 1 kHz tone at its level (not silence, not shifted)
+        let buf = src.audio(22_050, 44_100, 44_100).unwrap();
+        let x = &buf.channels[0];
+        let peak = x.iter().fold(0f32, |m, v| m.max(v.abs()));
+        assert!((0.2..0.3).contains(&peak), "peak {peak}");
+        let crossings = x.windows(2).filter(|w| w[0] < 0.0 && w[1] >= 0.0).count();
+        assert!((995..=1005).contains(&crossings), "{crossings} Hz");
     }
 }

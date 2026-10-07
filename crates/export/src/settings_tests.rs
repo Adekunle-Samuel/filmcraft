@@ -398,3 +398,15 @@ fn builtin_presets_are_valid_and_unique() {
     let back: ExportPreset = serde_json::from_value(json).unwrap();
     assert_eq!(back.settings.adaptive_bitrate, Some(0.2));
 }
+
+/// #108: the default 320 kbps is more than AAC can carry in stereo at 22.05 kHz (6 bits per sample
+/// and channel). The export failed with "bitrate out of range"; it is now capped to the limit.
+#[test]
+fn aac_bitrate_is_capped_for_low_sample_rates() {
+    let mut s = ExportSettings::default();
+    s.audio.bitrate_kbps = 320;
+    for (rate, ch) in [(22_050, 2), (16_000, 2), (8_000, 6), (48_000, 2)] {
+        let enc = aac_factory(Format::H264, rate, ch, &s).expect("AAC is always available");
+        assert!(enc.is_ok(), "{rate} Hz × {ch}: {:?}", enc.err());
+    }
+}
