@@ -124,13 +124,15 @@ pub(crate) fn place_video_clip(
             (q.settings.width, q.settings.height, q.settings.frame_rate)
         };
         let (src, dur) = source(pr, (w, h, rate));
+        // an imported picture (`graphics.newFromFile`) keeps its own size: centre its anchor in it
+        let src_size = pr.source_size(src).unwrap_or((w, h));
         let t = rate.snap(t);
         let dur = dur.max(rate.frame_duration());
         let mut ti = pr.make_track_item(src, TrackKind::Video, t, TimeRange::new(Tick::ZERO, dur), rate).ok_or_else(|| bad("graphics.newText", "bad item"))?;
         ti.name = name;
         ti.effects.extend(extra);
         for e in &mut ti.effects {
-            filmcraft_project::resolve_auto_points(e, (w, h), (w, h));
+            filmcraft_project::resolve_auto_points(e, (w, h), src_size);
         }
         let id = ti.id;
         let track_id = filmcraft_project::TrackId(pr.alloc_id());
