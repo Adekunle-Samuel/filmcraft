@@ -30,7 +30,7 @@ SUBCOMMANDS
          [--scale f] [--quality 0-100] [--no-audio] [--queue]
                                 export the active sequence and wait for it to finish: with an
                                 export preset (`export --list-presets`; built-in or the user's), or
-                                a format (h264|prores|dnxhr|apv|mjpeg|mxf-op1a|mxf-opatom|png|tiff|bmp|gif|wav|aiff, guessed
+                                a format (h264|hevc|prores|dnxhr|apv|mjpeg|mxf-op1a|mxf-opatom|png|tiff|bmp|gif|wav|aiff, guessed
                                 from the extension); --range entire|inOut|workArea, or a custom
                                 range in seconds; --settings is ExportSettings JSON merged over the
                                 preset; --scale renders at a fraction of the frame size (0.5 =
@@ -154,14 +154,19 @@ fn format_for(path: &str) -> Option<&'static str> {
     })
 }
 
+/// OS hardware video decoders (VideoToolbox on macOS, Media Foundation on Windows) in front of our
+/// own, as in the desktop app. Also what `mcp` and the headless commands decode with.
+fn register_hardware_decoders() -> filmcraft_platform::Availability {
+    filmcraft_platform::register()
+}
+
 #[tokio::main]
 async fn main() {
     if matches!(std::env::args().nth(1).as_deref(), Some("--version" | "-V")) {
         println!("filmcraft-cli {}", env!("CARGO_PKG_VERSION"));
         return;
     }
-    // OS hardware video decoders (VideoToolbox on macOS) in front of our own, as in the desktop app.
-    let _ = filmcraft_platform::register();
+    register_hardware_decoders();
     let a = Args::parse(std::env::args().skip(1));
     let Some(cmd) = a.pos(0) else { usage("missing subcommand") };
     match cmd {
@@ -378,6 +383,14 @@ async fn main() {
 
 #[cfg(test)]
 mod format_tests {
+    /// The CLI (and MCP / headless runs, which share its entry point) registers the hardware
+    /// decoders at start-up.
+    #[test]
+    fn startup_registers_the_hardware_decoders() {
+        let hardware = super::register_hardware_decoders();
+        assert_eq!(filmcraft_platform::registered(), cfg!(any(target_os = "macos", target_os = "windows")), "{hardware:?}");
+    }
+
     #[test]
     fn export_format_from_extension() {
         assert_eq!(super::format_for("out/clip.MXF"), Some("mxf-op1a"));

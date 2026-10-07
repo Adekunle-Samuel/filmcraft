@@ -67,6 +67,8 @@ fn meta(command: &str) -> Option<(&'static str, &'static str, &'static str)> {
         "file.saveAsTemplate" => ("Save as Template", "saveTemplate", "Save"),
         "markers.addFlashCue" => ("Flash Cue Marker", "flashCue", "OK"),
         "help.systemCompatibilityReport" => ("System Compatibility Report", "systemReport", "Close"),
+        "file.newColorMatte" => ("New Color Matte", "colorMatte", "OK"),
+        "project.matteColor" => ("Color Matte Color", "matteColor", "OK"),
         _ => return None,
     })
 }
@@ -88,6 +90,8 @@ fn dialog_command(id: &str) -> Option<&'static str> {
         "sequence.transcribe" => "sequence.transcribe",
         "file.saveAsTemplate" => "file.saveAsTemplate",
         "markers.addFlashCue" => "markers.addFlashCue",
+        "file.newColorMatte" => "file.newColorMatte",
+        "project.matteColor" => "project.matteColor",
         _ => return None,
     })
 }
@@ -332,6 +336,24 @@ fn defaults(app: &mut FilmcraftApp, cmd: &str, id: &str) -> Result<(Value, Value
         }
         "file.saveAsTemplate" => (json!({"name": s.project.name}), Value::Null),
         "markers.addFlashCue" => (json!({"name": "", "comment": ""}), Value::Null),
+        "file.newColorMatte" => {
+            let st = s.active_sequence().map(|q| q.settings.clone()).unwrap_or_default();
+            (json!({"color": "#000000", "name": "Color Matte", "width": st.width, "height": st.height, "seconds": 5.0}), Value::Null)
+        }
+        "project.matteColor" => {
+            let matte = match s.state.project_selection.as_slice() {
+                [id] => s.project.item(*id).and_then(|it| match &it.kind {
+                    filmcraft_engine::project::ItemKind::Media(m) => match &m.media {
+                        filmcraft_engine::project::MediaRef::Generator(filmcraft_media::Generator::ColorMatte { color }) => Some((it.id, *color)),
+                        _ => None,
+                    },
+                    _ => None,
+                }),
+                _ => None,
+            };
+            let (id, color) = matte.ok_or("select one Color Matte")?;
+            (json!({"item": id.0, "color": filmcraft_color::to_hex(color)}), Value::Null)
+        }
         _ => (json!({}), Value::Null),
     })
 }
@@ -397,6 +419,21 @@ fn combo(ui: &mut egui::Ui, elems: &mut Elems, id: &str, label: &str, value: &mu
             }
         });
         push(elems, id, &r.response, label);
+    });
+}
+
+/// A color swatch that opens the color picker; the parameter is `#rrggbb`.
+fn color(ui: &mut egui::Ui, elems: &mut Elems, pre: &str, p: &mut Value, key: &str, label: &str) {
+    ui.horizontal(|ui| {
+        ui.label(label);
+        let c = p.get(key).and_then(Value::as_str).and_then(filmcraft_color::parse_hex).unwrap_or([0.0, 0.0, 0.0, 1.0]);
+        let mut rgb = [c[0], c[1], c[2]].map(|v| (v.clamp(0.0, 1.0) * 255.0).round() as u8);
+        let r = egui::color_picker::color_edit_button_srgb(ui, &mut rgb);
+        push(elems, format!("{pre}.{key}"), &r, label);
+        if r.changed() {
+            p[key] = json!(format!("#{:02x}{:02x}{:02x}", rgb[0], rgb[1], rgb[2]));
+        }
+        ui.label(p.get(key).and_then(Value::as_str).unwrap_or_default());
     });
 }
 
@@ -687,6 +724,14 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
                 check(ui, &mut elems, pre, p, "diarize", "Recognize when different speakers are talking");
             }
             "file.saveAsTemplate" => text(ui, &mut elems, pre, p, "name", "Template Name:", 240.0),
+            "file.newColorMatte" => {
+                color(ui, &mut elems, pre, p, "color", "Color:");
+                text(ui, &mut elems, pre, p, "name", "Name:", 220.0);
+                number(ui, &mut elems, pre, p, "width", "Width:", 1.0..=16384.0, " px");
+                number(ui, &mut elems, pre, p, "height", "Height:", 1.0..=16384.0, " px");
+                number(ui, &mut elems, pre, p, "seconds", "Duration:", 0.04..=36000.0, " s");
+            }
+            "project.matteColor" => color(ui, &mut elems, pre, p, "color", "Color:"),
             "markers.addFlashCue" => {
                 text(ui, &mut elems, pre, p, "name", "Name:", 220.0);
                 text(ui, &mut elems, pre, p, "comment", "Comments:", 220.0);

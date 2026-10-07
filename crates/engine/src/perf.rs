@@ -37,6 +37,8 @@ pub fn decode_json() -> Value {
         // hardware decoders created, streams handed to software up front, mid-stream fallbacks.
         "hardware": {
             "enabled": filmcraft_codecs::hw::hardware_decoding(),
+            // the OS decoder backend registered at startup (null where there is none)
+            "backend": filmcraft_codecs::hw::hw_backend(),
             "frames": hw.frames,
             "softwareFrames": g.frames.saturating_sub(hw.frames),
             "sessions": hw.sessions,
@@ -92,6 +94,7 @@ mod tests {
             assert!(v["decode"]["hardware"][k].is_number(), "decode.hardware.{k} in {v}");
         }
         assert!(v["decode"]["hardware"]["enabled"].is_boolean());
+        assert!(v["decode"]["hardware"]["backend"].is_null() || v["decode"]["hardware"]["backend"].is_string());
         assert!(v["media"]["openSources"].is_number());
         assert_eq!(v["jobs"]["running"], json!(0));
         assert_eq!(s.history.undo.len(), undo, "a query adds no undo step");

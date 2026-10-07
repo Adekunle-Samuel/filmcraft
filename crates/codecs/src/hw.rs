@@ -29,6 +29,19 @@ pub fn hardware_decoding() -> bool {
     ENABLED.load(Ordering::Relaxed)
 }
 
+static BACKEND: std::sync::Mutex<Option<&'static str>> = std::sync::Mutex::new(None);
+
+/// Record the OS decoder backend `filmcraft_platform::register` put in front of our decoders
+/// ("VideoToolbox", "Media Foundation"), for `perf.stats`.
+pub fn set_hw_backend(name: &'static str) {
+    *BACKEND.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(name);
+}
+
+/// The registered hardware decoder backend, if any ([`set_hw_backend`]).
+pub fn hw_backend() -> Option<&'static str> {
+    *BACKEND.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
 /// Process-wide hardware decoding counters (they only grow; subtract two snapshots to measure an
 /// interval). Frames decoded in software are `GopStats::frames - frames`.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
