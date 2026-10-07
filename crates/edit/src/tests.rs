@@ -573,6 +573,59 @@ fn hostile_speeds_are_refused_or_clamped_never_overflow() {
 }
 
 #[test]
+fn shorter_head_into_an_l_cut_keeps_the_earlier_sound_where_it_is() {
+    // V1: a [0,10), b [10,20), c [20,30). a's sound on sync-locked A1 runs 3 into b: [0,13) (an L
+    // cut). b loses 3 at its head: a never moves, so its sound stays and the L cut still ends at 13.
+    let mut fx = Fx::new();
+    let (v1, a1) = (fx.v(0), fx.a(0));
+    let a = fx.put(v1, 0, 10, 0);
+    let b = fx.put(v1, 10, 10, 0);
+    fx.put(v1, 20, 10, 0);
+    let a_sound = fx.put(a1, 0, 13, 0);
+    for x in [a, a_sound] {
+        fx.seq.find_item_mut(x).unwrap().1.link = Some(7);
+    }
+    let mut n = fx.next;
+    ripple_trim_group(&mut fx.seq, &[b], Edge::In, f(3), &mut Fx::ctx(&mut n)).unwrap();
+    assert_eq!((fx.spans(v1), fx.spans(a1)), (vec![(0, 10), (10, 7), (17, 10)], vec![(0, 13)]));
+    fx.seq.check().unwrap();
+
+    // later material on A1 moves up with the pictures; landing on the L cut's sound refuses
+    let later = fx.put(a1, 15, 5, 0);
+    assert_eq!(ripple_trim_group(&mut fx.seq, &[b], Edge::In, f(3), &mut Fx::ctx(&mut n)), Err(EditError::SyncLockConflict));
+    assert_eq!(fx.spans(a1), vec![(0, 13), (15, 5)], "unchanged on failure");
+    fx.seq.find_item_mut(later).unwrap().1.start = f(20);
+    ripple_trim_group(&mut fx.seq, &[b], Edge::In, f(2), &mut Fx::ctx(&mut n)).unwrap();
+    assert_eq!((fx.spans(v1), fx.spans(a1)), (vec![(0, 10), (10, 5), (15, 10)], vec![(0, 13), (18, 5)]));
+
+    // unlinked material across the cut (a music bed) still refuses
+    let mut fx = Fx::new();
+    let (v1, a1) = (fx.v(0), fx.a(0));
+    fx.put(v1, 0, 10, 0);
+    let b = fx.put(v1, 10, 10, 0);
+    fx.put(a1, 0, 13, 0);
+    let mut n = fx.next;
+    assert_eq!(ripple_trim_group(&mut fx.seq, &[b], Edge::In, f(3), &mut Fx::ctx(&mut n)), Err(EditError::SyncLockConflict));
+    // so does a link with no partner left
+    fx.seq.track_mut(a1).unwrap().items[0].link = Some(9);
+    assert_eq!(ripple_trim_group(&mut fx.seq, &[b], Edge::In, f(3), &mut Fx::ctx(&mut n)), Err(EditError::SyncLockConflict));
+
+    // a linked cutaway across the cut whose own partner reaches past it too is no L cut: it refuses
+    let mut fx = Fx::new();
+    let (v1, v2, a1) = (fx.v(0), fx.v(1), fx.a(0));
+    fx.put(v1, 0, 10, 0);
+    let b = fx.put(v1, 10, 10, 0);
+    fx.put(v1, 20, 10, 0);
+    let x = fx.put(v2, 5, 20, 0);
+    let xs = fx.put(a1, 5, 20, 0);
+    for c in [x, xs] {
+        fx.seq.find_item_mut(c).unwrap().1.link = Some(7);
+    }
+    let mut n = fx.next;
+    assert_eq!(ripple_trim_group(&mut fx.seq, &[b], Edge::In, f(3), &mut Fx::ctx(&mut n)), Err(EditError::SyncLockConflict));
+}
+
+#[test]
 fn shorter_head_closes_the_stretch_after_the_cut_on_sync_locked_tracks() {
     // V1: a [0,10), b [10,20). a's sound on sync-locked A1 runs up to the cut: [0,10). b loses 3 at
     // its head; the stretch that closes is [10,13), where A1 is empty, so nothing refuses.
