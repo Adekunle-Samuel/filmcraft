@@ -263,7 +263,7 @@ fn add_tracks(app: &mut FilmcraftApp, ctx: &egui::Context) -> bool {
     }
     if apply {
         // nothing asked for: OK closes the dialog and changes nothing
-        if d.video + d.audio + d.submix > 0 {
+        if d.video > 0 || d.audio > 0 || d.submix > 0 {
             let params = serde_json::json!({
                 "video": d.video, "videoAfter": d.video_after,
                 "audio": d.audio, "audioAfter": d.audio_after, "audioType": d.audio_type,
