@@ -132,30 +132,85 @@ impl Pen16<'_> {
     fn s(&self) -> f32 {
         self.rect.width().min(self.rect.height()) / 16.0
     }
+    /// Stroke width in points covering a whole number of device pixels, at least one (a half pixel
+    /// rounds down: 1.25 pt at scale 1 is 1 px at 1x and 2 px at 2x), so lines never straddle pixels.
+    fn stroke_w(&self) -> f32 {
+        let ppp = self.painter.pixels_per_point();
+        (self.width * self.s() * ppp - 0.5).ceil().max(1.0) / ppp
+    }
+    fn stroke(&self) -> PathStroke {
+        PathStroke::new(self.stroke_w(), self.color)
+    }
+    /// Snap one coordinate (points) to the device pixel grid. `mid` puts it where the middle of a
+    /// stroke must sit to cover whole pixels (a pixel centre for an odd pixel width, an edge for an
+    /// even one); otherwise on a pixel edge (where a line ends or a fill begins). Offsets are rounded
+    /// from the icon's centre, the same way on both sides, so equal steps on the 16 grid stay equal
+    /// on screen (the three lines of the menu mark get the same two gaps).
+    fn snap(&self, v: f32, centre: f32, mid: bool) -> f32 {
+        let ppp = self.painter.pixels_per_point();
+        let half = if mid && (self.stroke_w() * ppp).round() as i32 % 2 == 1 { 0.5 } else { 0.0 };
+        let base = (centre * ppp).round() + half;
+        (base + ((v - centre) * ppp).round()) / ppp
+    }
+    fn snap_pos(&self, q: Pos2, mid_x: bool, mid_y: bool) -> Pos2 {
+        let c = self.rect.center();
+        pos2(self.snap(q.x, c.x, mid_x), self.snap(q.y, c.y, mid_y))
+    }
+    /// Grid points to screen. Points on a horizontal or vertical segment (one that runs less than a
+    /// device pixel sideways, so it draws straight anyway) snap to device pixels so the segment is
+    /// drawn crisp; points between slanted segments keep their exact place.
+    fn crisp(&self, pts: &[(f32, f32)], closed: bool) -> Vec<Pos2> {
+        let n = pts.len();
+        let ppp = self.painter.pixels_per_point();
+        let q: Vec<Pos2> = pts.iter().map(|(x, y)| self.p(*x, *y)).collect();
+        let seg = |i: usize, j: usize| {
+            let d = (q[i] - q[j]) * ppp;
+            (d.x.abs() < 1.0, d.y.abs() < 1.0) // (vertical, horizontal)
+        };
+        (0..n)
+            .map(|i| {
+                let mut nb = Vec::new();
+                if i > 0 || closed {
+                    nb.push(seg((i + n - 1) % n, i));
+                }
+                if i + 1 < n || closed {
+                    nb.push(seg(i, (i + 1) % n));
+                }
+                let q = q[i];
+                let vert = nb.iter().any(|s| s.0);
+                let horiz = nb.iter().any(|s| s.1);
+                if !vert && !horiz {
+                    return q;
+                }
+                // across a straight segment: the stroke's middle; along it: a pixel edge, where it ends
+                self.snap_pos(q, vert, horiz)
+            })
+            .collect()
+    }
     fn line(&self, pts: &[(f32, f32)]) {
-        let v: Vec<Pos2> = pts.iter().map(|(x, y)| self.p(*x, *y)).collect();
-        self.painter.add(PathShape::line(v, PathStroke::new(self.width * self.s(), self.color)));
+        let v = self.crisp(pts, false);
+        self.painter.add(PathShape::line(v, self.stroke()));
     }
     fn closed(&self, pts: &[(f32, f32)]) {
-        let v: Vec<Pos2> = pts.iter().map(|(x, y)| self.p(*x, *y)).collect();
-        self.painter.add(PathShape::closed_line(v, PathStroke::new(self.width * self.s(), self.color)));
+        let v = self.crisp(pts, true);
+        self.painter.add(PathShape::closed_line(v, self.stroke()));
     }
     fn fill(&self, pts: &[(f32, f32)]) {
         let v: Vec<Pos2> = pts.iter().map(|(x, y)| self.p(*x, *y)).collect();
         self.painter.add(PathShape::convex_polygon(v, self.color, Stroke::NONE));
     }
     fn circle(&self, x: f32, y: f32, r: f32) {
-        self.painter.circle_stroke(self.p(x, y), r * self.s(), Stroke::new(self.width * self.s(), self.color));
+        self.painter.circle_stroke(self.p(x, y), r * self.s(), Stroke::new(self.stroke_w(), self.color));
     }
     fn dot(&self, x: f32, y: f32, r: f32) {
         self.painter.circle_filled(self.p(x, y), r * self.s(), self.color);
     }
     fn rect(&self, x0: f32, y0: f32, x1: f32, y1: f32) {
-        let r = Rect::from_min_max(self.p(x0, y0), self.p(x1, y1));
-        self.painter.rect_stroke(r, 1.0 * self.s(), Stroke::new(self.width * self.s(), self.color), egui::StrokeKind::Middle);
+        let r = Rect::from_min_max(self.snap_pos(self.p(x0, y0), true, true), self.snap_pos(self.p(x1, y1), true, true));
+        self.painter.rect_stroke(r, 1.0 * self.s(), Stroke::new(self.stroke_w(), self.color), egui::StrokeKind::Middle);
     }
     fn rect_fill(&self, x0: f32, y0: f32, x1: f32, y1: f32) {
-        let r = Rect::from_min_max(self.p(x0, y0), self.p(x1, y1));
+        let r = Rect::from_min_max(self.snap_pos(self.p(x0, y0), false, false), self.snap_pos(self.p(x1, y1), false, false));
         self.painter.rect_filled(r, 0.8 * self.s(), self.color);
     }
     fn arc(&self, cx: f32, cy: f32, r: f32, a0: f32, a1: f32) {
@@ -655,4 +710,185 @@ pub fn button(ui: &mut egui::Ui, icon: Icon, size: f32, active: bool, t: &crate:
     };
     paint(ui.painter(), rect.shrink(size * 0.2), icon, col);
     if tooltip.is_empty() { resp } else { resp.on_hover_text(tooltip) }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use Icon::*;
+    use egui::epaint::{ColorMode, Shape};
+
+    const ALL: &[Icon] = &[
+        Selection,
+        TrackSelectFwd,
+        TrackSelectBack,
+        Ripple,
+        Rolling,
+        RateStretch,
+        Remix,
+        Razor,
+        Slip,
+        Slide,
+        Pen,
+        Rectangle,
+        Ellipse,
+        Hand,
+        Zoom,
+        Type,
+        Play,
+        Pause,
+        StepBack,
+        StepFwd,
+        GoToIn,
+        GoToOut,
+        MarkIn,
+        MarkOut,
+        Marker,
+        Insert,
+        Overwrite,
+        Lift,
+        Extract,
+        Camera,
+        Loop,
+        Wrench,
+        Plus,
+        Eye,
+        EyeOff,
+        Speaker,
+        Mute,
+        Lock,
+        Unlock,
+        SyncLock,
+        Mic,
+        Folder,
+        Film,
+        Sequence,
+        Audio,
+        Image,
+        Search,
+        ListView,
+        IconView,
+        Freeform,
+        NewItem,
+        Trash,
+        Home,
+        Workspaces,
+        Hamburger,
+        ChevronDown,
+        ChevronRight,
+        Magnet,
+        Link,
+        Keyframe,
+        Stopwatch,
+        Fx,
+        Reset,
+        Close,
+        Fullscreen,
+        Export,
+        Gear,
+        Info,
+        Captions,
+        Adjust,
+        Nest,
+        Undo,
+        Redo,
+        Bell,
+        Chat,
+        Globe,
+        Code,
+        Sparkle,
+        Grid,
+        Square,
+        Proxy,
+        Offline,
+        TrackMaskBack,
+        TrackMaskBackFrame,
+        TrackMaskFwdFrame,
+        TrackMaskFwd,
+        SortIcons,
+        Automate,
+        Star,
+        ChevronLeft,
+        ArrowUp,
+        Drive,
+        Network,
+        Clock,
+    ];
+
+    /// Paint `icon` at `ppp` device pixels per point into a rect of `size` points whose corner is
+    /// off the pixel grid, and return what was drawn.
+    fn drawn(icon: Icon, ppp: f32, size: f32) -> Vec<Shape> {
+        let ctx = egui::Context::default();
+        ctx.set_pixels_per_point(ppp);
+        let mut shapes = Vec::new();
+        for _ in 0..2 {
+            let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
+                paint(ui.painter(), Rect::from_min_size(pos2(10.3, 7.7), vec2(size, size)), icon, Color32::WHITE);
+            });
+            out.textures_delta.clear();
+            shapes = out.shapes.into_iter().map(|c| c.shape).collect();
+        }
+        fn flat(s: Shape, out: &mut Vec<Shape>) {
+            match s {
+                Shape::Vec(v) => v.into_iter().for_each(|s| flat(s, out)),
+                s => out.push(s),
+            }
+        }
+        let mut out = Vec::new();
+        shapes.into_iter().for_each(|s| flat(s, &mut out));
+        out
+    }
+
+    fn on_grid(v: f32, ppp: f32, width_px: f32) -> bool {
+        let want = if width_px.round() as i32 % 2 == 1 { 0.5 } else { 0.0 };
+        ((v * ppp).fract().abs() - want).abs() < 1e-3 || ((v * ppp).fract().abs() - (1.0 - want)).abs() < 1e-3
+    }
+
+    /// Every straight line of every icon covers whole device pixels at 1x and 2x (no half-pixel
+    /// blur): a whole number of pixels wide, its middle where that width needs it.
+    #[test]
+    fn straight_lines_land_on_whole_pixels() {
+        for &ppp in &[1.0, 2.0] {
+            for &size in &[16.0, 13.0, 9.6, 20.0] {
+                for &icon in ALL {
+                    for shape in drawn(icon, ppp, size) {
+                        if let Shape::Path(p) = shape {
+                            if p.stroke.width == 0.0 || matches!(p.stroke.color, ColorMode::Solid(c) if c == Color32::TRANSPARENT) {
+                                continue;
+                            }
+                            let w = p.stroke.width * ppp;
+                            assert!((w - w.round()).abs() < 1e-3 && w >= 1.0, "{icon:?} at {ppp}x size {size}: width {w} px");
+                            let n = p.points.len();
+                            let segs = if p.closed { n } else { n - 1 };
+                            for i in 0..segs {
+                                let (a, b) = (p.points[i], p.points[(i + 1) % n]);
+                                if (a.y - b.y).abs() < 1e-4 {
+                                    assert!(on_grid(a.y, ppp, w), "{icon:?} at {ppp}x size {size}: horizontal line at y {} px", a.y * ppp);
+                                }
+                                if (a.x - b.x).abs() < 1e-4 {
+                                    assert!(on_grid(a.x, ppp, w), "{icon:?} at {ppp}x size {size}: vertical line at x {} px", a.x * ppp);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// The panel menu mark (≡): three lines, the same two gaps, at every scale.
+    #[test]
+    fn menu_mark_lines_are_evenly_spaced() {
+        for &ppp in &[1.0, 1.5, 2.0] {
+            for &size in &[16.0, 13.0, 9.6, 12.0] {
+                let ys: Vec<f32> = drawn(Icon::Hamburger, ppp, size)
+                    .into_iter()
+                    .filter_map(|s| if let Shape::Path(p) = s { Some(p.points[0].y * ppp) } else { None })
+                    .collect();
+                assert_eq!(ys.len(), 3);
+                let (g1, g2) = (ys[1] - ys[0], ys[2] - ys[1]);
+                assert!((g1 - g2).abs() < 1e-3 && g1 >= 2.0, "{ppp}x size {size}: gaps {g1} and {g2} px");
+            }
+        }
+    }
 }
