@@ -45,7 +45,7 @@ claude mcp add filmcraft-headless -- /abs/path/filmcraft/target/release/filmcraf
 | `project_inspect` | both | bins and items with ids, types, durations; active sequence |
 | `sequence_inspect` | both | the active sequence: tracks, clips (`start` / `end` and `sourceIn` / `sourceOut` in ticks, frames, `speed`, `reverse`: the clip plays its `sourceIn` to `sourceOut` stretch backward, `gainDb`), effects, transitions, markers (name and `comment`), playhead, selection |
 | `media_import` | both | import files by absolute path (`text`, one path per line) |
-| `render_frame` | both | PNG of the program frame at `seconds` (headless renders; bridge screenshots the Program monitor) |
+| `render_frame` | both | PNG of the program frame at `seconds` (headless renders; bridge screenshots the Program monitor). Read-only: the playhead and selection are left as they were |
 | `ui_inspect` | bridge | UI state: tool, workspace, panels, zoom, playback, fps |
 | `ui_elements` | bridge | on-screen interactive elements with id, label and rect (`prefix` filter) |
 | `ui_click` | bridge | click by `id` or `x`,`y`; `button`, `count`, `modifiers` |
@@ -97,7 +97,10 @@ progress and stop it:
   no response, as the MCP cancellation utility asks.
 - Without `wait` the command returns `{job, path}` at once, as before: poll `jobs.list` and stop it
   with `jobs.cancel`. Other exports (`file.exportFrame`, interchange formats, …) finish quickly and
-  ignore the token. Bridge mode forwards the call unchanged; the app shows its own progress.
+  ignore the token.
+- Bridge mode works the same way: the export runs as an app job (the app stays responsive and shows
+  "Exporting… NN%" in its status bar) and the call returns when it is written, however long it
+  takes. `filmcraft-cli --bridge … exec file.exportMedia … wait=true` blocks the same way.
 
 ## 2. Control channel
 

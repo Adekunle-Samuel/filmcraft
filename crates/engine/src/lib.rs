@@ -929,10 +929,17 @@ impl Session {
 
     /// Render the active sequence at the playhead (CPU reference path).
     pub fn render_program(&self, scale: f32) -> Option<filmcraft_render::Image> {
+        self.render_program_at(scale, self.playhead())
+    }
+
+    /// Render the active sequence at `t` (snapped to its frame, as the playhead would be) without
+    /// moving the playhead (CPU reference path).
+    pub fn render_program_at(&self, scale: f32, t: Tick) -> Option<filmcraft_render::Image> {
         let seq = self.state.active_sequence?;
+        let t = self.sequence_rate().snap(t.max(Tick::ZERO));
         let provider = self.media.provider(self.project.clone(), self.services.clone());
         let opts = filmcraft_render::RenderOptions { scale, captions: true, ..Default::default() };
-        Some(filmcraft_render::render_sequence(&self.project, seq, self.playhead(), opts, &provider))
+        Some(filmcraft_render::render_sequence(&self.project, seq, t, opts, &provider))
     }
 }
 
@@ -947,19 +954,31 @@ pub fn media_start(p: &Project, id: ItemId) -> Tick {
 
 /// Media duration of an item (None for stills/adjustment layers = unlimited handles).
 pub fn media_duration(p: &Project, _pool: &MediaPool, id: ItemId) -> Option<Tick> {
-    let it = p.item(id)?;
-    match &it.kind {
-        filmcraft_project::ItemKind::Media(m) => match m.info.kind {
-            filmcraft_media::MediaKind::Still | filmcraft_media::MediaKind::Synthetic => None,
-            _ => Some(m.info.duration),
-        },
-        filmcraft_project::ItemKind::Sequence(s) => Some(s.duration()),
-        // a subclip that restricts trims ends at its Out point; otherwise its parent's media is the limit
-        filmcraft_project::ItemKind::Subclip { range, restrict_trims: true, .. } => Some(range.end()),
-        filmcraft_project::ItemKind::Subclip { parent, .. } => media_duration(p, _pool, *parent),
-        filmcraft_project::ItemKind::AdjustmentLayer { .. } | filmcraft_project::ItemKind::Graphic { .. } => None,
+    // a subclip's limit is its parent's: follow the chain, bounded (a damaged project file can make
+    // it cyclic or arbitrarily deep)
+    let mut id = id;
+    for _ in 0..=MAX_SUBCLIP_CHAIN {
+        let it = p.item(id)?;
+        return match &it.kind {
+            filmcraft_project::ItemKind::Media(m) => match m.info.kind {
+                filmcraft_media::MediaKind::Still | filmcraft_media::MediaKind::Synthetic => None,
+                _ => Some(m.info.duration),
+            },
+            filmcraft_project::ItemKind::Sequence(s) => Some(s.duration()),
+            // a subclip that restricts trims ends at its Out point; otherwise its parent's media is the limit
+            filmcraft_project::ItemKind::Subclip { range, restrict_trims: true, .. } => Some(range.end()),
+            filmcraft_project::ItemKind::Subclip { parent, .. } => {
+                id = *parent;
+                continue;
+            }
+            filmcraft_project::ItemKind::AdjustmentLayer { .. } | filmcraft_project::ItemKind::Graphic { .. } => None,
+        };
     }
+    None
 }
+
+/// Subclips of subclips followed before giving up (real projects nest one or two deep).
+const MAX_SUBCLIP_CHAIN: usize = 16;
 
 #[cfg(test)]
 mod aaf_omf_tests;

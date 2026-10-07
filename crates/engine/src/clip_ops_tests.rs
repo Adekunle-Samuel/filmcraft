@@ -863,3 +863,17 @@ fn color_matte_color_changes_and_undoes() {
     assert!(s.execute("project.matteColor", json!({"item": bars, "color": "#00ff00"})).is_err());
     assert!(s.execute("project.matteColor", json!({"item": matte, "color": "green"})).is_err());
 }
+
+/// A damaged project whose subclip is its own parent (#66): `media_duration` followed the chain
+/// without a bound and overflowed the stack. It gives up after a few hops now.
+#[test]
+fn a_cyclic_subclip_chain_has_no_media_duration() {
+    let mut s = demo();
+    let ocean = item_named(&s, "Ocean_Sunset.mp4");
+    s.execute("source.open", json!({"item": ocean.0})).unwrap();
+    let sub = ItemId(s.execute("clip.makeSubclip", json!({})).unwrap()["item"].as_u64().unwrap());
+    s.execute("clip.editSubclip", json!({"item": sub.0, "restrictTrims": false})).unwrap();
+    let Some(ItemKind::Subclip { parent, .. }) = std::sync::Arc::make_mut(&mut s.project).item_mut(sub).map(|i| &mut i.kind) else { panic!() };
+    *parent = sub;
+    assert_eq!(crate::media_duration(&s.project, &s.media, sub), None);
+}
