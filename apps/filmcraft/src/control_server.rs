@@ -46,11 +46,25 @@ fn accept_loop(listener: TcpListener, tx: Sender<ControlRequest>, ctx: egui::Con
         }
         let tx = tx.clone();
         let ctx = ctx.clone();
-        let open = Arc::clone(&open);
-        std::thread::spawn(move || {
+        // The slot is given back when the guard drops: after `serve` returns, if it panics, or if
+        // the thread can't be started (the closure, and with it the guard, is dropped).
+        let slot = Slot(Arc::clone(&open));
+        let spawned = std::thread::Builder::new().name("control-conn".into()).spawn(move || {
+            let _slot = slot;
             serve(stream, &tx, &ctx);
-            open.fetch_sub(1, Ordering::SeqCst);
         });
+        if let Err(e) = spawned {
+            eprintln!("filmcraft: control server could not start a connection thread: {e}");
+        }
+    }
+}
+
+/// One counted connection; decrements the open-connection count when dropped.
+struct Slot(Arc<AtomicUsize>);
+
+impl Drop for Slot {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::SeqCst);
     }
 }
 
