@@ -54,6 +54,7 @@ pub fn register() -> Availability {
     {
         filmcraft_codecs::register_video_decoder(videotoolbox_factory);
         filmcraft_export::register_encoder(hardware_encode::videotoolbox_encoder_factory);
+        filmcraft_export::register_format_probe(filmcraft_export::Format::Hevc, hardware_encode::hevc_available);
         Availability::Available("VideoToolbox")
     }
     #[cfg(not(target_os = "macos"))]

@@ -181,6 +181,43 @@ the media engine removes most of the first and lets the next batch render while 
 encodes (the exporter renders a batch of frames in parallel, then encodes it). What is left is the
 CPU compositor, the next target of #30 ("GPU export").
 
+## Results (HW3: VideoToolbox hardware H.265 (HEVC) encoding, against hardware H.264)
+
+Apple M1 (8 cores, 16 GB), 2026-10-07, single runs on an otherwise idle machine, release build. Both
+encoders are the M1's media engine. H.265 is `Format::Hevc` (Main, 8-bit 4:2:0, one-pass VBR, no
+B-frames); H.264 is the opt-in hardware encoder of HW2 (High).
+
+### Speed
+
+The raw encoders (ffmpeg's `hevc_videotoolbox` and `h264_videotoolbox` on a 1080p25 test pattern, 500
+frames): 166 and 189 frames/s. H.265 is the codec that compresses further, not the faster one to encode.
+
+The 9:29 timeline of HW2 (camera clip, ProRes 4444 overlays, AAC, loudness normalised to −14 LUFS), 20 Mb/s
+H.264 and 10 Mb/s H.265: **204 s and 195 s** (CPU 1042 s and 1029 s), files of 1417 MB and 719 MB. The
+same time: the same H.264 export took 193 s and 200 s on other runs. The export is bound by the CPU
+compositor and the decoders, not by the encoder, so a different hardware codec does not change it.
+
+### Quality per bit
+
+30 s with a banner (15–45 s of that timeline), exported by FilmCraft as ProRes 422 HQ (the reference)
+and by each encoder at several bitrates; ffmpeg's `psnr` and `ssim` of the decoded 4:2:0 pictures against
+the reference. Average PSNR over the three planes, and SSIM (higher is better):
+
+| Mb/s | H.264 | H.265 | difference | H.264 Mb/s for H.265's PSNR |
+|---|---|---|---|---|
+| 20 | 46.88 dB, 0.9902 | 46.91 dB, 0.9903 | +0.03 dB | beyond the range measured |
+| 10 | 44.96 dB, 0.9863 | 45.09 dB, 0.9863 | +0.13 dB | 10.5 |
+| 6 | 43.72 dB, 0.9833 | 44.31 dB, 0.9843 | +0.59 dB | 7.7 |
+| 4 | 42.91 dB, 0.9807 | 43.64 dB, 0.9825 | +0.73 dB | 5.8 |
+| 3 | 42.37 dB, 0.9786 | 43.05 dB, 0.9807 | +0.68 dB | 4.3 |
+
+At 10 Mb/s and above the two give the same picture. At 3–6 Mb/s H.265 reaches the same PSNR with 22–31 %
+less bitrate. Its worst frame is better at every bitrate (lowest per-frame PSNR 45.9 against 42.1 dB at
+20 Mb/s, 43.1 against 41.5 dB at 10, 39.5 against 37.8 dB at 3).
+
+So there is no case for a lower default bitrate: the two formats start at the same 20 Mb/s. H.265
+pays off where the file size matters, at 3–6 Mb/s; that 9:29 timeline is 428 MB at 6 Mb/s.
+
 ## Results (GPU1: blend modes on the GPU compositor, #30, before → after)
 
 Before = this change with the old whole-frame CPU fallback for non-Normal blend modes put back

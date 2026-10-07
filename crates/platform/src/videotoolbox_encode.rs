@@ -1,4 +1,4 @@
-//! VideoToolbox (macOS) hardware H.264 encoding.
+//! VideoToolbox (macOS) hardware H.264 and HEVC encoding.
 //!
 //! An FFI module of this crate (docs/adr/0001-platform-ffi.md): every `unsafe` block has a
 //! `// SAFETY:` comment, no panic may unwind into VideoToolbox (the output callback runs under
@@ -15,16 +15,21 @@
 //! copies each compressed frame (length-prefixed NAL units) into a queue that [`VtEncoder::encode`]
 //! and [`VtEncoder::flush`] drain.
 //!
-//! The first frame is completed straight away: the SPS / PPS the container needs come with the
-//! first compressed frame, and the muxer asks for them after the first group of frames.
+//! The first frame is completed straight away: the parameter sets the container needs (SPS / PPS
+//! for H.264, VPS / SPS / PPS and VideoToolbox's own `hvcC` record for HEVC) come with the first
+//! compressed frame, and the muxer asks for them after the first group of frames.
 
 use std::ffi::{c_int, c_void};
 use std::panic::AssertUnwindSafe;
 use std::ptr::NonNull;
 use std::sync::{Mutex, PoisonError};
 
-use objc2_core_foundation::{CFArray, CFBoolean, CFDictionary, CFNumber, CFRetained, CFString, CFType};
-use objc2_core_media::{CMSampleBuffer, CMTime, CMTimeFlags, CMVideoFormatDescriptionGetH264ParameterSetAtIndex, kCMVideoCodecType_H264};
+use objc2_core_foundation::{CFArray, CFBoolean, CFData, CFDictionary, CFNumber, CFRetained, CFString, CFType};
+use objc2_core_media::{
+    CMFormatDescription, CMSampleBuffer, CMTime, CMTimeFlags, CMVideoFormatDescriptionGetH264ParameterSetAtIndex,
+    CMVideoFormatDescriptionGetHEVCParameterSetAtIndex, kCMFormatDescriptionExtension_SampleDescriptionExtensionAtoms, kCMVideoCodecType_H264,
+    kCMVideoCodecType_HEVC,
+};
 use objc2_core_video::{
     CVImageBuffer, CVPixelBufferCreate, CVPixelBufferGetBaseAddressOfPlane, CVPixelBufferGetBytesPerRowOfPlane, CVPixelBufferGetHeightOfPlane,
     CVPixelBufferGetWidthOfPlane, CVPixelBufferLockBaseAddress, CVPixelBufferLockFlags, CVPixelBufferPool, CVPixelBufferUnlockBaseAddress,
@@ -32,11 +37,12 @@ use objc2_core_video::{
     kCVPixelBufferIOSurfacePropertiesKey, kCVPixelBufferPixelFormatTypeKey, kCVPixelBufferWidthKey,
 };
 use objc2_video_toolbox::{
-    VTCompressionSession, VTEncodeInfoFlags, VTSessionSetProperty, kVTCompressionPropertyKey_AllowFrameReordering, kVTCompressionPropertyKey_AllowOpenGOP,
-    kVTCompressionPropertyKey_AverageBitRate, kVTCompressionPropertyKey_ColorPrimaries, kVTCompressionPropertyKey_ConstantBitRate,
-    kVTCompressionPropertyKey_DataRateLimits, kVTCompressionPropertyKey_ExpectedFrameRate, kVTCompressionPropertyKey_MaxKeyFrameInterval,
-    kVTCompressionPropertyKey_ProfileLevel, kVTCompressionPropertyKey_RealTime, kVTCompressionPropertyKey_TransferFunction,
-    kVTCompressionPropertyKey_YCbCrMatrix, kVTProfileLevel_H264_Baseline_AutoLevel, kVTProfileLevel_H264_High_AutoLevel, kVTProfileLevel_H264_Main_AutoLevel,
+    VTCompressionSession, VTEncodeInfoFlags, VTSessionCopyProperty, VTSessionSetProperty, kVTCompressionPropertyKey_AllowFrameReordering,
+    kVTCompressionPropertyKey_AllowOpenGOP, kVTCompressionPropertyKey_AverageBitRate, kVTCompressionPropertyKey_ColorPrimaries,
+    kVTCompressionPropertyKey_ConstantBitRate, kVTCompressionPropertyKey_DataRateLimits, kVTCompressionPropertyKey_ExpectedFrameRate,
+    kVTCompressionPropertyKey_MaxKeyFrameInterval, kVTCompressionPropertyKey_ProfileLevel, kVTCompressionPropertyKey_RealTime,
+    kVTCompressionPropertyKey_TransferFunction, kVTCompressionPropertyKey_UsingHardwareAcceleratedVideoEncoder, kVTCompressionPropertyKey_YCbCrMatrix,
+    kVTProfileLevel_H264_Baseline_AutoLevel, kVTProfileLevel_H264_High_AutoLevel, kVTProfileLevel_H264_Main_AutoLevel, kVTProfileLevel_HEVC_Main_AutoLevel,
     kVTVideoEncoderSpecification_RequireHardwareAcceleratedVideoEncoder,
 };
 
@@ -47,12 +53,30 @@ const MAX_FRAME_BYTES: usize = 256 << 20;
 /// Largest picture the hardware encoder is asked for.
 const MAX_SIDE: u32 = 8192;
 
-/// H.264 profiles VideoToolbox offers.
+/// The codec of a session.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum VtCodec {
+    H264,
+    Hevc,
+}
+
+/// H.264 and HEVC profiles VideoToolbox offers (the profile also picks the codec).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum VtProfile {
     Baseline,
     Main,
     High,
+    /// HEVC Main: 8-bit 4:2:0.
+    HevcMain,
+}
+
+impl VtProfile {
+    pub fn codec(self) -> VtCodec {
+        match self {
+            VtProfile::Baseline | VtProfile::Main | VtProfile::High => VtCodec::H264,
+            VtProfile::HevcMain => VtCodec::Hevc,
+        }
+    }
 }
 
 /// How the bitrate is controlled (kilobits per second).
@@ -75,6 +99,7 @@ pub struct VtConfig {
     pub frame_duration: u32,
     /// Frames between keyframes (every keyframe is an IDR picture).
     pub keyframe_interval: u32,
+    /// The profile, which also says whether this is an H.264 or an HEVC session.
     pub profile: VtProfile,
     pub rate: VtRate,
 }
@@ -82,18 +107,22 @@ pub struct VtConfig {
 /// One compressed frame in decoding order, which is presentation order (times in the config's timescale).
 #[derive(Clone, Debug)]
 pub struct VtPacket {
-    /// Length-prefixed NAL units (4-byte lengths, as in an `avcC` MP4 sample).
+    /// Length-prefixed NAL units (4-byte lengths, as in an `avcC` / `hvcC` MP4 sample).
     pub data: Vec<u8>,
     pub key: bool,
     pub pts: i64,
     pub dts: i64,
 }
 
-/// The parameter sets of the stream (NAL units without length prefix), for the `avcC` box.
+/// The parameter sets of the stream (NAL units without length prefix), for the `avcC` / `hvcC` box.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ParamSets {
+    /// HEVC only.
+    pub vps: Vec<Vec<u8>>,
     pub sps: Vec<Vec<u8>>,
     pub pps: Vec<Vec<u8>>,
+    /// HEVC only: the `hvcC` record (HEVCDecoderConfigurationRecord) VideoToolbox wrote for the stream.
+    pub hvcc: Option<Vec<u8>>,
 }
 
 /// One output-callback result.
@@ -105,6 +134,7 @@ enum Output {
 /// State shared with the output callback (its `outputCallbackRefCon`). Boxed by the encoder and
 /// kept alive until the session is invalidated.
 struct Shared {
+    codec: VtCodec,
     timescale: i64,
     out: Mutex<Vec<Output>>,
     params: Mutex<Option<ParamSets>>,
@@ -160,37 +190,60 @@ fn ticks(t: CMTime, timescale: i64) -> Option<i64> {
     i64::try_from((2 * num + den).div_euclid(2 * den)).ok()
 }
 
-/// Whether length-prefixed NAL units hold an IDR slice (nal_unit_type 5).
-fn has_idr(data: &[u8]) -> Result<bool, String> {
+/// Whether length-prefixed NAL units hold a random access point: an IDR slice (nal_unit_type 5) in
+/// H.264; a BLA, IDR or CRA slice (types 16 to 21) in HEVC.
+fn is_sync(data: &[u8], codec: VtCodec) -> Result<bool, String> {
     let mut pos = 0usize;
-    let mut idr = false;
+    let mut key = false;
     while pos < data.len() {
         let len_bytes = data.get(pos..pos + 4).ok_or("truncated NAL length")?;
         let len = u32::from_be_bytes([len_bytes[0], len_bytes[1], len_bytes[2], len_bytes[3]]) as usize;
         pos += 4;
         let end = pos.checked_add(len).filter(|e| *e <= data.len()).ok_or("NAL unit longer than the frame")?;
         let header = *data.get(pos).ok_or("empty NAL unit")?;
-        if header & 0x1f == 5 {
-            idr = true;
-        }
+        key |= match codec {
+            VtCodec::H264 => header & 0x1f == 5,
+            VtCodec::Hevc => (16..=21).contains(&((header >> 1) & 0x3f)),
+        };
         pos = end;
     }
-    Ok(idr)
+    Ok(key)
 }
 
-/// SPS / PPS of the first compressed frame's format description.
-fn read_param_sets(sample: &CMSampleBuffer) -> Result<ParamSets, String> {
+/// The `hvcC` record VideoToolbox wrote among the sample description extension atoms of an HEVC
+/// format description (the container's own codec configuration, exactly as QuickTime writes it).
+fn hvcc_record(format: &CMFormatDescription) -> Option<Vec<u8>> {
+    // SAFETY: `format` is valid; the key is an immutable framework constant; the result is a
+    // retained property list (or none).
+    let atoms = unsafe { format.extension(kCMFormatDescriptionExtension_SampleDescriptionExtensionAtoms) }?;
+    let atoms = atoms.downcast::<CFDictionary>().ok()?;
+    // SAFETY: CoreMedia documents this extension as a dictionary from four-character-code strings
+    // to property lists; every CoreFoundation object is a `CFType`.
+    let atoms: &CFDictionary<CFString, CFType> = unsafe { atoms.cast_unchecked() };
+    let data = atoms.get(&CFString::from_str("hvcC"))?.downcast::<CFData>().ok()?;
+    let bytes = data.to_vec();
+    (!bytes.is_empty() && bytes.len() <= 65_535).then_some(bytes)
+}
+
+/// The parameter sets of the first compressed frame's format description: SPS / PPS for H.264,
+/// VPS / SPS / PPS and the `hvcC` record for HEVC.
+fn read_param_sets(sample: &CMSampleBuffer, codec: VtCodec) -> Result<ParamSets, String> {
     // SAFETY: `sample` is a valid sample buffer for the duration of the callback.
     let format = unsafe { sample.format_description() }.ok_or("compressed frame without a format description")?;
-    let (mut sps, mut pps) = (Vec::new(), Vec::new());
+    let (mut vps, mut sps, mut pps) = (Vec::new(), Vec::new(), Vec::new());
     let (mut index, mut count) = (0usize, 1usize);
     while index < count && index < 16 {
         let (mut ptr, mut size, mut total, mut nal_len): (*const u8, usize, usize, c_int) = (std::ptr::null(), 0, 0, 0);
         // SAFETY: the out-pointers are valid for the call; the returned pointer is only read
         // while `format` (retained above) is alive.
-        let status = unsafe { CMVideoFormatDescriptionGetH264ParameterSetAtIndex(&format, index, &mut ptr, &mut size, &mut total, &mut nal_len) };
+        let status = unsafe {
+            match codec {
+                VtCodec::H264 => CMVideoFormatDescriptionGetH264ParameterSetAtIndex(&format, index, &mut ptr, &mut size, &mut total, &mut nal_len),
+                VtCodec::Hevc => CMVideoFormatDescriptionGetHEVCParameterSetAtIndex(&format, index, &mut ptr, &mut size, &mut total, &mut nal_len),
+            }
+        };
         if status != 0 {
-            return Err(format!("cannot read the H.264 parameter sets ({status})"));
+            return Err(format!("cannot read the {codec:?} parameter sets ({status})"));
         }
         if nal_len != 4 {
             return Err(format!("unexpected NAL length size {nal_len}"));
@@ -201,17 +254,28 @@ fn read_param_sets(sample: &CMSampleBuffer) -> Result<ParamSets, String> {
         }
         // SAFETY: VideoToolbox returned `size` readable bytes at `ptr`, owned by `format`.
         let bytes = unsafe { std::slice::from_raw_parts(ptr, size) }.to_vec();
-        match bytes.first().map(|b| b & 0x1f) {
-            Some(7) => sps.push(bytes),
-            Some(8) => pps.push(bytes),
+        match (codec, bytes.first()) {
+            (VtCodec::H264, Some(b)) => match b & 0x1f {
+                7 => sps.push(bytes),
+                8 => pps.push(bytes),
+                _ => {}
+            },
+            (VtCodec::Hevc, Some(b)) => match (b >> 1) & 0x3f {
+                32 => vps.push(bytes),
+                33 => sps.push(bytes),
+                34 => pps.push(bytes),
+                _ => {}
+            },
             _ => {}
         }
         index += 1;
     }
-    if sps.is_empty() || pps.is_empty() {
-        return Err("the format description has no SPS / PPS".into());
+    let complete = !sps.is_empty() && !pps.is_empty() && (codec == VtCodec::H264 || !vps.is_empty());
+    if !complete {
+        return Err("the format description lacks parameter sets".into());
     }
-    Ok(ParamSets { sps, pps })
+    let hvcc = if codec == VtCodec::Hevc { hvcc_record(&format) } else { None };
+    Ok(ParamSets { vps, sps, pps, hvcc })
 }
 
 /// One compressed frame: its bytes, key flag and timestamps (and, once, the parameter sets).
@@ -234,11 +298,11 @@ fn read_packet(sample: &CMSampleBuffer, shared: &Shared) -> Result<VtPacket, Str
     let (pts, dts) = unsafe { (sample.presentation_time_stamp(), sample.decode_time_stamp()) };
     let pts = ticks(pts, shared.timescale).ok_or("compressed frame without a presentation time")?;
     let dts = ticks(dts, shared.timescale).unwrap_or(pts);
-    let key = has_idr(&data)?;
+    let key = is_sync(&data, shared.codec)?;
     {
         let mut params = shared.params.lock().unwrap_or_else(PoisonError::into_inner);
         if params.is_none() {
-            *params = Some(read_param_sets(sample)?);
+            *params = Some(read_param_sets(sample, shared.codec)?);
         }
     }
     Ok(VtPacket { data, key, pts, dts })
@@ -336,8 +400,8 @@ fn fill(pb: &CVImageBuffer, w: usize, h: usize, y: &[u8], u: &[u8], v: &[u8]) ->
     Ok(())
 }
 
-/// A hardware H.264 encoder: feed pictures, collect compressed frames (in presentation order, which
-/// is decoding order since nothing is reordered).
+/// A hardware H.264 or HEVC encoder: feed pictures, collect compressed frames (in presentation
+/// order, which is decoding order since nothing is reordered).
 pub struct VtEncoder {
     session: Session,
     config: VtConfig,
@@ -375,13 +439,14 @@ impl VtEncoder {
             return Err(format!("picture size {w}x{h}"));
         }
         if !w.is_multiple_of(2) || !h.is_multiple_of(2) {
-            // 4:2:0 H.264 crops in units of two samples: an odd size would come out one sample smaller
+            // 4:2:0 video crops in units of two samples: an odd size would come out one sample smaller
             return Err(format!("odd picture size {w}x{h}"));
         }
         if config.timescale == 0 || config.frame_duration == 0 || config.timescale > i32::MAX as u32 {
             return Err("invalid frame rate".into());
         }
-        let shared = Box::new(Shared { timescale: i64::from(config.timescale), out: Mutex::new(Vec::new()), params: Mutex::new(None) });
+        let codec = config.profile.codec();
+        let shared = Box::new(Shared { codec, timescale: i64::from(config.timescale), out: Mutex::new(Vec::new()), params: Mutex::new(None) });
 
         // SAFETY: reading immutable framework constants.
         let require_key: &CFString = unsafe { kVTVideoEncoderSpecification_RequireHardwareAcceleratedVideoEncoder };
@@ -403,7 +468,10 @@ impl VtEncoder {
                 None,
                 w as i32,
                 h as i32,
-                kCMVideoCodecType_H264,
+                match codec {
+                    VtCodec::H264 => kCMVideoCodecType_H264,
+                    VtCodec::Hevc => kCMVideoCodecType_HEVC,
+                },
                 Some(spec.as_ref()),
                 Some(attrs.as_ref()),
                 None,
@@ -433,6 +501,7 @@ impl VtEncoder {
                     VtProfile::Baseline => kVTProfileLevel_H264_Baseline_AutoLevel,
                     VtProfile::Main => kVTProfileLevel_H264_Main_AutoLevel,
                     VtProfile::High => kVTProfileLevel_H264_High_AutoLevel,
+                    VtProfile::HevcMain => kVTProfileLevel_HEVC_Main_AutoLevel,
                 },
             )
         };
@@ -497,12 +566,28 @@ impl VtEncoder {
         Ok(())
     }
 
+    /// Whether VideoToolbox says this session runs on a hardware encoder. The session is created
+    /// with one required, so it should always hold; asking (and testing it) means a requirement
+    /// dropped by accident could never turn into a silent software encode.
+    pub fn uses_hardware(&self) -> bool {
+        // SAFETY: reading an immutable framework constant.
+        let key: &CFString = unsafe { kVTCompressionPropertyKey_UsingHardwareAcceleratedVideoEncoder };
+        let mut value: *mut CFType = std::ptr::null_mut();
+        // SAFETY: the session is valid and `value` is a valid out-pointer for the CFTypeRef the
+        // property is copied to (returned retained, +1); it stays null when the call fails.
+        let status = unsafe { VTSessionCopyProperty(self.session.session.as_ref(), key, None, (&raw mut value).cast()) };
+        let Some(value) = NonNull::new(value).filter(|_| status == 0) else { return false };
+        // SAFETY: a copied property is returned retained (+1); `CFRetained` takes that reference over.
+        let value = unsafe { CFRetained::from_raw(value) };
+        value.downcast_ref::<CFBoolean>().is_some_and(CFBoolean::as_bool)
+    }
+
     /// The configuration this encoder was created with.
     pub fn config(&self) -> &VtConfig {
         &self.config
     }
 
-    /// The stream's SPS / PPS, known once the first compressed frame came out.
+    /// The stream's parameter sets, known once the first compressed frame came out.
     pub fn parameter_sets(&self) -> Option<ParamSets> {
         self.session.shared.params.lock().unwrap_or_else(PoisonError::into_inner).clone()
     }
@@ -544,7 +629,7 @@ impl VtEncoder {
         }
         self.submitted += 1;
         if self.submitted == 1 {
-            // the first compressed frame carries the SPS / PPS the container needs
+            // the first compressed frame carries the parameter sets the container needs
             // SAFETY: the session is valid.
             require(unsafe { self.session.session.complete_frames(pts) }, "to finish the first frame")?;
         }

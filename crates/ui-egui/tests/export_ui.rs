@@ -180,6 +180,38 @@ fn export_mode_settings_and_summary() {
 }
 
 #[test]
+fn h265_shows_the_h264_family_controls_without_the_h264_only_ones() {
+    use filmcraft_engine::export::{ExportSettings, Format};
+    let mut d = Driver::new("h265");
+    d.ok("ui.set", json!({"mode": "export"}));
+    d.frames(4);
+    // H.264, the default: profile, level and the hardware checkbox
+    for id in ["export.video.profile", "export.video.level", "export.video.hardwareEncoding", "export.video.bitrateMode"] {
+        assert!(d.has(id), "H.264: {id}");
+    }
+    d.app().ui.export.settings = ExportSettings { format: Format::Hevc, ..Default::default() };
+    d.frames(4);
+    for id in [
+        "export.video.bitrateMode",
+        "export.video.target",
+        "export.video.max",
+        "export.video.keyframeOn",
+        "export.section.multiplexer",
+        "export.section.audio",
+        "export.audio.sampleRate",
+    ] {
+        assert!(d.has(id), "H.265: {id}");
+    }
+    // Main is its only profile, the level is the encoder's choice, and hardware is the only encoder
+    for id in ["export.video.profile", "export.video.level", "export.video.hardwareEncoding"] {
+        assert!(!d.has(id), "H.265 has no {id}");
+    }
+    let sum = d.ok("ui.elements", json!({"prefix": "export.summary"}))[0]["label"].as_str().unwrap().to_string();
+    assert!(sum.contains("HEVC Main") && sum.contains("Target 20.00 Mbps"), "{sum}");
+    d.snapshot("export-h265");
+}
+
+#[test]
 fn preset_manager_search_favourite_save_apply() {
     let mut d = Driver::new("manager");
     d.ok("ui.set", json!({"mode": "export"}));
