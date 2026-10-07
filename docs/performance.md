@@ -125,6 +125,53 @@ the draft plan's box decimation of the planes, cheap next to software decoding, 
 CPU cost. Zero-copy upload of the decoded `CVPixelBuffer` into wgpu (no copy-out at all) is the
 next step (issue #30).
 
+## Results (HW2: Windows Media Foundation / Direct3D 11 hardware decoding, Off → Auto)
+
+Same binary (release build of the HW2 commit), Settings ▸ Playback ▸ Hardware decoding switched
+with `--hw off` / `--hw auto`, 2026-10-07: Intel Xeon E5-2680 v4 (14 cores / 28 threads, 2.4 GHz),
+NVIDIA GeForce RTX 5060 8 GB (driver 617.14), Windows 11 Pro 26200, idle machine. Two alternating
+rounds; the table gives the range of the two (decode: best of 3 within each). Reproduce with
+`cargo xtask bench --sections decode --only dec_h264 --repeat 3 --hw off|auto` (likewise `dec_hevc`)
+and `--sections playback --only "h264-2160 full" --hw off|auto`; set `FILMCRAFT_FFMPEG` if ffmpeg is not
+on `PATH` for the fixture generator. Pictures are identical either way (bit-exact parity tests,
+`crates/platform/tests/media_foundation.rs`). The decoder MFTs were Microsoft's H.264 decoder
+(`Microsoft H264 Video Decoder MFT`) and the `HEVCVideoExtension` decoder, both decoding with DXVA
+on the RTX 5060's NVDEC: `nvidia-smi dmon -s u` showed the decoder engine at 18–27 % during an
+Auto run and 0 % otherwise, and every picture came back as a Direct3D 11 texture.
+
+### Decode (every frame through the media stack)
+
+| codec | size | CPU ms/frame Off → **Auto** | fps Off → **Auto** |
+|---|---|---|---|
+| H.264 | 1080p | 77–80 → **3.3** | 162–166 → **347–353** |
+| H.264 | 2160p | 310–315 → **11.9** | 39–43 → **93** |
+| HEVC Main | 1080p | 69–73 → **3.5** | 89–93 → **307–308** |
+| HEVC Main | 2160p | 315–348 → **12–13** | 26–28 → **87–90** |
+| HEVC Main 10 | 2160p | 314–336 → **17.6** | 32 → **57** |
+
+Counters: every Auto row had `hw frames` = frames × 3 repeats (360 at 1080p, 216 at 2160p), 3
+sessions, 0 fallbacks, 0 declined; every Off row had 0 hardware frames and 0 sessions.
+
+What is left on the CPU is the readback: `examples/mfprobe.rs --time` splits a 2160p H.264 picture
+into 1.1 ms DXVA decode (feeding the MFT), 2.8 ms GPU to CPU copy (staging texture + map) and 7 ms
+CPU conversion (Annex B, biplanar to planar Y'CbCr); Main 10 is 1.4 / 4.5 / 10 ms (twice the bytes).
+A zero-copy path removes the last two.
+
+### Program-monitor playback (8 s, GPU path)
+
+| case | shown/dropped Off → **Auto** | CPU ms/frame Off → **Auto** |
+|---|---|---|
+| H.264 1080p Full | 192/0 → **192/0** | 86–89 → **8.5–8.8** |
+| H.264 2160p Full | 192/0 → **189–190/2–3** | 338–353 → **17–20** |
+| H.264 2160p 1/2 | 192/0 → **190/2** | 355–361 → **22** |
+| HEVC 2160p Full | 112–152/40–80 → **191–192/0–1** | 355–364 → **18** |
+
+This machine has 28 software-decoding threads, so Off keeps up with 4K H.264 (at 340 ms of CPU per
+frame, about 8 cores busy); Auto uses a twentieth of that CPU but drops 2–3 of 192 frames
+(readback latency at the start of the run). 4K HEVC is where Off drops frames and Auto does not.
+Draft playback (1/2 draft: 410–416 → 93–105 CPU ms/frame) is dominated by the draft plan's decimation,
+as on macOS, because the hardware ignores draft mode.
+
 ## Results (GPU1: blend modes on the GPU compositor, #30, before → after)
 
 Before = this change with the old whole-frame CPU fallback for non-Normal blend modes put back
