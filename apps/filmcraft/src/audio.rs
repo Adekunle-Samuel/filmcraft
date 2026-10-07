@@ -12,6 +12,7 @@ pub struct CpalOut {
     stream: Option<cpal::Stream>,
     played: Arc<AtomicU64>,
     rate: u32,
+    channels: u16,
     hw: AudioHardwarePrefs,
     /// Sequence sample rate for "Attempt to force hardware to document sample rate".
     document_rate: Option<u32>,
@@ -44,7 +45,14 @@ impl CpalOut {
         let host = cpal::default_host();
         let dev = host.default_output_device()?;
         let cfg = dev.default_output_config().ok()?;
-        Some(Self { stream: None, played: Arc::new(AtomicU64::new(0)), rate: cfg.sample_rate().0, hw: AudioHardwarePrefs::default(), document_rate: None })
+        Some(Self {
+            stream: None,
+            played: Arc::new(AtomicU64::new(0)),
+            rate: cfg.sample_rate().0,
+            channels: cfg.channels(),
+            hw: AudioHardwarePrefs::default(),
+            document_rate: None,
+        })
     }
 
     /// The stream configuration the settings ask for, falling back to the device default.
@@ -77,6 +85,7 @@ impl AudioOut for CpalOut {
             config.buffer_size = cpal::BufferSize::Fixed(self.hw.buffer_size);
         }
         self.rate = cfg.sample_rate().0;
+        self.channels = cfg.channels();
         self.played.store(0, Ordering::SeqCst);
         let played = self.played.clone();
         let err = |e| eprintln!("filmcraft: audio stream error: {e}");
@@ -103,6 +112,9 @@ impl AudioOut for CpalOut {
     fn sample_rate(&self) -> u32 {
         self.rate
     }
+    fn channels(&self) -> usize {
+        self.channels as usize
+    }
     fn played_frames(&self) -> Option<u64> {
         self.stream.as_ref().map(|_| self.played.load(Ordering::SeqCst))
     }
@@ -122,6 +134,7 @@ impl AudioOut for CpalOut {
             && let Ok(cfg) = self.config(&dev)
         {
             self.rate = cfg.sample_rate().0;
+            self.channels = cfg.channels();
         }
     }
 }
