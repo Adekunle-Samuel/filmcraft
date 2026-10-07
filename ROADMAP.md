@@ -36,7 +36,7 @@ before choosing work.
 | **Correctness in depth** | not tracked | **~60–70%** | A first-time contributor found four real bugs in core paths within hours (#5–#8: AIFF import failed, Slide left linked audio behind, transitions didn't follow ripple trims, export ignored start/end times). User reports: Color Matte always grey with no picker (#29); ALSA audio error on Linux (#23). Settings are "most wired", not all. |
 | **Codecs and media** | ~90% | **~75%** | Our decoders are bit-exact on conformance streams. Real camera and phone media (variable frame rate, damaged files, unusual containers) is far less tested. No camera RAW (RED, BRAW, ARRIRAW), no E-AC-3. |
 | **Export** | ~92% | **~70%** | Delivery: H.264 only (ProRes, DNxHR and image sequences cover mastering). No HEVC or AV1 export. AAF and OMF have never been validated in Avid Media Composer or Pro Tools. Export renders and encodes on the CPU only. |
-| **Performance and hardware** | ~62% | **~35–40%** | Premiere runs effects, decoding and encoding on the GPU and the hardware media engines. Here, hardware decode works on macOS only (VideoToolbox, #33; active in the desktop app only since #41, so releases up to 0.2.1 decoded in software). The GPU does compositing, blend modes (#32) and 31 common effects (GPU2): colour adjustments, crop/flip/transform, blurs, sharpen. Lumetri, keys, masks, the remaining effects, export and encoding are CPU. Linux and Windows have no hardware path. 8K and AV1 aren't real-time. The effect list shows Premiere's "GPU accelerated" badge, but only 31 effect ids run on the GPU here; the rest, Lumetri included, run on the CPU. |
+| **Performance and hardware** | ~62% | **~35–40%** | Premiere runs effects, decoding and encoding on the GPU and the hardware media engines. Here, hardware decode works on macOS (VideoToolbox, #33; active in the desktop app only since #41, so releases up to 0.2.1 decoded in software) and Windows (Media Foundation / Direct3D 11 DXVA, H.264 and HEVC Main / Main 10, #30). The GPU does compositing, blend modes (#32) and 31 common effects (GPU2): colour adjustments, crop/flip/transform, blurs, sharpen. Lumetri, keys, masks, the remaining effects and export rendering are CPU; H.264 encoding can use VideoToolbox on macOS (opt-in per export, no B-frames), and H.265 (HEVC) export exists there only, through the same hardware encoder. Linux has no hardware path. 8K and AV1 aren't real-time. The effect list shows Premiere's "GPU accelerated" badge, but only 31 effect ids run on the GPU here; the rest, Lumetri included, run on the CPU. |
 | **Stability** | not tracked | **improving, unproven** | The never-crash pass (no panics in product code, last-resort guards) landed on 2026-10-04. There's no field record from real users' projects yet. |
 | **Plugins and pro ecosystem** | not tracked | **~0–10%** | No audio plugin hosting (VST3 / Audio Units) and no third-party video effects (OpenFX). For many professional editors this alone rules FilmCraft out. Team Projects and Productions are out of scope by design. |
 | **AI features** | partial | **~25–35%** | Speech to text exists but is off in default builds (the `whisper` feature). Enhance Speech is a DSP chain, not a model. Auto Reframe is approximate. No Generative Extend, and no media-intelligence search or auto colour. |
@@ -48,10 +48,10 @@ before choosing work.
 In priority order. Agents should prefer this work over adding more checklist items.
 
 1. **Hardware acceleration** (#30), the most visible gap to users:
-   - hardware decode on Linux (VA-API) and Windows (Media Foundation);
+   - hardware decode on Linux (VA-API); VP9 / AV1 on Windows;
    - zero-copy decoded frames into wgpu;
    - the remaining effects on the GPU: Lumetri, keys, Vignette, Video Limiter, masks (31 common effects are done);
-   - GPU export, then hardware encode (H.264 / HEVC).
+   - GPU export, then hardware encode: H.264 and H.265 on macOS are in (H.264 opt-in; H.265 has no other encoder); other systems remain.
 2. **A measured parity number.** Add `cargo xtask parity`, run in CI. It should cover menus,
    commands, effects, transitions, panels, preferences and formats against the Premiere snapshot in
    `plan/premiere/`. It should report presence and fidelity separately (exact, approximate, stub).
@@ -63,7 +63,7 @@ In priority order. Agents should prefer this work over adding more checklist ite
    through XML / AAF.
 5. **Windows and Linux at runtime.** CI that runs the test suite and a headless playback/export
    smoke test on both, not just release builds. Fix the Linux audio path (#23).
-6. **Delivery codecs.** HEVC and AV1 export: hardware encoders first, and `rav1e` (BSD-2) for AV1.
+6. **Delivery codecs.** HEVC export is in on macOS (VideoToolbox, 8-bit, no software encoder); still to do: HEVC elsewhere, 10-bit / HDR HEVC, and AV1 (`rav1e`, BSD-2).
 7. **Plugin hosting** (VST3 / Audio Units, then OpenFX). Needs FFI, so it falls under the isolated
    `unsafe` crate rule (AGENTS.md §0.3). **Owner decision needed** before starting.
 8. **AI features** with openly licensed local models: transcription on by default, text-based
@@ -154,12 +154,10 @@ Status: ✅ done · 🟡 in progress · ⬜ not started. Estimates are remaining
 
 ## Running now
 
-- **Hardware acceleration (#30):** landed: blend modes on the GPU (#32); VideoToolbox hardware decode + the `platform` FFI crate (#33); 31 common effects on the GPU (GPU2). Next: VA-API (Linux) and Media Foundation (Windows) decode, zero-copy upload, Lumetri on the GPU.
+- **Hardware acceleration (#30):** landed: blend modes on the GPU (#32); VideoToolbox hardware decode + the `platform` FFI crate (#33); 31 common effects on the GPU (GPU2). Windows: Media Foundation / Direct3D 11 H.264 + HEVC decode (HW2). Next: VA-API (Linux) decode, zero-copy upload, Lumetri on the GPU.
 - **Next:** [Where we are lacking](#where-we-are-lacking) items 1–5. GPU export waits for the export-crate work (#19 and the never-crash follow-up) to land.
 
 ## Log
-
-- **2026-10-08:** Type-button long-press/right-click offers Vertical Type, dispatching the existing vertical-text command. Properties exposes the existing orientation flag; title layout and paragraph-text work are unchanged.
 
 - **2026-10-06:** 21 community PRs landed (#19, #28, #38, #39, #41–#60). Highlights: hardware decoding is now actually on in the desktop app (#41: `register()` sat inside a `log::info!` that never ran, so #33's VideoToolbox path only worked in the CLI and benchmarks); decode memory on long timelines cut sharply (frame pool, shared GOP-cache budget, positional file reads); exports are byte-identical across machines (#19); crash fix for odd track names over MCP (#44); ripple trim, ripple delete and speed changes move split-edit clips once (#56–#58); Japanese interface using an installed system font (#38; no fonts bundled); MCP annotations, resources, export progress and cancellation (#28).
 
@@ -207,4 +205,4 @@ Status: ✅ done · 🟡 in progress · ⬜ not started. Estimates are remaining
 
 ### Interface localization
 
-Edit > Language switches English/Japanese and persists in UI state. Commands `app.language.english` and `app.language.japanese` are reachable through the control channel. Core native/in-window menu labels are translated; untranslated labels use English. Japanese text uses the Japanese fonts from [craft-fonts](https://github.com/storytold/craft-fonts) when FilmCraft is built with them (`CRAFT_FONTS_DIR`; all official releases, including the web build), otherwise a Japanese font already installed on the system; with neither, switching to Japanese is refused with a message. Dialog/panel translation coverage remains open. Existing vertical text support is preserved.
+Edit > Language switches English/Japanese/Spanish/Portuguese (Brazilian) and persists in UI state. Commands `app.language.english`, `app.language.japanese`, `app.language.spanish` and `app.language.portuguese` are reachable through the control channel. Core native/in-window menu labels are translated; untranslated labels use English. Japanese text uses the Japanese fonts from [craft-fonts](https://github.com/storytold/craft-fonts) when FilmCraft is built with them (`CRAFT_FONTS_DIR`; all official releases, including the web build), otherwise a Japanese font already installed on the system; with neither, switching to Japanese is refused with a message. Dialog/panel translation coverage remains open. Existing vertical text support is preserved.

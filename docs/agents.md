@@ -89,6 +89,10 @@ progress and stop it:
 
 - The export runs as the same background job `jobs.list` shows. The session is locked only for short
   polls, so other requests (`ping`, `doc_inspect`, `jobs.list`, …) are answered while it encodes.
+- Every job in `jobs.list`, and every encoding item of `export.queue.list`, carries `etaSeconds`: the
+  time left at the job's speed over the last 15 seconds, `null` until a second of progress has been
+  measured (a loudness pass, a seek) and once it is done. The app shows it as `37% · 2:05 left` in the
+  status bar, the Export queue and the Progress panel.
 - With `"_meta": {"progressToken": T}` on the `tools/call`, the server sends
   `notifications/progress` `{progressToken: T, progress: <frames done>, total: <frames>, message:
   <job status>}` at most every 100 ms while frames advance. Without a token it sends none.
