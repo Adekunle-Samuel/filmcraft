@@ -23,6 +23,7 @@ undocumented_unsafe_blocks = "deny"
 [dependencies]
 filmcraft-codecs = { workspace = true }
 filmcraft-color = { workspace = true }
+filmcraft-export = { workspace = true }
 filmcraft-frame = { workspace = true }
 filmcraft-isobmff = { workspace = true }
 filmcraft-time = { workspace = true }
@@ -52,3 +53,5 @@ windows = { version = "0.62", features = [
 filmcraft-testkit = { workspace = true }
 filmcraft-media = { workspace = true }
 filmcraft-frame = { workspace = true }
+filmcraft-project = { workspace = true }
+filmcraft-render = { workspace = true }

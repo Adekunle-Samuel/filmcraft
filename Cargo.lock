@@ -2099,9 +2099,12 @@ version = "0.2.1"
 dependencies = [
  "filmcraft-codecs",
  "filmcraft-color",
+ "filmcraft-export",
  "filmcraft-frame",
  "filmcraft-isobmff",
  "filmcraft-media",
+ "filmcraft-project",
+ "filmcraft-render",
  "filmcraft-testkit",
  "filmcraft-time",
  "log",

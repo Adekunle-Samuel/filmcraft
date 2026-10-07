@@ -22,8 +22,8 @@
 use egui::{Align2, Color32, Rect, Sense, pos2, vec2};
 use filmcraft_engine::export::presets::{DEFAULT_PRESET, preset_key};
 use filmcraft_engine::export::{
-    AudioCodec, BitrateMode, ExportSettings, FieldOrder, Format, H264Profile, Multiplexer, MxfVideoCodec, Placement, Scaling, TextOverlay, builtin_presets,
-    format_bytes,
+    AudioCodec, BitrateMode, ExportSettings, FieldOrder, Format, H264Profile, HardwareEncoding, Multiplexer, MxfVideoCodec, Placement, Scaling, TextOverlay,
+    builtin_presets, format_bytes,
 };
 use filmcraft_engine::time::{FrameRate, Tick};
 use serde::{Deserialize, Serialize};
@@ -615,6 +615,14 @@ fn video_section(ui: &mut egui::Ui, reg: &mut Reg, s: &mut ExportSettings, t: &T
                 let labels: Vec<(String, bool)> = o.iter().map(|m| (m.label().to_string(), true)).collect();
                 if let Some(i) = combo(ui, reg, "export.video.bitrateMode", s.bitrate_mode.label(), &labels, 140.0) {
                     s.bitrate_mode = o[i];
+                }
+            });
+            row(ui, t, "Hardware Encoding", |ui| {
+                // the GPU's video encoder (NVENC on NVIDIA GPUs, Windows) where there is one and it
+                // takes these settings; two-pass VBR, HDR and MXF always use our encoder
+                let mut on = s.hardware_encoding == HardwareEncoding::Auto;
+                if check(ui, reg, "export.video.hardwareEncoding", &mut on, "Use the GPU when available") {
+                    s.hardware_encoding = if on { HardwareEncoding::Auto } else { HardwareEncoding::Off };
                 }
             });
             if let Some(bpp) = s.adaptive_bitrate {

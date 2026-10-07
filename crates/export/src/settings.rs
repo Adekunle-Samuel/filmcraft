@@ -61,6 +61,20 @@ impl H264Profile {
     }
 }
 
+/// Export ▸ Hardware encoding: whether H.264 may be encoded by the GPU's video engine (NVENC on
+/// NVIDIA GPUs, Windows) instead of FilmCraft's own encoder. Off by default: hardware encoders
+/// make different (usually larger for the same quality) streams, and exports are otherwise
+/// byte-identical from run to run and machine to machine.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum HardwareEncoding {
+    #[default]
+    Off,
+    /// Use the hardware encoder when the system has one and it takes the settings; otherwise the
+    /// software encoder.
+    Auto,
+}
+
 /// Bitrate encoding of bitrate-driven codecs (H.264).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]

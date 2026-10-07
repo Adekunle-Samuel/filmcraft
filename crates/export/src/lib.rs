@@ -248,6 +248,9 @@ pub struct ExportSettings {
     /// stream needs is raised.
     pub h264_level: Option<u8>,
     pub bitrate_mode: BitrateMode,
+    /// May H.264 be encoded by the GPU (NVENC)? Off unless asked for.
+    #[serde(default)]
+    pub hardware_encoding: HardwareEncoding,
     /// VBR maximum bitrate (None = 1.5 × target).
     pub max_bitrate_kbps: Option<u32>,
     /// Adaptive bitrate (the Match Source presets): bits per pixel per frame; replaces
@@ -429,6 +432,7 @@ impl Default for ExportSettings {
             h264_profile: H264Profile::High,
             h264_level: None,
             bitrate_mode: BitrateMode::default(),
+            hardware_encoding: HardwareEncoding::default(),
             max_bitrate_kbps: None,
             adaptive_bitrate: None,
             keyframe_distance: None,
@@ -551,6 +555,41 @@ fn video_factories() -> &'static RwLock<Vec<EncoderFactory>> {
 fn audio_factories() -> &'static RwLock<Vec<AudioEncoderFactory>> {
     static F: OnceLock<RwLock<Vec<AudioEncoderFactory>>> = OnceLock::new();
     F.get_or_init(|| RwLock::new(vec![aac_factory]))
+}
+
+/// Hardware encoder counters (`perf.stats` `export.hardware`): pictures encoded by hardware
+/// encoders, encoders created, and requests a hardware encoder declined (the software encoder
+/// took them).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct HwEncodeStats {
+    pub frames: u64,
+    pub sessions: u64,
+    pub declined: u64,
+}
+
+static HW_FRAMES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static HW_SESSIONS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static HW_DECLINED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// The hardware encoder counters so far.
+pub fn hw_encode_stats() -> HwEncodeStats {
+    use std::sync::atomic::Ordering::Relaxed;
+    HwEncodeStats { frames: HW_FRAMES.load(Relaxed), sessions: HW_SESSIONS.load(Relaxed), declined: HW_DECLINED.load(Relaxed) }
+}
+
+/// A hardware encoder encoded a picture.
+pub fn note_hw_encode_frame() {
+    HW_FRAMES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// A hardware encoder was created.
+pub fn note_hw_encode_session() {
+    HW_SESSIONS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// A hardware encoder declined a request (the software encoder takes it).
+pub fn note_hw_encode_declined() {
+    HW_DECLINED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 }
 
 pub fn register_encoder(f: EncoderFactory) {

@@ -197,6 +197,9 @@ pub fn settings_from_params(s: &Session, p: &Value, cmd: &str) -> Result<(Option
     if let Some(v) = str_p(p, "bitrateMode") {
         settings.bitrate_mode = serde_json::from_value(json!(v)).map_err(|_| bad(cmd, "bitrateMode: cbr | vbr1Pass | vbr2Pass"))?;
     }
+    if let Some(v) = str_p(p, "hardwareEncoding") {
+        settings.hardware_encoding = serde_json::from_value(json!(v)).map_err(|_| bad(cmd, "hardwareEncoding: off | auto"))?;
+    }
     if let Some(v) = u64_p(p, "keyframeDistance") {
         settings.keyframe_distance = Some(v as u32);
     }
