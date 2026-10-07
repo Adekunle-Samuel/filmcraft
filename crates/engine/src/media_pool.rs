@@ -53,13 +53,14 @@ impl Default for MediaPool {
     }
 }
 
-/// Cache key of a media clip's full-resolution reference ("" matches anything: generators and
-/// sources inserted without a key).
+/// Cache key of a media clip's full-resolution reference ("" matches anything: sources inserted
+/// without a key). A generator's key holds its parameters, so a Color Matte whose color changes
+/// (or comes back with undo) is generated again.
 pub fn media_key(m: &MediaClip) -> String {
     match &m.media {
         MediaRef::File { path } if m.offline => format!("offline:{path}"),
         MediaRef::File { path } => format!("file:{path}"),
-        MediaRef::Generator(_) => String::new(),
+        MediaRef::Generator(g) => format!("generator:{g:?}"),
     }
 }
 
@@ -125,6 +126,11 @@ impl MediaPool {
     /// Cache a source for an item, valid whatever the item's reference (generators).
     pub fn insert(&self, item: ItemId, src: SharedSource) {
         self.sources.write().unwrap_or_else(|e| e.into_inner()).insert(item, (String::new(), src));
+    }
+
+    /// Cache a source for an item under its [`media_key`].
+    pub fn insert_keyed(&self, item: ItemId, key: String, src: SharedSource) {
+        self.sources.write().unwrap_or_else(|e| e.into_inner()).insert(item, (key, src));
     }
 
     /// Cache a source opened from `path` for an item.
