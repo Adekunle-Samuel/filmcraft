@@ -851,3 +851,27 @@ fn a_cyclic_subclip_chain_has_no_media_duration() {
     *parent = sub;
     assert_eq!(crate::media_duration(&s.project, &s.media, sub), None);
 }
+
+/// #164: Add Edit with a clip selected cut every targeted track. Like Premiere it now cuts only
+/// the selected clips under the playhead; with nothing selected there, the targeted tracks.
+#[test]
+fn add_edit_cuts_only_the_selected_clips() {
+    let mut s = demo();
+    let count = |s: &Session| {
+        let q = s.active_sequence().unwrap();
+        (q.video_tracks.iter().map(|t| t.items.len()).sum::<usize>(), q.audio_tracks.iter().map(|t| t.items.len()).sum::<usize>())
+    };
+    // a V1 clip and a time inside it
+    let first = v1(&s)[1].clone();
+    let t = first.start + filmcraft_time::Tick(first.duration.0 / 2);
+    let (v0, a0) = count(&s);
+    s.state.selection = vec![first.id];
+    s.execute("sequence.addEdit", json!({"time": t.0})).unwrap();
+    let (v1n, a1n) = count(&s);
+    assert_eq!((v1n, a1n), (v0 + 1, a0), "only the selected V1 clip is cut");
+    // nothing selected under the playhead: every targeted track is cut
+    s.execute("edit.undo", json!({})).unwrap();
+    s.state.selection.clear();
+    let r = s.execute("sequence.addEdit", json!({"time": t.0})).unwrap();
+    assert!(r["cuts"].as_u64().unwrap() > 1, "{r}");
+}

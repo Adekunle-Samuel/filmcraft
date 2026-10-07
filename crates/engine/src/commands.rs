@@ -1333,8 +1333,17 @@ fn build() -> Vec<CommandSpec> {
         }),
         cmd!("sequence.addEdit", "Add Edit", ["Sequence"], Some("Cmd+K"), r#"{"time":ticks?}"#, has_seq, |s, p| {
             let t = time_p(s, p, "").unwrap_or(s.playhead());
-            let tg = s.targeting().targeted;
-            let n = s.edit_sequence("Add Edit", |q, ctx, _| Ok(edit::razor(q, &tg, t, ctx)))?;
+            // Like Premiere: selected clips under the playhead are cut, and only they (#164);
+            // with none, the targeted tracks are.
+            let sel = s.state.selection.clone();
+            let selected_here =
+                s.active_sequence().is_some_and(|q| sel.iter().any(|c| q.find_item(*c).is_some_and(|(_, it)| it.start < t && t < it.start + it.duration)));
+            let n = if selected_here {
+                s.edit_sequence("Add Edit", |q, ctx, _| Ok(edit::razor_items(q, &sel, t, ctx)))?
+            } else {
+                let tg = s.targeting().targeted;
+                s.edit_sequence("Add Edit", |q, ctx, _| Ok(edit::razor(q, &tg, t, ctx)))?
+            };
             Ok(json!({"cuts": n.len()}))
         }),
         cmd!("sequence.addEditAllTracks", "Add Edit to All Tracks", ["Sequence"], Some("Cmd+Shift+K"), r#"{"time":ticks?}"#, has_seq, |s, p| {
