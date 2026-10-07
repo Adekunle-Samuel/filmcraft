@@ -609,4 +609,18 @@ fn shorter_head_into_an_l_cut_keeps_the_earlier_sound_where_it_is() {
     // so does a link with no partner left
     fx.seq.track_mut(a1).unwrap().items[0].link = Some(9);
     assert_eq!(ripple_trim_group(&mut fx.seq, &[b], Edge::In, f(3), &mut Fx::ctx(&mut n)), Err(EditError::SyncLockConflict));
+
+    // a linked cutaway across the cut whose own partner reaches past it too is no L cut: it refuses
+    let mut fx = Fx::new();
+    let (v1, v2, a1) = (fx.v(0), fx.v(1), fx.a(0));
+    fx.put(v1, 0, 10, 0);
+    let b = fx.put(v1, 10, 10, 0);
+    fx.put(v1, 20, 10, 0);
+    let x = fx.put(v2, 5, 20, 0);
+    let xs = fx.put(a1, 5, 20, 0);
+    for c in [x, xs] {
+        fx.seq.find_item_mut(c).unwrap().1.link = Some(7);
+    }
+    let mut n = fx.next;
+    assert_eq!(ripple_trim_group(&mut fx.seq, &[b], Edge::In, f(3), &mut Fx::ctx(&mut n)), Err(EditError::SyncLockConflict));
 }

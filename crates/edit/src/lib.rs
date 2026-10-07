@@ -672,26 +672,19 @@ pub fn ripple_trim_group(seq: &mut Sequence, clips: &[ClipId], edge: Edge, delta
         let later = tr.items.iter().filter(|i| !clips.contains(&i.id) && i.start >= *from);
         shifting_links.extend(later.filter_map(|i| i.link).filter(|l| !own_links.contains(l)));
     }
-    // links that tie two or more clips together
-    let mut seen: Vec<u64> = Vec::new();
-    let mut paired: Vec<u64> = Vec::new();
-    for l in work.all_tracks().flat_map(|tr| tr.items.iter().filter_map(|i| i.link)) {
-        if seen.contains(&l) {
-            paired.push(l);
-        } else {
-            seen.push(l);
-        }
-    }
+    // every linked clip: its link, and where it is and ends
+    let linked: Vec<(u64, ClipId, Tick)> = work.all_tracks().flat_map(|tr| tr.items.iter().filter_map(|i| i.link.map(|l| (l, i.id, i.end())))).collect();
     for (tid, from, member) in rippling {
         let Some(tr) = work.track_mut(tid) else { continue };
         let follows = |i: &TrackItem| i.start < from && i.end() > from && i.link.is_some_and(|l| shifting_links.contains(&l));
-        // An L cut: the sound of a clip before the cut runs on into the shortened head. Its clip stays
-        // put, so the sound stays with it and the L cut still ends where it did. (Unlinked material
-        // across the cut, a music bed, still refuses.)
+        // An L cut: the sound of a clip that ends at the cut runs on into the shortened head. That clip
+        // stays put, so its sound stays with it and the L cut still ends where it did. (Unlinked material
+        // across the cut, a music bed, still refuses, and so does a linked clip whose partner reaches past
+        // the cut.)
         let stays = |i: &TrackItem| {
-            edge == Edge::In
-                && i.start < from - Tick(1)
-                && i.link.is_some_and(|l| paired.contains(&l) && !shifting_links.contains(&l) && !own_links.contains(&l))
+            let cut = from - Tick(1);
+            let mut partners = linked.iter().filter(|p| Some(p.0) == i.link && p.1 != i.id).peekable();
+            edge == Edge::In && i.start < cut && i.link.is_some_and(|l| !own_links.contains(&l)) && partners.peek().is_some() && partners.all(|p| p.2 <= cut)
         };
         if !member && shift < Tick::ZERO {
             let at = if edge == Edge::In { from - Tick(1) } else { from };
