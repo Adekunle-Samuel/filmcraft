@@ -249,7 +249,7 @@ impl FilmcraftMcp {
                 .await
                 .map_err(join_error)?
             }
-            Backend::Bridge(b) => b.call("engine.execute", json!({"command": id, "params": params})).await,
+            Backend::Bridge(b) => b.execute(id, params).await,
         }
     }
 
@@ -592,8 +592,8 @@ impl ServerHandler for FilmcraftMcp {
             return Err(McpError::invalid_params(m, None));
         }
         // A blocking export reports progress and can be cancelled (docs/agents.md § Long exports).
+        // Bridge mode too: the app runs it as a job, so it stays responsive (#91, #92).
         if request.name == "command_run"
-            && matches!(&*self.backend, Backend::Headless(_))
             && let Some(a) = &request.arguments
             && let Some(id) = a.get("id").and_then(Value::as_str)
         {
