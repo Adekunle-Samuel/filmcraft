@@ -327,6 +327,21 @@ pub fn invoke(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, params: Val
             filmcraft_engine::find_command(id).map_or(Ok(()), |c| (c.enabled)(&app.session))?;
             return crate::panels::remix::open(app, ctx);
         }
+        // Add Tracks… from the menu opens the dialog (new tracks after the last ones, as Premiere
+        // offers); with params it adds the tracks directly.
+        "sequence.addTracks" if params.as_object().is_none_or(|m| m.is_empty()) => {
+            filmcraft_engine::find_command(id).map_or(Ok(()), |c| (c.enabled)(&app.session))?;
+            let seq = app.session.active_sequence();
+            let count = |f: fn(&filmcraft_engine::project::Sequence) -> usize| seq.map_or(0, f);
+            app.ui.add_tracks = crate::state::AddTracksDraft {
+                video_after: count(|q| q.video_tracks.len()),
+                audio_after: count(|q| q.audio_tracks.len()),
+                submix_after: count(|q| q.submix_tracks.len()),
+                ..Default::default()
+            };
+            app.dialog = Some(crate::Dialog::AddTracks);
+            return Ok(json!({"dialog": "addTracks"}));
+        }
         "sequence.deleteTracks" if params.as_object().is_none_or(|m| m.is_empty()) => {
             filmcraft_engine::find_command(id).map_or(Ok(()), |c| (c.enabled)(&app.session))?;
             app.ui.delete_tracks = Default::default();

@@ -628,7 +628,10 @@ impl AudioEncoder for AacEncoder {
 }
 
 fn aac_factory(_format: Format, sample_rate: u32, channels: u32, s: &ExportSettings) -> Option<Result<Box<dyn AudioEncoder>>> {
-    let bps = s.audio.bitrate_kbps.clamp(32, 512) * 1000;
+    // AAC caps a frame at 6144 bits per channel (ISO/IEC 14496-3 §4.5.3.2): 6 bits per sample, so
+    // 264.6 kbps for stereo at 22.05 kHz; a higher setting is capped instead of refused
+    let max = (6 * sample_rate as u64 * channels.max(1) as u64).min(u32::MAX as u64) as u32;
+    let bps = (s.audio.bitrate_kbps.clamp(32, 512) * 1000).min(max);
     Some(
         filmcraft_aac::Encoder::new(filmcraft_aac::EncoderConfig::cbr(sample_rate, channels as usize, bps))
             .map(|enc| Box::new(AacEncoder { enc, rate: sample_rate, channels }) as Box<dyn AudioEncoder>)

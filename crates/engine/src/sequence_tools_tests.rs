@@ -1,7 +1,7 @@
 //! Sequence / Markers menu commands (`sequence_tools`).
 
 use super::*;
-use filmcraft_project::{Label, MarkerKind};
+use filmcraft_project::{AudioChannels, Label, MarkerKind, TrackKind};
 use serde_json::json;
 
 fn demo() -> Session {
@@ -187,6 +187,108 @@ fn make_subsequence_from_in_out_and_from_selection() {
     assert_eq!(s.project.item(ItemId(r["sequence"].as_u64().unwrap())).unwrap().name, "Shot 3");
     s.execute("edit.undo", json!({})).unwrap();
     assert!(s.project.items.values().all(|i| i.name != "Shot 3"));
+}
+
+/// Sequence ▸ Add Tracks…: where the new tracks go, what they are, and what the amounts may be.
+/// Premiere Pro 26.5.2: Placement is "Before First Track" or after one of the tracks (after the
+/// last by default); a track added after Video 1 is the new Video 2, and what was on Video 2 is
+/// then on Video 3; audio tracks are Standard, 5.1, Adaptive or Mono, submix tracks Stereo, 5.1,
+/// Adaptive or Mono.
+#[test]
+fn add_tracks_places_and_types_them() {
+    let mut s = demo();
+    let names = |s: &Session, kind: TrackKind| s.active_sequence().unwrap().tracks(kind).iter().map(|t| t.name.clone()).collect::<Vec<_>>();
+    let before = s.active_sequence().unwrap().clone();
+    assert_eq!(names(&s, TrackKind::Video), ["Video 1", "Video 2", "Video 3"]);
+    let on_v2 = before.video_tracks[1].items[0].id;
+
+    // without a place: after the last track (and one video track when nothing is said, as before)
+    let r = s.execute("sequence.addTracks", json!({})).unwrap();
+    assert_eq!((r["video"].as_array().unwrap().len(), r["audio"].as_array().unwrap().len(), r["submix"].as_array().unwrap().len()), (1, 0, 0));
+    assert_eq!(names(&s, TrackKind::Video), ["Video 1", "Video 2", "Video 3", "Video 4"]);
+    assert_eq!(s.active_sequence().unwrap().video_tracks[3].id.0, r["video"][0].as_u64().unwrap());
+    s.execute("edit.undo", json!({})).unwrap();
+
+    // after Video 1: two new empty tracks there, the tracks above move up and are numbered again
+    s.execute("sequence.addTracks", json!({"video": 2, "videoAfter": "V1"})).unwrap();
+    let q = s.active_sequence().unwrap();
+    assert_eq!(names(&s, TrackKind::Video), ["Video 1", "Video 2", "Video 3", "Video 4", "Video 5"]);
+    assert!(q.video_tracks[1].items.is_empty() && q.video_tracks[2].items.is_empty());
+    assert_eq!(q.video_tracks[3].id, before.video_tracks[1].id);
+    assert_eq!(q.video_tracks[3].items[0].id, on_v2, "what was on Video 2 is on Video 4");
+    assert_eq!(q.audio_tracks.len(), before.audio_tracks.len(), "no audio track was asked for");
+    // one undo step
+    s.execute("edit.undo", json!({})).unwrap();
+    assert_eq!(*s.active_sequence().unwrap(), before);
+
+    // before the first track; a name the user gave is kept, default names follow their place
+    s.edit_sequence("Rename Track", |q, _, _| {
+        q.audio_tracks[1].name = "Music".into();
+        Ok(())
+    })
+    .unwrap();
+    s.execute("sequence.addTracks", json!({"video": 0, "audio": 1, "audioAfter": "first", "audioType": "mono"})).unwrap();
+    assert_eq!(names(&s, TrackKind::Audio), ["Audio 1", "Audio 2", "Music", "Audio 4"]);
+    let q = s.active_sequence().unwrap();
+    assert_eq!(q.audio_tracks[0].channels, AudioChannels::Mono);
+    assert_eq!(q.audio_tracks[1].id, before.audio_tracks[0].id);
+    // a number counts the tracks before the new ones; "Standard" is a stereo track
+    for (ty, want) in [("standard", AudioChannels::Stereo), ("5.1", AudioChannels::Surround51), ("adaptive", AudioChannels::Adaptive)] {
+        let r = s.execute("sequence.addTracks", json!({"video": 0, "audio": 1, "audioAfter": 2, "audioType": ty})).unwrap();
+        let q = s.active_sequence().unwrap();
+        assert_eq!((q.audio_tracks[2].id.0, q.audio_tracks[2].channels), (r["audio"][0].as_u64().unwrap(), want), "{ty}");
+    }
+
+    // submix tracks: stereo unless said, placed among the submix tracks
+    assert!(before.submix_tracks.is_empty());
+    s.execute("sequence.addTracks", json!({"video": 0, "submix": 2})).unwrap();
+    s.execute("sequence.addTracks", json!({"video": 0, "submix": 1, "submixAfter": "S1", "submixType": "5.1"})).unwrap();
+    let q = s.active_sequence().unwrap();
+    assert_eq!(
+        q.submix_tracks.iter().map(|t| (t.name.as_str(), t.channels)).collect::<Vec<_>>(),
+        [("Submix 1", AudioChannels::Stereo), ("Submix 2", AudioChannels::Surround51), ("Submix 3", AudioChannels::Stereo)]
+    );
+    // all three kinds at once are one undo step
+    let before = s.active_sequence().unwrap().clone();
+    let r = s.execute("sequence.addTracks", json!({"video": 1, "audio": 1, "submix": 1})).unwrap();
+    assert_eq!((r["video"].as_array().unwrap().len(), r["audio"].as_array().unwrap().len(), r["submix"].as_array().unwrap().len()), (1, 1, 1));
+    s.execute("edit.undo", json!({})).unwrap();
+    assert_eq!(*s.active_sequence().unwrap(), before);
+}
+
+/// Amounts and places come from a dialog, a script or the control channel: a wrong one is an
+/// error that changes nothing, and no amount can make the sequence grow without bound.
+#[test]
+fn add_tracks_refuses_what_it_cannot_do() {
+    let mut s = demo();
+    let before = s.active_sequence().unwrap().clone();
+    for bad in [
+        json!({"video": 0}),
+        json!({"video": 100}),
+        json!({"video": u64::MAX}),
+        json!({"video": 0, "audio": 1_000_000}),
+        json!({"video": "many"}),
+        json!({"video": 1, "videoAfter": "V9"}),
+        json!({"video": 1, "videoAfter": "A1"}),
+        json!({"video": 1, "videoAfter": 4}),
+        json!({"video": 1, "videoAfter": "top"}),
+        json!({"video": 0, "audio": 1, "audioAfter": "V1"}),
+        json!({"video": 0, "audio": 1, "audioType": "quad"}),
+        json!({"video": 0, "submix": 1, "submixAfter": "S1"}),
+        json!({"video": 0, "submix": 1, "submixType": "standard-ish"}),
+    ] {
+        let r = s.execute("sequence.addTracks", bad.clone());
+        assert!(r.is_err(), "{bad} was accepted: {r:?}");
+        assert_eq!(*s.active_sequence().unwrap(), before, "{bad} changed the sequence");
+    }
+    // 99 at a time, and a sequence stops at 999 tracks of a kind
+    for _ in 0..10 {
+        s.execute("sequence.addTracks", json!({"video": 99})).unwrap();
+    }
+    assert_eq!(s.active_sequence().unwrap().video_tracks.len(), 3 + 990);
+    assert!(s.execute("sequence.addTracks", json!({"video": 7})).is_err());
+    s.execute("sequence.addTracks", json!({"video": 6})).unwrap();
+    assert_eq!(s.active_sequence().unwrap().video_tracks.len(), 999);
 }
 
 #[test]
