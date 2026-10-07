@@ -818,32 +818,48 @@ mod tests {
         c.send(&export(1, "quiet.mp4", None, 0.5)).await;
         let m = c.next().await;
         assert_eq!((m["id"].as_u64(), &m["result"]["isError"]), (Some(1), &json!(false)), "{m}");
-        // progress, strictly increasing, with a total; ping answered while the export runs
-        c.send(&export(2, "a.mp4", Some(json!("tok")), 1.0)).await;
-        let (mut last, mut notes, mut pinged, mut pong) = (-1.0, 0, false, false);
-        let done = loop {
-            let m = c.next().await;
-            if m["method"] == "notifications/progress" {
-                assert_eq!(m["params"]["progressToken"], "tok", "{m}");
-                let p = m["params"]["progress"].as_f64().unwrap();
-                assert!(p > last && m["params"]["total"].as_f64().unwrap() >= p, "{m}");
-                last = p;
-                notes += 1;
-                if !pinged {
-                    pinged = true;
-                    c.send(r#"{"jsonrpc":"2.0","id":3,"method":"ping"}"#).await;
+        // progress, strictly increasing, with a total; ping answered while the export runs. The
+        // job is polled every 100 ms, so a fast machine finishes a short export within one poll:
+        // a longer one is tried until the export outlasts a few polls.
+        let (mut notes, mut pong) = (0, false);
+        for (attempt, seconds) in [1.0, 4.0, 16.0].into_iter().enumerate() {
+            let (id, ping, name) = (20 + attempt as u64, 30 + attempt as u64, format!("a{attempt}.mp4"));
+            c.send(&export(id, &name, Some(json!("tok")), seconds)).await;
+            let (mut last, mut pinged) = (-1.0, false);
+            (notes, pong) = (0, false);
+            let done = loop {
+                let m = c.next().await;
+                if m["method"] == "notifications/progress" {
+                    assert_eq!(m["params"]["progressToken"], "tok", "{m}");
+                    let p = m["params"]["progress"].as_f64().unwrap();
+                    assert!(p > last && m["params"]["total"].as_f64().unwrap() >= p, "{m}");
+                    last = p;
+                    notes += 1;
+                    if !pinged {
+                        pinged = true;
+                        c.send(&json!({"jsonrpc": "2.0", "id": ping, "method": "ping"}).to_string()).await;
+                    }
+                } else if m["id"] == ping {
+                    pong = true;
+                } else if m["id"] == id {
+                    break m;
                 }
-            } else if m["id"] == 3 {
-                pong = true;
-            } else if m["id"] == 2 {
-                break m;
+            };
+            assert_eq!(done["result"]["isError"], false, "{done}");
+            assert!(notes >= 1, "a finished export reports its progress at least once");
+            assert!(dir.join(&name).exists());
+            if notes >= 2 && pong {
+                break;
             }
-        };
-        assert_eq!(done["result"]["isError"], false, "{done}");
+            // the ping's answer is still on its way: read it so it cannot be taken for a later reply
+            while pinged && !pong {
+                pong = c.next().await["id"] == ping;
+            }
+            pong = false;
+        }
         assert!(notes >= 2 && pong, "{notes} notifications, ping answered during the export: {pong}");
-        assert!(dir.join("a.mp4").exists());
         // cancel after the first notification: no response, no partial file
-        c.send(&export(4, "b.mp4", Some(json!(7)), 8.0)).await;
+        c.send(&export(4, "b.mp4", Some(json!(7)), 20.0)).await;
         loop {
             let m = c.next().await;
             assert_ne!(m["id"], 4, "finished before the cancel: {m}");
