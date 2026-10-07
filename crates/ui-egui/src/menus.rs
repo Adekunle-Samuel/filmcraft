@@ -24,6 +24,7 @@ macro_rules! uic {
 pub const UI_COMMANDS: &[UiCommand] = &[
     uic!("app.language.english", "English", ["Edit", "Language"], None),
     uic!("app.language.japanese", "日本語", ["Edit", "Language"], None),
+    uic!("app.language.spanish", "Español", ["Edit", "Language"], None),
     uic!("playback.toggle", "Play/Stop", [], Some("Space")),
     uic!("playback.forward", "Shuttle Right", [], Some("L")),
     uic!("playback.stop", "Shuttle Stop", [], Some("K")),
@@ -146,12 +147,16 @@ pub fn panel_command_id(p: PanelKind) -> String {
 
 /// Execute a UI or engine command by id.
 pub fn invoke(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, params: Value) -> Result<Value, String> {
-    if matches!(id, "app.language.english" | "app.language.japanese") {
+    if matches!(id, "app.language.english" | "app.language.japanese" | "app.language.spanish") {
         // Japanese needs the craft-fonts (built with CRAFT_FONTS_DIR) or a font installed on the system
         if id == "app.language.japanese" && !crate::i18n::install_japanese_font(ctx) {
             return Err("no Japanese font is installed on this system (for example Noto Sans CJK JP); the interface stays in English".into());
         }
-        app.ui.language = if id == "app.language.japanese" { crate::i18n::Language::Ja } else { crate::i18n::Language::En };
+        app.ui.language = match id {
+            "app.language.japanese" => crate::i18n::Language::Ja,
+            "app.language.spanish" => crate::i18n::Language::Es,
+            _ => crate::i18n::Language::En,
+        };
         let items = menu_items(app);
         if let Some(hook) = app.hooks.shortcuts_changed.as_mut() {
             hook(&items);
@@ -401,6 +406,7 @@ pub fn menu_items(app: &FilmcraftApp) -> Vec<MenuItem> {
         match it.id.as_str() {
             "app.language.english" => it.checked = Some(app.ui.language == crate::i18n::Language::En),
             "app.language.japanese" => it.checked = Some(app.ui.language == crate::i18n::Language::Ja),
+            "app.language.spanish" => it.checked = Some(app.ui.language == crate::i18n::Language::Es),
             _ => {}
         }
         if it.id.starts_with("view.") {
