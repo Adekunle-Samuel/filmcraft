@@ -52,26 +52,27 @@ fn has_transcript(s: &Session) -> std::result::Result<(), String> {
     if sequence_words(s).is_empty() { Err("the sequence has no transcript (Transcribe first)".into()) } else { Ok(()) }
 }
 
-const NO_SPEECH: &str = "speech-to-text is not available in this build (built without the `whisper` feature); import a transcript with transcript.set instead";
+fn has_transcripts(s: &Session) -> std::result::Result<(), String> {
+    if s.project.transcripts.is_empty() { Err("there are no transcripts".into()) } else { Ok(()) }
+}
 
-/// `transcript.generate` needs a recogniser: one installed in [`Session::transcriber`], or this
-/// build's own (feature `whisper`). Without either the command is disabled, so `describe`,
-/// `command_list {"enabled_only": true}` and the menu don't offer it (#97).
+/// Why speech-to-text can't run in this build (no installed transcriber, built without `whisper`).
+pub(crate) const NO_SPEECH: &str =
+    "speech-to-text is not available in this build (built without the `whisper` feature); import a transcript with transcript.set instead";
+
+/// `transcript.generate` can run: a host installed a transcriber or the build has speech-to-text
+/// (#97: it reported enabled and then always failed).
 pub(crate) fn can_transcribe(s: &Session) -> std::result::Result<(), String> {
     if s.transcriber.is_some() || speech_available() { Ok(()) } else { Err(NO_SPEECH.into()) }
 }
 
-/// `transcript.downloadModel` is compiled in only with the `speech-download` feature (#98).
+/// `transcript.downloadModel` can run: built with `speech-download` (#98).
 fn can_download(_: &Session) -> std::result::Result<(), String> {
     if cfg!(feature = "speech-download") {
         Ok(())
     } else {
         Err("model downloads are not available in this build (built without the `speech-download` feature)".into())
     }
-}
-
-fn has_transcripts(s: &Session) -> std::result::Result<(), String> {
-    if s.project.transcripts.is_empty() { Err("there are no transcripts".into()) } else { Ok(()) }
 }
 
 /// The media item behind a project item (subclips resolve to their parent).

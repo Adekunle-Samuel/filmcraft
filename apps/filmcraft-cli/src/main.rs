@@ -105,7 +105,8 @@ impl Backend {
     async fn exec(&mut self, id: &str, params: Value) -> Result<Value, String> {
         match self {
             Backend::Local(s) => s.execute(id, params).map_err(|e| e.to_string()),
-            Backend::Bridge(b) => b.call("engine.execute", json!({"command": id, "params": params})).await.map_err(|e| e.to_string()),
+            // a blocking export runs as an app job polled by the client (#91, #92)
+            Backend::Bridge(b) => b.execute(id, params).await.map_err(|e| e.to_string()),
         }
     }
 

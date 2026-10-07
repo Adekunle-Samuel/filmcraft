@@ -826,16 +826,19 @@ fn build() -> Vec<CommandSpec> {
             // Project Settings ▸ Ingest: copy / transcode / create proxies
             // (image sequences are many files: ingest copies and transcodes single files only)
             let item_ids: Vec<ItemId> = ids.iter().filter(|i| !image_sequences.iter().any(|q| q["item"].as_u64() == Some(**i))).map(|i| ItemId(*i)).collect();
-            // Settings ▸ Media Analysis & Transcription ▸ Automatically transcribe clips. In a build
-            // without speech-to-text `transcript.generate` is disabled and its reason lands in
-            // `errors`, so the enabled setting doesn't silently do nothing (#89).
+            // Settings ▸ Media Analysis & Transcription ▸ Automatically transcribe clips
             let ma = &s.prefs.media_analysis;
             if ma.auto_transcribe && ma.auto_transcribe_scope == "allImported" && !ids.is_empty() {
                 let audio: Vec<u64> = ids.iter().copied().filter(|i| s.project.item(ItemId(*i)).is_some_and(|it| it.has_audio())).collect();
-                if !audio.is_empty()
-                    && let Err(e) = s.execute("transcript.generate", json!({"items": audio}))
-                {
-                    errors.push(format!("transcription: {e}"));
+                if !audio.is_empty() {
+                    // without speech-to-text the setting can't act: say so instead of importing
+                    // silently untranscribed (#89)
+                    let r = crate::transcript::can_transcribe(s)
+                        .map_err(EngineError::Other)
+                        .and_then(|()| s.execute("transcript.generate", json!({"items": audio})));
+                    if let Err(e) = r {
+                        errors.push(format!("transcription: {e}"));
+                    }
                 }
             }
             let ingest = match crate::proxies::ingest(s, &item_ids) {
