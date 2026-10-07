@@ -550,6 +550,7 @@ pub fn trim(seq: &mut Sequence, clip: ClipId, edge: Edge, mode: TrimMode, delta:
     let (tid, it) = seq.find_item(clip).ok_or(EditError::NoItem(clip))?;
     let old_end = it.end();
     let old_start = it.start;
+    let own_link = it.link;
     let speed = it.speed.abs();
     let mut work = seq.clone();
     {
@@ -582,8 +583,12 @@ pub fn trim(seq: &mut Sequence, clip: ClipId, edge: Edge, mode: TrimMode, delta:
                 continue;
             }
             if tr.id == tid || tr.sync_lock {
-                if tr.id != tid && shift < Tick::ZERO && !track_range_empty(tr, TimeRange::new(at + shift - Tick(if edge == Edge::In { 1 } else { 0 }), -shift))
-                {
+                // the stretch that closes: a shorter head takes it from just after the cut, a
+                // shorter tail from just before it
+                let closing = if edge == Edge::In { TimeRange::new(old_start, -shift) } else { TimeRange::new(at + shift, -shift) };
+                // (the clip's own linked partners are the caller's to trim or leave)
+                let in_the_way = tr.items.iter().any(|i| i.range().overlaps(&closing) && (own_link.is_none() || i.link != own_link));
+                if tr.id != tid && shift < Tick::ZERO && in_the_way {
                     return Err(EditError::SyncLockConflict);
                 }
                 let from = if edge == Edge::In { old_start + Tick(1) } else { old_end };
@@ -647,7 +652,11 @@ pub fn ripple_trim_group(seq: &mut Sequence, clips: &[ClipId], edge: Edge, delta
             origins.push((tid, from));
         }
     }
-    let main_from = {
+    // a shorter or longer head: the cut is the latest member's start (a sound that leads its picture
+    // starts earlier), whichever member was grabbed
+    let main_from = if edge == Edge::In {
+        origins.iter().map(|o| o.1).max().unwrap_or_default()
+    } else {
         let (tid, _) = seq.find_item(first).ok_or(EditError::NoItem(first))?;
         origins.iter().find(|(t, _)| *t == tid).map(|o| o.1).unwrap_or_default()
     };
@@ -676,9 +685,10 @@ pub fn ripple_trim_group(seq: &mut Sequence, clips: &[ClipId], edge: Edge, delta
         let Some(tr) = work.track_mut(tid) else { continue };
         let follows = |i: &TrackItem| i.start < from && i.end() > from && i.link.is_some_and(|l| shifting_links.contains(&l));
         if !member && shift < Tick::ZERO {
-            let at = if edge == Edge::In { from - Tick(1) } else { from };
-            let closing = TimeRange::new(at + shift, -shift);
-            if tr.items.iter().any(|i| i.range().overlaps(&closing) && !follows(i)) {
+            // a shorter head closes the stretch just after the cut, a shorter tail the one before it
+            let closing = if edge == Edge::In { TimeRange::new(from - Tick(1), -shift) } else { TimeRange::new(from + shift, -shift) };
+            let own = |i: &TrackItem| i.link.is_some_and(|l| own_links.contains(&l));
+            if tr.items.iter().any(|i| i.range().overlaps(&closing) && !follows(i) && !own(i)) {
                 return Err(EditError::SyncLockConflict);
             }
         }

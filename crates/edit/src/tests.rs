@@ -571,3 +571,51 @@ fn hostile_speeds_are_refused_or_clamped_never_overflow() {
         }
     }
 }
+
+#[test]
+fn shorter_head_closes_the_stretch_after_the_cut_on_sync_locked_tracks() {
+    // V1: a [0,10), b [10,20). a's sound on sync-locked A1 runs up to the cut: [0,10). b loses 3 at
+    // its head; the stretch that closes is [10,13), where A1 is empty, so nothing refuses.
+    for group in [false, true] {
+        let mut fx = Fx::new();
+        let (v1, a1) = (fx.v(0), fx.a(0));
+        fx.put(v1, 0, 10, 0);
+        let b = fx.put(v1, 10, 10, 0);
+        fx.put(v1, 20, 10, 0);
+        fx.put(a1, 0, 10, 0);
+        let later = fx.put(a1, 20, 5, 0);
+        let mut n = fx.next;
+        if group {
+            ripple_trim_group(&mut fx.seq, &[b], Edge::In, f(3), &mut Fx::ctx(&mut n)).unwrap();
+        } else {
+            trim(&mut fx.seq, b, Edge::In, TrimMode::Ripple, f(3), &mut Fx::ctx(&mut n)).unwrap();
+        }
+        assert_eq!((fx.spans(v1), fx.spans(a1)), (vec![(0, 10), (10, 7), (17, 10)], vec![(0, 10), (17, 5)]), "group {group}");
+        // material inside the stretch that closes still refuses
+        fx.seq.find_item_mut(later).unwrap().1.start = f(11);
+        let r = if group {
+            ripple_trim_group(&mut fx.seq, &[b], Edge::In, f(2), &mut Fx::ctx(&mut n))
+        } else {
+            trim(&mut fx.seq, b, Edge::In, TrimMode::Ripple, f(2), &mut Fx::ctx(&mut n))
+        };
+        assert_eq!(r, Err(EditError::SyncLockConflict), "group {group}");
+    }
+    // a clip on a sync-locked track that starts at the cut stays put while the pictures after it move
+    // up: only the stretch after the cut sees it (the old stretch, before the cut, let it through)
+    for group in [false, true] {
+        let mut fx = Fx::new();
+        let (v1, a1) = (fx.v(0), fx.a(0));
+        fx.put(v1, 0, 10, 0);
+        let b = fx.put(v1, 10, 10, 0);
+        fx.put(v1, 20, 10, 0);
+        fx.put(a1, 10, 5, 0);
+        let mut n = fx.next;
+        let r = if group {
+            ripple_trim_group(&mut fx.seq, &[b], Edge::In, f(3), &mut Fx::ctx(&mut n))
+        } else {
+            trim(&mut fx.seq, b, Edge::In, TrimMode::Ripple, f(3), &mut Fx::ctx(&mut n))
+        };
+        assert_eq!(r, Err(EditError::SyncLockConflict), "group {group}");
+        assert_eq!(fx.spans(v1), vec![(0, 10), (10, 10), (20, 10)], "unchanged on failure");
+    }
+}
