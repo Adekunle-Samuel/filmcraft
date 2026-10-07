@@ -85,7 +85,8 @@ pub fn selected_graphic(app: &FilmcraftApp) -> Option<(ClipId, TrackItem)> {
     app.session.state.selection.iter().copied().find(|c| is_graphic_clip(app, *c)).and_then(|c| q.find_item(c).map(|(_, it)| (c, it.clone())))
 }
 
-/// Layers of the graphic clips visible at the playhead, front-most first.
+/// Layers of the graphic clips visible at the playhead, front-most first. A layer whose
+/// visibility is off is not in the picture, so it has no box and cannot be clicked either.
 pub fn visible_layers(app: &FilmcraftApp, pic: Rect, frame: (u32, u32)) -> Vec<LayerView> {
     let Some(seq) = app.session.active_sequence() else { return Vec::new() };
     let t = app.session.playhead();
@@ -106,7 +107,7 @@ pub fn visible_layers(app: &FilmcraftApp, pic: Rect, frame: (u32, u32)) -> Vec<L
         let base = screen.then_apply(&filmcraft_render::motion_matrix(seq, it, size, mt));
         let idx = layer_indices(&it.effects);
         for (li, &ei) in idx.iter().enumerate().rev() {
-            if let Some(spec) = eval_layer(&it.effects[ei], mt, size) {
+            if let Some(spec) = eval_layer(&it.effects[ei], mt, size).filter(|s| s.enabled) {
                 let local = layer_local_bounds(&spec);
                 out.push(LayerView { clip: it.id, layer: li, to_screen: base.then_apply(&layer_matrix(&spec)), canvas_to_screen: base, spec, local });
             }
@@ -405,15 +406,11 @@ pub fn monitor_overlay(app: &mut FilmcraftApp, ui: &mut egui::Ui, pic: Rect, fra
             let q = v.quad();
             let selected = sel_layers.contains(&v.layer);
             let is_edit = editing.as_ref().is_some_and(|e| e.clip == v.clip.0 && e.layer == v.layer);
-            // the box of the text being typed into is red, as in Premiere
-            let col = if is_edit {
-                t.danger
-            } else if selected {
-                accent
-            } else {
-                Color32::from_white_alpha(70)
-            };
-            painter.add(egui::Shape::closed_line(q.to_vec(), Stroke::new(1.0, col)));
+            // only the selected layers have a box; that of the text being typed into is red, as in Premiere
+            if !(selected || is_edit) {
+                continue;
+            }
+            painter.add(egui::Shape::closed_line(q.to_vec(), Stroke::new(1.0, if is_edit { t.danger } else { accent })));
             if selected && !is_edit {
                 let paragraph = text_of(&v.spec).filter(|tp| is_paragraph(tp));
                 let label = if paragraph.is_some() { "resize handle" } else { "scale handle" };
