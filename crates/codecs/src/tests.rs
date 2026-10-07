@@ -578,3 +578,40 @@ fn opus_mp4_stereo() {
         "MPEG-4",
     );
 }
+
+#[test]
+fn apv_mp4_and_raw_bitstream_decode() {
+    use filmcraft_isobmff::{ApvConfig, Brand, Mp4Writer, SampleEntry, TrackConfig, WriteSample, WriterOptions};
+
+    let (w, h) = (64u32, 32u32);
+    let mut fr = filmcraft_apv::Frame::new(w, h, filmcraft_apv::ChromaFormat::Yuv422, 10, false);
+    for (i, y) in fr.y.iter_mut().enumerate() {
+        *y = if (i as u32 % w) < w / 2 { 850 } else { 150 };
+    }
+    let mut enc = filmcraft_apv::Encoder::new(filmcraft_apv::Profile::P422_10, w, h).expect("encoder");
+    let au = enc.encode_raw_au(&fr).expect("encode_raw_au");
+    let apvc = ApvConfig::parse(&enc.decoder_config_record()).expect("parse apvC");
+
+    // 1. Raw .apv elementary stream
+    let raw_src = crate::open_bytes("clip.apv", au.clone().into()).expect("open raw .apv");
+    let raw_v = raw_src.info().video.as_ref().expect("video info");
+    assert_eq!((raw_v.width, raw_v.height), (w, h));
+    assert_eq!(raw_v.codec, "APV 422-10");
+    assert_eq!(raw_v.pixel_format, "YUV 4:2:2 10-bit");
+    let decoded_raw = raw_src.video_frame(FrameRequest::full(Tick::ZERO)).expect("decode raw frame");
+    assert_eq!((decoded_raw.width, decoded_raw.height), (w, h));
+
+    // 2. MP4 with apv1 + apvC
+    let mut mux = Mp4Writer::new(std::io::Cursor::new(Vec::new()), WriterOptions::new(Brand::Mp4)).expect("writer");
+    let vt = mux.add_track(TrackConfig::new(SampleEntry::apv(apvc, w as u16, h as u16), 24)).expect("track");
+    mux.write_sample(vt, WriteSample { data: &au, duration: 1, composition_offset: 0, is_sync: true }).expect("sample");
+    let mp4_bytes: Arc<[u8]> = mux.finish().expect("finish").into_inner().into();
+
+    let mp4_src = crate::open_bytes("clip.mp4", mp4_bytes).expect("open mp4");
+    let mp4_v = mp4_src.info().video.as_ref().expect("mp4 video info");
+    assert_eq!((mp4_v.width, mp4_v.height), (w, h));
+    assert_eq!(mp4_v.codec, "APV 422-10");
+    assert_eq!(mp4_v.pixel_format, "YUV 4:2:2 10-bit");
+    let decoded_mp4 = mp4_src.video_frame(FrameRequest::full(Tick::ZERO)).expect("decode mp4 frame");
+    assert_eq!(decoded_mp4.to_rgba8(), decoded_raw.to_rgba8());
+}

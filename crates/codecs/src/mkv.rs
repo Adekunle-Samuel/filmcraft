@@ -145,6 +145,7 @@ fn sample_entry(c: &Codec, private: &[u8], v: Option<&filmcraft_matroska::VideoI
     Some(match c {
         Codec::Vp9 { private } => SampleEntry::video(FourCc(*b"vp09"), CodecConfig::Vp9(vp9_config(private, v)), w, h),
         Codec::Av1 { av1c } => SampleEntry::video(FourCc(*b"av01"), CodecConfig::Av1(filmcraft_isobmff::Av1Config::parse(av1c).unwrap_or_default()), w, h),
+        Codec::Apv { apvc } => SampleEntry::apv(filmcraft_isobmff::ApvConfig::parse(apvc).unwrap_or_default(), w, h),
         Codec::Avc { avcc } => SampleEntry::avc(AvcConfig::parse(avcc).ok()?, w, h),
         Codec::Hevc { hvcc } => SampleEntry::hevc(HevcConfig::parse(hvcc).ok()?, w, h),
         Codec::ProRes { fourcc } => SampleEntry::prores(FourCc(fourcc.unwrap_or(*b"apcn")), w, h),
@@ -206,6 +207,10 @@ fn codec_label(c: &Codec) -> String {
         Codec::Vp8 => "VP8".into(),
         Codec::Vp9 { .. } => "VP9".into(),
         Codec::Av1 { .. } => "AV1".into(),
+        Codec::Apv { apvc } => match filmcraft_isobmff::ApvConfig::parse(apvc).ok().and_then(|a| filmcraft_apv::Profile::from_idc(a.profile_idc)) {
+            Some(p) => p.name().into(),
+            None => "APV".into(),
+        },
         Codec::ProRes { .. } => "Apple ProRes".into(),
         Codec::Mjpeg => "Motion JPEG".into(),
         Codec::Aac { .. } => "AAC".into(),

@@ -676,6 +676,72 @@ pub fn prores_factory(e: &SampleEntry) -> Option<Result<Box<dyn VideoDecoder>>> 
     matches!(e.codec, CodecConfig::ProRes { .. }).then(|| Ok(Box::new(ProResDecoder) as Box<dyn VideoDecoder>))
 }
 
+/// Our APV (Advanced Professional Video, RFC 9924) decoder (every frame is intra; tiles decode in
+/// parallel).
+pub struct ApvDecoder;
+
+/// Convert a decoded APV frame to a [`VideoFrame`].
+pub fn apv_to_video_frame(f: filmcraft_apv::Frame) -> VideoFrame {
+    use std::sync::Arc;
+    let chroma = match f.chroma {
+        filmcraft_apv::ChromaFormat::Yuv422 => filmcraft_frame::Chroma::C422,
+        filmcraft_apv::ChromaFormat::Monochrome | filmcraft_apv::ChromaFormat::Yuv444 | filmcraft_apv::ChromaFormat::Yuv4444 => filmcraft_frame::Chroma::C444,
+    };
+    let mut color = filmcraft_color::ColorInfo { matrix: filmcraft_frame::default_matrix(f.width, f.height), ..filmcraft_color::ColorInfo::REC709 };
+    if let Some(m) = filmcraft_color::Matrix::from_code(f.color.matrix) {
+        color.matrix = m;
+    }
+    if let Some(t) = filmcraft_color::Transfer::from_code(f.color.transfer) {
+        color.transfer = t;
+    }
+    if let Some(p) = primaries_from_code(f.color.primaries) {
+        color.primaries = p;
+    }
+    if f.color.full_range {
+        color.range = filmcraft_color::Range::Full;
+    }
+    let neutral = 1u16 << f.bit_depth.saturating_sub(1);
+    let (cb, cr) = if f.chroma == filmcraft_apv::ChromaFormat::Monochrome {
+        let u = vec![neutral; (f.width as usize) * (f.height as usize)];
+        (u.clone(), u)
+    } else {
+        (f.cb, f.cr)
+    };
+    let data = if f.bit_depth == 8 {
+        let to8 = |p: Vec<u16>| Arc::new(p.into_iter().map(|v| v as u8).collect::<Vec<u8>>());
+        filmcraft_frame::PixelData::Yuv8 { planes: [to8(f.y), to8(cb), to8(cr)], chroma, alpha: f.alpha.map(to8) }
+    } else {
+        filmcraft_frame::PixelData::Yuv16 {
+            planes: [Arc::new(f.y), Arc::new(cb), Arc::new(cr)],
+            chroma,
+            bits: f.bit_depth as u32,
+            alpha: f.alpha.map(Arc::new),
+        }
+    };
+    VideoFrame { width: f.width, height: f.height, data, color, par: (1, 1), pts: filmcraft_time::Tick::ZERO }
+}
+
+impl VideoDecoder for ApvDecoder {
+    fn decode(&mut self, sample: &[u8], pts: i64) -> Result<Vec<DecodedFrame>> {
+        let f = filmcraft_apv::decode_frame(sample).map_err(|e| CodecError::Decode(e.to_string()))?;
+        Ok(vec![DecodedFrame { pts, frame: apv_to_video_frame(f), draft: false }])
+    }
+    fn flush(&mut self) -> Vec<DecodedFrame> {
+        Vec::new()
+    }
+    fn reset(&mut self) {}
+    fn name(&self) -> &str {
+        "FilmCraft APV"
+    }
+    fn intra_only(&self) -> bool {
+        true
+    }
+}
+
+pub fn apv_factory(e: &SampleEntry) -> Option<Result<Box<dyn VideoDecoder>>> {
+    matches!(e.codec, CodecConfig::Apv(_)).then(|| Ok(Box::new(ApvDecoder) as Box<dyn VideoDecoder>))
+}
+
 /// Our DNxHD / DNxHR (VC-3) decoder (every frame is intra; macroblock rows decode in parallel).
 pub struct DnxDecoder;
 

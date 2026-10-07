@@ -178,6 +178,8 @@ pub enum CodecConfig {
     Dnx {
         fourcc: FourCc,
     },
+    /// Advanced Professional Video (`apv1` + `apvC`).
+    Apv(ApvConfig),
     Aac(AacConfig),
     /// MPEG-1/2 audio layer III (esds object type 0x69/0x6B, or QuickTime `.mp3`).
     Mp3,
@@ -215,6 +217,7 @@ impl CodecConfig {
             CodecConfig::ProRes { .. } => "prores",
             CodecConfig::Jpeg { .. } => "mjpeg",
             CodecConfig::Dnx { .. } => "dnxhd",
+            CodecConfig::Apv(_) => "apv",
             CodecConfig::Aac(_) => "aac",
             CodecConfig::Mp3 => "mp3",
             CodecConfig::Pcm(_) => "pcm",
@@ -722,6 +725,112 @@ impl TimecodeConfig {
     }
 }
 
+/// `apvC` — APVDecoderConfigurationBox (`FullBox('apvC', version = 0, flags = 0)` containing
+/// `APVDecoderConfigurationRecord`).
+#[derive(Clone, Debug, PartialEq, Eq, Default)]
+pub struct ApvConfig {
+    pub profile_idc: u8,
+    pub level_idc: u8,
+    pub band_idc: u8,
+    pub frame_width: u32,
+    pub frame_height: u32,
+    pub chroma_format_idc: u8,
+    pub bit_depth_minus8: u8,
+    pub capture_time_distance: u8,
+    pub capture_time_distance_ignored: bool,
+    pub color_description_present: bool,
+    pub color_primaries: u8,
+    pub transfer_characteristics: u8,
+    pub matrix_coefficients: u8,
+    pub full_range: bool,
+    /// Raw `APVDecoderConfigurationRecord` bytes (after the 4-byte FullBox header).
+    pub raw_record: Vec<u8>,
+}
+
+impl ApvConfig {
+    /// Build from a raw `APVDecoderConfigurationRecord` (starting with `configurationVersion = 1`).
+    pub fn from_record(record: Vec<u8>) -> Result<Self> {
+        let mut c = Cur::new(&record, "apvC");
+        let version = c.u8()?;
+        if version != 1 {
+            return Err(Error::Invalid(format!("unsupported APVDecoderConfigurationRecord version {version}")));
+        }
+        let num_entries = c.u8()?;
+        let mut cfg = ApvConfig { raw_record: record.clone(), ..Default::default() };
+        if num_entries >= 1 && c.remaining() >= 2 {
+            let _pbu_type = c.u8()?;
+            let num_fi = c.u8()?;
+            if num_fi >= 1 && c.remaining() >= 14 {
+                let flags = c.u8()?;
+                cfg.color_description_present = (flags & 0x02) != 0;
+                cfg.capture_time_distance_ignored = (flags & 0x01) != 0;
+                cfg.profile_idc = c.u8()?;
+                cfg.level_idc = c.u8()?;
+                cfg.band_idc = c.u8()?;
+                cfg.frame_width = c.u32()?;
+                cfg.frame_height = c.u32()?;
+                let cb = c.u8()?;
+                cfg.chroma_format_idc = cb >> 4;
+                cfg.bit_depth_minus8 = cb & 0x0F;
+                cfg.capture_time_distance = c.u8()?;
+                if cfg.color_description_present && c.remaining() >= 4 {
+                    cfg.color_primaries = c.u8()?;
+                    cfg.transfer_characteristics = c.u8()?;
+                    cfg.matrix_coefficients = c.u8()?;
+                    cfg.full_range = (c.u8()? & 0x80) != 0;
+                }
+            }
+        }
+        Ok(cfg)
+    }
+
+    /// Parse the payload of an `apvC` box (with or without the 4-byte `FullBox` header).
+    pub fn parse(data: &[u8]) -> Result<Self> {
+        if data.len() >= 5 && data[..4] == [0, 0, 0, 0] && data[4] == 1 {
+            Self::from_record(data[4..].to_vec())
+        } else if !data.is_empty() && data[0] == 1 {
+            Self::from_record(data.to_vec())
+        } else {
+            let mut c = Cur::new(data, "apvC");
+            let (v, _) = c.full_header()?;
+            if v != 0 {
+                return Err(Error::Invalid(format!("unsupported apvC FullBox version {v}")));
+            }
+            Self::from_record(c.rest().to_vec())
+        }
+    }
+
+    /// Serialize the full `apvC` box payload (4-byte `FullBox` header + `APVDecoderConfigurationRecord`).
+    pub fn to_bytes(&self) -> Vec<u8> {
+        let mut b = BoxBuf::new();
+        b.u32(0); // FullBox version = 0, flags = 0
+        if !self.raw_record.is_empty() {
+            b.bytes(&self.raw_record);
+            return b.buf;
+        }
+        b.u8(1); // configurationVersion = 1
+        b.u8(1); // number_of_configuration_entry = 1
+        b.u8(1); // pbu_type = 1 (primary frame)
+        b.u8(1); // number_of_frame_info = 1
+        let flags = (if self.color_description_present { 0x02 } else { 0 }) | (if self.capture_time_distance_ignored { 0x01 } else { 0 });
+        b.u8(flags);
+        b.u8(self.profile_idc);
+        b.u8(self.level_idc);
+        b.u8(self.band_idc);
+        b.u32(self.frame_width);
+        b.u32(self.frame_height);
+        b.u8((self.chroma_format_idc << 4) | (self.bit_depth_minus8 & 0x0F));
+        b.u8(self.capture_time_distance);
+        if self.color_description_present {
+            b.u8(self.color_primaries);
+            b.u8(self.transfer_characteristics);
+            b.u8(self.matrix_coefficients);
+            b.u8(if self.full_range { 0x80 } else { 0 });
+        }
+        b.buf
+    }
+}
+
 // ---------------------------------------------------------------------------------------------
 // Parsing
 
@@ -741,6 +850,7 @@ fn is_video_fourcc(f: &[u8; 4]) -> bool {
             | b"apco"
             | b"ap4h"
             | b"ap4x"
+            | b"apv1"
             | b"jpeg"
             | b"mjpa"
             | b"mjpb"
@@ -834,6 +944,7 @@ pub(crate) fn parse_sample_entry(format: FourCc, payload: &[u8], handler: FourCc
                 b"hvcC" if matches!(f, b"hvc1" | b"hev1") => codec = Some(CodecConfig::Hevc(HevcConfig::parse(p)?)),
                 b"av1C" if f == b"av01" => codec = Some(CodecConfig::Av1(Av1Config::parse(p)?)),
                 b"vpcC" if f == b"vp09" => codec = Some(CodecConfig::Vp9(VpcConfig::parse(p)?)),
+                b"apvC" if f == b"apv1" => codec = Some(CodecConfig::Apv(ApvConfig::parse(p)?)),
                 b"colr" => v.color = parse_colr(p).ok(),
                 b"mdcv" => v.mastering_display = MasteringDisplay::parse(p),
                 b"clli" if p.len() >= 4 => v.content_light = Some((u16::from_be_bytes([p[0], p[1]]), u16::from_be_bytes([p[2], p[3]]))),
@@ -865,6 +976,7 @@ pub(crate) fn parse_sample_entry(format: FourCc, payload: &[u8], handler: FourCc
                 b"apch" | b"apcn" | b"apcs" | b"apco" | b"ap4h" | b"ap4x" => CodecConfig::ProRes { fourcc: format },
                 b"jpeg" | b"mjpa" | b"mjpb" => CodecConfig::Jpeg { fourcc: format },
                 b"AVdn" | b"AVdh" => CodecConfig::Dnx { fourcc: format },
+                b"apv1" => CodecConfig::Apv(ApvConfig::default()),
                 _ => unknown(),
             },
         };
@@ -1181,6 +1293,14 @@ impl SampleEntry {
         }
         e
     }
+    /// Advanced Professional Video entry (`apv1` + `apvC`).
+    pub fn apv(cfg: ApvConfig, width: u16, height: u16) -> Self {
+        let mut e = Self::video(FourCc(*b"apv1"), CodecConfig::Apv(cfg), width, height);
+        if let Some(v) = e.video.as_mut() {
+            v.compressor_name = "APV".into();
+        }
+        e
+    }
     /// Motion-JPEG entry (`jpeg`).
     pub fn jpeg(width: u16, height: u16) -> Self {
         let f = FourCc(*b"jpeg");
@@ -1251,6 +1371,7 @@ impl SampleEntry {
                 CodecConfig::Hevc(c) => b.leaf(b"hvcC", &c.to_bytes()),
                 CodecConfig::Av1(c) => b.leaf(b"av1C", &c.to_bytes()),
                 CodecConfig::Vp9(c) => b.leaf(b"vpcC", &c.to_bytes()),
+                CodecConfig::Apv(c) => b.leaf(b"apvC", &c.to_bytes()),
                 _ => {}
             }
             if let Some(g) = v.gamma {

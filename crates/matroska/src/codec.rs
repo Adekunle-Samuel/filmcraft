@@ -17,6 +17,8 @@ pub enum Codec {
     Vp9 { private: Vec<u8> },
     /// `V_AV1`; payload is an `AV1CodecConfigurationRecord` (av1C).
     Av1 { av1c: Vec<u8> },
+    /// `V_APV`; payload is an `APVDecoderConfigurationRecord` (apvC), if present.
+    Apv { apvc: Vec<u8> },
     /// `V_PRORES`; `fourcc` from `CodecPrivate` (e.g. `apcn`), if present.
     ProRes { fourcc: Option<[u8; 4]> },
     /// `V_MJPEG`, or `V_MS/VFW/FOURCC` with an `MJPG` compression FourCC.
@@ -62,6 +64,7 @@ impl Codec {
             Codec::Vp8 => "vp8".into(),
             Codec::Vp9 { .. } => "vp9".into(),
             Codec::Av1 { .. } => "av1".into(),
+            Codec::Apv { .. } => "apv".into(),
             Codec::ProRes { .. } => "prores".into(),
             Codec::Mjpeg => "mjpeg".into(),
             Codec::VfwFourcc { fourcc, .. } => String::from_utf8_lossy(fourcc).trim().to_ascii_lowercase(),
@@ -145,6 +148,7 @@ pub(crate) fn map_codec(id: &str, private: &[u8], audio: Option<&crate::AudioInf
         "V_VP8" => Codec::Vp8,
         "V_VP9" => Codec::Vp9 { private: p },
         "V_AV1" => Codec::Av1 { av1c: p },
+        "V_APV" => Codec::Apv { apvc: p },
         "V_PRORES" => Codec::ProRes { fourcc: private.get(..4).and_then(|f| f.try_into().ok()) },
         "V_MJPEG" => Codec::Mjpeg,
         "V_MS/VFW/FOURCC" => {
@@ -153,6 +157,7 @@ pub(crate) fn map_codec(id: &str, private: &[u8], audio: Option<&crate::AudioInf
                 b"MJPG" | b"mjpg" | b"AVRn" | b"AVDJ" => Codec::Mjpeg,
                 b"H264" | b"h264" | b"avc1" | b"X264" | b"x264" => Codec::Avc { avcc: Vec::new() },
                 b"apch" | b"apcn" | b"apcs" | b"apco" | b"ap4h" | b"ap4x" => Codec::ProRes { fourcc: Some(fourcc) },
+                b"apv1" | b"APV1" => Codec::Apv { apvc: Vec::new() },
                 _ => Codec::VfwFourcc { fourcc, bitmap_info_header: p },
             }
         }
@@ -200,6 +205,8 @@ mod tests {
     #[test]
     fn mapping() {
         assert_eq!(map_codec("V_MPEG4/ISO/AVC", &[1, 2], None), Codec::Avc { avcc: vec![1, 2] });
+        assert_eq!(map_codec("V_APV", &[1, 2, 3], None), Codec::Apv { apvc: vec![1, 2, 3] });
+        assert_eq!(map_codec("V_APV", &[], None).name(), "apv");
         assert_eq!(map_codec("V_PRORES", b"apcn", None), Codec::ProRes { fourcc: Some(*b"apcn") });
         let mut bih = vec![0u8; 40];
         bih[16..20].copy_from_slice(b"MJPG");
