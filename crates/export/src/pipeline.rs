@@ -118,9 +118,13 @@ impl Pipeline {
             if lim.enabled {
                 limit_f32(&mut out, lim.min_percent, lim.max_percent);
             }
+            // the float image is not needed any more: its buffer serves the next frame's layers
+            filmcraft_frame::pool::recycle_f32(img.px);
             return (Vec::new(), out);
         }
         let mut rgba = img.over_black_rgba8();
+        // the float image is not needed any more: its buffer serves the next frame's layers
+        filmcraft_frame::pool::recycle_f32(img.px);
         if lim.enabled {
             limit_rgba8(&mut rgba, lim.min_percent, lim.max_percent);
         }

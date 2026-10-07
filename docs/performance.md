@@ -59,6 +59,42 @@ What remains per live decoder is unchanged: the H.264 decoder publishes each mac
 picture as its own allocations (`Frame::make_row`, five per row), which is where the 290 MB per
 decoder comes from.
 
+## Results (CPU compositor: layer rectangles, an opaque bottom layer and recycled images, before → after)
+
+The CPU compositor is what export runs. In a profile of a 9:29 export it took about a third of the
+busy CPU with the built-in H.264 encoder (the encoder took the other two thirds), and a faster
+encoder leaves it as the largest cost of an export. It works on premultiplied linear `f32` images,
+33 MB each at 1080p, and every layer was one of them: a banner that is transparent except for its
+bottom 100 rows still cost a full conversion and a full mix, and the bottom layer paid for a
+zero-filled canvas and a pass that mixes it over that canvas.
+
+Apple M1 (8 cores: 4 performance + 4 efficiency), 2026-10-06, a machine that was not idle, so the
+two builds ran alternately in the same session and the median is reported.
+
+### Per frame, synthetic 1080p sources
+
+`cargo run --release -p filmcraft-render --example frame_bench`: an 8-bit 4:2:0 camera picture and a
+10-bit 4:4:4 banner with alpha only in its bottom 100 rows; `render_sequence` followed by the
+conversion to 8-bit RGBA, milliseconds per frame (median of 40 frames, 5 alternating rounds):
+
+| scenario | before | after |
+|---|---|---|
+| camera only | 8.9 | 6.5 |
+| camera + banner | 16.2 | 7.8 |
+
+Both builds give the same picture (same checksum).
+
+### A real export
+
+30 s of a 1080p25 camera clip with a ProRes 4444 banner, exported with the built-in encoder
+(deterministic, byte for byte): 46.4 s before, 36.7 s after. **The two exports are the same file**
+(same bytes, same MD5), so every frame of the real pipeline (camera decode, ProRes decode,
+compositing, conversion) matches. The encoder is most of that time; with a faster one the
+compositor's savings are a larger part of the export.
+
+What is left in a frame without overlays is the Y'CbCr → linear float conversion of the camera
+picture (4.5 ms in the synthetic case) and the conversion to 8 bits (2 ms).
+
 ## Results (GPU2: standard effects on the GPU compositor, #30, before → after)
 
 Before = this change with clips that carry standard effects sent back to the CPU layer path in
