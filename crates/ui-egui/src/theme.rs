@@ -1,7 +1,9 @@
 //! Design tokens. Every widget reads colours/sizes from [`Tokens`] so themes apply everywhere.
 //!
 //! The default theme follows the look of Premiere Pro's current dark UI (values measured from
-//! black-box screenshots, see `plan/premiere/02-ui-ux.md`); fonts are Inter + JetBrains Mono (OFL).
+//! black-box screenshots, see `plan/premiere/02-ui-ux.md`); fonts are Inter + JetBrains Mono (OFL), and
+//! Source Sans 3 (OFL, the closest open face to Premiere's) for the interface when the app is built
+//! with craft-fonts.
 
 use std::sync::Arc;
 
@@ -124,7 +126,7 @@ impl Tokens {
             separator: Color32::from_rgb(0x30, 0x30, 0x30),
             row_alt: Color32::from_rgb(0x21, 0x21, 0x21),
             row_selected: Color32::from_rgb(0x33, 0x33, 0x33),
-            hot_text: Color32::from_rgb(0x57, 0x94, 0xec),
+            hot_text: Color32::from_rgb(0x40, 0x96, 0xf3),
             tl_bg: Color32::from_rgb(0x1d, 0x1d, 0x1d),
             tl_track_bg: Color32::from_rgb(0x1d, 0x1d, 0x1d),
             tl_track_bg_alt: Color32::from_rgb(0x1d, 0x1d, 0x1d),
@@ -139,7 +141,7 @@ impl Tokens {
             render_yellow: Color32::from_rgb(0xf0, 0xf0, 0x4f),
             render_green: Color32::from_rgb(0x2d, 0x9d, 0x78),
             monitor_bg: Color32::from_rgb(0x1d, 0x1d, 0x1d),
-            timecode: Color32::from_rgb(0x57, 0x94, 0xec),
+            timecode: Color32::from_rgb(0x40, 0x96, 0xf3),
             danger: Color32::from_rgb(0xdc, 0x51, 0x3d),
             radius: 0.0,
             radius_sm: 4.0,
@@ -228,6 +230,35 @@ impl Tokens {
     pub fn semibold(size: f32) -> FontId {
         FontId::new(size, FontFamily::Name("semibold".into()))
     }
+    /// The big blue timecode over the timeline and under the monitors: regular weight, as in
+    /// Premiere (Premiere's reads 10 px tall and 76 px wide for 00:00:16:05 at 1x).
+    pub fn timecode() -> FontId {
+        FontId::new(16.0, FontFamily::Proportional)
+    }
+}
+
+/// Menu text: Premiere's menus are the system's, larger and brighter than panel text.
+pub const MENU_TEXT_SIZE: f32 = 13.0;
+pub const MENU_TEXT: Color32 = Color32::from_rgb(0xde, 0xde, 0xde);
+
+/// Style of the menu bar's menus and their submenus (on top of egui's own menu style).
+pub fn menu_style(s: &mut egui::Style) {
+    egui::containers::menu::menu_style(s);
+    s.text_styles.insert(TextStyle::Button, FontId::new(MENU_TEXT_SIZE, FontFamily::Proportional));
+    s.text_styles.insert(TextStyle::Body, FontId::new(MENU_TEXT_SIZE, FontFamily::Proportional));
+    if s.visuals.dark_mode {
+        s.visuals.override_text_color = Some(MENU_TEXT);
+    }
+}
+
+/// The interface face in craft-fonts: Source Sans 3 (Adobe's open-source sans, SIL OFL; the closest open
+/// face to Premiere's interface type, which is not licensable).
+pub const UI_FAMILY: &str = "Source Sans 3";
+
+/// The craft-fonts entry of the interface face in `style`; `None` when the app was built without
+/// craft-fonts (the interface then stays in Inter).
+fn craft_ui_face(style: &str) -> Option<&'static filmcraft_text::fonts::CraftFont> {
+    filmcraft_text::fonts::CRAFT_FONTS.iter().find(|f| f.family == UI_FAMILY && f.style == style)
 }
 
 /// Every font family the theme defines (fallback fonts such as the Japanese fonts are added to each
@@ -236,8 +267,9 @@ pub fn font_families() -> Vec<FontFamily> {
     vec![FontFamily::Proportional, FontFamily::Monospace, FontFamily::Name("semibold".into()), FontFamily::Name("medium".into())]
 }
 
-/// Install fonts (Inter, Inter SemiBold, JetBrains Mono, then the Japanese craft-fonts when built with
-/// `CRAFT_FONTS_DIR`) and egui visuals.
+/// Install fonts (Source Sans 3 from craft-fonts when built with `CRAFT_FONTS_DIR`, then Inter, Inter
+/// SemiBold, JetBrains Mono, then the Japanese craft-fonts) and egui visuals. Inter stays behind
+/// Source Sans 3 for the symbols it lacks.
 pub fn install(ctx: &egui::Context, t: &Tokens) {
     let mut fonts = FontDefinitions::default();
     fonts.font_data.insert("inter".into(), Arc::new(FontData::from_static(filmcraft_text::fonts::INTER_REGULAR)));
@@ -248,6 +280,14 @@ pub fn install(ctx: &egui::Context, t: &Tokens) {
     fonts.families.entry(FontFamily::Monospace).or_default().insert(0, "jbmono".into());
     fonts.families.insert(FontFamily::Name("semibold".into()), vec!["inter-semibold".into(), "inter".into()]);
     fonts.families.insert(FontFamily::Name("medium".into()), vec!["inter-medium".into(), "inter".into()]);
+    for (family, style) in [("", "Regular"), ("medium", "Medium"), ("semibold", "Semibold")] {
+        if let Some(f) = craft_ui_face(style) {
+            let name = format!("ui:{} {}", f.family, f.style);
+            fonts.font_data.insert(name.clone(), Arc::new(FontData::from_static(f.bytes)));
+            let family = if family.is_empty() { FontFamily::Proportional } else { FontFamily::Name(family.into()) };
+            fonts.families.entry(family).or_default().insert(0, name);
+        }
+    }
     add_craft_fonts(&mut fonts);
     ctx.set_fonts(fonts);
     apply_visuals(ctx, t);
@@ -377,12 +417,36 @@ mod tests {
         ctx.fonts_mut(|fonts| {
             let defs = fonts.definitions().clone();
             assert_eq!(defs.font_data.keys().filter(|k| k.starts_with("craft:")).count(), n);
-            assert_eq!(defs.families[&FontFamily::Proportional].first().map(String::as_str), Some("inter"));
+            let ui = if craft_ui_face("Regular").is_some() { "ui:Source Sans 3 Regular" } else { "inter" };
+            assert_eq!(defs.families[&FontFamily::Proportional].first().map(String::as_str), Some(ui));
             assert_eq!(defs.families[&FontFamily::Monospace].first().map(String::as_str), Some("jbmono"));
             assert!(fonts.has_glyph(&FontId::new(13.0, FontFamily::Proportional), 'A'));
             if n == 0 {
                 assert!(defs.families.values().flatten().all(|name| !name.starts_with("craft:")));
             }
+        });
+    }
+
+    /// Built with craft-fonts that carry Source Sans 3: the interface text is set in it, every weight,
+    /// with Inter right behind it for symbols it lacks.
+    #[test]
+    fn interface_face_from_craft_fonts() {
+        if craft_ui_face("Regular").is_none() {
+            eprintln!("SKIPPED: built without Source Sans 3 in craft-fonts (set CRAFT_FONTS_DIR to run)");
+            return;
+        }
+        let ctx = installed();
+        ctx.fonts_mut(|fonts| {
+            let defs = fonts.definitions().clone();
+            for (family, first, next) in [
+                (FontFamily::Proportional, "ui:Source Sans 3 Regular", "inter"),
+                (FontFamily::Name("medium".into()), "ui:Source Sans 3 Medium", "inter-medium"),
+                (FontFamily::Name("semibold".into()), "ui:Source Sans 3 Semibold", "inter-semibold"),
+            ] {
+                let stack = &defs.families[&family];
+                assert_eq!(&stack[..2], &[first.to_string(), next.to_string()], "{family:?}: {stack:?}");
+            }
+            assert!(fonts.has_glyph(&Tokens::timecode(), '0'));
         });
     }
 }
