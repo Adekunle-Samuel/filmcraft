@@ -106,6 +106,8 @@ pub enum Dialog {
     AudioGain,
     /// Sequence ▸ Delete Tracks….
     DeleteTracks,
+    /// Sequence ▸ Add Tracks….
+    AddTracks,
 }
 
 #[derive(Default)]
