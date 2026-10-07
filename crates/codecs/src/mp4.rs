@@ -18,6 +18,9 @@ use crate::gop::{GopCache, VideoSamples};
 use crate::video::VideoDecoder;
 use crate::{CodecError, make_video_decoder};
 
+/// Most bytes read from one AAC access unit when probing for HE-AAC at open (8 channels × 6144 bits).
+const MAX_AAC_PROBE_UNIT: usize = 8 * 6144 / 8;
+
 struct AudioState {
     decoder: Option<PacketDecoder>,
     /// Decoded packets by sample index.
@@ -180,7 +183,12 @@ impl Mp4Source {
                 CodecConfig::Aac(a) => (
                     {
                         // HE-AAC plays at twice the core rate the AudioSpecificConfig starts with
-                        let units = t.samples.iter().take(8).filter_map(|x| filmcraft_media::reader::read_range(&*bytes.0, x.offset, x.size as usize).ok());
+                        // an AAC access unit is at most 6144 bits per channel: a hostile `stsz` can't make us read more
+                        let units = t
+                            .samples
+                            .iter()
+                            .take(8)
+                            .filter_map(|x| filmcraft_media::reader::read_range(&*bytes.0, x.offset, (x.size as usize).min(MAX_AAC_PROBE_UNIT)).ok());
                         let units: Vec<Vec<u8>> = units.collect();
                         match crate::audio::aac_output_rate(&a.asc, units.iter().map(Vec::as_slice)) {
                             Some(r) => r,
