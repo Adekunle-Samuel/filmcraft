@@ -25,7 +25,10 @@
 
 #![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable))]
 
+// Used by the Windows decoder only; compiled everywhere so their tests run on every system.
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
 mod annexb;
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
 mod biplanar;
 #[cfg(target_os = "macos")]
 pub mod hardware_encode;
