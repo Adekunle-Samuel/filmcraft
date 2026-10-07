@@ -415,3 +415,23 @@ fn fps_validation_keeps_real_rates_and_refuses_degenerate_ones() {
     assert_eq!(s.sequence_rate(), before);
     assert_eq!(s.execute("project.inspect", json!({})).unwrap().to_string().len(), n, "no sequence was created");
 }
+
+/// #164: with a clip selected, Q/W trim only its tracks (and its linked sound), not every
+/// targeted track under the playhead (the music on A2 used to be cut too).
+#[test]
+fn ripple_trim_to_playhead_follows_the_selection() {
+    let mut s = demo_unlocked();
+    let rate = s.sequence_rate();
+    let a2 = |s: &Session| s.active_sequence().unwrap().audio_tracks[1].items.iter().map(|i| (i.start, i.duration)).collect::<Vec<_>>();
+    let music = a2(&s);
+    assert!(!music.is_empty(), "the demo has music on A2");
+    let (id, start, _) = v1(&s)[1];
+    s.execute("timeline.select", json!({"clips": [id]})).unwrap();
+    let ph = start + rate.tick_of(10);
+    s.execute("playhead.set", json!({"time": ph.0})).unwrap();
+    s.execute("trim.rippleNext", json!({})).unwrap();
+    assert_eq!(v1(&s).into_iter().find(|c| c.0 == id).unwrap().2, ph, "the selected clip ends at the playhead");
+    assert_eq!(a2(&s), music, "the music on A2 is untouched");
+    let linked = s.active_sequence().unwrap().audio_tracks[0].items.iter().find(|i| i.start == start).map(|i| i.end());
+    assert_eq!(linked, Some(ph), "its linked sound on A1 is trimmed with it");
+}
