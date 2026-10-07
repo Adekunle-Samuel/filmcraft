@@ -502,7 +502,8 @@ impl MediaSource for WcSource {
         }
         let t = &self.file.tracks[self.track];
         let n = t.samples.len();
-        let target = req.time.max(Tick::ZERO).to_rational_floor(1, t.timescale.max(1) as i64);
+        // nearest, as `Mp4Source` looks frames up (sample times are rounded to the timescale)
+        let target = req.time.max(Tick::ZERO).to_rational_round(1, t.timescale.max(1) as i64);
         let i = t.sample_at_presentation_time(target).unwrap_or(n - 1).min(n - 1);
         let want = t.samples[i].pts;
         self.collect(&mut c, want);
