@@ -26,7 +26,7 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
 use filmcraft_export::presets::{DEFAULT_PRESET, preset_key};
-use filmcraft_export::{ExportPreset, ExportSettings, Format};
+use filmcraft_export::{ExportPreset, ExportSettings, Format, HardwareEncoding};
 use filmcraft_project::{ItemId, Project};
 use filmcraft_time::{FrameRate, Tick, TimeRange};
 use serde::{Deserialize, Serialize};
@@ -199,6 +199,18 @@ pub fn settings_from_params(s: &Session, p: &Value, cmd: &str) -> Result<(Option
     }
     if let Some(v) = u64_p(p, "keyframeDistance") {
         settings.keyframe_distance = Some(v as u32);
+    }
+    if let Some(v) = p.get("hardwareEncoding") {
+        settings.hardware_encoding = match v {
+            Value::Bool(on) => {
+                if *on {
+                    HardwareEncoding::Auto
+                } else {
+                    HardwareEncoding::Off
+                }
+            }
+            other => serde_json::from_value(other.clone()).map_err(|_| bad(cmd, "hardwareEncoding: off | auto"))?,
+        };
     }
     if let Some(v) = bool_p(p, "burnCaptions") {
         settings.burn_captions = v;

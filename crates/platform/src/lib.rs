@@ -1,9 +1,12 @@
-//! OS media integration (layer L5): hardware video decoding through the operating system's codecs.
+//! OS media integration (layer L5): hardware video decoding and encoding through the operating
+//! system's codecs.
 //!
 //! [`register`] puts the platform's hardware decoder factory in front of FilmCraft's own decoders
 //! (`filmcraft_codecs::register_video_decoder`). Today that is VideoToolbox on macOS for H.264
 //! (`avcC`) and HEVC (`hvcC`) streams, 8- and 10-bit, 4:2:0 and 4:2:2; on other systems
-//! registration does nothing and reports [`Availability::Unavailable`].
+//! registration does nothing and reports [`Availability::Unavailable`]. It also registers a
+//! hardware H.264 encoder factory (`filmcraft_export::register_encoder`) that only acts when an
+//! export asks for it (`ExportSettings::hardware_encoding` = `Auto`), see [`hardware_encode`].
 //!
 //! Hardware decoding never makes a file undecodable:
 //!
@@ -22,10 +25,15 @@
 
 #![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable))]
 
+#[cfg(target_os = "macos")]
+pub mod hardware_encode;
 pub mod hybrid;
 #[cfg(target_os = "macos")]
 #[allow(unsafe_code)]
 pub mod videotoolbox;
+#[cfg(target_os = "macos")]
+#[allow(unsafe_code)]
+pub mod videotoolbox_encode;
 
 pub use hybrid::HybridDecoder;
 
@@ -45,6 +53,7 @@ pub fn register() -> Availability {
     #[cfg(target_os = "macos")]
     {
         filmcraft_codecs::register_video_decoder(videotoolbox_factory);
+        filmcraft_export::register_encoder(hardware_encode::videotoolbox_encoder_factory);
         Availability::Available("VideoToolbox")
     }
     #[cfg(not(target_os = "macos"))]

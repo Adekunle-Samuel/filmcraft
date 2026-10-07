@@ -249,6 +249,11 @@ pub struct ExportSettings {
     /// stream needs is raised.
     pub h264_level: Option<u8>,
     pub bitrate_mode: BitrateMode,
+    /// May H.264 be encoded by the system's hardware encoder (VideoToolbox on macOS)? Off unless
+    /// asked for: hardware output depends on the machine, so it is not byte-reproducible like the
+    /// built-in encoder's (`determinism_tests`).
+    #[serde(default)]
+    pub hardware_encoding: HardwareEncoding,
     /// VBR maximum bitrate (None = 1.5 × target).
     pub max_bitrate_kbps: Option<u32>,
     /// Adaptive bitrate (the Match Source presets): bits per pixel per frame; replaces
@@ -430,6 +435,7 @@ impl Default for ExportSettings {
             h264_profile: H264Profile::High,
             h264_level: None,
             bitrate_mode: BitrateMode::default(),
+            hardware_encoding: HardwareEncoding::default(),
             max_bitrate_kbps: None,
             adaptive_bitrate: None,
             keyframe_distance: None,
@@ -574,8 +580,18 @@ fn audio_factories() -> &'static RwLock<Vec<AudioEncoderFactory>> {
     F.get_or_init(|| RwLock::new(vec![aac_factory]))
 }
 
+/// Register a video encoder factory (tried before the built-in ones and those registered earlier).
+/// Registering the same factory twice is harmless.
 pub fn register_encoder(f: EncoderFactory) {
-    video_factories().write().unwrap_or_else(|e| e.into_inner()).insert(0, f);
+    let mut g = video_factories().write().unwrap_or_else(|e| e.into_inner());
+    if !g.iter().any(|x| std::ptr::fn_addr_eq(*x, f)) {
+        g.insert(0, f);
+    }
+}
+
+/// Whether `f` is among the registered video encoder factories (startup diagnostics, tests).
+pub fn encoder_registered(f: EncoderFactory) -> bool {
+    video_factories().read().unwrap_or_else(|e| e.into_inner()).iter().any(|x| std::ptr::fn_addr_eq(*x, f))
 }
 pub fn register_audio_encoder(f: AudioEncoderFactory) {
     audio_factories().write().unwrap_or_else(|e| e.into_inner()).insert(0, f);
