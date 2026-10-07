@@ -199,6 +199,11 @@ pub struct FilmcraftApp {
     watched_render: Option<(u64, Tick)>,
     /// Settings last applied to the UI (theme, tooltips, frame cache, audio device).
     applied_prefs: Option<filmcraft_engine::autosave::Preferences>,
+    workspace_restored: bool,
+    /// Window ▸ Workspaces: saved layouts ([`dock::WORKSPACES_FILE`] in the data directory).
+    pub workspaces: dock::WorkspacePrefs,
+    /// Workspace names and the current one, as last handed to the native menu.
+    menu_workspaces: (Vec<String>, String),
 }
 
 pub struct GpuState {
@@ -331,6 +336,8 @@ impl FilmcraftApp {
         session.shortcuts.register_external(menus::external_commands());
         let recovery = !session.recovery_candidates().is_empty();
         let frames = Arc::new(FrameServer::new(session.media.clone(), session.services.clone(), session.previews.clone(), FrameServer::default_workers()));
+        let workspaces =
+            session.prefs_path.as_ref().and_then(|p| p.parent()).map(|d| dock::WorkspacePrefs::load(&d.join(dock::WORKSPACES_FILE))).unwrap_or_default();
         Self {
             session,
             ui: UiState::default(),
@@ -375,6 +382,9 @@ impl FilmcraftApp {
             gpu: None,
             watched_render: None,
             applied_prefs: None,
+            workspace_restored: false,
+            workspaces,
+            menu_workspaces: Default::default(),
         }
     }
 
@@ -443,6 +453,13 @@ impl FilmcraftApp {
                 self.start_audio();
             }
         }
+        if prev.is_none() && !self.workspace_restored {
+            // reopen the workspace in use when the app last closed
+            self.workspace_restored = true;
+            if let Some(w) = dock::find(&self.workspaces, &self.workspaces.current) {
+                self.set_workspace(&w);
+            }
+        }
         self.applied_prefs = Some(p);
     }
 
@@ -500,9 +517,29 @@ impl FilmcraftApp {
         }
     }
 
+    fn workspaces_path(&self) -> Option<std::path::PathBuf> {
+        self.session.prefs_path.as_ref().and_then(|p| p.parent()).map(|d| d.join(dock::WORKSPACES_FILE))
+    }
+
+    /// Replace the saved workspaces and write them to the data directory.
+    pub fn set_workspaces(&mut self, w: dock::WorkspacePrefs) -> Result<(), String> {
+        self.workspaces = w;
+        match self.workspaces_path() {
+            Some(p) => self.workspaces.save(&p).map_err(|e| format!("saving workspaces: {e}")),
+            None => Ok(()),
+        }
+    }
+
     pub fn set_workspace(&mut self, name: &str) {
         self.ui.workspace = name.to_string();
-        self.ui.dock = dock::workspace(name);
+        self.ui.dock = dock::saved_layout(&self.workspaces, name);
+        if self.workspaces.current != name {
+            let mut next = self.workspaces.clone();
+            next.current = name.to_string();
+            if let Err(e) = self.set_workspaces(next) {
+                self.ui.status = e;
+            }
+        }
         if name == "Color" {
             self.ui.show_scopes = false;
         }
@@ -957,7 +994,9 @@ impl FilmcraftApp {
     // ---------------------------------------------------------------- input
 
     fn handle_shortcuts(&mut self, ctx: &egui::Context) {
-        if self.bindings_rev != self.session.shortcuts.revision {
+        let workspaces = (dock::names(&self.workspaces), self.ui.workspace.clone());
+        if self.bindings_rev != self.session.shortcuts.revision || workspaces != self.menu_workspaces {
+            self.menu_workspaces = workspaces;
             self.bindings = menus::bindings(self);
             self.bindings_rev = self.session.shortcuts.revision;
             let items = menus::menu_items(self);

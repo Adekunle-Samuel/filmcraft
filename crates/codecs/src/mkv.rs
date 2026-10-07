@@ -100,9 +100,12 @@ fn to_tick(t: &filmcraft_matroska::Track, pts: i64) -> Tick {
     Tick::from_rational(pts * n, 1, d)
 }
 
+/// A time as the track timestamp to look a frame up by: rounded to the nearest tick, as muxers
+/// round frame times to `TimestampScale` (usually 1 ms). Flooring skipped every frame whose
+/// timestamp was rounded up (every third frame at 30 fps).
 fn from_tick(t: &filmcraft_matroska::Track, time: Tick) -> i64 {
     let (n, d) = tb(t);
-    time.to_rational_floor(n, d)
+    time.to_rational_round(n, d)
 }
 
 /// VP9 configuration from the Matroska `CodecPrivate` feature list (ID / length / value triples:

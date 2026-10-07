@@ -418,6 +418,15 @@ impl Bin {
         }
         self.children.iter_mut().any(|c| if let BinEntry::Bin(b) = c { b.remove_item(id) } else { false })
     }
+    /// Take a sub-bin, and everything in it, out of the tree. The bin itself is never removed from itself.
+    pub fn remove_bin(&mut self, id: BinId) -> Option<Bin> {
+        if let Some(at) = self.children.iter().position(|c| matches!(c, BinEntry::Bin(b) if b.id == id))
+            && let BinEntry::Bin(b) = self.children.remove(at)
+        {
+            return Some(b);
+        }
+        self.children.iter_mut().find_map(|c| if let BinEntry::Bin(b) = c { b.remove_bin(id) } else { None })
+    }
     /// All items in this bin and sub-bins.
     pub fn all_items(&self, out: &mut Vec<ItemId>) {
         for c in &self.children {

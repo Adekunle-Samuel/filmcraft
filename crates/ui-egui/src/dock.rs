@@ -161,6 +161,73 @@ fn vsplit(size: SplitSize, a: DockNode, b: DockNode) -> DockNode {
 
 pub const WORKSPACES: [&str; 9] = ["Editing", "Assembly", "Color", "Effects", "Audio", "Captions and Graphics", "Learning", "Review", "All Panels"];
 
+/// The user's workspaces file, beside `preferences.json` in the data directory.
+pub const WORKSPACES_FILE: &str = "workspaces.json";
+
+/// Window ▸ Workspaces: the user's own workspaces and saved changes to the built-in ones, and the
+/// workspace in use (reopened at launch).
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct WorkspacePrefs {
+    pub saved: Vec<SavedWorkspace>,
+    pub current: String,
+}
+
+/// A named layout. `layout` is a [`DockNode`] kept as JSON, so one unreadable entry (a panel a
+/// newer version added) doesn't lose the others.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct SavedWorkspace {
+    pub name: String,
+    pub layout: serde_json::Value,
+}
+
+impl WorkspacePrefs {
+    pub fn load(path: &std::path::Path) -> Self {
+        std::fs::read(path).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default()
+    }
+    pub fn save(&self, path: &std::path::Path) -> std::io::Result<()> {
+        if let Some(d) = path.parent() {
+            std::fs::create_dir_all(d)?;
+        }
+        let tmp = path.with_extension("json.tmp");
+        std::fs::write(&tmp, serde_json::to_vec_pretty(self).map_err(std::io::Error::other)?)?;
+        std::fs::rename(tmp, path)
+    }
+}
+
+/// A workspace's command-id key: `Captions and Graphics` → `captionsandgraphics`.
+pub fn slug(name: &str) -> String {
+    name.to_ascii_lowercase().replace(' ', "")
+}
+
+pub fn is_builtin(name: &str) -> bool {
+    WORKSPACES.contains(&name)
+}
+
+/// Every workspace, built-in and the user's own, in one alphabetical list (Premiere's Window ▸
+/// Workspaces).
+pub fn names(prefs: &WorkspacePrefs) -> Vec<String> {
+    let mut v: Vec<String> = WORKSPACES.iter().map(|s| s.to_string()).collect();
+    for s in &prefs.saved {
+        if !v.contains(&s.name) {
+            v.push(s.name.clone());
+        }
+    }
+    v.sort_by_key(|n| n.to_lowercase());
+    v
+}
+
+/// The workspace called `query` (any case, spaces optional).
+pub fn find(prefs: &WorkspacePrefs, query: &str) -> Option<String> {
+    names(prefs).into_iter().find(|n| slug(n) == slug(query))
+}
+
+/// The saved layout of a workspace: the user's saved version, else the built-in default.
+pub fn saved_layout(prefs: &WorkspacePrefs, name: &str) -> DockNode {
+    prefs.saved.iter().find(|s| s.name == name).and_then(|s| serde_json::from_value(s.layout.clone()).ok()).unwrap_or_else(|| workspace(name))
+}
+
 /// The default layout of a named workspace.
 pub fn workspace(name: &str) -> DockNode {
     use PanelKind::*;
@@ -569,9 +636,7 @@ pub fn draw_group_chrome(
                 let mresp = ui.interact(mr.expand(3.0), egui::Id::new(("tab-menu", g.path.clone())), Sense::click());
                 reg.add(&format!("panel.menu.{}", p.id()), mr, "panel menu");
                 let mc = if mresp.hovered() { t.tab_text_active } else { t.tab_text };
-                for dy in [-3.5, 0.0, 3.5] {
-                    painter.line_segment([pos2(mr.min.x, mr.center().y + dy), pos2(mr.max.x, mr.center().y + dy)], Stroke::new(1.5, mc));
-                }
+                icons::paint(&painter, Rect::from_center_size(mr.center(), vec2(16.0, 16.0)), Icon::Hamburger, mc);
                 // 1 pt underline spanning label + ≡, 23 pt below the frame top
                 let uy = strip.min.y + 23.0;
                 painter.line_segment([pos2(label_x, uy), pos2(mr.max.x, uy)], Stroke::new(1.0, t.tab_text_active));

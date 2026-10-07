@@ -449,3 +449,37 @@ proptest! {
         prop_assert_eq!(links(&imp.project, si), links(&p, s));
     }
 }
+
+#[test]
+fn a_master_clip_used_by_an_earlier_sequence_still_lands_in_its_bin() {
+    // Premiere and other writers may put a stringout sequence ahead of the bins that hold its clips.
+    let file = format!(
+        r#"<file id="file-1"><name>take.mov</name><pathurl>file://localhost/media/take.mov</pathurl>{RATE}<duration>120</duration><media><video><samplecharacteristics><width>1920</width><height>1080</height></samplecharacteristics></video></media></file>"#
+    );
+    let doc = format!(
+        r#"<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE xmeml>
+<xmeml version="4"><project><name>Order</name><children>
+  <bin><name>Stringouts</name><children>
+    <sequence id="sequence-1"><name>All takes</name><duration>120</duration>{RATE}
+      <media><video><track><clipitem id="clipitem-1"><masterclipid>masterclip-1</masterclipid><name>take</name>{RATE}
+        <start>0</start><end>120</end><in>0</in><out>120</out>{file}</clipitem></track></video></media>
+    </sequence>
+  </children></bin>
+  <bin><name>Footage</name><children><bin><name>Comedy</name><children>
+    <clip id="masterclip-1"><name>take</name><duration>120</duration>{RATE}
+      <media><video><track><clipitem id="clipitem-2"><masterclipid>masterclip-1</masterclipid><name>take</name>{RATE}<file id="file-1"/></clipitem></track></video></media>
+    </clip>
+  </children></bin></children></bin>
+</children></project></xmeml>"#
+    );
+    let (imp, _) = import(doc.as_bytes(), Format::Fcp7Xml, None).unwrap();
+    let p = &imp.project;
+    let mut items = Vec::new();
+    p.root.all_items(&mut items);
+    let take = items.iter().copied().find(|i| p.item(*i).unwrap().name == "take.mov").unwrap();
+    assert_eq!(items.iter().filter(|i| **i == take).count(), 1);
+    let bin = p.root.parent_of(take).unwrap();
+    assert_ne!(bin, p.root.id, "the take was left loose at the top");
+    assert_eq!(p.root.find_bin(bin).unwrap().name, "Comedy");
+}

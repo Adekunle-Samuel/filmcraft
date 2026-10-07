@@ -247,3 +247,76 @@ fn gpu_masked_mix_matches_cpu() {
     eprintln!("masked mix: max |cpu − gpu| = {worst:e}");
     assert!(worst < 2e-4, "{worst}");
 }
+
+/// A 4:4:4 grey picture with an alpha plane that ramps from transparent (left) to opaque (right).
+fn yuv_alpha_frame(w: u32, h: u32, bits: u32) -> Arc<VideoFrame> {
+    let n = (w * h) as usize;
+    let max = (1u32 << bits) - 1;
+    let ramp = |i: usize| ((i % w as usize) as u32 * max / (w - 1)) as u16;
+    let data = if bits == 8 {
+        PixelData::Yuv8 {
+            planes: [Arc::new(vec![180u8; n]), Arc::new(vec![100u8; n]), Arc::new(vec![170u8; n])],
+            chroma: Chroma::C444,
+            alpha: Some(Arc::new((0..n).map(|i| ramp(i) as u8).collect())),
+        }
+    } else {
+        let s = |v: u32| (v << (bits - 8)) as u16;
+        PixelData::Yuv16 {
+            planes: [Arc::new(vec![s(180); n]), Arc::new(vec![s(100); n]), Arc::new(vec![s(170); n])],
+            chroma: Chroma::C444,
+            bits,
+            alpha: Some(Arc::new((0..n).map(ramp).collect())),
+        }
+    };
+    Arc::new(VideoFrame { width: w, height: h, data, color: filmcraft_color::ColorInfo::REC709, par: (1, 1), pts: Default::default() })
+}
+
+/// A Y'CbCr layer with an alpha plane (ProRes 4444) is drawn with its alpha: the GPU result matches
+/// the CPU compositor over an opaque background. (It used to draw such a layer opaque.)
+#[test]
+fn gpu_draws_yuv_alpha_plane_like_the_cpu() {
+    let Some((dev, q)) = device() else {
+        eprintln!("no GPU adapter; skipping");
+        return;
+    };
+    let (w, h) = (320usize, 180usize);
+    let pixels = filmcraft_media::generators::render(
+        &filmcraft_media::Generator::Demo(filmcraft_media::DemoScene::OceanSunset),
+        320,
+        180,
+        1.0,
+        24,
+        filmcraft_time::FrameRate::FPS_24,
+    );
+    let background = Arc::new(VideoFrame::rgba8(320, 180, pixels));
+    for bits in [8, 10, 12] {
+        let mut c = GpuCompositor::new(&dev, &q);
+        let plan = FramePlan::Layers {
+            width: w,
+            height: h,
+            layers: vec![
+                PlanLayer { frame: background.clone(), matrix: Affine::IDENTITY, opacity: 1.0, blend: Blend::Normal, fx: None },
+                PlanLayer { frame: yuv_alpha_frame(320, 180, bits), matrix: Affine::IDENTITY, opacity: 0.9, blend: Blend::Normal, fx: None },
+            ],
+        };
+        let cpu = execute_cpu(&plan).over_black_rgba8();
+        c.composite(&plan);
+        let (_, _, gpu) = c.read_output().expect("readback");
+        let mut diffs: Vec<u32> =
+            cpu.chunks(4).zip(gpu.chunks(4)).map(|(a, b)| (0..3).map(|k| (a[k] as i32 - b[k] as i32).unsigned_abs()).max().unwrap_or(0)).collect();
+        diffs.sort_unstable();
+        let (p99, max) = (diffs[diffs.len() * 99 / 100], diffs[diffs.len() - 1]);
+        assert!(p99 <= 3 && max <= 8, "{bits}-bit: p99 {p99}, max {max}");
+        // the transparent left edge shows the background, the opaque right edge the layer
+        let at = |img: &[u8], x: usize| (img[(90 * w + x) * 4], img[(90 * w + x) * 4 + 1], img[(90 * w + x) * 4 + 2]);
+        let bg = execute_cpu(&FramePlan::Layers {
+            width: w,
+            height: h,
+            layers: vec![PlanLayer { frame: background.clone(), matrix: Affine::IDENTITY, opacity: 1.0, blend: Blend::Normal, fx: None }],
+        })
+        .over_black_rgba8();
+        let (l, r, b0) = (at(&gpu, 1), at(&gpu, w - 2), at(&bg, 1));
+        assert!((l.0 as i32 - b0.0 as i32).abs() <= 6 && (l.1 as i32 - b0.1 as i32).abs() <= 6, "{bits}-bit: left edge {l:?} vs background {b0:?}");
+        assert!(r != at(&bg, w - 2), "{bits}-bit: right edge {r:?} should differ from the background");
+    }
+}

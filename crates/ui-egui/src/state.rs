@@ -320,6 +320,19 @@ impl MonitorView {
     }
 }
 
+/// Window ▸ Workspaces dialogs: Save as New Workspace… and Edit Workspaces….
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub enum WorkspaceDialog {
+    SaveAs {
+        name: String,
+    },
+    /// `selected`: the workspace picked in the list; `name`: its new name being typed.
+    Edit {
+        selected: Option<String>,
+        name: String,
+    },
+}
+
 /// Guide dialogs (View ▸ Add Guide…, Guide Templates ▸ Save Guides as Template… / Manage Guides…).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum GuideDialog {
@@ -454,6 +467,9 @@ pub struct UiState {
     /// Open guide dialog (Add Guide / Save Guides as Template / Manage Guides).
     #[serde(default)]
     pub guide_dialog: Option<GuideDialog>,
+    /// Open Window ▸ Workspaces dialog.
+    #[serde(default)]
+    pub workspace_dialog: Option<WorkspaceDialog>,
     /// Edit / Clip / File menu dialog (Paste Attributes, Make Subclip, Frame Hold Options, …;
     /// open when Some). See `panels::clip_dialogs`.
     #[serde(default)]
@@ -769,6 +785,7 @@ impl Default for UiState {
             multicam_record: true,
             edit_cameras: None,
             guide_dialog: None,
+            workspace_dialog: None,
             clip_dialog: None,
             extras: Default::default(),
             gfx_templates: Default::default(),

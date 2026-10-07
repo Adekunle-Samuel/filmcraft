@@ -116,8 +116,8 @@ pub fn handle(app: &mut FilmcraftApp, ctx: &egui::Context, req: &ControlRequest)
                 }
             }
             if let Some(w) = s("workspace") {
-                match crate::dock::WORKSPACES.iter().find(|x| x.eq_ignore_ascii_case(w)) {
-                    Some(w) => app.set_workspace(w),
+                match crate::dock::find(&app.workspaces, w) {
+                    Some(w) => app.set_workspace(&w),
                     None => return err(format!("unknown workspace `{w}`")),
                 }
             }

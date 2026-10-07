@@ -202,3 +202,48 @@ fn hostile_times_are_refused_or_clamped_never_a_panic() {
     assert!(s.execute("timeline.move", json!({"moves": [{"clip": 987_654_321u64, "track": v_track.0, "time": 0}]})).is_err(), "a clip that does not exist");
     assert_eq!(*s.project, *before);
 }
+
+/// Moving one narration line onto a spot another line still held shortened that line and said
+/// nothing; the result now names every clip the move changed without being asked to.
+#[test]
+fn a_move_that_lands_on_another_clip_reports_what_it_cut() {
+    let mut s = demo();
+    let (_, _, a_track, a1) = pair_in_an_empty_sequence(&mut s, 0.0);
+    let later = a1.end().0 as f64 / filmcraft_time::TICKS_PER_SECOND as f64 + 2.0;
+    let item = a1.item.0;
+    s.execute("timeline.place", json!({"item": item, "seconds": later})).unwrap();
+    let a2 = s.active_sequence().unwrap().track(a_track).unwrap().items[1].clone();
+    let line = |c: ClipId, t: Tick| json!({"moves": [{"clip": c.0, "track": a_track.0, "time": t.0}], "linked": false});
+    // onto empty space: nothing else changes, nothing is reported
+    let r = s.execute("timeline.move", line(a1.id, a2.end() + Tick(1000))).unwrap();
+    assert_eq!(r["overwritten"], json!([]));
+    s.execute("edit.undo", json!({})).unwrap();
+    // over the head of the next line: that line is shortened (living on under a new id), and the result says so
+    let half = Tick(a1.duration.0 / 2);
+    let r = s.execute("timeline.move", line(a1.id, a2.start - half)).unwrap();
+    let rest = s.active_sequence().unwrap().track(a_track).unwrap().items.last().unwrap().clone();
+    assert_eq!((rest.end(), rest.duration), (a2.end(), a2.duration - half), "the overwrite itself is unchanged");
+    assert_eq!(r["overwritten"], json!([{"clip": a2.id.0, "was": a2.duration.0, "now": rest.duration.0, "pieces": [rest.id.0]}]));
+    s.execute("edit.undo", json!({})).unwrap();
+    // over its tail: shortened in place, same id
+    let r = s.execute("timeline.move", line(a2.id, a1.end() - half)).unwrap();
+    assert_eq!(r["overwritten"], json!([{"clip": a1.id.0, "was": a1.duration.0, "now": (a1.duration - half).0, "pieces": [a1.id.0]}]));
+    s.execute("edit.undo", json!({})).unwrap();
+    // squarely onto it: the line under it is gone, and the result names it
+    let r = s.execute("timeline.move", line(a1.id, a2.start)).unwrap();
+    assert!(s.active_sequence().unwrap().find_item(a2.id).is_none());
+    assert_eq!(r["overwritten"], json!([{"clip": a2.id.0, "was": a2.duration.0, "now": 0, "pieces": []}]));
+    s.execute("edit.undo", json!({})).unwrap();
+    // inside a longer line: it is split in two around the moved one
+    s.execute("timeline.trim", json!({"clip": a1.id.0, "edge": "out", "delta": -(a1.duration.0 / 2)})).unwrap();
+    let short = s.active_sequence().unwrap().find_item(a1.id).unwrap().1.duration;
+    let r = s.execute("timeline.move", line(a1.id, a2.start + Tick(a2.duration.0 / 4))).unwrap();
+    let o = &r["overwritten"][0];
+    assert_eq!(r["overwritten"].as_array().unwrap().len(), 1, "{r}");
+    assert_eq!((o["clip"].as_u64(), o["now"].as_i64()), (Some(a2.id.0), Some((a2.duration - short).0)), "{r}");
+    assert_eq!(o["pieces"].as_array().unwrap().len(), 2, "{r}");
+    // an insert-mode move shifts clips along and covers nothing
+    s.execute("edit.undo", json!({})).unwrap();
+    let r = s.execute("timeline.move", json!({"moves": [{"clip": a1.id.0, "track": a_track.0, "time": a2.start.0}], "insert": true, "linked": false})).unwrap();
+    assert_eq!(r["overwritten"], json!([]));
+}

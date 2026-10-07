@@ -31,7 +31,7 @@
   <key>CFBundleIconFile</key>
   <string>FilmCraft</string>
   <key>LSApplicationCategoryType</key>
-  <string>public.app-category.graphics-design</string>
+  <string>public.app-category.video</string>
   <!-- Must match MACOSX_DEPLOYMENT_TARGET in package.sh. Big Sur is the first release on
        Apple silicon and has the Metal feature set wgpu targets. -->
   <key>LSMinimumSystemVersion</key>
@@ -50,58 +50,22 @@
   <array>
     <dict>
       <key>UTTypeIdentifier</key>
-      <string>ai.storyteller.filmcraft.document</string>
+      <string>ai.storyteller.filmcraft.project</string>
       <key>UTTypeDescription</key>
-      <string>FilmCraft Document</string>
+      <string>FilmCraft Project</string>
       <key>UTTypeConformsTo</key>
       <array>
         <string>public.data</string>
-        <string>public.image</string>
+        <string>public.json</string>
       </array>
       <key>UTTypeIconFile</key>
       <string>FilmCraft</string>
       <key>UTTypeTagSpecification</key>
       <dict>
         <key>public.filename-extension</key>
-        <array><string>pcraft</string></array>
+        <array><string>fcproj</string></array>
         <key>public.mime-type</key>
         <array><string>application/x-filmcraft</string></array>
-      </dict>
-    </dict>
-  </array>
-  <!-- Types macOS may not know; the system's own declaration wins when it has one. -->
-  <key>UTImportedTypeDeclarations</key>
-  <array>
-    <dict>
-      <key>UTTypeIdentifier</key>
-      <string>com.adobe.photoshop-large-image</string>
-      <key>UTTypeDescription</key>
-      <string>Photoshop Large Document</string>
-      <key>UTTypeConformsTo</key>
-      <array>
-        <string>public.data</string>
-        <string>public.image</string>
-      </array>
-      <key>UTTypeTagSpecification</key>
-      <dict>
-        <key>public.filename-extension</key>
-        <array><string>psb</string></array>
-      </dict>
-    </dict>
-    <dict>
-      <key>UTTypeIdentifier</key>
-      <string>ai.storyteller.filmcraft.qoi</string>
-      <key>UTTypeDescription</key>
-      <string>QOI Image</string>
-      <key>UTTypeConformsTo</key>
-      <array>
-        <string>public.data</string>
-        <string>public.image</string>
-      </array>
-      <key>UTTypeTagSpecification</key>
-      <dict>
-        <key>public.filename-extension</key>
-        <array><string>qoi</string></array>
       </dict>
     </dict>
   </array>
