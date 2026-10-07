@@ -223,12 +223,18 @@ fn queue_column(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                     let preset = it["preset"].as_str().filter(|s| !s.is_empty()).unwrap_or(CUSTOM);
                     let (label, col) = match status {
                         "ready" => ("Ready".to_string(), t.text_dim),
-                        "encoding" => (format!("Encoding {:.0}%", it["progress"].as_f64().unwrap_or(0.0) * 100.0), t.accent),
+                        "encoding" => (format!("Encoding {:.0}%{}", it["progress"].as_f64().unwrap_or(0.0) * 100.0, super::eta_suffix(it)), t.accent),
                         "done" => ("Done".to_string(), t.render_green),
                         "failed" => (format!("Failed: {}", it["error"].as_str().unwrap_or("")), t.danger),
                         _ => ("Cancelled".to_string(), t.text_faint),
                     };
-                    ui.label(egui::RichText::new(format!("{preset} · {label}")).size(11.0).color(col));
+                    if status == "encoding" {
+                        // the progress and the time left on a line of their own: the column is narrow, and a wrapped "· 15 s left" reads badly
+                        ui.label(egui::RichText::new(preset).size(11.0).color(t.text_dim));
+                        ui.label(egui::RichText::new(label).size(11.0).color(col));
+                    } else {
+                        ui.label(egui::RichText::new(format!("{preset} · {label}")).size(11.0).color(col));
+                    }
                     if status == "encoding" {
                         ui.add(egui::ProgressBar::new(it["progress"].as_f64().unwrap_or(0.0) as f32).desired_height(6.0));
                     }

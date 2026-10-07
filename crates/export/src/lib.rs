@@ -18,6 +18,7 @@ use std::io::Write;
 mod audio_out;
 mod job;
 mod mxf_out;
+mod pace;
 mod pcm;
 mod pipeline;
 pub mod presets;
@@ -470,12 +471,32 @@ pub struct Progress {
     pub error: Mutex<Option<String>>,
     /// What loudness normalization measured (when it ran).
     pub loudness: Mutex<Option<LoudnessReport>>,
+    /// Readings of `done` over time, for [`Progress::eta`].
+    pace: Mutex<pace::Pace>,
 }
 
 impl Progress {
     pub fn fraction(&self) -> f32 {
         let t = self.total.load(Ordering::Relaxed).max(1);
         self.done.load(Ordering::Relaxed) as f32 / t as f32
+    }
+
+    /// The estimated time left, from the job's speed over the last 15 seconds. Each call is also a
+    /// reading of that speed, so ask regularly (the UI does on every frame it draws the job).
+    /// `None` until a second of readings shows progress, and once the job is done or finished.
+    pub fn eta(&self) -> Option<std::time::Duration> {
+        self.eta_at(web_time::Instant::now())
+    }
+
+    /// [`Progress::eta`] at a given time (tests, and hosts with a clock of their own).
+    pub fn eta_at(&self, now: web_time::Instant) -> Option<std::time::Duration> {
+        let (done, total) = (self.done.load(Ordering::Relaxed), self.total.load(Ordering::Relaxed));
+        let mut pace = self.pace.lock().unwrap_or_else(|e| e.into_inner());
+        pace.observe(now, done);
+        if self.finished.load(Ordering::Relaxed) || done >= total {
+            return None;
+        }
+        pace.eta(total - done)
     }
     fn set_status(&self, s: impl Into<String>) {
         *self.status.lock().unwrap_or_else(|e| e.into_inner()) = s.into();
