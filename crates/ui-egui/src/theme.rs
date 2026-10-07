@@ -237,7 +237,8 @@ impl Tokens {
     }
 }
 
-/// Menu text: Premiere's menus are the system's, larger and brighter than panel text.
+/// Menu text: Premiere's menus are the system's, larger and brighter than panel text, one item
+/// every 24 px.
 pub const MENU_TEXT_SIZE: f32 = 13.0;
 pub const MENU_TEXT: Color32 = Color32::from_rgb(0xde, 0xde, 0xde);
 
@@ -246,6 +247,7 @@ pub fn menu_style(s: &mut egui::Style) {
     egui::containers::menu::menu_style(s);
     s.text_styles.insert(TextStyle::Button, FontId::new(MENU_TEXT_SIZE, FontFamily::Proportional));
     s.text_styles.insert(TextStyle::Body, FontId::new(MENU_TEXT_SIZE, FontFamily::Proportional));
+    s.spacing.item_spacing.y = 0.0;
     if s.visuals.dark_mode {
         s.visuals.override_text_color = Some(MENU_TEXT);
     }
