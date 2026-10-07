@@ -837,3 +837,29 @@ fn subclip_source_monitor_trims_and_markers() {
     s.execute("edit.undo", json!({})).unwrap();
     assert!(matches!(s.project.item(sub).unwrap().kind, ItemKind::Subclip { restrict_trims: false, .. }));
 }
+
+/// #29: a Color Matte's color can be changed after it is created; the generated frames follow,
+/// and undo brings the old color back (the media pool regenerates the matte, it doesn't keep
+/// serving the first one).
+#[test]
+fn color_matte_color_changes_and_undoes() {
+    let mut s = demo();
+    let matte = s.execute("file.newColorMatte", json!({"width": 64, "height": 36, "color": "#ff0000"})).unwrap()["item"].as_u64().unwrap();
+    let px = |s: &Session| {
+        let f = s.source(ItemId(matte)).unwrap().video_frame(filmcraft_media::FrameRequest::full(Tick::ZERO)).unwrap();
+        f.to_rgba8()[..3].to_vec()
+    };
+    assert_eq!(px(&s), [255, 0, 0]);
+    let r = s.execute("project.matteColor", json!({"item": matte, "color": "#0000ff"})).unwrap();
+    assert_eq!(r["color"], "#0000ff");
+    assert_eq!(px(&s), [0, 0, 255]);
+    s.execute("edit.undo", json!({})).unwrap();
+    assert_eq!(px(&s), [255, 0, 0]);
+    // the selected matte when no item is named; anything else is refused
+    s.state.project_selection = vec![ItemId(matte)];
+    s.execute("project.matteColor", json!({"color": "#00ff00"})).unwrap();
+    assert_eq!(px(&s), [0, 255, 0]);
+    let bars = s.execute("file.newBarsAndTone", json!({})).unwrap()["item"].as_u64().unwrap();
+    assert!(s.execute("project.matteColor", json!({"item": bars, "color": "#00ff00"})).is_err());
+    assert!(s.execute("project.matteColor", json!({"item": matte, "color": "green"})).is_err());
+}

@@ -445,6 +445,35 @@ fn new_generator(s: &mut Session, g: Generator, name: &str, label: Label, p: &Va
     Ok(json!({"item": id.0}))
 }
 
+/// `project.matteColor`: change a Color Matte's color (`item`, or the one selected in the Project
+/// panel). Every clip of the matte follows; undo brings the old color back.
+fn set_matte_color(s: &mut Session, p: &Value) -> Result<Value> {
+    const CMD: &str = "project.matteColor";
+    let color = str_p(p, "color").and_then(filmcraft_color::parse_hex).ok_or_else(|| bad(CMD, "`color` must be #rrggbb"))?;
+    let is_matte = |s: &Session, id: ItemId| {
+        s.project.item(id).is_some_and(|it| matches!(&it.kind, ItemKind::Media(m) if matches!(m.media, MediaRef::Generator(Generator::ColorMatte { .. }))))
+    };
+    let item = match item_p(p, "item") {
+        Some(id) => id,
+        None => match s.state.project_selection.as_slice() {
+            [id] => *id,
+            _ => return Err(bad(CMD, "select one Color Matte (or pass `item`)")),
+        },
+    };
+    if !is_matte(s, item) {
+        return Err(bad(CMD, format!("item {} is not a Color Matte", item.0)));
+    }
+    s.edit("Color Matte Color", |pr, _| {
+        if let Some(ItemKind::Media(m)) = pr.item_mut(item).map(|it| &mut it.kind)
+            && let MediaRef::Generator(Generator::ColorMatte { color: c }) = &mut m.media
+        {
+            *c = color;
+        }
+        Ok(())
+    })?;
+    Ok(json!({"item": item.0, "color": filmcraft_color::to_hex(color)}))
+}
+
 /// Place a project item on the timeline (drag from Project, or Insert/Overwrite from source).
 pub(crate) fn place_item(
     s: &mut Session,
@@ -723,6 +752,7 @@ fn build() -> Vec<CommandSpec> {
             let c = str_p(p, "color").and_then(filmcraft_color::parse_hex).unwrap_or([0.1, 0.1, 0.1, 1.0]);
             new_generator(s, Generator::ColorMatte { color: c }, "Color Matte", Label::Lavender, p)
         }),
+        cmd!("project.matteColor", "Color Matte Color…", [], None, r##"{"item":id?,"color":"#rrggbb"}"##, always, set_matte_color),
         cmd!("file.newCountingLeader", "Universal Counting Leader…", ["File", "New"], None, "{}", always, |s, p| new_generator(
             s,
             Generator::CountingLeader,
