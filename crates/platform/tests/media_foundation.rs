@@ -76,9 +76,11 @@ fn parity(name: &str, s: &Stream) {
 /// of a GOP the decoder reports an error (the GOP cache seeks after every flush, and the hybrid
 /// decoder would replay the run in software). After an IDR the pictures are the software decoder's.
 fn drained_decoder_restarts_only_at_idr(name: &str, s: &Stream) {
-    let info = NalStreamInfo::from_entry(&s.entry).unwrap().unwrap();
-    let is_idr = |i: usize| {
-        info.nal_types(&s.samples[i].0).iter().any(|&t| if info.codec == filmcraft_codecs::hw::NalCodec::H264 { t == 5 } else { matches!(t, 19 | 20) })
+    use filmcraft_codecs::hw::{NalCodec, StreamInfo};
+    let info = filmcraft_platform::media_foundation::stream_info(&s.entry).unwrap();
+    let is_idr = |i: usize| match &info {
+        StreamInfo::Nal(n) => n.nal_types(&s.samples[i].0).iter().any(|&t| if n.codec == NalCodec::H264 { t == 5 } else { matches!(t, 19 | 20) }),
+        StreamInfo::Frame(f) => f.is_random_access(&s.samples[i].0),
     };
     let Ok(mut mf) = MfDecoder::new(info.clone()) else { return };
     let mid = s.samples.len() / 2;
@@ -101,10 +103,26 @@ fn drained_decoder_restarts_only_at_idr(name: &str, s: &Stream) {
 #[test]
 fn bit_exact_with_the_software_decoders() {
     let ff = filmcraft_testkit::require_ffmpeg!();
-    for (name, _) in FIXTURES {
-        let Some(path) = named(&ff, name) else { continue };
-        parity(name, &read_stream(&path));
+    for (name, s) in small_streams(&ff) {
+        parity(&name, &s);
     }
+}
+
+/// The small parity fixtures: H.264 High, HEVC Main (open GOP) and Main 10, VP9 profiles 0 / 2 and
+/// AV1 8- / 10-bit (640x360, B-frames or hidden reference frames, two GOPs or more).
+fn small_streams(ff: &std::path::Path) -> Vec<(String, Stream)> {
+    let mut out = Vec::new();
+    for (name, _) in FIXTURES {
+        if let Some(path) = named(ff, name) {
+            out.push((name.to_string(), read_stream(&path)));
+        }
+    }
+    for codec in ["vp9", "vp9p2", "av1", "av1p10"] {
+        if let Some(path) = frame_fixture(ff, codec, "640x360") {
+            out.push((format!("{codec} 640x360"), read_stream(&path)));
+        }
+    }
+    out
 }
 
 /// 1920x1080 and 3840x2160 with B-frames and two GOPs: H.264 High, HEVC Main (open GOP) and
@@ -204,15 +222,15 @@ fn hevc_main10_1080p_and_2160p_are_bit_exact() {
 #[test]
 fn mid_stream_failure_continues_in_software() {
     let ff = filmcraft_testkit::require_ffmpeg!();
-    for (name, _) in FIXTURES {
-        let Some(path) = named(&ff, name) else { continue };
-        let s = read_stream(&path);
-        let info = NalStreamInfo::from_entry(&s.entry).unwrap().unwrap();
+    for (name, s) in small_streams(&ff) {
+        let name = name.as_str();
+        let info = filmcraft_platform::media_foundation::stream_info(&s.entry).unwrap();
         let Ok(_) = MfDecoder::new(info.clone()) else {
             eprintln!("SKIPPED: no Media Foundation hardware decoder for {name}");
             continue;
         };
         let reference = decode_all(software(&s).as_mut(), &s.samples);
+        assert!(!reference.is_empty(), "{name}");
         // fail at the first sample, inside the first GOP, at a sync sample and just after one
         let k = (1..s.samples.len()).find(|&i| s.sync[i]).unwrap();
         for fail_at in [0, 5, k, k + 1, k + 9] {
@@ -248,9 +266,8 @@ fn bounded(what: &str, limit: Duration, f: impl FnOnce() + Send + 'static) {
 #[test]
 fn damaged_samples_and_parameter_sets_never_crash_or_hang() {
     let ff = filmcraft_testkit::require_ffmpeg!();
-    for (name, _) in FIXTURES {
-        let Some(path) = named(&ff, name) else { continue };
-        let s = read_stream(&path);
+    for (name, s) in small_streams(&ff) {
+        let name = name.as_str();
         if hardware(&s).is_none() {
             continue;
         }
@@ -288,6 +305,10 @@ fn damaged_samples_and_parameter_sets_never_crash_or_hang() {
         let rec = match &s.entry.codec {
             filmcraft_isobmff::CodecConfig::Avc(a) => a.to_bytes(),
             filmcraft_isobmff::CodecConfig::Hevc(c) => c.to_bytes(),
+            filmcraft_isobmff::CodecConfig::Av1(c) => {
+                damaged_av1c(name, &s, c);
+                continue;
+            }
             _ => continue,
         };
         let hevc = matches!(s.entry.codec, filmcraft_isobmff::CodecConfig::Hevc(_));
@@ -422,4 +443,211 @@ fn decoder_moves_between_threads() {
     let samples = s.samples.clone();
     let out = std::thread::spawn(move || decode_all(hw.as_mut(), &samples[..30])).join().unwrap();
     assert_same("second thread", &out, &reference);
+}
+
+// ---- VP9 and AV1 (frame-coded streams: vpcC / av1C) ----
+
+/// A VP9 / AV1 fixture with hidden reference frames (VP9 alt-ref superframes, AV1 alt-ref and
+/// show_existing_frame), two GOPs: `codec` is `vp9`, `vp9p2` (10-bit), `av1` or `av1p10`.
+fn frame_fixture(ff: &std::path::Path, codec: &str, size: &str) -> Option<std::path::PathBuf> {
+    let (_, h) = size.split_once('x')?;
+    let src = format!("testsrc2=s={size}:r=24:d=2,noise=alls=12:allf=t");
+    let (name, args): (String, Vec<&str>) = match codec {
+        "vp9" => (
+            format!("vp9_p0_{h}.mp4"),
+            vec![
+                "-f",
+                "lavfi",
+                "-i",
+                &src,
+                "-c:v",
+                "libvpx-vp9",
+                "-profile:v",
+                "0",
+                "-b:v",
+                "0",
+                "-crf",
+                "32",
+                "-deadline",
+                "good",
+                "-cpu-used",
+                "8",
+                "-g",
+                "24",
+                "-auto-alt-ref",
+                "1",
+                "-lag-in-frames",
+                "8",
+                "-row-mt",
+                "1",
+                "-pix_fmt",
+                "yuv420p",
+            ],
+        ),
+        "vp9p2" => (
+            format!("vp9_p2_{h}.mp4"),
+            vec![
+                "-f",
+                "lavfi",
+                "-i",
+                &src,
+                "-c:v",
+                "libvpx-vp9",
+                "-profile:v",
+                "2",
+                "-b:v",
+                "0",
+                "-crf",
+                "32",
+                "-deadline",
+                "good",
+                "-cpu-used",
+                "8",
+                "-g",
+                "24",
+                "-auto-alt-ref",
+                "1",
+                "-lag-in-frames",
+                "8",
+                "-row-mt",
+                "1",
+                "-pix_fmt",
+                "yuv420p10le",
+            ],
+        ),
+        "av1" => (
+            format!("av1_p0_{h}.mp4"),
+            vec![
+                "-f",
+                "lavfi",
+                "-i",
+                &src,
+                "-c:v",
+                "libaom-av1",
+                "-crf",
+                "34",
+                "-b:v",
+                "0",
+                "-cpu-used",
+                "8",
+                "-row-mt",
+                "1",
+                "-g",
+                "24",
+                "-lag-in-frames",
+                "8",
+                "-pix_fmt",
+                "yuv420p",
+            ],
+        ),
+        _ => (
+            format!("av1_p0_10bit_{h}.mp4"),
+            vec![
+                "-f",
+                "lavfi",
+                "-i",
+                &src,
+                "-c:v",
+                "libaom-av1",
+                "-crf",
+                "34",
+                "-b:v",
+                "0",
+                "-cpu-used",
+                "8",
+                "-row-mt",
+                "1",
+                "-g",
+                "24",
+                "-lag-in-frames",
+                "8",
+                "-pix_fmt",
+                "yuv420p10le",
+            ],
+        ),
+    };
+    fixture(ff, &name, &args)
+}
+
+fn frame_parity(codec: &str, sizes: &[&str]) {
+    let ff = filmcraft_testkit::require_ffmpeg!();
+    for size in sizes {
+        let Some(path) = frame_fixture(&ff, codec, size) else { continue };
+        parity(&format!("{codec} {size}"), &read_stream(&path));
+    }
+}
+
+#[test]
+fn vp9_profile_0_is_bit_exact() {
+    frame_parity("vp9", &["640x360", "1920x1080", "3840x2160"]);
+}
+
+#[test]
+fn vp9_profile_2_10bit_is_bit_exact() {
+    frame_parity("vp9p2", &["640x360", "1920x1080", "3840x2160"]);
+}
+
+#[test]
+fn av1_8bit_is_bit_exact() {
+    frame_parity("av1", &["640x360", "1920x1080", "3840x2160"]);
+}
+
+#[test]
+fn av1_10bit_is_bit_exact() {
+    frame_parity("av1p10", &["640x360", "1920x1080", "3840x2160"]);
+}
+
+/// Damaged `av1C` sequence headers (bit flips, truncation): the backend declines or the decoder
+/// errors / falls back, never crashes or hangs.
+fn damaged_av1c(name: &str, s: &Stream, c: &filmcraft_isobmff::Av1Config) {
+    let mut seed = 0x9E37_79B9u64;
+    for round in 0..24 {
+        let mut cfg = c.clone();
+        if round % 3 == 2 {
+            cfg.config_obus.truncate(cfg.config_obus.len() * (round + 1) / 30);
+        } else {
+            for _ in 0..1 + round % 4 {
+                let at = (xorshift(&mut seed) as usize) % cfg.config_obus.len().max(1);
+                if let Some(b) = cfg.config_obus.get_mut(at) {
+                    *b ^= 1 << (xorshift(&mut seed) % 8);
+                }
+            }
+        }
+        let mut entry = s.entry.clone();
+        entry.codec = filmcraft_isobmff::CodecConfig::Av1(cfg);
+        let samples: Vec<_> = s.samples.iter().take(12).cloned().collect();
+        bounded(&format!("{name} av1C round {round}"), Duration::from_secs(60), move || {
+            let Some(info) = filmcraft_platform::media_foundation::stream_info(&entry) else { return };
+            let Ok(mut d) = MfDecoder::new(info) else { return };
+            for (smp, pts) in &samples {
+                if d.decode(smp, *pts).is_err() {
+                    break;
+                }
+            }
+            let _ = d.flush();
+        });
+    }
+}
+
+/// A key frame of another size (VP9) / a sequence header unlike the `av1C` one (AV1) appearing in
+/// the middle of a stream is something the hardware session was not set up for: the hybrid decoder
+/// continues with the software decoder, whose output is the reference.
+#[test]
+fn in_band_format_changes_fall_back_to_software() {
+    let ff = filmcraft_testkit::require_ffmpeg!();
+    for codec in ["vp9", "av1"] {
+        let (Some(big), Some(small)) = (frame_fixture(&ff, codec, "1920x1080"), frame_fixture(&ff, codec, "640x360")) else { continue };
+        let (a, b) = (read_stream(&big), read_stream(&small));
+        let Some(mut hw) = hardware(&a) else { continue };
+        let mut sw = software(&a);
+        // (the second stream's pictures come later in time, as in a real stream)
+        let samples: Vec<_> = a.samples[..8].iter().cloned().chain(b.samples[..8].iter().map(|(d, p)| (d.clone(), p + 100_000))).collect();
+        let before = filmcraft_codecs::hw::hw_stats().fallbacks;
+        let got = decode_all(hw.as_mut(), &samples);
+        let want = decode_all(sw.as_mut(), &samples);
+        assert!(filmcraft_codecs::hw::hw_stats().fallbacks > before, "{codec}: the change was counted as a fallback");
+        assert!(!hw.name().starts_with("Media Foundation"), "{codec}: continued in {}", hw.name());
+        assert_same(&format!("{codec} 1080p then 360p"), &got, &want);
+        assert!(got.iter().any(|f| f.frame.width == 640) && got.iter().any(|f| f.frame.width == 1920), "{codec}: both sizes came out");
+    }
 }

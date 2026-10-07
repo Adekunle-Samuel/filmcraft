@@ -89,7 +89,7 @@ pub fn hardware_decoder_for(entry: &filmcraft_isobmff::SampleEntry) -> bool {
     }
     #[cfg(target_os = "windows")]
     {
-        filmcraft_codecs::hw::NalStreamInfo::from_entry(entry).and_then(|r| r.ok()).is_some_and(|info| media_foundation::MfDecoder::new(info).is_ok())
+        media_foundation::stream_info(entry).is_some_and(|info| media_foundation::MfDecoder::new(info).is_ok())
     }
     #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     {
@@ -117,14 +117,14 @@ pub fn videotoolbox_factory(entry: &filmcraft_isobmff::SampleEntry) -> Option<fi
 }
 
 /// The Media Foundation factory: a [`HybridDecoder`] around [`media_foundation::MfDecoder`] for
-/// `avcC` / `hvcC` streams a Direct3D-aware decoder MFT can decode with DXVA on this system's
-/// GPU, `None` otherwise.
+/// H.264 / HEVC / VP9 / AV1 streams a Direct3D-aware decoder MFT can decode with DXVA on this
+/// system's GPU, `None` otherwise.
 #[cfg(target_os = "windows")]
 pub fn media_foundation_factory(entry: &filmcraft_isobmff::SampleEntry) -> Option<filmcraft_codecs::Result<Box<dyn filmcraft_codecs::VideoDecoder>>> {
     if !filmcraft_codecs::hw::hardware_decoding() {
         return None;
     }
-    let info = filmcraft_codecs::hw::NalStreamInfo::from_entry(entry)?.ok()?;
+    let info = media_foundation::stream_info(entry)?;
     match media_foundation::MfDecoder::new(info.clone()) {
         Ok(mf) => Some(Ok(Box::new(HybridDecoder::new(Box::new(mf), entry.clone(), info)))),
         Err(why) => {

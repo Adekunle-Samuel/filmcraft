@@ -159,6 +159,15 @@ impl Gpu {
         }
     }
 
+    /// Every decoder profile the device's DXVA lists.
+    pub fn profiles(&self) -> Vec<GUID> {
+        // SAFETY: plain COM calls on a live interface; each index below the count is valid.
+        unsafe {
+            let n = self.video.GetVideoDecoderProfileCount();
+            (0..n).filter_map(|i| self.video.GetVideoDecoderProfile(i).ok()).collect()
+        }
+    }
+
     /// Whether DXVA on this device decodes `profile` into `format` at `size` (so a stream is
     /// declined up front instead of failing on its first sample).
     pub fn supports(&self, profile: GUID, format: SurfaceFormat, size: (u32, u32)) -> Result<(), String> {

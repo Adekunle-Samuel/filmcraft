@@ -21,8 +21,9 @@ let availability = filmcraft_platform::register(); // Available("VideoToolbox") 
   reorder buffer of the stream's own depth (`max_num_reorder_frames` /
   `sps_max_num_reorder_pics`) restores presentation order; a run starting at an HEVC CRA leaves
   out its RASL pictures, as our decoder does. Each seek (`reset`) starts a fresh session.
-- **Windows: Media Foundation + Direct3D 11 / DXVA, H.264 (`avcC`) and HEVC (`hvcC`)**, 8-bit 4:2:0
-  (H.264 Baseline / Main / High, HEVC Main) and 10-bit 4:2:0 (HEVC Main 10)
+- **Windows: Media Foundation + Direct3D 11 / DXVA, H.264 (`avcC`), HEVC (`hvcC`), VP9 (`vpcC`) and
+  AV1 (`av1C`)**, 8-bit 4:2:0 (H.264 Baseline / Main / High, HEVC Main, VP9 profile 0, AV1 main) and
+  10-bit 4:2:0 (HEVC Main 10, VP9 profile 2, AV1 main 10)
   (`media_foundation/`). A Direct3D-aware decoder MFT (Microsoft's H.264 decoder, the HEVC Video
   Extensions' decoder, or a vendor's synchronous hardware MFT) is driven at the level of single
   access units, so there is no Source Reader and no second demuxer: the container samples FilmCraft
@@ -42,9 +43,18 @@ let availability = filmcraft_platform::register(); // Available("VideoToolbox") 
     Windows' own software decoding is never used in place of ours.
   - *Declined up front* (our decoder is used): field-coded H.264, H.264 profiles other than
     Baseline / Main / High, 10-bit H.264, 4:2:2 / 4:4:4 / monochrome, HEVC profiles other than
-    Main / Main Still Picture / Main 10, larger than 8192×8192, no Direct3D 11 video device, no
-    DXVA decoder for the stream on this GPU, no decoder MFT (HEVC needs the *HEVC Video Extensions*
-    from the Microsoft Store, which the Windows "N" editions and some installs lack).
+    Main / Main Still Picture / Main 10, VP9 profiles 1 / 3 (4:2:2 / 4:4:4 / RGB) and 12-bit, AV1
+    profiles 1 / 2 and 12-bit, larger than 8192×8192, no Direct3D 11 video device, no DXVA decoder
+    for the stream on this GPU, no decoder MFT (HEVC, VP9 and AV1 need the *HEVC Video Extensions*,
+    *VP9 Video Extensions* and *AV1 Video Extension* from the Microsoft Store, which the Windows "N"
+    editions and some installs lack). Several GPUs' DXVA lacks AV1 profiles 1 / 2 as well.
+  - *VP9 and AV1* (`codecs::hw::FrameStreamInfo`, `media_foundation/stream.rs`): the container
+    sample goes in as it is (a VP9 frame or superframe, an AV1 temporal unit; the `av1C` sequence
+    header goes first after a seek). The MFT outputs only shown pictures, in presentation order, so
+    hidden alt-ref frames and `show_existing_frame` need nothing special. Picture size and colour
+    are read from the bitstream the way the software decoders do (`hw_frame::vp9_color` /
+    `av1_color` are shared with them). A VP9 key frame of another size or format, or an AV1 sequence
+    header unlike `av1C`'s, hands the stream to the software decoder (`HybridDecoder`).
   - `mfplat.dll` is loaded at run time (`mft.rs`), not linked: Windows "N" editions without the Media
     Feature Pack still start FilmCraft, which then decodes in software.
   - After a `flush` (which drains the MFT) the MFT only restarts at an IDR picture; the GOP cache
@@ -96,5 +106,6 @@ playback with no dropped frames at Full, 1/2 and 1/4. Details in
 
 ## Not yet
 
-Zero-copy upload of `CVPixelBuffer`s into wgpu textures; hardware encoding; Media Foundation /
-D3D11 (Windows) and VA-API (Linux) decoders; field-coded H.264.
+Zero-copy upload of decoded pictures into wgpu textures (`CVPixelBuffer`s on macOS, Direct3D 11
+textures on Windows); hardware encoding; VA-API (Linux) decoders; field-coded H.264; VP9 / AV1
+4:4:4 and 12-bit on Windows.

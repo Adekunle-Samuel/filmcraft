@@ -20,8 +20,8 @@ fn main() {
             continue;
         };
         let Some(entry) = file.tracks[t].entries.first() else { continue };
-        let Some(Ok(info)) = filmcraft_codecs::hw::NalStreamInfo::from_entry(entry) else {
-            println!("{path}: not avcC/hvcC");
+        let Some(info) = filmcraft_platform::media_foundation::stream_info(entry) else {
+            println!("{path}: not an avcC / hvcC / vpcC / av1C stream this backend reads");
             continue;
         };
         let mut d = match filmcraft_platform::media_foundation::MfDecoder::new(info) {

@@ -30,58 +30,69 @@
 mod gpu;
 #[allow(unsafe_code)]
 mod mft;
+mod stream;
 
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use filmcraft_codecs::hw::{NalCodec, NalStreamInfo};
+use filmcraft_codecs::hw::{NalCodec, StreamInfo};
 use filmcraft_codecs::{CodecError, DecodedFrame, Result, VideoDecoder};
-use windows::Win32::Graphics::Direct3D11::{D3D11_DECODER_PROFILE_H264_VLD_NOFGT, D3D11_DECODER_PROFILE_HEVC_VLD_MAIN, D3D11_DECODER_PROFILE_HEVC_VLD_MAIN10};
-use windows::core::GUID;
 
 use self::gpu::{Gpu, Readback, SurfaceFormat};
 use self::mft::{MfApi, Mft, Poll};
-use crate::annexb::to_annex_b;
+use self::stream::Stream;
 use crate::biplanar::{self, Geometry};
 
-/// Largest picture the backend takes (as the VideoToolbox one).
-const MAX_SIDE: u32 = 8192;
 /// Pictures the decoder may hold back (a DPB is at most 16 frames; more means it lost track).
 const MAX_IN_FLIGHT: usize = 64;
 /// Upper bound on the outputs taken per call: a misbehaving MFT cannot make a decode call loop.
 const MAX_OUTPUTS_PER_CALL: usize = 4096;
+
+/// The stream description of a sample entry this backend could take (`avcC` / `hvcC` / `vpcC` /
+/// `av1C`), or `None` for other codecs and unreadable configuration records.
+pub fn stream_info(entry: &filmcraft_isobmff::SampleEntry) -> Option<StreamInfo> {
+    use filmcraft_codecs::hw::{FrameStreamInfo, NalStreamInfo};
+    match NalStreamInfo::from_entry(entry) {
+        Some(r) => r.ok().map(StreamInfo::Nal),
+        None => FrameStreamInfo::from_entry(entry)?.ok().map(StreamInfo::Frame),
+    }
+}
 
 /// Whether Media Foundation and a Direct3D 11 video device exist on this system.
 pub fn available() -> bool {
     mft::api().and_then(Gpu::shared).is_ok()
 }
 
-/// What the decoder needs for a stream, or why it is declined.
-fn plan(info: &NalStreamInfo) -> std::result::Result<(SurfaceFormat, GUID), String> {
-    if info.interlaced {
-        return Err("field-coded H.264".into());
+/// What each codec's decoders and the GPU's DXVA profiles offer on this machine (diagnostics:
+/// `examples/mfcaps.rs`).
+pub fn capabilities() -> String {
+    use windows::Win32::Graphics::Direct3D11 as d3d;
+    use windows::Win32::Media::MediaFoundation as mf;
+    let (api, gpu) = match mft::api().and_then(|a| Gpu::shared(a).map(|g| (a, g))) {
+        Ok(x) => x,
+        Err(e) => return format!("no Media Foundation / Direct3D 11 video device: {e}"),
+    };
+    let mut out = format!("adapter: {}\n", gpu.name());
+    for (name, subtype) in
+        [("H.264", mf::MFVideoFormat_H264), ("HEVC", mf::MFVideoFormat_HEVC), ("VP9", mf::MFVideoFormat_VP90), ("AV1", mf::MFVideoFormat_AV1)]
+    {
+        let list = mft::describe(api, subtype);
+        out += &format!("{name} decoder MFTs: {}\n", if list.is_empty() { "none".into() } else { list.join("; ") });
     }
-    if info.chroma_format_idc != 1 {
-        return Err(format!("chroma_format_idc {}", info.chroma_format_idc));
+    let profiles = gpu.profiles();
+    for (name, guid) in [
+        ("H.264 VLD", d3d::D3D11_DECODER_PROFILE_H264_VLD_NOFGT),
+        ("HEVC Main", d3d::D3D11_DECODER_PROFILE_HEVC_VLD_MAIN),
+        ("HEVC Main 10", d3d::D3D11_DECODER_PROFILE_HEVC_VLD_MAIN10),
+        ("VP9 profile 0", d3d::D3D11_DECODER_PROFILE_VP9_VLD_PROFILE0),
+        ("VP9 profile 2 (10-bit)", d3d::D3D11_DECODER_PROFILE_VP9_VLD_10BIT_PROFILE2),
+        ("AV1 profile 0", d3d::D3D11_DECODER_PROFILE_AV1_VLD_PROFILE0),
+        ("AV1 profile 1", d3d::D3D11_DECODER_PROFILE_AV1_VLD_PROFILE1),
+        ("AV1 profile 2", d3d::D3D11_DECODER_PROFILE_AV1_VLD_PROFILE2),
+    ] {
+        out += &format!("DXVA {name}: {}\n", profiles.contains(&guid));
     }
-    if info.bit_depth_luma != info.bit_depth_chroma || !matches!(info.bit_depth_luma, 8 | 10) {
-        return Err(format!("{}-bit luma / {}-bit chroma", info.bit_depth_luma, info.bit_depth_chroma));
-    }
-    let (_, _, w, h) = info.crop;
-    let (cx, cy) = (info.crop.0, info.crop.1);
-    if w == 0 || h == 0 || w > MAX_SIDE || h > MAX_SIDE || cx.saturating_add(w) > info.coded.0 || cy.saturating_add(h) > info.coded.1 {
-        return Err(format!("picture size {w}x{h}"));
-    }
-    let ten = info.bit_depth_luma == 10;
-    match (info.codec, info.profile_idc, ten) {
-        // Baseline, Main and High (the profiles DXVA H.264 decoders list)
-        (NalCodec::H264, 66 | 77 | 100, false) => Ok((SurfaceFormat::Nv12, D3D11_DECODER_PROFILE_H264_VLD_NOFGT)),
-        (NalCodec::H264, p, _) => Err(format!("H.264 profile {p} at {} bits", info.bit_depth_luma)),
-        // Main and Main Still Picture
-        (NalCodec::Hevc, 1 | 3, false) => Ok((SurfaceFormat::Nv12, D3D11_DECODER_PROFILE_HEVC_VLD_MAIN)),
-        (NalCodec::Hevc, 2, true) => Ok((SurfaceFormat::P010, D3D11_DECODER_PROFILE_HEVC_VLD_MAIN10)),
-        (NalCodec::Hevc, p, _) => Err(format!("HEVC profile {p} at {} bits", info.bit_depth_luma)),
-    }
+    out
 }
 
 /// Where a decoder's time went (wall clock), for diagnostics (`examples/mfprobe.rs --time`).
@@ -99,7 +110,9 @@ pub struct Timings {
 
 /// The Media Foundation decoder for one `avcC` / `hvcC` stream.
 pub struct MfDecoder {
-    info: NalStreamInfo,
+    stream: Stream,
+    /// The stream as the hybrid decoder's tests (random access, disposable) see it.
+    info: StreamInfo,
     format: SurfaceFormat,
     geometry: Geometry,
     api: &'static MfApi,
@@ -115,6 +128,9 @@ pub struct MfDecoder {
     /// out (as the software decoder does).
     skip_rasl: bool,
     first: bool,
+    /// The size the MFT declares for its pictures was checked against the stream's (VP9 / AV1: the
+    /// picture size is in the bitstream, and a decoder that disagrees would show padding or crop).
+    size_checked: bool,
     /// [`VideoDecoder::flush`] drained the MFT, which then behaves as at the end of a stream: it
     /// only restarts at an IDR picture, the references of the run are gone.
     drained: bool,
@@ -128,21 +144,21 @@ pub struct MfDecoder {
 impl MfDecoder {
     /// A decoder for the stream, or why Media Foundation does not take it (unsupported format, no
     /// DXVA decoder for it on the GPU, no Direct3D-aware decoder MFT).
-    pub fn new(info: NalStreamInfo) -> std::result::Result<Self, String> {
-        let (format, profile) = plan(&info)?;
+    pub fn new(stream: impl Into<Stream>) -> std::result::Result<Self, String> {
+        let stream = stream.into();
+        let plan = stream.plan()?;
         let api = mft::api()?;
         let gpu = Gpu::shared(api)?;
-        gpu.supports(profile, format, info.coded)?;
-        let (_, _, w, h) = info.crop;
-        let mft = Mft::new(api, &gpu, info.codec, (w, h), format)?;
+        gpu.supports(plan.profile, plan.format, plan.size)?;
+        let format = plan.format;
+        let mft = Mft::new(api, &gpu, &stream.spec(format))?;
         log::info!("hardware decoding: {} on {}", mft.name(), gpu.name());
-        let name = match info.codec {
-            NalCodec::H264 => "Media Foundation H.264",
-            NalCodec::Hevc => "Media Foundation HEVC",
-        };
+        let geometry = stream.first_geometry(format);
         Ok(Self {
-            geometry: Geometry { crop: info.crop, bits: format.bits(), color: info.color, par: info.par },
-            info,
+            name: stream.name(),
+            info: stream.info(),
+            geometry,
+            stream,
             format,
             api,
             gpu,
@@ -152,10 +168,10 @@ impl MfDecoder {
             need_headers: true,
             skip_rasl: false,
             first: true,
+            size_checked: false,
             drained: false,
             fail_after: None,
             fed: 0,
-            name,
             timings: Timings::default(),
         })
     }
@@ -187,12 +203,15 @@ impl MfDecoder {
         }
     }
 
-    /// Whether `sample` holds an IDR picture (H.264 IDR slice; HEVC IDR_W_RADL / IDR_N_LP).
-    fn is_idr(&self, sample: &[u8]) -> bool {
-        self.info.nal_types(sample).iter().any(|&t| match self.info.codec {
-            NalCodec::H264 => t == 5,
-            NalCodec::Hevc => matches!(t, 19 | 20),
-        })
+    /// A VP9 / AV1 decoder must output the picture size the bitstream declares (H.264 / HEVC
+    /// decoders report coded or cropped sizes, which the cropping handles).
+    fn check_size(&mut self) -> std::result::Result<(), String> {
+        self.size_checked = true;
+        let (_, _, w, h) = self.geometry.crop;
+        match (&self.stream, self.mft.as_ref().and_then(Mft::output_size)) {
+            (Stream::Frame(_), Some(got)) if got != (w, h) => Err(format!("the decoder outputs {}x{} pictures, the stream says {w}x{h}", got.0, got.1)),
+            _ => Ok(()),
+        }
     }
 
     /// Take every picture the decoder has ready (presentation order).
@@ -201,8 +220,11 @@ impl MfDecoder {
             let Some(mft) = self.mft.as_ref() else { return Ok(()) };
             match mft.poll()? {
                 Poll::NeedInput => return Ok(()),
-                Poll::FormatChanged => {}
+                Poll::FormatChanged => self.size_checked = false,
                 Poll::Frame(sample, t) => {
+                    if !self.size_checked {
+                        self.check_size()?;
+                    }
                     let geometry = self.geometry;
                     let (t0, mut convert) = (Instant::now(), Duration::ZERO);
                     let frame = self.readback.read(&self.gpu, &sample, self.format, |b| {
@@ -257,14 +279,16 @@ impl VideoDecoder for MfDecoder {
             // A drained MFT cannot go on from the middle of a GOP (software decoders can). The
             // GOP cache seeks (`reset`) after every flush, so this is an error only for callers
             // that continue after one: the hybrid decoder then replays the run in software.
-            if !self.is_idr(sample) {
+            if !self.stream.is_restart(sample) {
                 return Err(CodecError::Decode("the hardware decoder was drained and restarts only at an IDR picture".into()));
             }
             self.drained = false;
             self.first = true;
         }
-        if self.info.codec == NalCodec::Hevc {
-            let types = self.info.nal_types(sample);
+        if let Stream::Nal(info) = &self.stream
+            && info.codec == NalCodec::Hevc
+        {
+            let types = info.nal_types(sample);
             if types.iter().any(|t| (16..=23).contains(t)) {
                 // CRA / BLA starting a run: its RASL pictures reference pictures we never decoded.
                 self.skip_rasl = self.first && types.iter().any(|t| (16..=21).contains(t) && !(19..=20).contains(t));
@@ -274,11 +298,15 @@ impl VideoDecoder for MfDecoder {
             }
         }
         self.first = false;
-        let annex_b = to_annex_b(&self.info, sample, self.need_headers).map_err(CodecError::Decode)?;
+        // a VP9 key frame says the picture's size and colour (they are not in the container)
+        if let Some(g) = self.stream.declared_picture(sample) {
+            self.geometry = g;
+        }
+        let annex_b = self.stream.input(sample, self.need_headers).map_err(CodecError::Decode)?;
         if self.mft.is_none() {
-            let (_, _, w, h) = self.info.crop;
-            let mft = Mft::new(self.api, &self.gpu, self.info.codec, (w, h), self.format).map_err(CodecError::Decode)?;
+            let mft = Mft::new(self.api, &self.gpu, &self.stream.spec(self.format)).map_err(CodecError::Decode)?;
             self.mft = Some(mft);
+            self.size_checked = false;
             self.need_headers = true;
         }
         let (t0, spent) = (Instant::now(), self.timings.readback + self.timings.convert);
@@ -316,6 +344,7 @@ impl VideoDecoder for MfDecoder {
         self.need_headers = true;
         self.skip_rasl = false;
         self.first = true;
+        self.size_checked = false;
         self.drained = false;
     }
 
@@ -336,75 +365,5 @@ impl Drop for MfDecoder {
     fn drop(&mut self) {
         // the decoder MFT is released on whichever thread drops the decoder: it needs COM
         let _ = gpu::ensure_com();
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn info(codec: NalCodec, profile_idc: u8, bits: u32, chroma_format_idc: u32) -> NalStreamInfo {
-        NalStreamInfo {
-            codec,
-            length_size: 4,
-            highest_tid: None,
-            parameter_sets: Vec::new(),
-            coded: (1920, 1088),
-            crop: (0, 0, 1920, 1080),
-            chroma_format_idc,
-            bit_depth_luma: bits,
-            bit_depth_chroma: bits,
-            interlaced: false,
-            profile_idc,
-            color: filmcraft_color::ColorInfo::REC709,
-            par: (1, 1),
-            reorder: 2,
-        }
-    }
-
-    #[test]
-    fn takes_h264_baseline_main_high_and_hevc_main_main10() {
-        for p in [66, 77, 100] {
-            assert_eq!(plan(&info(NalCodec::H264, p, 8, 1)).unwrap().0, SurfaceFormat::Nv12, "H.264 profile {p}");
-        }
-        assert_eq!(plan(&info(NalCodec::Hevc, 1, 8, 1)).unwrap(), (SurfaceFormat::Nv12, D3D11_DECODER_PROFILE_HEVC_VLD_MAIN));
-        assert_eq!(plan(&info(NalCodec::Hevc, 2, 10, 1)).unwrap(), (SurfaceFormat::P010, D3D11_DECODER_PROFILE_HEVC_VLD_MAIN10));
-    }
-
-    #[test]
-    fn declines_what_dxva_does_not_decode() {
-        // Hi10, High 4:2:2 / 4:4:4, Extended; 10-bit under an 8-bit profile; 4:2:2 / 4:4:4 / mono HEVC
-        for (codec, p, bits, chroma) in [
-            (NalCodec::H264, 110, 10, 1),
-            (NalCodec::H264, 122, 10, 2),
-            (NalCodec::H264, 244, 8, 3),
-            (NalCodec::H264, 88, 8, 1),
-            (NalCodec::H264, 100, 10, 1),
-            (NalCodec::H264, 100, 8, 2),
-            (NalCodec::Hevc, 4, 10, 2),
-            (NalCodec::Hevc, 4, 12, 1),
-            (NalCodec::Hevc, 1, 10, 1),
-            (NalCodec::Hevc, 2, 8, 1),
-            (NalCodec::Hevc, 1, 8, 0),
-            (NalCodec::Hevc, 1, 8, 3),
-        ] {
-            assert!(plan(&info(codec, p, bits, chroma)).is_err(), "{codec:?} profile {p} {bits}-bit chroma {chroma}");
-        }
-        let mut field_coded = info(NalCodec::H264, 100, 8, 1);
-        field_coded.interlaced = true;
-        assert!(plan(&field_coded).is_err());
-        // luma and chroma depths that differ
-        let mut mixed = info(NalCodec::Hevc, 2, 10, 1);
-        mixed.bit_depth_chroma = 8;
-        assert!(plan(&mixed).is_err());
-    }
-
-    #[test]
-    fn declines_absurd_pictures() {
-        for crop in [(0, 0, 0, 1080), (0, 0, 1920, 0), (0, 0, 9000, 1080), (0, 0, 1080, 9000), (8, 0, 1920, 1080), (0, 16, 1920, 1080), (u32::MAX, 0, 16, 16)] {
-            let mut i = info(NalCodec::H264, 100, 8, 1);
-            i.crop = crop;
-            assert!(plan(&i).is_err(), "{crop:?}");
-        }
     }
 }

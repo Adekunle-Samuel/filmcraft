@@ -172,6 +172,34 @@ frame, about 8 cores busy); Auto uses a twentieth of that CPU but drops 2–3 of
 Draft playback (1/2 draft: 410–416 → 93–105 CPU ms/frame) is dominated by the draft plan's decimation,
 as on macOS, because the hardware ignores draft mode.
 
+## Results (HW2 follow-up: Windows VP9 and AV1 hardware decoding, Off → Auto)
+
+Same machine and method as the H.264 / HEVC results above (Xeon E5-2680 v4, RTX 5060 driver 617.14,
+idle, 2026-10-07, two alternating rounds of `--hw off` / `--hw auto`, the same binary). MFTs:
+`VP9VideoExtensionDecoder` and `AV1VideoExtension` (Microsoft Store codec extensions), DXVA on the
+GPU's NVDEC (profiles VP9 0 / 2, AV1 main). AV1 fixtures here are libaom (`libsvtav1` is not in this
+ffmpeg build; the bench falls back to it) and VP9 are libvpx-vp9, as in the bench's `dec_*` specs.
+`cargo xtask bench --sections decode --only dec_vp9 --repeat 3 --hw off|auto` (likewise `dec_av1`),
+`--sections playback --only "av1-2160 full" --hw off|auto`.
+
+| codec | size | CPU ms/frame Off → **Auto** | fps Off → **Auto** (best of 3) |
+|---|---|---|---|
+| VP9 | 1080p | 38-43 → **3.5-3.6** | 60 → **281-283** |
+| VP9 | 2160p | 165-169 → **15-16** | 16 → **70-79** |
+| AV1 | 1080p | 55-56 → **3.3-3.4** | 22 → **373-374** |
+| AV1 | 2160p | 219-221 → **10.9-11.3** | 5.5 → **106-107** |
+
+Every Auto row had `hw frames` = frames × 3 repeats, 3 sessions, 0 fallbacks, 0 declined.
+
+| playback 8 s, Full | shown/dropped Off → **Auto** | CPU ms/frame Off → **Auto** |
+|---|---|---|
+| VP9 2160p | 11-12/180-181 → **191/1** | 117-124 → **24-27** |
+| AV1 2160p | 0/192 → **192/0** | 47.5-47.9 → **17-20** |
+
+Software AV1 decodes 4K at 5.5 fps here, so it never plays in real time; with the hardware decoder it
+plays without a drop. As on the other codecs, the hardware ignores draft mode and what is left on the
+CPU is the readback and plane conversion.
+
 ## Results (GPU1: blend modes on the GPU compositor, #30, before → after)
 
 Before = this change with the old whole-frame CPU fallback for non-Normal blend modes put back
