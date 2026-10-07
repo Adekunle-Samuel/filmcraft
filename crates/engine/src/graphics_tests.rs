@@ -369,6 +369,9 @@ fn new_layer_from_file_places_the_image_above() {
     assert_eq!(it.start, q.settings.frame_rate.snap(t));
     let ti = q.video_tracks.iter().position(|tr| tr.id == tid).unwrap();
     assert!(q.video_tracks[..ti].iter().any(|tr| tr.item_at(t).is_some()), "above the footage");
+    // the anchor is the picture's centre, not the frame's, so `position` places the picture
+    let anchor = it.effect("motion").unwrap().vec2_at("anchor", Tick::ZERO);
+    assert_eq!((anchor.x, anchor.y), (w as f64 / 2.0, h as f64 / 2.0));
     assert_eq!(s.state.selection, vec![clip]);
     assert!(s.execute("graphics.newFromFile", json!({})).is_err());
     let _ = std::fs::remove_dir_all(&dir);
