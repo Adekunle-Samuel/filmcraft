@@ -195,8 +195,9 @@ impl NvencH264 {
         let o = r?;
         let data = annex_b_to_length_prefixed(&o.data)?;
         let k = self.emitted;
-        self.emitted += 1;
-        Ok(Packet { data, key: o.pic_type == ffi::NV_ENC_PIC_TYPE_IDR, pts: o.pts as i64, dts: k - i64::from(self.delay) })
+        self.emitted = self.emitted.saturating_add(1);
+        let pts = i64::try_from(o.pts).unwrap_or(i64::MAX);
+        Ok(Packet { data, key: o.pic_type == ffi::NV_ENC_PIC_TYPE_IDR, pts, dts: k.saturating_sub(i64::from(self.delay)) })
     }
 }
 
@@ -204,14 +205,24 @@ impl NvencH264 {
 fn fill_nv12(l: Locked<'_>, y: &[u8], u: &[u8], v: &[u8], w: usize, h: usize) {
     let pitch = l.pitch;
     let (luma, chroma) = l.data.split_at_mut((pitch * h).min(l.data.len()));
+    if w == 0 || pitch == 0 {
+        return;
+    }
     for (row, dst) in y.chunks_exact(w).zip(luma.chunks_exact_mut(pitch)).take(h) {
-        dst[..w].copy_from_slice(row);
+        // `submit` rejects a pitch narrower than a row; a short row is skipped, never overrun
+        if let Some(d) = dst.get_mut(..w) {
+            d.copy_from_slice(row);
+        }
     }
     let cw = w / 2;
+    if cw == 0 {
+        return;
+    }
     for ((ur, vr), dst) in u.chunks_exact(cw).zip(v.chunks_exact(cw)).zip(chroma.chunks_exact_mut(pitch)).take(h / 2) {
-        for ((d, a), b) in dst[..w].chunks_exact_mut(2).zip(ur).zip(vr) {
-            d[0] = *a;
-            d[1] = *b;
+        let Some(dst) = dst.get_mut(..w) else { continue };
+        for (([du, dv], a), b) in dst.as_chunks_mut::<2>().0.iter_mut().zip(ur).zip(vr) {
+            *du = *a;
+            *dv = *b;
         }
     }
 }
@@ -219,9 +230,9 @@ fn fill_nv12(l: Locked<'_>, y: &[u8], u: &[u8], v: &[u8], w: usize, h: usize) {
 /// The NAL units of an Annex B byte stream (start codes `00 00 01` / `00 00 00 01`).
 pub fn annex_b_nals(data: &[u8]) -> Vec<&[u8]> {
     let mut starts = Vec::new();
-    let mut i = 0;
-    while i + 3 <= data.len() {
-        if data[i] == 0 && data[i + 1] == 0 && data[i + 2] == 1 {
+    let mut i = 0usize;
+    while let Some(w) = data.get(i..i.saturating_add(3)) {
+        if w == [0, 0, 1] {
             starts.push(i + 3);
             i += 3;
         } else {
@@ -230,13 +241,13 @@ pub fn annex_b_nals(data: &[u8]) -> Vec<&[u8]> {
     }
     let mut out = Vec::with_capacity(starts.len());
     for (k, &s) in starts.iter().enumerate() {
-        let mut e = starts.get(k + 1).map_or(data.len(), |n| n - 3);
+        let mut e = starts.get(k + 1).map_or(data.len(), |n| n.saturating_sub(3));
         // trailing zero bytes belong to the next start code (4-byte form) or are padding
-        while e > s && data[e - 1] == 0 {
+        while e > s && data.get(e - 1) == Some(&0) {
             e -= 1;
         }
-        if e > s {
-            out.push(&data[s..e]);
+        if let Some(n) = data.get(s..e).filter(|n| !n.is_empty()) {
+            out.push(n);
         }
     }
     out
@@ -251,7 +262,7 @@ pub fn annex_b_to_length_prefixed(data: &[u8]) -> Result<Vec<u8>, String> {
     }
     let mut out = Vec::with_capacity(data.len());
     for n in nals {
-        if matches!(n[0] & 0x1f, 7..=9) {
+        if n.first().is_none_or(|b| matches!(b & 0x1f, 7..=9)) {
             continue;
         }
         out.extend_from_slice(&(n.len() as u32).to_be_bytes());
@@ -266,7 +277,7 @@ pub fn annex_b_to_length_prefixed(data: &[u8]) -> Result<Vec<u8>, String> {
 /// The SPS and PPS NAL units of an Annex B byte string.
 pub fn split_parameter_sets(data: &[u8]) -> Result<(Vec<u8>, Vec<u8>), String> {
     let nals = annex_b_nals(data);
-    let find = |t: u8| nals.iter().find(|n| n[0] & 0x1f == t).map(|n| n.to_vec());
+    let find = |t: u8| nals.iter().find(|n| n.first().is_some_and(|b| b & 0x1f == t)).map(|n| n.to_vec());
     match (find(7), find(8)) {
         (Some(s), Some(p)) => Ok((s, p)),
         _ => Err("the encoder returned no SPS / PPS".into()),
@@ -304,5 +315,25 @@ mod tests {
         assert_eq!(&buf[..4], &[0, 1, 2, 3]);
         assert_eq!(&buf[pitch..pitch + 4], &[4, 5, 6, 7]);
         assert_eq!(&buf[pitch * h..pitch * h + 4], &[100, 200, 101, 201]);
+    }
+
+    #[test]
+    fn nv12_never_writes_past_a_narrow_pitch() {
+        // a driver pitch narrower than the row (rejected by `submit`) must not panic here either
+        let (w, h, pitch) = (8usize, 4usize, 4usize);
+        let y = vec![7u8; w * h];
+        let (u, v) = (vec![1u8; w * h / 4], vec![2u8; w * h / 4]);
+        let mut buf = vec![0u8; pitch * h * 3 / 2];
+        fill_nv12(Locked { data: &mut buf, pitch }, &y, &u, &v, w, h);
+        // and empty or zero-sized inputs
+        fill_nv12(Locked { data: &mut [], pitch: 0 }, &[], &[], &[], 0, 0);
+        fill_nv12(Locked { data: &mut buf, pitch }, &[1], &[], &[], 1, 1);
+    }
+
+    #[test]
+    fn empty_nal_units_are_skipped() {
+        assert!(annex_b_nals(&[0, 0, 1, 0, 0, 1]).is_empty());
+        assert!(annex_b_to_length_prefixed(&[0, 0, 1, 0, 0, 0, 1]).is_err());
+        assert!(split_parameter_sets(&[0, 0, 1]).is_err());
     }
 }

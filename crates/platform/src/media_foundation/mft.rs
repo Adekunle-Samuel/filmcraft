@@ -12,17 +12,15 @@ use std::ffi::c_void;
 use std::mem::ManuallyDrop;
 use std::sync::OnceLock;
 
-use filmcraft_codecs::hw::NalCodec;
 use windows::Win32::Foundation::HMODULE;
 use windows::Win32::Graphics::Direct3D11::ID3D11Device;
 use windows::Win32::Media::MediaFoundation::{
     IMFActivate, IMFDXGIDeviceManager, IMFMediaBuffer, IMFMediaType, IMFSample, IMFTransform, MF_E_NO_MORE_TYPES, MF_E_NOTACCEPTING,
-    MF_E_TRANSFORM_NEED_MORE_INPUT, MF_E_TRANSFORM_STREAM_CHANGE, MF_MT_FRAME_SIZE, MF_MT_INTERLACE_MODE, MF_MT_MAJOR_TYPE, MF_MT_MPEG2_PROFILE, MF_MT_SUBTYPE,
-    MF_SA_D3D11_AWARE, MF_TRANSFORM_ASYNC, MF_VERSION, MFMediaType_Video, MFT_CATEGORY_VIDEO_DECODER, MFT_ENUM_FLAG, MFT_ENUM_FLAG_ASYNCMFT,
+    MF_E_TRANSFORM_NEED_MORE_INPUT, MF_E_TRANSFORM_STREAM_CHANGE, MF_MT_FRAME_SIZE, MF_MT_INTERLACE_MODE, MF_MT_MAJOR_TYPE, MF_MT_MINIMUM_DISPLAY_APERTURE,
+    MF_MT_SUBTYPE, MF_SA_D3D11_AWARE, MF_TRANSFORM_ASYNC, MF_VERSION, MFMediaType_Video, MFT_CATEGORY_VIDEO_DECODER, MFT_ENUM_FLAG, MFT_ENUM_FLAG_ASYNCMFT,
     MFT_ENUM_FLAG_HARDWARE, MFT_ENUM_FLAG_SORTANDFILTER, MFT_ENUM_FLAG_SYNCMFT, MFT_FRIENDLY_NAME_Attribute, MFT_MESSAGE_COMMAND_DRAIN,
     MFT_MESSAGE_COMMAND_FLUSH, MFT_MESSAGE_NOTIFY_BEGIN_STREAMING, MFT_MESSAGE_NOTIFY_START_OF_STREAM, MFT_MESSAGE_SET_D3D_MANAGER, MFT_OUTPUT_DATA_BUFFER,
-    MFT_OUTPUT_STREAM_PROVIDES_SAMPLES, MFT_REGISTER_TYPE_INFO, MFVideoFormat_H264, MFVideoFormat_HEVC, MFVideoFormat_NV12, MFVideoFormat_P010,
-    MFVideoInterlace_Progressive,
+    MFT_OUTPUT_STREAM_PROVIDES_SAMPLES, MFT_REGISTER_TYPE_INFO, MFVideoFormat_NV12, MFVideoFormat_P010, MFVideoInterlace_Progressive,
 };
 use windows::Win32::System::Com::CoTaskMemFree;
 use windows::Win32::System::LibraryLoader::{GetProcAddress, LOAD_LIBRARY_SEARCH_SYSTEM32, LoadLibraryExW};
@@ -152,15 +150,9 @@ impl MfApi {
         Ok(sample)
     }
 
-    /// The decoder MFTs for `codec`, hardware ones first, as activation objects.
-    fn decoders(&self, codec: NalCodec) -> Result<Vec<IMFActivate>, String> {
-        let input = MFT_REGISTER_TYPE_INFO {
-            guidMajorType: MFMediaType_Video,
-            guidSubtype: match codec {
-                NalCodec::H264 => MFVideoFormat_H264,
-                NalCodec::Hevc => MFVideoFormat_HEVC,
-            },
-        };
+    /// The decoder MFTs taking input of `subtype`, hardware ones first, as activation objects.
+    fn decoders(&self, subtype: GUID) -> Result<Vec<IMFActivate>, String> {
+        let input = MFT_REGISTER_TYPE_INFO { guidMajorType: MFMediaType_Video, guidSubtype: subtype };
         let flags = MFT_ENUM_FLAG(MFT_ENUM_FLAG_SYNCMFT.0 | MFT_ENUM_FLAG_ASYNCMFT.0 | MFT_ENUM_FLAG_HARDWARE.0 | MFT_ENUM_FLAG_SORTANDFILTER.0);
         let (mut list, mut count) = (std::ptr::null_mut::<*mut c_void>(), 0u32);
         // SAFETY: the type info and the out-pointers refer to live locals.
@@ -197,6 +189,27 @@ pub enum Poll {
     FormatChanged,
 }
 
+/// An attribute of the decoder's input media type.
+pub enum Attr {
+    U32(u32),
+    Blob(Vec<u8>),
+}
+
+/// What the decoder MFT is asked to decode.
+pub struct Spec {
+    /// The input subtype (`MFVideoFormat_H264`, `_HEVC`, `_VP90`, `_AV1`).
+    pub subtype: GUID,
+    /// The codec's name and what is missing when no MFT takes it.
+    pub label: &'static str,
+    pub missing: &'static str,
+    /// Picture size in luma samples.
+    pub size: (u32, u32),
+    /// Output format.
+    pub format: SurfaceFormat,
+    /// Extra input type attributes (profile, sequence header...).
+    pub attrs: Vec<(GUID, Attr)>,
+}
+
 /// A Direct3D-aware decoder MFT, configured for one stream.
 pub struct Mft {
     transform: IMFTransform,
@@ -212,18 +225,15 @@ impl Mft {
     /// Create the decoder for `codec` with output in `format`, for pictures of `size`, decoding
     /// on the device of `gpu`. Errors (and so the stream is declined) when no Direct3D-aware
     /// synchronous decoder MFT takes the stream.
-    pub fn new(api: &MfApi, gpu: &Gpu, codec: NalCodec, size: (u32, u32), format: SurfaceFormat) -> Result<Mft, String> {
+    pub fn new(api: &MfApi, gpu: &Gpu, spec: &Spec) -> Result<Mft, String> {
         ensure_com()?;
-        let candidates = api.decoders(codec)?;
+        let candidates = api.decoders(spec.subtype)?;
         if candidates.is_empty() {
-            return Err(match codec {
-                NalCodec::H264 => "no H.264 decoder MFT".into(),
-                NalCodec::Hevc => "no HEVC decoder MFT (the HEVC Video Extensions are not installed)".into(),
-            });
+            return Err(format!("no {} decoder MFT{}", spec.label, spec.missing));
         }
         let mut reasons = Vec::new();
         for a in candidates {
-            match Self::configure(api, gpu, &a, codec, size, format) {
+            match Self::configure(api, gpu, &a, spec) {
                 Ok(m) => return Ok(m),
                 Err(e) => reasons.push(e),
             }
@@ -231,7 +241,8 @@ impl Mft {
         Err(reasons.join("; "))
     }
 
-    fn configure(api: &MfApi, gpu: &Gpu, activate: &IMFActivate, codec: NalCodec, size: (u32, u32), format: SurfaceFormat) -> Result<Mft, String> {
+    fn configure(api: &MfApi, gpu: &Gpu, activate: &IMFActivate, spec: &Spec) -> Result<Mft, String> {
+        let (size, format) = (spec.size, spec.format);
         let name = friendly_name(activate).unwrap_or_else(|| "a decoder MFT".into());
         // SAFETY: plain COM calls on live interfaces.
         let transform: IMFTransform = unsafe { activate.ActivateObject() }.map_err(|e| format!("{name}: cannot be created: {e}"))?;
@@ -254,22 +265,15 @@ impl Mft {
         // SAFETY: plain COM calls on live interfaces.
         unsafe {
             input.SetGUID(&MF_MT_MAJOR_TYPE, &MFMediaType_Video).map_err(|e| e.to_string())?;
-            input
-                .SetGUID(
-                    &MF_MT_SUBTYPE,
-                    &match codec {
-                        NalCodec::H264 => MFVideoFormat_H264,
-                        NalCodec::Hevc => MFVideoFormat_HEVC,
-                    },
-                )
-                .map_err(|e| e.to_string())?;
+            input.SetGUID(&MF_MT_SUBTYPE, &spec.subtype).map_err(|e| e.to_string())?;
             input.SetUINT64(&MF_MT_FRAME_SIZE, (u64::from(size.0) << 32) | u64::from(size.1)).map_err(|e| e.to_string())?;
             input.SetUINT32(&MF_MT_INTERLACE_MODE, MFVideoInterlace_Progressive.0 as u32).map_err(|e| e.to_string())?;
-            if codec == NalCodec::Hevc {
-                // the HEVC decoder lists P010 output only when told the stream is Main 10
-                // (eAVEncH265VProfile_Main_420_8 = 1, eAVEncH265VProfile_Main_420_10 = 2)
-                let profile = if format == SurfaceFormat::P010 { 2 } else { 1 };
-                input.SetUINT32(&MF_MT_MPEG2_PROFILE, profile).map_err(|e| e.to_string())?;
+            for (key, value) in &spec.attrs {
+                match value {
+                    Attr::U32(v) => input.SetUINT32(key, *v),
+                    Attr::Blob(b) => input.SetBlob(key, b),
+                }
+                .map_err(|e| e.to_string())?;
             }
             mft.transform.SetInputType(0, &input, 0).map_err(|e| format!("{}: does not take this stream: {e}", mft.name))?;
         }
@@ -307,6 +311,27 @@ impl Mft {
             }
         }
         Err(format!("{}: cannot output {:?}", self.name, self.format))
+    }
+
+    /// The size of the pictures the decoder says it outputs: the display aperture of its output
+    /// type when it has one (the surfaces are aligned: 640x368 for a 640x360 picture), else its
+    /// frame size.
+    pub fn output_size(&self) -> Option<(u32, u32)> {
+        // SAFETY: plain COM calls on live interfaces; `GetBlob` writes at most the 16 bytes of the
+        // buffer it is given (an `MFVideoArea`: two offsets of 4 bytes, then the area as two i32).
+        unsafe {
+            let t = self.transform.GetOutputCurrentType(0).ok()?;
+            let mut area = [0u8; 16];
+            let mut len = 0u32;
+            if t.GetBlob(&MF_MT_MINIMUM_DISPLAY_APERTURE, &mut area, Some(&mut len)).is_ok() && len == 16 {
+                let (cx, cy) = (i32::from_le_bytes([area[8], area[9], area[10], area[11]]), i32::from_le_bytes([area[12], area[13], area[14], area[15]]));
+                if cx > 0 && cy > 0 {
+                    return Some((cx as u32, cy as u32));
+                }
+            }
+            let packed = t.GetUINT64(&MF_MT_FRAME_SIZE).ok()?;
+            Some(((packed >> 32) as u32, packed as u32))
+        }
     }
 
     /// The MFT's name, for logs.
@@ -367,6 +392,25 @@ impl Mft {
             self.transform.ProcessMessage(MFT_MESSAGE_NOTIFY_START_OF_STREAM, 0).map_err(|e| format!("{}: restart failed: {e}", self.name))
         }
     }
+}
+
+/// One line per decoder MFT taking `subtype` (name, synchronous or not, Direct3D-aware or not):
+/// diagnostics.
+pub fn describe(api: &MfApi, subtype: GUID) -> Vec<String> {
+    let Ok(list) = api.decoders(subtype) else { return vec!["enumeration failed".into()] };
+    list.iter()
+        .map(|a| {
+            let name = friendly_name(a).unwrap_or_else(|| "?".into());
+            // SAFETY: plain COM calls on live interfaces.
+            let (asynchronous, d3d11) = unsafe {
+                match a.ActivateObject::<IMFTransform>().and_then(|t| t.GetAttributes()) {
+                    Ok(attrs) => (attrs.GetUINT32(&MF_TRANSFORM_ASYNC).unwrap_or(0) != 0, attrs.GetUINT32(&MF_SA_D3D11_AWARE).unwrap_or(0) != 0),
+                    Err(_) => (false, false),
+                }
+            };
+            format!("{name} (async {asynchronous}, Direct3D 11 aware {d3d11})")
+        })
+        .collect()
 }
 
 fn friendly_name(a: &IMFActivate) -> Option<String> {

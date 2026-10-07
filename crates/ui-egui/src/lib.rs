@@ -126,6 +126,9 @@ pub struct Playback {
     anchor_tick: Tick,
     /// Audio frames played at anchor (when the audio clock drives).
     pub audio_clock: bool,
+    /// The audio clock's last reading and when (egui time, s) it last moved: a device that stops
+    /// consuming samples hands the clock back to the wall clock (see [`AUDIO_STALL_S`]).
+    audio_seen: (u64, f64),
     /// Audio underruns for the current (or last) play (desktop: sound is mixed ahead).
     #[cfg(not(target_arch = "wasm32"))]
     pub audio_stats: std::sync::Arc<play_ahead::AudioStats>,
@@ -140,6 +143,12 @@ pub struct Playback {
     /// Forward playback stops here (Play In to Out, Play from Playhead to Out Point).
     pub stop_at: Option<Tick>,
 }
+
+/// How long (s) the audio clock may stand still during playback before the wall clock takes over.
+/// An output stream can open and then never call back (ALSA with a busy or misconfigured device,
+/// #136); playback must not freeze on it. Devices that are slow to start (Bluetooth) stay well
+/// under this.
+pub const AUDIO_STALL_S: f64 = 1.0;
 
 /// How long `ui.screenshot` waits for the window to present the frame.
 const SCREENSHOT_TIMEOUT_S: f64 = 10.0;
@@ -667,6 +676,7 @@ impl FilmcraftApp {
         self.playback.preroll = None;
         self.playback.anchor_time = now;
         self.playback.anchor_tick = self.session.playhead();
+        self.playback.audio_seen = (0, now);
         self.start_audio();
         // Audio Track Mixer: an automation pass runs while playing forward in real time
         if (self.playback.speed - 1.0).abs() < 1e-9 && !self.session.mixrec.active() {
@@ -754,13 +764,27 @@ impl FilmcraftApp {
             self.playback.anchor_time = now;
         }
         let rate = self.session.sequence_rate();
-        let elapsed = if self.playback.audio_clock {
-            match self.audio.as_ref().and_then(|a| a.played_frames().map(|f| (f, a.sample_rate()))) {
-                Some((f, sr)) => f as f64 / sr as f64,
-                None => now - self.playback.anchor_time,
+        let reading = if self.playback.audio_clock { self.audio.as_ref().and_then(|a| a.played_frames().map(|f| (f, a.sample_rate()))) } else { None };
+        if let Some((f, sr)) = reading {
+            if f != self.playback.audio_seen.0 {
+                self.playback.audio_seen = (f, now);
+            } else if now - self.playback.audio_seen.1 >= AUDIO_STALL_S {
+                // the device stopped consuming samples: continue from where the audio got to on
+                // the wall clock, without sound
+                let played = if sr > 0 { f as f64 / sr as f64 } else { 0.0 };
+                self.playback.anchor_tick += Tick::from_seconds_f64(played * self.playback.speed);
+                self.playback.anchor_time = now;
+                self.playback.audio_clock = false;
+                if let Some(a) = self.audio.as_mut() {
+                    a.stop();
+                }
+                log::warn!("audio output stalled (no samples consumed for {AUDIO_STALL_S} s); playing without sound");
+                self.ui.status = "Audio output is not responding: playing without sound (check Settings ▸ Audio Hardware)".into();
             }
-        } else {
-            now - self.playback.anchor_time
+        }
+        let elapsed = match reading {
+            Some((f, sr)) if self.playback.audio_clock && sr > 0 => f as f64 / sr as f64,
+            _ => now - self.playback.anchor_time,
         };
         let t = self.playback.anchor_tick + Tick::from_seconds_f64(elapsed * self.playback.speed);
         let seq = self.session.active_sequence();
@@ -1001,7 +1025,11 @@ impl FilmcraftApp {
                 }
             }
         });
-        for id in fire {
+        for mut id in fire {
+            // Select All / Deselect All act on the Project panel's items when it has focus (#168).
+            if self.ui.focused == PanelKind::Project && matches!(id.as_str(), "edit.selectAll" | "edit.deselectAll") {
+                id = id.replacen("edit.", "project.", 1);
+            }
             // Mark In/Out in the Source monitor when it has focus.
             let params = if self.ui.focused == PanelKind::Source
                 && (matches!(id.as_str(), "markers.markIn" | "markers.markOut") || id.starts_with("markers.markSplit") || id.starts_with("markers.goToSplit"))
@@ -1229,20 +1257,27 @@ impl FilmcraftApp {
         }
         ui.ctx().request_repaint_after(std::time::Duration::from_millis(150));
         let f = job.progress.fraction().clamp(0.0, 1.0);
+        let left = job.progress.eta().map(panels::left_text).unwrap_or_default();
         let cancel = egui::Rect::from_center_size(egui::pos2(sb.max.x - 14.0, sb.center().y), egui::vec2(14.0, 14.0));
         let bar = egui::Rect::from_min_size(egui::pos2(cancel.min.x - 128.0, sb.center().y - 3.0), egui::vec2(120.0, 6.0));
         let p = ui.painter();
         p.rect_filled(bar, 3.0, t.separator);
         p.rect_filled(egui::Rect::from_min_size(bar.min, egui::vec2(bar.width() * f, bar.height())), 3.0, t.accent);
         let verb = if job.label.starts_with("Rendering") { job.label.clone() } else { "Exporting".to_string() };
-        p.text(egui::pos2(bar.min.x - 8.0, sb.center().y), egui::Align2::RIGHT_CENTER, format!("{verb}… {:.0}%", f * 100.0), Tokens::ui(11.0), t.text_dim);
+        p.text(
+            egui::pos2(bar.min.x - 8.0, sb.center().y),
+            egui::Align2::RIGHT_CENTER,
+            format!("{verb}… {:.0}%{left}", f * 100.0),
+            Tokens::ui(11.0),
+            t.text_dim,
+        );
         let resp = ui.interact(cancel, egui::Id::new(("job-cancel", job.id)), egui::Sense::click());
         let c = if resp.hovered() { t.hot_text } else { t.text_dim };
         let k = 3.5;
         p.line_segment([cancel.center() - egui::vec2(k, k), cancel.center() + egui::vec2(k, k)], egui::Stroke::new(1.4, c));
         p.line_segment([cancel.center() + egui::vec2(-k, k), cancel.center() + egui::vec2(k, -k)], egui::Stroke::new(1.4, c));
         self.auto.add("status.job.cancel", cancel, &format!("Cancel {}", job.label));
-        self.auto.add("status.job.progress", bar, &format!("{:.0}%", f * 100.0));
+        self.auto.add("status.job.progress", bar, &format!("{:.0}%{left}", f * 100.0));
         if resp.on_hover_text("Cancel").clicked() {
             job.progress.cancel.store(true, Ordering::Relaxed);
             self.watched_render = None;

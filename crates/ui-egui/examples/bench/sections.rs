@@ -486,7 +486,7 @@ pub fn export(o: &Opts) -> Vec<Value> {
             "realtime": frames as f64 / best / FrameRate::FPS_23_976.as_f64(), "cpu_ms_per_frame": median(&cpu),
             "mbytes": bytes as f64 / 1e6, "runs_s": runs, "load": load_avg(),
             // pictures encoded by a hardware encoder during this row (zero with --hw off or where there is none)
-            "hw_frames": filmcraft_engine::export::hw_encode_stats().frames - hw0.frames,
+            "hw_frames": filmcraft_engine::export::hw_encode_stats().frames.saturating_sub(hw0.frames),
         }));
     }
     let _ = std::fs::remove_dir_all(&dir);

@@ -29,18 +29,28 @@ struct NvencEncoder {
 impl NvencEncoder {
     fn packets(&self, ps: Vec<super::Packet>) -> Vec<EncodedPacket> {
         let den = self.rate.den;
-        ps.into_iter().map(|p| EncodedPacket { data: p.data, key: p.key, duration: den as u32, composition_offset: ((p.pts - p.dts) * den) as i32 }).collect()
+        let duration = u32::try_from(den).unwrap_or(u32::MAX);
+        ps.into_iter().map(|p| EncodedPacket { data: p.data, key: p.key, duration, composition_offset: composition_offset(p.pts, p.dts, den) }).collect()
     }
+}
+
+/// `(pts - dts) × den` as an MP4 composition offset. It is a few frames (the B-frame delay); a
+/// hostile value saturates instead of wrapping.
+fn composition_offset(pts: i64, dts: i64, den: i64) -> i32 {
+    let offset = pts.saturating_sub(dts).saturating_mul(den);
+    i32::try_from(offset).unwrap_or(if offset < 0 { i32::MIN } else { i32::MAX })
 }
 
 impl VideoEncoder for NvencEncoder {
     fn sample_entry(&self) -> SampleEntry {
         let (sps, pps) = self.enc.parameter_sets();
-        SampleEntry::avc(AvcConfig::new(vec![sps.to_vec()], vec![pps.to_vec()], 4), self.w as u16, self.h as u16)
+        // `config` declines sizes above u16::MAX
+        let (w, h) = (u16::try_from(self.w).unwrap_or(u16::MAX), u16::try_from(self.h).unwrap_or(u16::MAX));
+        SampleEntry::avc(AvcConfig::new(vec![sps.to_vec()], vec![pps.to_vec()], 4), w, h)
     }
 
     fn timescale(&self) -> u32 {
-        self.rate.num as u32
+        u32::try_from(self.rate.num).unwrap_or(u32::MAX)
     }
 
     fn encode(&mut self, f: &EncoderFrame) -> Result<Vec<EncodedPacket>> {
@@ -63,7 +73,7 @@ impl VideoEncoder for NvencEncoder {
 
     fn media_start(&self) -> Option<i64> {
         // with B-frames the first DTS is `delay` frames before the first PTS
-        (self.enc.delay() > 0).then_some(i64::from(self.enc.delay()) * self.rate.den)
+        (self.enc.delay() > 0).then_some(i64::from(self.enc.delay()).saturating_mul(self.rate.den))
     }
 }
 
@@ -81,10 +91,16 @@ fn config(format: Format, w: u32, h: u32, rate: FrameRate, s: &ExportSettings) -
     if s.field_order != FieldOrder::Progressive {
         return Err("interlaced output".into());
     }
+    if w > u32::from(u16::MAX) || h > u32::from(u16::MAX) {
+        return Err(format!("{w}x{h} does not fit an MP4 sample entry"));
+    }
     if rate.num <= 0 || rate.den <= 0 || rate.num > i64::from(u32::MAX) || rate.den > i64::from(u32::MAX) {
         return Err("frame rate".into());
     }
-    let fps = (rate.num as u32, rate.den as u32);
+    let (Ok(num), Ok(den)) = (u32::try_from(rate.num), u32::try_from(rate.den)) else {
+        return Err("frame rate".into());
+    };
+    let fps = (num, den);
     let kbps = s.bitrate_kbps.max(100);
     Ok(Config {
         width: w,
@@ -125,5 +141,26 @@ pub fn factory(format: Format, w: u32, h: u32, rate: FrameRate, s: &ExportSettin
             Some(Ok(Box::new(NvencEncoder { enc, w, h, rate, y: Vec::new(), u: Vec::new(), v: Vec::new() })))
         }
         Err(why) => declined(&why),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn composition_offsets_saturate() {
+        assert_eq!(composition_offset(3, 1, 1001), 2002);
+        assert_eq!(composition_offset(0, -2, 1001), 2002);
+        assert_eq!(composition_offset(i64::MAX, i64::MIN, 1001), i32::MAX);
+        assert_eq!(composition_offset(i64::MIN, i64::MAX, 1001), i32::MIN);
+        assert_eq!(composition_offset(1 << 40, 0, 1), i32::MAX);
+    }
+
+    #[test]
+    fn oversized_pictures_are_declined() {
+        let s = ExportSettings { format: Format::H264, hardware_encoding: HardwareEncoding::Auto, ..Default::default() };
+        assert!(config(Format::H264, 70_000, 64, FrameRate::FPS_24, &s).is_err());
+        assert!(config(Format::H264, 64, 70_000, FrameRate::FPS_24, &s).is_err());
     }
 }

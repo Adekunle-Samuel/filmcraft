@@ -53,13 +53,18 @@ impl Default for MediaPool {
     }
 }
 
-/// Cache key of a media clip's full-resolution reference ("" matches anything: generators and
-/// sources inserted without a key).
+/// Largest file [`MediaPool::probe_file`] reads whole when no streaming reader takes it (WAV,
+/// MP3 and other byte-opened formats, or an unsupported container such as AVI).
+pub const PROBE_WHOLE_FILE_MAX: u64 = 64 * 1024 * 1024;
+
+/// Cache key of a media clip's full-resolution reference ("" matches anything: sources inserted
+/// without a key). A generator's key holds its parameters, so a Color Matte whose color changes
+/// (or comes back with undo) is generated again.
 pub fn media_key(m: &MediaClip) -> String {
     match &m.media {
         MediaRef::File { path } if m.offline => format!("offline:{path}"),
         MediaRef::File { path } => format!("file:{path}"),
-        MediaRef::Generator(_) => String::new(),
+        MediaRef::Generator(g) => format!("generator:{g:?}"),
     }
 }
 
@@ -127,6 +132,11 @@ impl MediaPool {
         self.sources.write().unwrap_or_else(|e| e.into_inner()).insert(item, (String::new(), src));
     }
 
+    /// Cache a source for an item under its [`media_key`].
+    pub fn insert_keyed(&self, item: ItemId, key: String, src: SharedSource) {
+        self.sources.write().unwrap_or_else(|e| e.into_inner()).insert(item, (key, src));
+    }
+
     /// Cache a source opened from `path` for an item.
     pub fn insert_file(&self, item: ItemId, path: &str, src: SharedSource) {
         self.sources.write().unwrap_or_else(|e| e.into_inner()).insert(item, (format!("file:{path}"), src));
@@ -184,6 +194,16 @@ impl MediaPool {
         }
         let bytes = services.read_file(path).map_err(io)?;
         self.open_bytes(&file_name(path), bytes.into())
+    }
+
+    /// Open a file to look at it (Media Browser properties and thumbnails), not to import it: a
+    /// format without a streaming reader is read whole only up to [`PROBE_WHOLE_FILE_MAX`] bytes
+    /// (#157). Hosts without random-access readers open the file as [`Self::open_file`] does.
+    pub fn probe_file(&self, path: &str, services: &dyn Services) -> Result<SharedSource, MediaError> {
+        let Some(r) = services.reader(path) else { return self.open_file(path, services) };
+        let r = r.map_err(|e| if e.kind() == std::io::ErrorKind::NotFound { MediaError::Offline(e.to_string()) } else { MediaError::Io(e.to_string()) })?;
+        let openers = self.openers.read().unwrap_or_else(|e| e.into_inner()).clone();
+        filmcraft_media::reader::open_reader_within(&file_name(path), r, &filmcraft_codecs::reader_openers(), &openers, PROBE_WHOLE_FILE_MAX)
     }
 
     /// Resolve (and cache) the source for a project item, using proxies when they are enabled.

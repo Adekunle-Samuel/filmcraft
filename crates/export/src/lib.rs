@@ -18,6 +18,7 @@ use std::io::Write;
 mod audio_out;
 mod job;
 mod mxf_out;
+mod pace;
 mod pcm;
 mod pipeline;
 pub mod presets;
@@ -61,6 +62,11 @@ pub enum Format {
     #[default]
     #[serde(rename = "h264", alias = "H264")]
     H264,
+    /// MPEG-4 (or QuickTime, see [`Multiplexer`]), H.265 / HEVC Main (8-bit) video + AAC audio. There is no
+    /// built-in encoder: a platform hardware encoder registers one ([`register_encoder`]) and says so
+    /// with [`register_format_probe`]; [`available`] is false without it.
+    #[serde(rename = "hevc", alias = "Hevc")]
+    Hevc,
     /// QuickTime, Apple ProRes 422 (HQ unless the settings pick another flavour) + PCM.
     #[serde(rename = "prores", alias = "ProRes")]
     ProRes,
@@ -102,6 +108,7 @@ impl Format {
     pub fn from_name(s: &str) -> Option<Format> {
         Some(match s.to_ascii_lowercase().replace([' ', '-', '_', '.'], "").as_str() {
             "h264" | "mp4" | "avc" | "m4v" => Format::H264,
+            "hevc" | "h265" | "hvc1" | "hev1" | "x265" => Format::Hevc,
             "prores" | "mov" | "appleprores" => Format::ProRes,
             "dnxhr" | "dnxhd" | "dnx" | "avid" | "aviddnxhr" | "aviddnxhd" | "vc3" => Format::DnxHr,
             "apv" | "apv1" => Format::Apv,
@@ -121,6 +128,7 @@ impl Format {
     pub fn id(self) -> &'static str {
         match self {
             Format::H264 => "h264",
+            Format::Hevc => "hevc",
             Format::ProRes => "prores",
             Format::DnxHr => "dnxhr",
             Format::Apv => "apv",
@@ -137,7 +145,7 @@ impl Format {
     }
     pub fn extension(self) -> &'static str {
         match self {
-            Format::H264 => "mp4",
+            Format::H264 | Format::Hevc => "mp4",
             Format::ProRes | Format::DnxHr | Format::Apv | Format::Mjpeg => "mov",
             Format::PngSequence => "png",
             Format::TiffSequence => "tif",
@@ -151,6 +159,7 @@ impl Format {
     pub fn label(self) -> &'static str {
         match self {
             Format::H264 => "H.264",
+            Format::Hevc => "H.265 (HEVC)",
             Format::ProRes => "Apple ProRes",
             Format::DnxHr => "Avid DNxHR",
             Format::Apv => "APV",
@@ -169,8 +178,18 @@ impl Format {
     pub fn is_mxf(self) -> bool {
         matches!(self, Format::MxfOp1a | Format::MxfOpAtom)
     }
-    pub const ALL: [Format; 13] = [
+    /// Whether the crate carries an encoder for the format; the others need one registered at runtime
+    /// ([`register_format_probe`]).
+    pub fn has_builtin_encoder(self) -> bool {
+        self != Format::Hevc
+    }
+    /// H.264 or H.265: MPEG-4 (or QuickTime) with AAC audio, set up with the same bitrate controls.
+    pub fn is_h26x(self) -> bool {
+        matches!(self, Format::H264 | Format::Hevc)
+    }
+    pub const ALL: [Format; 14] = [
         Format::H264,
+        Format::Hevc,
         Format::ProRes,
         Format::DnxHr,
         Format::Apv,
@@ -248,7 +267,9 @@ pub struct ExportSettings {
     /// stream needs is raised.
     pub h264_level: Option<u8>,
     pub bitrate_mode: BitrateMode,
-    /// May H.264 be encoded by the GPU (NVENC)? Off unless asked for.
+    /// May H.264 be encoded by the system's hardware encoder (VideoToolbox on macOS, NVENC on
+    /// Windows)? Off unless asked for: hardware output depends on the machine, so it is not
+    /// byte-reproducible like the built-in encoder's (`determinism_tests`).
     #[serde(default)]
     pub hardware_encoding: HardwareEncoding,
     /// VBR maximum bitrate (None = 1.5 × target).
@@ -459,6 +480,9 @@ impl ExportSettings {
         if self.effects.image_overlay.enabled && self.effects.image_overlay.path.trim().is_empty() {
             return Err(ExportError::Unsupported("image overlay: no image file chosen".into()));
         }
+        if self.format == Format::Hevc && self.bitrate_mode == BitrateMode::Vbr2Pass {
+            return Err(ExportError::Unsupported("H.265 export has no two-pass mode: choose CBR or VBR, 1 pass".into()));
+        }
         Ok(())
     }
 }
@@ -474,12 +498,32 @@ pub struct Progress {
     pub error: Mutex<Option<String>>,
     /// What loudness normalization measured (when it ran).
     pub loudness: Mutex<Option<LoudnessReport>>,
+    /// Readings of `done` over time, for [`Progress::eta`].
+    pace: Mutex<pace::Pace>,
 }
 
 impl Progress {
     pub fn fraction(&self) -> f32 {
         let t = self.total.load(Ordering::Relaxed).max(1);
         self.done.load(Ordering::Relaxed) as f32 / t as f32
+    }
+
+    /// The estimated time left, from the job's speed over the last 15 seconds. Each call is also a
+    /// reading of that speed, so ask regularly (the UI does on every frame it draws the job).
+    /// `None` until a second of readings shows progress, and once the job is done or finished.
+    pub fn eta(&self) -> Option<std::time::Duration> {
+        self.eta_at(web_time::Instant::now())
+    }
+
+    /// [`Progress::eta`] at a given time (tests, and hosts with a clock of their own).
+    pub fn eta_at(&self, now: web_time::Instant) -> Option<std::time::Duration> {
+        let (done, total) = (self.done.load(Ordering::Relaxed), self.total.load(Ordering::Relaxed));
+        let mut pace = self.pace.lock().unwrap_or_else(|e| e.into_inner());
+        pace.observe(now, done);
+        if self.finished.load(Ordering::Relaxed) || done >= total {
+            return None;
+        }
+        pace.eta(total - done)
     }
     fn set_status(&self, s: impl Into<String>) {
         *self.status.lock().unwrap_or_else(|e| e.into_inner()) = s.into();
@@ -592,17 +636,47 @@ pub fn note_hw_encode_declined() {
     HW_DECLINED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 }
 
+/// Register a video encoder factory (tried before the built-in ones and those registered earlier).
+/// Registering the same factory twice is harmless.
 pub fn register_encoder(f: EncoderFactory) {
-    video_factories().write().unwrap_or_else(|e| e.into_inner()).insert(0, f);
+    let mut g = video_factories().write().unwrap_or_else(|e| e.into_inner());
+    if !g.iter().any(|x| std::ptr::fn_addr_eq(*x, f)) {
+        g.insert(0, f);
+    }
+}
+
+/// Whether `f` is among the registered video encoder factories (startup diagnostics, tests).
+pub fn encoder_registered(f: EncoderFactory) -> bool {
+    video_factories().read().unwrap_or_else(|e| e.into_inner()).iter().any(|x| std::ptr::fn_addr_eq(*x, f))
 }
 pub fn register_audio_encoder(f: AudioEncoderFactory) {
     audio_factories().write().unwrap_or_else(|e| e.into_inner()).insert(0, f);
 }
 
-/// Whether a format can currently be exported. Every [`Format`] has a built-in encoder; this stays
-/// as the hook for formats whose encoders are registered at runtime.
+type FormatProbe = (Format, fn() -> bool);
+
+fn format_probes() -> &'static RwLock<Vec<FormatProbe>> {
+    static P: OnceLock<RwLock<Vec<FormatProbe>>> = OnceLock::new();
+    P.get_or_init(|| RwLock::new(Vec::new()))
+}
+
+/// Say how to find out whether the encoder of a format without a built-in one ([`Format::has_builtin_encoder`])
+/// works on this machine: `probe` runs when [`available`] asks (it should cache its answer).
+/// Registering the same probe twice is harmless.
+pub fn register_format_probe(format: Format, probe: fn() -> bool) {
+    let mut g = format_probes().write().unwrap_or_else(|e| e.into_inner());
+    if !g.iter().any(|(f, p)| *f == format && std::ptr::fn_addr_eq(*p, probe)) {
+        g.push((format, probe));
+    }
+}
+
+/// Whether a format can currently be exported: it has a built-in encoder, or a registered probe
+/// says its encoder works here.
 pub fn available(format: Format) -> bool {
-    Format::ALL.contains(&format)
+    if !Format::ALL.contains(&format) {
+        return false;
+    }
+    format.has_builtin_encoder() || format_probes().read().unwrap_or_else(|e| e.into_inner()).iter().any(|(f, probe)| *f == format && probe())
 }
 
 struct MjpegEncoder {
@@ -1264,7 +1338,7 @@ pub fn export(project: &Arc<Project>, seq: ItemId, settings: &ExportSettings, so
             }
             (total, count)
         }
-        Format::H264 | Format::ProRes | Format::DnxHr | Format::Apv | Format::Mjpeg | Format::MxfOp1a | Format::MxfOpAtom => {
+        Format::H264 | Format::Hevc | Format::ProRes | Format::DnxHr | Format::Apv | Format::Mjpeg | Format::MxfOp1a | Format::MxfOpAtom => {
             // Handled by the stepped exporter above; reaching here would be a dispatch bug.
             return Err(ExportError::Unsupported(format!("{:?} must run as a stepped export", settings.format)));
         }

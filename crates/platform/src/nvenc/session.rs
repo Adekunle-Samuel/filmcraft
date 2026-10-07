@@ -194,7 +194,8 @@ impl Session {
         let api = api()?;
         let device = nvidia_device()?;
         // SAFETY: a zeroed parameter block with its version and the device's COM pointer; the
-        // device is kept in the session for as long as the encoder lives.
+        // device is kept in the session for as long as the encoder lives. On failure a non-null
+        // handle is the driver's and is destroyed exactly once, here, before returning.
         let enc = unsafe {
             let mut p: NV_ENC_OPEN_ENCODE_SESSION_EX_PARAMS = std::mem::zeroed();
             p.version = NV_ENC_OPEN_ENCODE_SESSION_EX_PARAMS_VER;
@@ -205,7 +206,15 @@ impl Session {
             let mut enc: Handle = std::ptr::null_mut();
             let s = open(&mut p, &mut enc);
             if s != NV_ENC_SUCCESS || enc.is_null() {
-                return Err(status("opening the NVENC session", s, enc, api));
+                let e = status("opening the NVENC session", s, enc, api);
+                // a failed open may still hand back a session; destroy it so the GPU's encoder
+                // session limit is not used up by sessions nobody owns
+                if !enc.is_null()
+                    && let Some(d) = api.list.nvEncDestroyEncoder
+                {
+                    d(enc);
+                }
+                return Err(e);
             }
             enc
         };
@@ -397,6 +406,12 @@ impl Session {
             let st = lock(self.enc, &mut l);
             if st != NV_ENC_SUCCESS || l.bufferDataPtr.is_null() || l.pitch == 0 {
                 return Err(status("locking an input buffer", st, self.enc, self.api));
+            }
+            // a driver pitch narrower than a row would make `fill` write past each row
+            if (l.pitch as usize) < w as usize {
+                // the lock succeeded, so release it before giving up (its status no longer matters)
+                let _ = unlock(self.enc, input);
+                return Err(format!("the driver returned an input pitch of {} bytes for {w}-pixel rows", l.pitch));
             }
             let len = (l.pitch as usize).saturating_mul(h as usize).saturating_mul(3) / 2;
             fill(Locked { data: std::slice::from_raw_parts_mut(l.bufferDataPtr.cast::<u8>(), len), pitch: l.pitch as usize });

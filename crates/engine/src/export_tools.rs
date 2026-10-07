@@ -26,7 +26,7 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
 use filmcraft_export::presets::{DEFAULT_PRESET, preset_key};
-use filmcraft_export::{ExportPreset, ExportSettings, Format};
+use filmcraft_export::{ExportPreset, ExportSettings, Format, HardwareEncoding};
 use filmcraft_project::{ItemId, Project};
 use filmcraft_time::{FrameRate, Tick, TimeRange};
 use serde::{Deserialize, Serialize};
@@ -197,11 +197,20 @@ pub fn settings_from_params(s: &Session, p: &Value, cmd: &str) -> Result<(Option
     if let Some(v) = str_p(p, "bitrateMode") {
         settings.bitrate_mode = serde_json::from_value(json!(v)).map_err(|_| bad(cmd, "bitrateMode: cbr | vbr1Pass | vbr2Pass"))?;
     }
-    if let Some(v) = str_p(p, "hardwareEncoding") {
-        settings.hardware_encoding = serde_json::from_value(json!(v)).map_err(|_| bad(cmd, "hardwareEncoding: off | auto"))?;
-    }
     if let Some(v) = u64_p(p, "keyframeDistance") {
         settings.keyframe_distance = Some(v as u32);
+    }
+    if let Some(v) = p.get("hardwareEncoding") {
+        settings.hardware_encoding = match v {
+            Value::Bool(on) => {
+                if *on {
+                    HardwareEncoding::Auto
+                } else {
+                    HardwareEncoding::Off
+                }
+            }
+            other => serde_json::from_value(other.clone()).map_err(|_| bad(cmd, "hardwareEncoding: off | auto"))?,
+        };
     }
     if let Some(v) = bool_p(p, "burnCaptions") {
         settings.burn_captions = v;
@@ -519,6 +528,7 @@ fn item_json(s: &Session, it: &QueueItem) -> Value {
         "range": it.settings.range,
         "status": it.status,
         "progress": progress,
+        "etaSeconds": job.filter(|_| it.status == QueueStatus::Encoding).and_then(|j| j.progress.eta()).map(|d| d.as_secs_f64()),
         "statusText": status_text,
         "job": it.job,
         "error": it.error,
