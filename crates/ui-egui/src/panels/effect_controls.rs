@@ -706,13 +706,18 @@ pub fn properties_panel(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
 }
 
 /// Run the panel's actions. Parameter changes made while the mouse button is down (a drag) share
-/// one undo step, starting at the press (#201); typed values and clicks stay separate steps.
+/// one undo step, which the first change of each press begins (#201); typed values and clicks stay
+/// separate steps. A drag value only changes once the mouse moves, after the press frame, so the
+/// press that already began a step is remembered by its start time.
 fn run(app: &mut FilmcraftApp, ctx: &egui::Context, actions: Vec<(String, Value)>) {
-    let (down, pressed) = ctx.input(|i| (i.pointer.any_down(), i.pointer.any_pressed()));
+    let (down, press) = ctx.input(|i| (i.pointer.any_down(), i.pointer.press_start_time()));
+    let key = egui::Id::new("effect-controls-drag-step");
     for (cmd, mut p) in actions {
         if cmd == "effects.setParam" && down {
+            let begun = ctx.data(|d| d.get_temp::<Option<f64>>(key)).flatten();
             p["merge"] = json!(true);
-            p["begin"] = json!(pressed);
+            p["begin"] = json!(begun != press);
+            ctx.data_mut(|d| d.insert_temp(key, press));
         }
         if let Err(e) = app.session.execute(&cmd, p) {
             app.ui.status = e.to_string();
@@ -885,5 +890,51 @@ mod param_text_tests {
         assert_eq!(param_text(&p, "curve_luma", &ParamValue::Curve(vec![[0.0, 0.0], [1.0, 1.0]])), "Default");
         assert_eq!(param_text(&p, "hue_vs_sat", &ParamValue::Curve(vec![])), "Default");
         assert_eq!(param_text(&p, "curve_luma", &ParamValue::Curve(vec![[0.0, 0.0], [0.5, 0.6], [1.0, 1.0]])), "Custom (3 points)");
+    }
+}
+
+#[cfg(test)]
+mod drag_undo_tests {
+    use serde_json::json;
+
+    /// #201: a drag value changes only once the mouse moves, after the press frame; two drags of
+    /// the same parameter are still two undo steps.
+    #[test]
+    fn each_press_begins_its_own_undo_step() {
+        let mut s = filmcraft_engine::Session::default();
+        s.execute("file.openDemoProject", json!({})).unwrap();
+        let clip = s.active_sequence().unwrap().video_tracks[0].items[0].id.0;
+        let mut app = crate::FilmcraftApp::new(s);
+        let ctx = egui::Context::default();
+        let opacity = |app: &crate::FilmcraftApp| {
+            let q = app.session.active_sequence().unwrap();
+            let it = q.find_item(filmcraft_project::ClipId(clip)).unwrap().1;
+            it.effects.iter().find(|e| e.effect == "opacity").unwrap().params["opacity"].value.as_f64().unwrap()
+        };
+        let start = opacity(&app);
+        let pos = egui::pos2(10.0, 10.0);
+        let button = |pressed| egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed, modifiers: Default::default() };
+        let mut time = 0.0;
+        let mut frame = |app: &mut crate::FilmcraftApp, events: Vec<egui::Event>, value: Option<f64>| {
+            time += 0.1;
+            let raw = egui::RawInput { time: Some(time), events, ..Default::default() };
+            let mut out = ctx.run_ui(raw, |ui| {
+                let actions = value.map(|v| ("effects.setParam".to_string(), json!({"clip": clip, "effect": "opacity", "param": "opacity", "value": v})));
+                super::run(app, ui.ctx(), actions.into_iter().collect());
+            });
+            out.textures_delta.clear();
+        };
+        for values in [[90.0, 70.0], [50.0, 60.0]] {
+            frame(&mut app, vec![egui::Event::PointerMoved(pos), button(true)], None); // the press: nothing changes yet
+            for v in values {
+                frame(&mut app, vec![egui::Event::PointerMoved(pos)], Some(v));
+            }
+            frame(&mut app, vec![button(false)], None);
+        }
+        assert_eq!(opacity(&app), 60.0);
+        app.session.undo();
+        assert_eq!(opacity(&app), 70.0, "undo takes back only the second drag");
+        app.session.undo();
+        assert_eq!(opacity(&app), start, "and then the first");
     }
 }
