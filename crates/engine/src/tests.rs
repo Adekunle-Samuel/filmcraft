@@ -1,4 +1,16 @@
 use super::*;
+
+#[test]
+fn invalid_preview_scales_are_rejected_without_allocating() {
+    let mut s = Session::default();
+    s.execute("file.newSequence", serde_json::json!({"width":160,"height":90})).unwrap();
+    for scale in [0.0, -1.0, f32::NAN, f32::INFINITY, f32::MAX] {
+        assert!(s.render_program(scale).is_none());
+        assert!(s.render_program_working(scale).is_none());
+    }
+    assert!(s.try_render_program_at(f32::NAN, Tick::ZERO).unwrap_err().to_string().contains("finite"), "the reason is reported");
+    assert_eq!(s.render_program(0.5).unwrap().w, 80);
+}
 use serde_json::json;
 
 fn demo() -> Session {
@@ -93,6 +105,43 @@ fn slide_moves_linked_audio_with_the_video() {
     let a = q.audio_tracks[0].items.iter().find(|i| i.link == v.link).unwrap();
     assert_eq!(nv.start, v.start + s.sequence_rate().tick_of(5));
     assert_eq!((a.start, a.source_in), (nv.start, nv.source_in), "linked audio slides too and stays in sync");
+}
+
+#[test]
+fn sequence_parameters_are_bounded_and_failed_changes_are_atomic() {
+    let mut s = demo();
+    let before = (*s.project).clone();
+    let history = s.history.undo.len();
+    for command in ["file.newSequence", "sequence.settings"] {
+        for params in [
+            json!({"width":0}),
+            json!({"height":0}),
+            json!({"sampleRate":0}),
+            json!({"width":4_294_967_360_u64}),
+            json!({"height":u64::MAX}),
+            json!({"sampleRate":u64::MAX}),
+            json!({"width":-1}),
+            json!({"width":1.5}),
+            json!({"width":32768,"height":16384}),
+            json!({"width":1920.25}),
+            json!({"fps":1001}),
+            json!({"sampleRate":384001}),
+        ] {
+            assert!(s.execute(command, params.clone()).is_err(), "{command} {params}");
+            assert_eq!(*s.project, before);
+            assert_eq!(s.history.undo.len(), history);
+        }
+    }
+    for params in [json!({"video":u64::MAX}), json!({"audio":u64::MAX}), json!({"video":257}), json!({"audio":-1})] {
+        assert!(s.execute("file.newSequence", params.clone()).is_err(), "{params}");
+        assert_eq!(*s.project, before);
+    }
+    s.execute("file.newSequence", json!({"width":7680,"height":4320,"video":0,"audio":0})).unwrap();
+    assert_eq!(s.active_sequence().unwrap().settings.width, 7680, "standard 8K remains supported");
+    s.execute("file.newSequence", json!({"width":15360.0,"height":8640.0,"sampleRate":48000.0,"video":1.0,"audio":0})).unwrap();
+    assert_eq!(s.active_sequence().unwrap().settings.width, 15360, "16K, and integer-valued floats, are accepted");
+    s.execute("sequence.settings", json!({"width":16384,"height":8192})).unwrap();
+    assert_eq!(s.active_sequence().unwrap().settings.height, 8192, "a 16384x8192 panorama is accepted");
 }
 
 #[test]
@@ -434,4 +483,21 @@ fn ripple_trim_to_playhead_follows_the_selection() {
     assert_eq!(a2(&s), music, "the music on A2 is untouched");
     let linked = s.active_sequence().unwrap().audio_tracks[0].items.iter().find(|i| i.start == start).map(|i| i.end());
     assert_eq!(linked, Some(ph), "its linked sound on A1 is trimmed with it");
+}
+
+#[test]
+fn empty_items_do_not_panic_keyframe_commands() {
+    let mut s = demo();
+    let seq = s.state.active_sequence.unwrap();
+    let clip = {
+        let item = &mut std::sync::Arc::make_mut(&mut s.project).sequence_mut(seq).unwrap().video_tracks[0].items[0];
+        item.duration = Tick::ZERO;
+        item.id
+    };
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        s.execute("effects.toggleAnimation", json!({"clip":clip.0,"effect":"motion","param":"position"}))
+    }));
+    assert!(result.is_ok(), "an empty clip must not supply reversed clamp bounds");
+    let error = result.unwrap().unwrap_err();
+    assert!(error.to_string().contains("non-positive duration"), "expected the ordinary invariant error, got: {error}");
 }

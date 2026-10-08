@@ -786,6 +786,8 @@ impl Track {
     }
     /// Invariant check: items do not overlap.
     pub fn check(&self) -> Result<(), String> {
+        // Validate before calling end(), including on a single-item track.
+        self.check_bounds()?;
         for w in self.items.windows(2) {
             if w[0].end() > w[1].start {
                 return Err(format!("{}: items {:?} and {:?} overlap", self.name, w[0].id, w[1].id));
@@ -794,6 +796,21 @@ impl Track {
         for i in &self.items {
             if i.duration.0 <= 0 {
                 return Err(format!("{}: item {:?} has non-positive duration", self.name, i.id));
+            }
+        }
+        Ok(())
+    }
+    /// Only the value bounds that keep timeline arithmetic from overflowing (no structural rules
+    /// such as overlap or positive duration); what a loaded project must satisfy.
+    pub fn check_bounds(&self) -> Result<(), String> {
+        for item in &self.items {
+            if !bounded_time_range(item.start, item.duration) {
+                return Err(format!("{}: item {:?} is outside supported time bounds", self.name, item.id));
+            }
+        }
+        for transition in &self.transitions {
+            if !bounded_time_range(transition.start, transition.duration) {
+                return Err(format!("{}: transition {:?} is outside supported time bounds", self.name, transition.id));
             }
         }
         Ok(())
@@ -844,6 +861,41 @@ impl Default for SequenceSettings {
             working_space: "Rec. 709".into(),
             color: filmcraft_color::ColorPipeline::REC709,
         }
+    }
+}
+
+/// Largest frame side, in pixels.
+pub const MAX_FRAME_SIDE: u32 = 32_768;
+/// Largest frame area, in pixels (16384 x 16384: 16K and 16384 x 8192 panoramas fit).
+pub const MAX_FRAME_PIXELS: u64 = 268_435_456;
+
+/// Bound working-frame allocations while retaining 16K and wide panoramic frames.
+pub fn validate_frame_size(width: u32, height: u32) -> Result<(), String> {
+    if width == 0 || height == 0 || width > MAX_FRAME_SIDE || height > MAX_FRAME_SIDE || u64::from(width) * u64::from(height) > MAX_FRAME_PIXELS {
+        return Err(format!("frame size must be positive, at most {MAX_FRAME_SIDE} pixels per side and {MAX_FRAME_PIXELS} pixels total"));
+    }
+    Ok(())
+}
+
+impl SequenceSettings {
+    pub fn validate(&self) -> Result<(), String> {
+        validate_frame_size(self.width, self.height)?;
+        if self.frame_rate.num <= 0
+            || self.frame_rate.den <= 0
+            || self.frame_rate.as_f64() > 1000.0
+            || self.frame_rate.num > i64::from(u32::MAX)
+            || self.frame_rate.den > i64::from(u32::MAX)
+            || (i128::from(TICKS_PER_SECOND) * i128::from(self.frame_rate.den) / i128::from(self.frame_rate.num.max(1))) > i128::from(Tick::MAX.0)
+        {
+            return Err("frame rate must be positive, at most 1000 fps, with unsigned 32-bit rational components".into());
+        }
+        if self.sample_rate == 0 || self.sample_rate > 384_000 {
+            return Err("sample rate must be between 1 and 384000 Hz".into());
+        }
+        if self.par.0 == 0 || self.par.1 == 0 {
+            return Err("pixel aspect ratio must be positive".into());
+        }
+        Ok(())
     }
 }
 
@@ -976,6 +1028,7 @@ impl Sequence {
         v
     }
     pub fn check(&self) -> Result<(), String> {
+        self.check_bounds()?;
         for t in self.all_tracks() {
             t.check()?;
         }
@@ -984,6 +1037,33 @@ impl Sequence {
         }
         Ok(())
     }
+    /// The hostile-value bounds alone (settings, marks and every time range), without the
+    /// structural invariants of [`Sequence::check`]: a project that breaks only those (e.g. an
+    /// overlap written by an older build) still opens, but nothing in it can overflow.
+    pub fn check_bounds(&self) -> Result<(), String> {
+        self.settings.validate()?;
+        if self.mark_in.into_iter().chain(self.mark_out).any(|t| t < Tick::MIN || t > Tick::MAX)
+            || self.work_area.is_some_and(|r| !bounded_time_range(r.start, r.duration))
+        {
+            return Err("sequence marks or work area are outside supported time bounds".into());
+        }
+        for t in self.all_tracks() {
+            t.check_bounds()?;
+        }
+        for t in &self.caption_tracks {
+            t.check_bounds()?;
+        }
+        Ok(())
+    }
+}
+
+/// Bound persisted timeline arithmetic before any start + duration operation: start, duration and
+/// end all stay within `Tick::MIN..=Tick::MAX`, leaving headroom for later edit math. Negative
+/// positions remain supported; the sign of the duration is a structural rule (track items and
+/// captions require a positive one in their own invariant checks), not a bound.
+pub(crate) fn bounded_time_range(start: Tick, duration: Tick) -> bool {
+    let within = |t: i64| (Tick::MIN.0..=Tick::MAX.0).contains(&t);
+    within(start.0) && within(duration.0) && start.0.checked_add(duration.0).is_some_and(within)
 }
 
 /// Project-level settings.
@@ -1623,6 +1703,40 @@ mod tests {
         let q = Project::from_json(&s).unwrap();
         assert_eq!(p, q);
         assert!(q.sequence(seq).unwrap().check().is_ok());
+    }
+
+    #[test]
+    fn hostile_frame_rates_are_rejected_before_frame_arithmetic() {
+        for frame_rate in [FrameRate { num: i64::MAX, den: i64::MAX }, FrameRate { num: 1, den: i64::from(u32::MAX) }] {
+            let settings = SequenceSettings { frame_rate, ..Default::default() };
+            assert!(settings.validate().is_err());
+        }
+        for (width, height) in [(7680, 4320), (15360, 8640), (16384, 8192), (16384, 16384), (32768, 8192)] {
+            assert!(SequenceSettings { width, height, ..Default::default() }.validate().is_ok(), "{width}x{height}");
+        }
+        assert!(validate_frame_size(32768, 16384).is_err());
+        assert!(validate_frame_size(65536, 1).is_err());
+    }
+
+    #[test]
+    fn corrupt_timeline_times_are_rejected_before_end_arithmetic() {
+        let (mut project, media, seq) = demo_project();
+        let rate = project.sequence(seq).unwrap().settings.frame_rate;
+        let range = TimeRange::new(Tick::ZERO, rate.tick_of(24));
+        let first = project.make_track_item(media, TrackKind::Video, Tick::ZERO, range, rate).unwrap();
+        let second = project.make_track_item(media, TrackKind::Video, rate.tick_of(24), range, rate).unwrap();
+        project.sequence_mut(seq).unwrap().video_tracks[0].items = vec![first, second];
+        for start in [Tick(i64::MAX), Tick(i64::MIN), Tick::MAX] {
+            project.sequence_mut(seq).unwrap().video_tracks[0].items[0].start = start;
+            let result = std::panic::catch_unwind(|| project.sequence(seq).unwrap().check());
+            assert!(result.is_ok());
+            assert!(result.unwrap().is_err());
+        }
+        project.sequence_mut(seq).unwrap().video_tracks[0].items[0].start = Tick::ZERO;
+        for mark in [Tick(i64::MAX), Tick(i64::MIN)] {
+            project.sequence_mut(seq).unwrap().mark_out = Some(mark);
+            assert!(project.sequence(seq).unwrap().check().is_err());
+        }
     }
 
     #[test]
