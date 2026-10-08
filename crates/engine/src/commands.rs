@@ -2224,7 +2224,7 @@ fn build() -> Vec<CommandSpec> {
             "Set Effect Parameter",
             [],
             None,
-            r##"{"clip":id,"effect":"motion"|index,"param":str,"mask":n?,"value":num|[x,y]|"#rrggbb"|bool|path,"time":ticks?}"##,
+            r##"{"clip":id,"effect":"motion"|index,"param":str,"mask":n?,"value":num|[x,y]|"#rrggbb"|bool|path,"time":ticks?,"merge":bool?,"begin":bool?}"##,
             has_seq,
             |s, p| {
                 let c = clip_p(p, "clip").ok_or_else(|| bad("effects.setParam", "need `clip`"))?;
@@ -2234,7 +2234,12 @@ fn build() -> Vec<CommandSpec> {
                 let ph = s.playhead();
                 let tl = time_p(s, p, "").unwrap_or(ph);
                 let pq = p.clone();
-                s.edit_sequence("Change Effect Parameter", |q, _, _| {
+                // `merge`: a drag of one parameter is one undo step (#201); `begin` starts a new one
+                let merge = bool_p(p, "merge").unwrap_or(false).then(|| format!("setParam:{}:{eff}:{pid}:{}", c.0, p.get("mask").unwrap_or(&Value::Null)));
+                if bool_p(p, "begin").unwrap_or(false) {
+                    s.history.merge_key = None;
+                }
+                s.edit_sequence_as("Change Effect Parameter", merge.as_deref(), |q, _, _| {
                     let (_, it) = q.find_item_mut(c).ok_or(filmcraft_edit::EditError::NoItem(c))?;
                     let mt = it.source_time_at(tl.clamp(it.start, (it.end() - Tick(1)).max(it.start)));
                     let e = match &eff {

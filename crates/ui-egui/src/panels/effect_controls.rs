@@ -169,11 +169,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     // footer timecode
     let tc = filmcraft_time::format_time(ph, seq.settings.frame_rate, seq.settings.drop_frame, filmcraft_time::TimeDisplay::Timecode, 48000);
     ui.painter().text(pos2(rect.min.x + 10.0, rect.max.y - 13.0), Align2::LEFT_CENTER, tc, Tokens::mono(13.0), t.timecode);
-    for (cmd, p) in actions {
-        if let Err(e) = app.session.execute(&cmd, p) {
-            app.ui.status = e.to_string();
-        }
-    }
+    run(app, ui.ctx(), actions);
 }
 
 /// Premiere's "Custom Setup ▸ Edit…" row: opens the effect's Clip Fx Editor window.
@@ -528,11 +524,7 @@ pub fn lumetri_panel(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
             }
         }
     });
-    for a in actions {
-        if let Err(e) = app.session.execute("effects.setParam", a) {
-            app.ui.status = e.to_string();
-        }
-    }
+    run(app, ui.ctx(), actions.into_iter().map(|a| ("effects.setParam".to_string(), a)).collect());
 }
 
 /// Properties panel (Premiere 26): a compact inspector for the selected clip.
@@ -710,7 +702,18 @@ pub fn properties_panel(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     bui.painter().rect_filled(br, 4.0, if bresp.hovered() { t.hover } else { t.panel_bg });
     bui.painter().rect_stroke(br, 4.0, Stroke::new(1.0, t.separator), egui::StrokeKind::Inside);
     bui.painter().text(br.center(), Align2::CENTER_CENTER, format!("Speed {:.0}%", it.speed * 100.0), Tokens::ui(12.0), t.text);
-    for (cmd, p) in actions {
+    run(app, ui.ctx(), actions);
+}
+
+/// Run the panel's actions. Parameter changes made while the mouse button is down (a drag) share
+/// one undo step, starting at the press (#201); typed values and clicks stay separate steps.
+fn run(app: &mut FilmcraftApp, ctx: &egui::Context, actions: Vec<(String, Value)>) {
+    let (down, pressed) = ctx.input(|i| (i.pointer.any_down(), i.pointer.any_pressed()));
+    for (cmd, mut p) in actions {
+        if cmd == "effects.setParam" && down {
+            p["merge"] = json!(true);
+            p["begin"] = json!(pressed);
+        }
         if let Err(e) = app.session.execute(&cmd, p) {
             app.ui.status = e.to_string();
         }
