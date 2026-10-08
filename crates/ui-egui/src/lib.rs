@@ -88,6 +88,11 @@ pub struct HostHooks {
     pub pick_open_file: Option<Box<dyn FnMut(&str, &[&str]) -> Option<String>>>,
     /// Folder picker (Link Media search, proxy and Project Manager destinations).
     pub pick_folder: Option<Box<dyn FnMut() -> Option<String>>>,
+    /// Pick one file for a command that relinks to it (Link Media ▸ Locate…, Attach Proxies,
+    /// Reconnect Full Resolution) instead of importing it, as [`Self::pick_files`] does. Native
+    /// hosts return the path. A host whose picker is asynchronous (the web) returns `None` and
+    /// runs `hint.command` with `hint.params` plus `"path"` itself once the user has chosen.
+    pub pick_file_for_relink: Option<Box<dyn FnMut(&[&str], Option<RelinkHint>) -> Option<String>>>,
     /// Bring the window on screen for control-channel UI requests *without* taking keyboard focus
     /// (macOS: `orderFrontRegardless`). Without it the app only requests a repaint: it never
     /// activates itself for an agent, because the user's keystrokes would land here.
@@ -95,6 +100,16 @@ pub struct HostHooks {
     /// Open a file in its default application, or (`true`) reveal it in the file manager (Edit ▸
     /// Edit Original, Help ▸ Reveal Log Files).
     pub open_path: Option<Box<dyn FnMut(&str, bool) -> Result<(), String>>>,
+}
+
+/// The command a [`HostHooks::pick_file_for_relink`] caller runs with the chosen file, for hosts
+/// that can only run it later.
+#[derive(Clone, Debug)]
+pub struct RelinkHint {
+    /// `media.relink`, `media.attachProxies` or `media.reconnectFullRes`.
+    pub command: String,
+    /// Its parameters, without `"path"`.
+    pub params: serde_json::Value,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
