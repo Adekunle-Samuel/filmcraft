@@ -501,3 +501,31 @@ fn empty_items_do_not_panic_keyframe_commands() {
     let error = result.unwrap().unwrap_err();
     assert!(error.to_string().contains("non-positive duration"), "expected the ordinary invariant error, got: {error}");
 }
+
+/// #201: a drag of an effect parameter (`merge`, starting with `begin`) is one undo step, and the
+/// next drag is another.
+#[test]
+fn dragging_an_effect_parameter_is_one_undo_step() {
+    let mut s = demo_unlocked();
+    let id = v1(&s)[0].0;
+    let opacity = |s: &Session| {
+        let q = s.active_sequence().unwrap();
+        let it = q.find_item(ClipId(id)).unwrap().1;
+        let e = it.effects.iter().find(|e| e.effect == "opacity").unwrap();
+        e.params["opacity"].value.as_f64().unwrap()
+    };
+    let start = opacity(&s);
+    let set = |s: &mut Session, v: f64, begin: bool| {
+        s.execute("effects.setParam", json!({"clip": id, "effect": "opacity", "param": "opacity", "value": v, "merge": true, "begin": begin})).unwrap();
+    };
+    set(&mut s, 90.0, true);
+    set(&mut s, 70.0, false);
+    set(&mut s, 30.0, false);
+    set(&mut s, 50.0, true); // a second drag
+    set(&mut s, 60.0, false);
+    assert_eq!(opacity(&s), 60.0);
+    s.undo();
+    assert_eq!(opacity(&s), 30.0, "undo takes back the whole second drag");
+    s.undo();
+    assert_eq!(opacity(&s), start, "and then the whole first one");
+}

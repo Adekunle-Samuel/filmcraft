@@ -781,9 +781,20 @@ impl Session {
 
     /// Edit the active sequence with the edit-algebra context.
     pub fn edit_sequence<R>(&mut self, label: &str, f: impl FnOnce(&mut Sequence, &mut EditCtx, &mut EditorState) -> Result<R>) -> Result<R> {
+        self.edit_sequence_as(label, None, f)
+    }
+
+    /// [`Session::edit_sequence`] that shares one undo step with the previous edit of the same
+    /// `merge` key, like [`Session::edit_merged`] (a drag is one undoable change).
+    pub fn edit_sequence_as<R>(
+        &mut self,
+        label: &str,
+        merge: Option<&str>,
+        f: impl FnOnce(&mut Sequence, &mut EditCtx, &mut EditorState) -> Result<R>,
+    ) -> Result<R> {
         let seq_id = self.state.active_sequence.ok_or(EngineError::NoSequence)?;
         let media = self.media.clone();
-        self.edit(label, move |p, st| {
+        let body = move |p: &mut Project, st: &mut EditorState| {
             let project_snapshot = std::sync::Arc::new(p.clone());
             let snap = project_snapshot.clone();
             let durations = move |id: ItemId| -> Option<Tick> { media_duration(&project_snapshot, &media, id) };
@@ -800,7 +811,11 @@ impl Session {
                 s.check().map_err(EngineError::Other)?;
             }
             Ok(r)
-        })
+        };
+        match merge {
+            Some(key) => self.edit_merged(label, key, body),
+            None => self.edit(label, body),
+        }
     }
 
     pub fn undo(&mut self) -> Option<String> {

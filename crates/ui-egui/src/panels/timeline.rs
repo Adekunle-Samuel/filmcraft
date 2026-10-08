@@ -2108,10 +2108,7 @@ fn interact(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, layout: &
                 let r = ui.add_enabled(!sel.is_empty() && app.session.is_enabled(cmd), egui::Button::new(label));
                 app.auto.add(&format!("timeline.clipMenu.{cmd}"), r.rect, label);
                 if r.clicked() {
-                    if cmd == "clip.speedDuration" {
-                        app.dialog = None;
-                        let _ = app.session.execute(cmd, json!({"speed": 50.0}));
-                    } else if let Err(e) = crate::menus::invoke(app, &ctx, cmd, json!({})) {
+                    if let Err(e) = crate::menus::invoke(app, &ctx, cmd, json!({})) {
                         app.ui.status = e;
                     }
                     ui.close();
