@@ -1491,6 +1491,24 @@ fn resolve_auto_points_sized(e: &mut EffectInstance, frame: (u32, u32), source: 
 }
 
 impl Project {
+    /// Resolve media through at most sixteen items, preserving the outermost subclip range.
+    /// Missing parents, cycles and longer chains are unavailable media.
+    pub fn resolve_media(&self, item: ItemId) -> Option<(ItemId, &MediaClip, Option<TimeRange>)> {
+        let mut id = item;
+        let mut range = None;
+        for _ in 0..16 {
+            match &self.item(id)?.kind {
+                ItemKind::Media(media) => return Some((id, media, range)),
+                ItemKind::Subclip { parent, range: span, .. } => {
+                    range.get_or_insert(*span);
+                    id = *parent;
+                }
+                _ => return None,
+            }
+        }
+        None
+    }
+
     /// Size in pixels of what an item shows: a media clip's picture, a sequence's frame, an
     /// adjustment layer or graphic; a subclip has the size of its parent. `None` without
     /// picture. This is the size the renderer centres a clip's "auto" anchor in.
@@ -1628,6 +1646,22 @@ mod tests {
         path["vertices"][0]["p"]["x"] = serde_json::Value::Null;
         assert!(serde_json::from_value::<MaskPath>(path.clone()).is_err());
         assert!(serde_json::from_value::<ParamValue>(serde_json::json!({ "Path": path })).is_err());
+    }
+
+    #[test]
+    fn media_resolution_bounds_depth_and_preserves_the_outer_range() {
+        let (mut p, media, _) = demo_project();
+        assert_eq!(p.resolve_media(media).map(|(id, _, range)| (id, range)), Some((media, None)));
+        let mut parent = media;
+        let mut last_range = TimeRange::default();
+        for n in 0..15 {
+            last_range = TimeRange::new(Tick(n * 1000), Tick(100));
+            parent = p.add_item("Sub", Label::Iris, ItemKind::Subclip { parent, range: last_range, restrict_trims: false }, None);
+        }
+        assert_eq!(p.resolve_media(parent).map(|(id, _, range)| (id, range)), Some((media, Some(last_range))));
+        let too_deep = p.add_item("Too deep", Label::Iris, ItemKind::Subclip { parent, range: last_range, restrict_trims: false }, None);
+        assert!(p.resolve_media(too_deep).is_none());
+        assert!(p.resolve_media(ItemId(u64::MAX)).is_none());
     }
 
     #[test]
