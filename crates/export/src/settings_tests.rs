@@ -148,10 +148,13 @@ fn wav_and_aiff_audio_only() {
 #[test]
 fn invalid_export_allocations_are_rejected_before_rendering() {
     let (project, sequence, _) = matte([1.0, 0.0, 0.0, 1.0], 64, 36, None);
-    for size in [(0, 36), (64, 0), (u32::MAX, u32::MAX), (16384, 16384)] {
+    for size in [(0, 36), (64, 0), (u32::MAX, u32::MAX), (32768, 16384), (40000, 16)] {
         let settings = ExportSettings { frame_size: Some(size), ..Default::default() };
         assert!(settings.validate().is_err(), "{size:?}");
         assert!(pipeline::Pipeline::new(project.clone(), sequence, &settings, false).is_err());
+    }
+    for size in [(15360, 8640), (16384, 8192)] {
+        assert!(ExportSettings { frame_size: Some(size), ..Default::default() }.validate().is_ok(), "{size:?} is a real output size");
     }
     for scale in [0.0, -1.0, f32::NAN, f32::INFINITY, 1e30] {
         let settings = ExportSettings { scale, ..Default::default() };

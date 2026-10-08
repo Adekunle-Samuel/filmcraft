@@ -787,16 +787,7 @@ impl Track {
     /// Invariant check: items do not overlap.
     pub fn check(&self) -> Result<(), String> {
         // Validate before calling end(), including on a single-item track.
-        for item in &self.items {
-            if !bounded_time_range(item.start, item.duration) {
-                return Err(format!("{}: item {:?} is outside supported time bounds", self.name, item.id));
-            }
-        }
-        for transition in &self.transitions {
-            if !bounded_time_range(transition.start, transition.duration) {
-                return Err(format!("{}: transition {:?} is outside supported time bounds", self.name, transition.id));
-            }
-        }
+        self.check_bounds()?;
         for w in self.items.windows(2) {
             if w[0].end() > w[1].start {
                 return Err(format!("{}: items {:?} and {:?} overlap", self.name, w[0].id, w[1].id));
@@ -805,6 +796,21 @@ impl Track {
         for i in &self.items {
             if i.duration.0 <= 0 {
                 return Err(format!("{}: item {:?} has non-positive duration", self.name, i.id));
+            }
+        }
+        Ok(())
+    }
+    /// Only the value bounds that keep timeline arithmetic from overflowing (no structural rules
+    /// such as overlap or positive duration); what a loaded project must satisfy.
+    pub fn check_bounds(&self) -> Result<(), String> {
+        for item in &self.items {
+            if !bounded_time_range(item.start, item.duration) {
+                return Err(format!("{}: item {:?} is outside supported time bounds", self.name, item.id));
+            }
+        }
+        for transition in &self.transitions {
+            if !bounded_time_range(transition.start, transition.duration) {
+                return Err(format!("{}: transition {:?} is outside supported time bounds", self.name, transition.id));
             }
         }
         Ok(())
@@ -858,10 +864,15 @@ impl Default for SequenceSettings {
     }
 }
 
-/// Bound working-frame allocations while retaining standard 8K and wide panoramic frames.
+/// Largest frame side, in pixels.
+pub const MAX_FRAME_SIDE: u32 = 32_768;
+/// Largest frame area, in pixels (16384 x 16384: 16K and 16384 x 8192 panoramas fit).
+pub const MAX_FRAME_PIXELS: u64 = 268_435_456;
+
+/// Bound working-frame allocations while retaining 16K and wide panoramic frames.
 pub fn validate_frame_size(width: u32, height: u32) -> Result<(), String> {
-    if width == 0 || height == 0 || width > 16_384 || height > 16_384 || u64::from(width) * u64::from(height) > 67_108_864 {
-        return Err("frame size must be positive, at most 16384 pixels per side and 67108864 pixels total".into());
+    if width == 0 || height == 0 || width > MAX_FRAME_SIDE || height > MAX_FRAME_SIDE || u64::from(width) * u64::from(height) > MAX_FRAME_PIXELS {
+        return Err(format!("frame size must be positive, at most {MAX_FRAME_SIDE} pixels per side and {MAX_FRAME_PIXELS} pixels total"));
     }
     Ok(())
 }
@@ -1017,12 +1028,7 @@ impl Sequence {
         v
     }
     pub fn check(&self) -> Result<(), String> {
-        self.settings.validate()?;
-        if self.mark_in.into_iter().chain(self.mark_out).any(|t| t < Tick::MIN || t > Tick::MAX)
-            || self.work_area.is_some_and(|r| !bounded_time_range(r.start, r.duration))
-        {
-            return Err("sequence marks or work area are outside supported time bounds".into());
-        }
+        self.check_bounds()?;
         for t in self.all_tracks() {
             t.check()?;
         }
@@ -1031,13 +1037,33 @@ impl Sequence {
         }
         Ok(())
     }
+    /// The hostile-value bounds alone (settings, marks and every time range), without the
+    /// structural invariants of [`Sequence::check`]: a project that breaks only those (e.g. an
+    /// overlap written by an older build) still opens, but nothing in it can overflow.
+    pub fn check_bounds(&self) -> Result<(), String> {
+        self.settings.validate()?;
+        if self.mark_in.into_iter().chain(self.mark_out).any(|t| t < Tick::MIN || t > Tick::MAX)
+            || self.work_area.is_some_and(|r| !bounded_time_range(r.start, r.duration))
+        {
+            return Err("sequence marks or work area are outside supported time bounds".into());
+        }
+        for t in self.all_tracks() {
+            t.check_bounds()?;
+        }
+        for t in &self.caption_tracks {
+            t.check_bounds()?;
+        }
+        Ok(())
+    }
 }
 
-/// Bound persisted timeline arithmetic before any start + duration operation. Negative timeline
-/// positions remain supported; empty ranges are valid metadata (track items/captions also require
-/// a positive duration in their own invariant checks).
+/// Bound persisted timeline arithmetic before any start + duration operation: start, duration and
+/// end all stay within `Tick::MIN..=Tick::MAX`, leaving headroom for later edit math. Negative
+/// positions remain supported; the sign of the duration is a structural rule (track items and
+/// captions require a positive one in their own invariant checks), not a bound.
 pub(crate) fn bounded_time_range(start: Tick, duration: Tick) -> bool {
-    start >= Tick::MIN && start <= Tick::MAX && duration.0 >= 0 && start.0.checked_add(duration.0).is_some_and(|end| end <= Tick::MAX.0)
+    let within = |t: i64| (Tick::MIN.0..=Tick::MAX.0).contains(&t);
+    within(start.0) && within(duration.0) && start.0.checked_add(duration.0).is_some_and(within)
 }
 
 /// Project-level settings.
@@ -1685,7 +1711,11 @@ mod tests {
             let settings = SequenceSettings { frame_rate, ..Default::default() };
             assert!(settings.validate().is_err());
         }
-        assert!(SequenceSettings { width: 7680, height: 4320, ..Default::default() }.validate().is_ok());
+        for (width, height) in [(7680, 4320), (15360, 8640), (16384, 8192), (16384, 16384), (32768, 8192)] {
+            assert!(SequenceSettings { width, height, ..Default::default() }.validate().is_ok(), "{width}x{height}");
+        }
+        assert!(validate_frame_size(32768, 16384).is_err());
+        assert!(validate_frame_size(65536, 1).is_err());
     }
 
     #[test]

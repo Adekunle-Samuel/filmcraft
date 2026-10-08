@@ -8,6 +8,7 @@ fn invalid_preview_scales_are_rejected_without_allocating() {
         assert!(s.render_program(scale).is_none());
         assert!(s.render_program_working(scale).is_none());
     }
+    assert!(s.try_render_program_at(f32::NAN, Tick::ZERO).unwrap_err().to_string().contains("finite"), "the reason is reported");
     assert_eq!(s.render_program(0.5).unwrap().w, 80);
 }
 use serde_json::json;
@@ -121,7 +122,8 @@ fn sequence_parameters_are_bounded_and_failed_changes_are_atomic() {
             json!({"sampleRate":u64::MAX}),
             json!({"width":-1}),
             json!({"width":1.5}),
-            json!({"width":16384,"height":16384}),
+            json!({"width":32768,"height":16384}),
+            json!({"width":1920.25}),
             json!({"fps":1001}),
             json!({"sampleRate":384001}),
         ] {
@@ -136,6 +138,10 @@ fn sequence_parameters_are_bounded_and_failed_changes_are_atomic() {
     }
     s.execute("file.newSequence", json!({"width":7680,"height":4320,"video":0,"audio":0})).unwrap();
     assert_eq!(s.active_sequence().unwrap().settings.width, 7680, "standard 8K remains supported");
+    s.execute("file.newSequence", json!({"width":15360.0,"height":8640.0,"sampleRate":48000.0,"video":1.0,"audio":0})).unwrap();
+    assert_eq!(s.active_sequence().unwrap().settings.width, 15360, "16K, and integer-valued floats, are accepted");
+    s.execute("sequence.settings", json!({"width":16384,"height":8192})).unwrap();
+    assert_eq!(s.active_sequence().unwrap().settings.height, 8192, "a 16384x8192 panorama is accepted");
 }
 
 #[test]

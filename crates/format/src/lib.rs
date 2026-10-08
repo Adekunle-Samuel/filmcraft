@@ -206,10 +206,12 @@ pub fn decode(bytes: &[u8]) -> Result<Loaded, FormatError> {
     validate_loaded(env.loaded(found))
 }
 
+/// Refuse only values that would overflow or exhaust memory later (`Sequence::check_bounds`);
+/// structural rules such as overlaps are left to the editor, so projects that open today still open.
 fn validate_loaded(loaded: Loaded) -> Result<Loaded, FormatError> {
     for item in loaded.project.sequences() {
         if let filmcraft_project::ItemKind::Sequence(sequence) = &item.kind {
-            sequence.check().map_err(|e| FormatError::Corrupt(format!("sequence `{}`: {e}", item.name)))?;
+            sequence.check_bounds().map_err(|e| FormatError::Corrupt(format!("sequence `{}`: {e}", item.name)))?;
         }
     }
     Ok(loaded)
@@ -326,11 +328,39 @@ mod tests {
     fn damaged_sequence_settings_are_rejected_before_rendering() {
         let mut p = Project::new("Invalid sequence");
         let id = p.new_sequence("Bad", filmcraft_project::SequenceSettings::default(), 1, 1, None);
-        for (width, height, sample_rate) in [(0, 90, 48000), (160, 0, 48000), (160, 90, 0), (16384, 16384, 48000)] {
+        for (width, height, sample_rate) in [(0, 90, 48000), (160, 0, 48000), (160, 90, 0), (65536, 90, 48000), (32768, 16384, 48000)] {
             let settings = &mut p.sequence_mut(id).unwrap().settings;
             (settings.width, settings.height, settings.sample_rate) = (width, height, sample_rate);
             assert!(matches!(decode(&encode(&p, false)), Err(FormatError::Corrupt(_))));
         }
+    }
+
+    /// #210 review: load-time validation refuses only overflowing values. A project that breaks a
+    /// structural rule an older build may have written (overlapping or zero-length clips) still
+    /// opens, as it did before; and 16K sequences are not "too large".
+    #[test]
+    fn structural_rule_breaks_still_open() {
+        use filmcraft_project::{ItemKind, SequenceSettings, TrackKind};
+        use filmcraft_time::{FrameRate, Tick, TimeRange};
+        let mut p = Project::new("Legacy");
+        let rate = FrameRate::FPS_24;
+        let layer = p.add_item(
+            "Layer",
+            filmcraft_project::Label::Iris,
+            ItemKind::AdjustmentLayer { width: 1920, height: 1080, rate, duration: rate.tick_of(48) },
+            None,
+        );
+        let settings = SequenceSettings { width: 15360, height: 8640, ..Default::default() };
+        let seq = p.new_sequence("Sequence 01", settings, 1, 1, None);
+        let range = TimeRange::new(Tick::ZERO, rate.tick_of(48));
+        let a = p.make_track_item(layer, TrackKind::Video, Tick::ZERO, range, rate).unwrap();
+        let b = p.make_track_item(layer, TrackKind::Video, rate.tick_of(24), range, rate).unwrap();
+        let mut c = p.make_track_item(layer, TrackKind::Video, rate.tick_of(200), range, rate).unwrap();
+        c.duration = Tick::ZERO;
+        p.sequence_mut(seq).unwrap().video_tracks[0].items = vec![a, b, c];
+        assert!(p.sequence(seq).unwrap().check().is_err(), "the sequence breaks the editor's invariants");
+        let loaded = decode(&encode(&p, false)).unwrap_or_else(|e| panic!("a project that opened before is refused: {e}"));
+        assert_eq!(loaded.project.sequence(seq).unwrap().video_tracks[0].items.len(), 3);
     }
 
     #[test]

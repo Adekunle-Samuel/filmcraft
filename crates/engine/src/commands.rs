@@ -165,9 +165,14 @@ pub(crate) fn u64_p(p: &Value, k: &str) -> Option<u64> {
 }
 
 /// Typed dimensions/counts must not truncate, wrap or silently accept negative/fractional values.
+/// Integer-valued floats (`1920.0`, as JSON from many clients) are integers.
 pub(crate) fn checked_u32_p(p: &Value, key: &str, cmd: &str) -> Result<Option<u32>> {
     let Some(value) = p.get(key).filter(|v| !v.is_null()) else { return Ok(None) };
-    value.as_u64().and_then(|v| u32::try_from(v).ok()).map(Some).ok_or_else(|| bad(cmd, format!("`{key}` must be an unsigned 32-bit integer")))
+    let exact = value
+        .as_u64()
+        .and_then(|v| u32::try_from(v).ok())
+        .or_else(|| value.as_f64().filter(|f| f.is_finite() && f.fract() == 0.0 && (0.0..=f64::from(u32::MAX)).contains(f)).map(|f| f as u32));
+    exact.map(Some).ok_or_else(|| bad(cmd, format!("`{key}` must be an unsigned 32-bit integer")))
 }
 
 /// Parse a time from params: `time` (ticks), `frame`, `seconds` or `timecode`, with `prefix`.

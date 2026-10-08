@@ -217,10 +217,8 @@ pub fn decode_pcm(v: &[u8], format: SoundFormat, channels: usize, bits: u32, fra
             if bps == 0 || bps > 4 || frame_bytes < bps * ch {
                 return Err(crate::Error::Unsupported(format!("{bits}-bit PCM with {frame_bytes}-byte frames")));
             }
+            // `frame_bytes >= bps * ch`, so the output is bounded by the bytes actually supplied.
             let n = v.len() / frame_bytes;
-            if n.checked_mul(ch).is_none_or(|n| n > 16_777_216) {
-                return Err(crate::Error::Invalid("PCM decode exceeds the sample buffer limit".into()));
-            }
             let mut out = vec![Vec::with_capacity(n); ch];
             let scale = 1.0 / (1u64 << (8 * bps - 1)) as f32;
             for i in 0..n {
@@ -239,6 +237,8 @@ pub fn decode_pcm(v: &[u8], format: SoundFormat, channels: usize, bits: u32, fra
             Ok(out)
         }
         SoundFormat::Aes3Element => {
+            // SMPTE 331M: an AES3 element carries at most eight channels (and an output buffer per
+            // declared channel would multiply a hostile header's allocation).
             if ch > 8 {
                 return Err(crate::Error::Invalid("an AES3 element has at most eight channels".into()));
             }

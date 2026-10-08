@@ -923,7 +923,7 @@ impl Session {
     /// Render the active sequence at the playhead in its working colour space (HDR values kept;
     /// for scopes and analysis).
     pub fn render_program_working(&self, scale: f32) -> Option<filmcraft_render::Image> {
-        let seq = self.renderable_sequence(scale)?;
+        let seq = self.renderable_sequence(scale).ok()?;
         let provider = self.media.provider(self.project.clone(), self.services.clone());
         let opts = filmcraft_render::RenderOptions { scale, working_output: true, ..Default::default() };
         Some(filmcraft_render::render_sequence(&self.project, seq, self.playhead(), opts, &provider))
@@ -935,29 +935,33 @@ impl Session {
     }
 
     /// Render the active sequence at `t` (snapped to its frame, as the playhead would be) without
-    /// moving the playhead (CPU reference path).
+    /// moving the playhead (CPU reference path). `None` when there is no sequence or the frame
+    /// cannot be rendered at `scale`; [`Session::try_render_program_at`] says why.
     pub fn render_program_at(&self, scale: f32, t: Tick) -> Option<filmcraft_render::Image> {
+        self.try_render_program_at(scale, t).ok()
+    }
+
+    /// [`Session::render_program_at`], with the reason when nothing can be rendered.
+    pub fn try_render_program_at(&self, scale: f32, t: Tick) -> Result<filmcraft_render::Image> {
         let seq = self.renderable_sequence(scale)?;
         let t = self.sequence_rate().snap(t.max(Tick::ZERO));
         let provider = self.media.provider(self.project.clone(), self.services.clone());
         let opts = filmcraft_render::RenderOptions { scale, captions: true, ..Default::default() };
-        Some(filmcraft_render::render_sequence(&self.project, seq, t, opts, &provider))
+        Ok(filmcraft_render::render_sequence(&self.project, seq, t, opts, &provider))
     }
 
-    fn renderable_sequence(&self, scale: f32) -> Option<ItemId> {
-        let id = self.state.active_sequence?;
-        let seq = self.project.sequence(id)?;
+    /// The active sequence, if a frame of it at `scale` is within the image size limits.
+    fn renderable_sequence(&self, scale: f32) -> Result<ItemId> {
+        let id = self.state.active_sequence.ok_or(EngineError::NoSequence)?;
+        let seq = self.project.sequence(id).ok_or(EngineError::NoSequence)?;
         if !scale.is_finite() || scale <= 0.0 {
-            eprintln!("filmcraft: render scale must be finite and positive");
-            return None;
+            return Err(EngineError::Other(format!("render scale {scale} must be finite and positive")));
         }
         let (w, h) = filmcraft_render::output_size(seq, scale);
-        let valid = u32::try_from(w).ok().zip(u32::try_from(h).ok()).is_some_and(|(w, h)| filmcraft_project::validate_frame_size(w, h).is_ok());
-        if !valid {
-            eprintln!("filmcraft: requested render frame exceeds the image size limits");
-            return None;
-        }
-        Some(id)
+        let size = u32::try_from(w).ok().zip(u32::try_from(h).ok());
+        let Some((w, h)) = size else { return Err(EngineError::Other("the requested render frame exceeds the image size limits".into())) };
+        filmcraft_project::validate_frame_size(w, h).map_err(|e| EngineError::Other(format!("cannot render a {w}x{h} frame: {e}")))?;
+        Ok(id)
     }
 }
 

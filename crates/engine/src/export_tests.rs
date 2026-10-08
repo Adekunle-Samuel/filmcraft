@@ -61,6 +61,7 @@ fn export_integer_parameters_cannot_wrap_or_overflow() {
         }
     }
     assert!(s.execute("export.resolve", json!({"bitrateKbps":u32::MAX})).is_ok());
+    assert!(s.execute("export.resolve", json!({"bitrateKbps":8000.0, "keyframeDistance":48.0})).is_ok(), "integer-valued floats are integers");
 }
 
 fn probe(path: &str) -> Option<Value> {

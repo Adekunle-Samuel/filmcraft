@@ -208,10 +208,8 @@ impl CaptionTrack {
     }
     /// Invariant check: captions sorted, positive duration, no overlaps.
     pub fn check(&self) -> Result<(), String> {
+        self.check_bounds()?;
         for c in &self.captions {
-            if !crate::bounded_time_range(c.start, c.duration) {
-                return Err(format!("{}: caption {:?} is outside supported time bounds", self.name, c.id));
-            }
             if c.duration.0 <= 0 {
                 return Err(format!("{}: caption {:?} has non-positive duration", self.name, c.id));
             }
@@ -219,6 +217,15 @@ impl CaptionTrack {
         for w in self.captions.windows(2) {
             if w[0].end() > w[1].start {
                 return Err(format!("{}: captions {:?} and {:?} overlap", self.name, w[0].id, w[1].id));
+            }
+        }
+        Ok(())
+    }
+    /// Only the time bounds that keep caption arithmetic from overflowing (see `Track::check_bounds`).
+    pub fn check_bounds(&self) -> Result<(), String> {
+        for c in &self.captions {
+            if !crate::bounded_time_range(c.start, c.duration) {
+                return Err(format!("{}: caption {:?} is outside supported time bounds", self.name, c.id));
             }
         }
         Ok(())

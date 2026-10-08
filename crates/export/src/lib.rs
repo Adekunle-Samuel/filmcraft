@@ -1217,7 +1217,7 @@ fn h264_factory(format: Format, w: u32, h: u32, rate: FrameRate, s: &ExportSetti
 /// The range to export (settings → In/Out → whole sequence).
 pub fn export_range(project: &Project, seq: ItemId, settings: &ExportSettings) -> Result<TimeRange> {
     let q = project.sequence(seq).ok_or(ExportError::NoSequence)?;
-    q.check().map_err(ExportError::Unsupported)?;
+    q.check_bounds().map_err(ExportError::Unsupported)?;
     if let Some(r) = settings.range {
         validate_range(r)?;
         return Ok(r);
