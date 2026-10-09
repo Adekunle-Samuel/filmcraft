@@ -234,6 +234,8 @@ Every menu item, button, slider and drag in FilmCraft is a **command** with an i
 
 The trailer and the grades in these screenshots were built exactly this way, by an agent driving the running app.
 
+- **Assistant (optional, off by default).** A chat panel that edits through the same commands, with Claude or a local model: it removes silences and ums from an interview, proposes content cuts with reasons, matches a reference's grade and makes 30 s / 60 s variations. Every plan is shown before it is applied, lands in a new sequence as one undo step, and exports wait for your click. Build with `--features assistant`; see [docs/assistant.md](docs/assistant.md).
+
 <br>
 
 ## Everywhere
@@ -271,6 +273,7 @@ The control protocol is documented in [docs/control-protocol.md](docs/control-pr
 | [docs/architecture.md](docs/architecture.md) | Layers, data model, time base, command system, render and export pipeline |
 | [docs/testing.md](docs/testing.md) | Unit, property and ffmpeg-oracle tests, accuracy criteria, benchmarks |
 | [docs/agents.md](docs/agents.md) | Driving FilmCraft over MCP and the control channel; how agents develop it |
+| [docs/assistant.md](docs/assistant.md) | The optional in-app Assistant: setup, what is sent, how it edits |
 | [docs/control-protocol.md](docs/control-protocol.md) | Control-channel and MCP reference |
 | [docs/project-files.md](docs/project-files.md) | `.fcproj` format, schema migrations, auto-save and crash recovery |
 | [docs/graphics.md](docs/graphics.md) · [docs/captions.md](docs/captions.md) | Text engine, graphic clips and tools; caption tracks and formats |
@@ -291,7 +294,7 @@ The biggest gaps today:
 - **No plugins.** No VST3 / Audio Units or OpenFX hosting.
 - **Delivery codecs.** H.264 is our only delivery-codec export; no HEVC or AV1 export yet.
 - **Real-world media and platforms.** Our decoders are bit-exact on conformance streams, but camera and phone files in the wild are less tested. Windows and Linux get far less testing than macOS.
-- **AI features.** Few so far; speech to text is optional and off by default.
+- **AI features.** Few so far; speech to text and the Assistant are optional and off by default, and the Assistant has only been evaluated on scripted, synthetic material.
 
 Bug reports with real footage are the most useful thing you can send us: [open an issue](https://github.com/storytold/filmcraft/issues) or tell us in [Discord](https://discord.gg/artcraft).
 

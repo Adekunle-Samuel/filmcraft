@@ -19,6 +19,8 @@
 
 pub mod captions;
 pub mod multicam;
+pub mod plan;
+pub mod plan_style;
 pub mod through;
 pub mod transcript;
 

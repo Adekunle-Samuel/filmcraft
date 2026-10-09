@@ -52,6 +52,8 @@ filmcraft-format = { path = "crates/format" }
 filmcraft-engine = { path = "crates/engine" }
 filmcraft-ui-egui = { path = "crates/ui-egui" }
 filmcraft-automation = { path = "crates/automation" }
+filmcraft-llm = { path = "crates/llm" }
+filmcraft-agent = { path = "crates/agent" }
 filmcraft-platform = { path = "crates/platform" }
 filmcraft-testkit = { path = "crates/testkit" }
 

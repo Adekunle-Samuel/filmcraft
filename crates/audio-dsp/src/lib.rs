@@ -6,6 +6,7 @@
 //!   registry ([`effects()`]) describing every effect's parameters (range, unit, default) so the
 //!   engine and UI can build controls generically.
 //! * [`biquad`] — RBJ-cookbook biquads (TDF-II) with analytic magnitude response.
+//! * [`silence`] — waveform silence detection (voiced regions and the silences between them).
 //! * [`sync`] — offset between two recordings of one event (GCC-PHAT, sample-accurate).
 //! * [`resample`] — streaming, block-invariant rate conversion for playback on a device at another rate.
 //! * [`channels`] — channel layouts, ITU-R BS.775 up/downmix, 5.1 mixdown types, the 5.1 panner.
@@ -29,6 +30,7 @@ pub mod loudness;
 pub mod oversample;
 pub mod remix;
 pub mod resample;
+pub mod silence;
 mod smooth;
 pub mod sync;
 

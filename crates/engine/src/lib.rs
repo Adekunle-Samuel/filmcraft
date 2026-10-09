@@ -11,16 +11,20 @@
 #![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable))]
 
 pub mod aaf_omf;
+pub mod audio_analysis;
 pub mod autosave;
 pub mod captions;
 pub mod clip_ops;
 pub mod color;
 pub mod commands;
 pub mod demo;
+pub mod edit_plan;
 pub mod essential_sound;
 pub mod export_tools;
+pub mod frames;
 pub mod graphic_templates;
 pub mod graphics;
+pub mod history;
 pub mod interchange;
 pub mod keyboard;
 pub mod masks;
@@ -45,7 +49,10 @@ pub mod sequence_tools;
 pub mod settings;
 pub mod shortcut_presets;
 pub mod shortcuts;
+pub mod style_analysis;
+pub mod style_grade;
 pub mod sync;
+pub mod tools;
 pub mod transcript;
 pub mod trim;
 pub mod voiceover;
@@ -197,6 +204,36 @@ pub struct History {
     /// Key of the last [`Session::edit_merged`] step: a continuous gesture (a fader drag) with the
     /// same key folds into that one undo step.
     pub merge_key: Option<String>,
+    /// Marks handed out by `edit.historyMark` (newest last, at most [`MAX_HISTORY_MARKS`]), checked
+    /// by `edit.collapseSince` before it folds steps.
+    pub marks: Vec<HistoryMark>,
+}
+
+/// Marks kept per session; older ones expire.
+pub const MAX_HISTORY_MARKS: usize = 64;
+
+/// A point in the undo history (`edit.historyMark`). It remembers the snapshots around the point
+/// weakly, so `edit.collapseSince` can tell whether the history below it is still the same.
+#[derive(Clone, Debug)]
+pub struct HistoryMark {
+    /// Unique in the process, so a token from another project or session never matches.
+    pub token: u64,
+    /// Undo depth when the mark was taken.
+    pub mark: usize,
+    /// The project when the mark was taken: the "before" snapshot of the first step after it.
+    base: std::sync::Weak<Project>,
+    /// The undo entry at `mark - 1` (None when the history was empty).
+    below: Option<std::sync::Weak<Project>>,
+}
+
+/// Fold the undo steps pushed since the history had `n0` entries into one step named `label`
+/// (it undoes all of them at once). Returns whether there was anything to fold.
+pub fn collapse_history(s: &mut Session, n0: usize, label: &str) -> bool {
+    let Some(first) = s.history.undo.get(n0).map(|e| e.1.clone()) else { return false };
+    s.history.undo.truncate(n0);
+    s.history.undo.push((label.to_string(), first));
+    s.history.merge_key = None;
+    true
 }
 
 impl History {
@@ -359,6 +396,10 @@ pub struct Session {
     pub mask_jobs: Vec<masks::PendingTrack>,
     /// Scene Edit Detection jobs whose results are applied when they finish.
     pub scene_jobs: Vec<scene_detect::PendingScene>,
+    /// `transcript.generate` jobs whose transcripts are stored when they finish.
+    pub transcript_jobs: Vec<transcript::PendingTranscripts>,
+    /// Style analyses (`media.analyze`): cached profiles, running jobs, the style library folder.
+    pub style: style_analysis::StyleState,
     /// Effect presets (built-in + the user's, persisted in the data directory).
     pub presets: presets::PresetLibrary,
     /// Export presets (built-in + the user's, persisted in the data directory) and favourites.
@@ -397,6 +438,13 @@ pub struct Job {
 }
 
 impl Job {
+    /// Whether the job is over: its result is stored (what `jobs.list` reports as `finished`) or
+    /// its progress says so. Job bodies store their output before the result, so once this is
+    /// true the output can be applied, even if `progress.finished` is set a moment later.
+    pub fn is_finished(&self) -> bool {
+        self.progress.finished.load(std::sync::atomic::Ordering::Relaxed) || self.result.lock().unwrap_or_else(|e| e.into_inner()).is_some()
+    }
+
     pub fn to_json(&self) -> Value {
         use std::sync::atomic::Ordering;
         let res = self.result.lock().unwrap_or_else(|e| e.into_inner()).clone();
@@ -455,6 +503,8 @@ impl Session {
             media_jobs: Vec::new(),
             mask_jobs: Vec::new(),
             scene_jobs: Vec::new(),
+            transcript_jobs: Vec::new(),
+            style: Default::default(),
             presets: Default::default(),
             export_presets: Default::default(),
             export_queue: Default::default(),
@@ -505,6 +555,7 @@ impl Session {
         self.shortcuts.set_dir(&cfg.data_dir);
         self.presets.set_dir(&cfg.data_dir);
         self.export_presets.set_dir(&cfg.data_dir);
+        self.style.set_dir(&cfg.data_dir);
         self.prefs_path = Some(prefs_path);
         self.apply_media_cache();
         self.persistence = Some(autosave::Persistence::start(&cfg, self.prefs.auto_save.clone())?);
@@ -548,6 +599,8 @@ impl Session {
         proxies::poll(self);
         masks::poll(self);
         scene_detect::poll(self);
+        transcript::poll(self);
+        style_analysis::poll(self);
         export_tools::pump_queue(self, false);
         panels::log_jobs(self);
         let Some(p) = self.persistence.as_mut() else { return };
@@ -818,6 +871,87 @@ impl Session {
         }
     }
 
+    /// Run `f` as one undoable step named `label`: every edit it makes (through [`Session::edit`],
+    /// [`Session::execute`]…) folds into a single undo step, or none when it changed nothing. When
+    /// `f` fails (or panics) the project, the editor state, the history and the journal are put
+    /// back as they were, so a multi-step operation never leaves half an edit behind.
+    pub fn grouped<R>(&mut self, label: &str, f: impl FnOnce(&mut Session) -> Result<R>) -> Result<R> {
+        let n0 = self.history.undo.len();
+        let base = self.project.clone();
+        let state = self.state.clone();
+        let undo = self.history.undo.clone();
+        let redo = self.history.redo.clone();
+        let merge_key = self.history.merge_key.clone();
+        let journal_len = self.journal.len();
+        let revision = self.revision;
+        let limit = self.history.limit;
+        // no front-trimming while `f` runs: `n0` must keep pointing at the first new step
+        self.history.limit = usize::MAX;
+        let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| f(self)))
+            .unwrap_or_else(|_| Err(EngineError::Other(format!("internal error in \u{201c}{label}\u{201d} (see the crash log); nothing was changed"))));
+        self.history.limit = limit;
+        if r.is_ok() {
+            collapse_history(self, n0, label);
+        } else {
+            self.project = base;
+            self.state = state;
+            self.history.undo = undo;
+            self.history.redo = redo;
+            self.history.merge_key = merge_key;
+            self.journal.truncate(journal_len);
+            if self.revision != revision {
+                self.bump();
+            }
+        }
+        let excess = self.history.undo.len().saturating_sub(self.history.limit);
+        self.history.undo.drain(..excess);
+        r
+    }
+
+    /// Mark the current point of the undo history (`edit.historyMark`): `(mark, token)` for
+    /// [`Session::collapse_since`].
+    pub fn history_mark(&mut self) -> (usize, u64) {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+        let token = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let mark = self.history.undo.len();
+        let below = mark.checked_sub(1).and_then(|i| self.history.undo.get(i)).map(|e| Arc::downgrade(&e.1));
+        self.history.marks.push(HistoryMark { token, mark, base: Arc::downgrade(&self.project), below });
+        let excess = self.history.marks.len().saturating_sub(MAX_HISTORY_MARKS);
+        self.history.marks.drain(..excess);
+        (mark, token)
+    }
+
+    /// Fold the undo steps made since [`Session::history_mark`] returned `(mark, token)` into one
+    /// step named `label` (`edit.collapseSince`). Refused when the token is unknown or belongs to
+    /// another mark, or when the history up to the mark is no longer the one the mark saw (steps
+    /// below it were undone and replaced). Returns how many steps were folded (0: none since).
+    pub fn collapse_since(&mut self, mark: usize, token: u64, label: &str) -> Result<usize> {
+        let stale = |why: &str| EngineError::Other(format!("can't combine the steps since history mark {mark}: {why}"));
+        let rec = self.history.marks.iter().find(|m| m.token == token).cloned().ok_or_else(|| stale("unknown or expired token"))?;
+        if rec.mark != mark {
+            return Err(stale(&format!("the token belongs to mark {}", rec.mark)));
+        }
+        let base = rec.base.upgrade().ok_or_else(|| stale("the history has changed since"))?;
+        if Arc::ptr_eq(&base, &self.project) && self.history.undo.len() == mark {
+            return Ok(0);
+        }
+        // the first step after the mark started from `base`; the 200-step limit may have trimmed
+        // the front since, so it can sit lower than `mark`
+        let at = self.history.undo.iter().take(mark.saturating_add(1)).position(|e| Arc::ptr_eq(&e.1, &base));
+        let Some(at) = at else {
+            return Err(stale("the steps after it were undone or replaced"));
+        };
+        if let (Some(below), Some(i)) = (&rec.below, at.checked_sub(1)) {
+            let same = below.upgrade().zip(self.history.undo.get(i)).is_some_and(|(b, e)| Arc::ptr_eq(&b, &e.1));
+            if !same {
+                return Err(stale("the history before it has changed"));
+            }
+        }
+        let n = self.history.undo.len().saturating_sub(at);
+        collapse_history(self, at, label);
+        Ok(n)
+    }
+
     pub fn undo(&mut self) -> Option<String> {
         let (label, prev) = self.history.undo.pop()?;
         self.history.merge_key = None;
@@ -1020,6 +1154,8 @@ const MAX_SUBCLIP_CHAIN: usize = 16;
 #[cfg(test)]
 mod aaf_omf_tests;
 #[cfg(test)]
+mod audio_analysis_tests;
+#[cfg(test)]
 mod audio_effects_tests;
 #[cfg(test)]
 mod autosave_tests;
@@ -1028,6 +1164,8 @@ mod clip_ops_tests;
 #[cfg(test)]
 mod color_tests;
 #[cfg(test)]
+mod edit_plan_tests;
+#[cfg(test)]
 mod essential_sound_tests;
 #[cfg(test)]
 mod explicit_targets_tests;
@@ -1035,6 +1173,8 @@ mod explicit_targets_tests;
 mod export_tests;
 #[cfg(test)]
 mod file_tests;
+#[cfg(test)]
+mod history_tests;
 #[cfg(test)]
 mod image_sequence_tests;
 #[cfg(test)]

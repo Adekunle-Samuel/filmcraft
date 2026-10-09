@@ -91,3 +91,31 @@ fn tiny_model_transcribes_public_domain_speech() {
     eprintln!("whisper-tiny WER {:.1}% over {words} words", wer * 100.0);
     assert!(wer < 0.25, "WER {wer}");
 }
+
+/// The real vocabulary encodes the filler prompt (BPE with the model's merges) back to the same
+/// text, and transcription conditioned on it still produces well-formed words.
+#[test]
+fn tiny_model_with_the_filler_prompt() {
+    let Some(dir) = model_dir("whisper-tiny") else {
+        eprintln!("SKIPPED: whisper-tiny weights not found (see the test's module docs)");
+        return;
+    };
+    let json = std::fs::read_to_string(dir.join("tokenizer.json")).unwrap();
+    let tok = filmcraft_speech::whisper::tokenizer::Tokenizer::from_json(&json).unwrap();
+    let ids = filmcraft_speech::whisper::prompt_tokens(&tok, Some(filmcraft_speech::FILLER_PROMPT));
+    assert_eq!(tok.decode(&ids).trim(), filmcraft_speech::FILLER_PROMPT);
+    assert!(ids.len() < 40, "BPE merges applied: {} tokens", ids.len());
+    assert!(tok.start_of_prev.is_some());
+    let samples = samples();
+    let Some((p, _)) = samples.first() else {
+        eprintln!("SKIPPED: no speech samples in target/fixtures/speech");
+        return;
+    };
+    let w = filmcraft_speech::whisper::Whisper::load(&dir, "whisper-tiny").unwrap();
+    let opts = Options { language: Some("en".into()), diarize: false, initial_prompt: Some(filmcraft_speech::FILLER_PROMPT.into()), ..Default::default() };
+    let audio = read_f32(p);
+    let t = w.transcribe(&audio, &opts, &mut |_, _| true).unwrap();
+    t.check().unwrap();
+    assert!(!t.words.is_empty());
+    eprintln!("with the filler prompt: {}", t.text());
+}

@@ -1671,7 +1671,9 @@ dependencies = [
  "cpal",
  "eframe",
  "egui",
+ "filmcraft-agent",
  "filmcraft-engine",
+ "filmcraft-llm",
  "filmcraft-platform",
  "filmcraft-ui-egui",
  "log",
@@ -1704,6 +1706,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "filmcraft-agent"
+version = "0.4.0"
+dependencies = [
+ "filmcraft-engine",
+ "filmcraft-llm",
+ "filmcraft-project",
+ "filmcraft-speech",
+ "filmcraft-time",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "filmcraft-apv"
 version = "0.4.0"
 dependencies = [
@@ -1726,6 +1742,8 @@ version = "0.4.0"
 dependencies = [
  "base64 0.22.1",
  "filmcraft-engine",
+ "filmcraft-project",
+ "filmcraft-speech",
  "filmcraft-time",
  "image",
  "rmcp",
@@ -1775,9 +1793,12 @@ version = "0.4.0"
 name = "filmcraft-cli"
 version = "0.4.0"
 dependencies = [
+ "filmcraft-agent",
  "filmcraft-automation",
  "filmcraft-codecs",
  "filmcraft-engine",
+ "filmcraft-format",
+ "filmcraft-llm",
  "filmcraft-media",
  "filmcraft-mpegts",
  "filmcraft-mxf",
@@ -1847,6 +1868,7 @@ dependencies = [
  "filmcraft-project",
  "filmcraft-time",
  "proptest",
+ "serde",
  "serde_json",
  "thiserror 2.0.21",
 ]
@@ -2035,6 +2057,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "filmcraft-llm"
+version = "0.4.0"
+dependencies = [
+ "rustls",
+ "rustls-rustcrypto",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+ "ureq",
+]
+
+[[package]]
 name = "filmcraft-matroska"
 version = "0.4.0"
 dependencies = [
@@ -2220,6 +2254,7 @@ dependencies = [
  "eframe",
  "egui",
  "egui_kittest",
+ "filmcraft-agent",
  "filmcraft-audio-dsp",
  "filmcraft-codecs",
  "filmcraft-color",
@@ -2229,6 +2264,7 @@ dependencies = [
  "filmcraft-geom",
  "filmcraft-gpu",
  "filmcraft-interchange",
+ "filmcraft-llm",
  "filmcraft-media",
  "filmcraft-platform",
  "filmcraft-project",

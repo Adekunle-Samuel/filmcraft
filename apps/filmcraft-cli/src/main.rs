@@ -5,6 +5,8 @@
 #![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable))]
 
 mod args;
+#[cfg(feature = "assistant")]
+mod assistant;
 mod probe;
 
 use args::{Args, parse_value};
@@ -44,6 +46,12 @@ SUBCOMMANDS
                                 --image-sequence <media> is the first numbered still of a sequence
   bench-decode <media> [--frames N]
   mcp                           MCP server on stdio (headless, or --bridge to the live app)
+  assistant \"<prompt>\"          one Assistant turn on the headless project (build with
+                                --features assistant): [--provider anthropic|openai]
+                                [--model m] [--effort low..max] [--base-url u] [--budget usd]
+                                [--conversation c.json (continue / save the chat)] [--yes (allow
+                                edits without asking)]. Needs ANTHROPIC_API_KEY (or a local
+                                OpenAI-compatible server); see docs/assistant.md
   help                          this text
   --version                     print the version
 
@@ -221,6 +229,40 @@ async fn main() {
                     let s = |k: &str| c[k].as_str().unwrap_or("").to_string();
                     println!("{:<32} {:<34} {:<14} {}", s("id"), s("label"), s("shortcut"), s("params"));
                 }
+            }
+        }
+        "assistant" => {
+            let prompt = a.pos(1).unwrap_or_else(|| usage("assistant \"<prompt>\""));
+            #[cfg(feature = "assistant")]
+            {
+                if a.opt("--bridge").is_some() {
+                    usage("assistant runs headless (use the Assistant panel in the app instead of --bridge)");
+                }
+                let mut b = Backend::open(&a);
+                let Backend::Local(s) = &mut b else { usage("assistant runs headless") };
+                let budget = a
+                    .opt("--budget")
+                    .map(|v| v.parse::<f64>().ok().filter(|b| b.is_finite() && *b > 0.0).unwrap_or_else(|| usage("--budget must be a positive number of US$")));
+                let o = assistant::Options {
+                    prompt,
+                    provider: a.opt("--provider"),
+                    model: a.opt("--model"),
+                    effort: a.opt("--effort"),
+                    base_url: a.opt("--base-url"),
+                    budget,
+                    conversation: a.opt("--conversation"),
+                    yes: a.flag("--yes"),
+                };
+                let code = assistant::run(s, &o).unwrap_or_else(|e| fail(e));
+                b.finish(&a).await;
+                if code != 0 {
+                    std::process::exit(code);
+                }
+            }
+            #[cfg(not(feature = "assistant"))]
+            {
+                let _ = prompt;
+                fail("this build has no Assistant (build with --features assistant)");
             }
         }
         "exec" => {

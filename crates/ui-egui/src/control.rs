@@ -18,6 +18,10 @@
 //! - `ui.playback {action: play|stop|toggle, speed?}`
 //! - `ui.screenshot {path?, panel?}`: PNG of the window (or one panel)
 //! - `ui.resize {width, height}` / `ui.focus` / `app.quit`
+//! - `assistant.send {text}` / `assistant.state` / `assistant.approve {index|id, allow}` /
+//!   `assistant.plan {index, apply}` / `assistant.cancel` / `assistant.reset` /
+//!   `assistant.settings.get` / `assistant.settings.set {…}` (never the API key; see
+//!   `panels::assistant`)
 
 use std::sync::mpsc::Sender;
 
@@ -385,6 +389,10 @@ pub fn handle(app: &mut FilmcraftApp, ctx: &egui::Context, req: &ControlRequest)
             ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
             ok(Value::Null)
         }
+        m if m.starts_with("assistant.") => match crate::panels::assistant::control(app, ctx, m, p) {
+            Ok(v) => ok(v),
+            Err(e) => err(e),
+        },
         "app.quit" => {
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
             ok(Value::Null)

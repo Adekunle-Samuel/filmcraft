@@ -244,12 +244,23 @@ impl FilmcraftMcp {
                 tokio::task::spawn_blocking(move || {
                     // A command that panicked earlier poisoned the lock; the session is still usable.
                     let mut g = s.lock().unwrap_or_else(PoisonError::into_inner);
+                    // what the app does every frame: store finished transcripts and analyses,
+                    // advance the export queue
+                    g.poll_persistence();
                     g.execute(&id, params).map_err(AutomationError::from)
                 })
                 .await
                 .map_err(join_error)?
             }
             Backend::Bridge(b) => b.execute(id, params).await,
+        }
+    }
+
+    /// Apply finished background work now (headless; the app does it every frame itself).
+    pub(crate) async fn pump(&self) {
+        if let Backend::Headless(s) = &*self.backend {
+            let s = s.clone();
+            let _ = tokio::task::spawn_blocking(move || s.lock().unwrap_or_else(PoisonError::into_inner).poll_persistence()).await;
         }
     }
 
@@ -561,7 +572,100 @@ impl FilmcraftMcp {
     }
 }
 
-const INSTRUCTIONS: &str = "FilmCraft video editor (Premiere Pro-class). Every edit is an engine command: `command_list` to discover ids/params, `command_run` to execute (undoable; `command_batch` runs several). `doc_inspect` (or `project_inspect`/`sequence_inspect`) returns ids you can pass to commands; `render_preview` shows the result. In bridge mode the `ui_*` tools drive the live app: `ui_elements` lists clickable ids, `ui_click`/`ui_drag`/`ui_key` operate it, `ui_screenshot` shows it. Time is in ticks: 254016000000 per second (commands also accept `seconds`, `frame` or `timecode`).";
+/// An engine catalogue tool (a `tools.list` entry) as an MCP tool.
+fn engine_tool(t: &Value) -> Option<rmcp::model::Tool> {
+    let name = t.get("name")?.as_str()?.to_string();
+    let title = t.get("title").and_then(Value::as_str).unwrap_or(&name).to_string();
+    let description = t.get("description").and_then(Value::as_str).unwrap_or_default().to_string();
+    let schema = t.get("inputSchema")?.as_object()?.clone();
+    let a = t.get("annotations");
+    let hint = |k: &str| a.and_then(|a| a.get(k)).and_then(Value::as_bool).unwrap_or(false);
+    let annotations = rmcp::model::ToolAnnotations::with_title(title.clone())
+        .read_only(hint("readOnlyHint"))
+        .destructive(hint("destructiveHint"))
+        .idempotent(hint("idempotentHint"))
+        .open_world(hint("openWorldHint"));
+    Some(rmcp::model::Tool::new(name, description, Arc::new(schema)).with_title(title).with_annotations(annotations))
+}
+
+impl FilmcraftMcp {
+    /// The engine catalogue (headless: this session; bridge: the app's). Empty when the app cannot
+    /// be reached, so the server's own tools are still listed.
+    async fn engine_tools(&self) -> Vec<rmcp::model::Tool> {
+        let Ok(list) = self.run("tools.list", json!({})).await else { return Vec::new() };
+        list.as_array().map(|a| a.iter().filter_map(engine_tool).collect()).unwrap_or_default()
+    }
+
+    /// Run engine catalogue tool `name`: images become MCP image content, and a tool that started
+    /// a job (an export, a transcription...) is followed to the end with progress and cancellation.
+    async fn call_engine_tool(&self, name: &str, input: Value, context: &rmcp::service::RequestContext<rmcp::RoleServer>) -> Result<CallToolResult, McpError> {
+        // strict arguments, as for our own tools: a bad input is a -32602 naming what is wrong
+        match filmcraft_engine::tools::find(name) {
+            Some(_) => filmcraft_engine::tools::validate(name, &input).map_err(|e| McpError::invalid_params(e.to_string(), None))?,
+            None => return Err(McpError::invalid_params(format!("unknown tool `{name}`"), None)),
+        }
+        let started = std::time::SystemTime::now();
+        let out = match self.run("tools.call", json!({"name": name, "input": input.clone()})).await {
+            Ok(v) => v,
+            Err(e) => return Ok(fail(e)),
+        };
+        let mut result = out.get("result").cloned().unwrap_or(Value::Null);
+        if let Some(job) = out.get("job").and_then(Value::as_u64) {
+            // only an export's own output is removed on cancel
+            let partial = if name == "export" { result.get("path").and_then(Value::as_str).map(str::to_string) } else { None };
+            match self.follow_job(job, context, partial.as_deref(), started).await {
+                crate::long_job::JobEnd::Done(r) => {
+                    if let Some(o) = result.as_object_mut() {
+                        o.insert("result".into(), r);
+                    }
+                    // a finished analysis is read back, so the client gets the profile, not just "done"
+                    if name == "analyze_media"
+                        && let Some(item) = input.get("item")
+                        && let Ok(profile) = self.run("media.analysis", json!({"item": item})).await
+                        && let Some(o) = result.as_object_mut()
+                    {
+                        o.insert("profile".into(), filmcraft_engine::tools::cap(profile));
+                    }
+                }
+                crate::long_job::JobEnd::Failed(e) => return Ok(fail(format!("{name} failed: {e}"))),
+                crate::long_job::JobEnd::Cancelled => {
+                    if name == "export_variations" {
+                        self.remove_unfinished_exports(&result, started).await;
+                    }
+                    return Ok(fail("cancelled"));
+                }
+            }
+        }
+        let mut content: Vec<Content> = out
+            .get("images")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(|i| i.get("png").and_then(Value::as_str))
+            .map(|b64| Content::image(b64.to_string(), "image/png"))
+            .collect();
+        content.push(Content::text(serde_json::to_string_pretty(&result).unwrap_or_default()));
+        Ok(CallToolResult::success(content))
+    }
+
+    /// After a cancelled `export_variations`: delete the partial output of each of its exports that
+    /// did not finish (`result.files[].queueItems`); finished files stay.
+    async fn remove_unfinished_exports(&self, result: &Value, started: std::time::SystemTime) {
+        let Ok(queue) = self.run("export.queue.list", json!({})).await else { return };
+        let status = |id: u64| {
+            queue["items"].as_array().and_then(|a| a.iter().find(|i| i["id"].as_u64() == Some(id))).and_then(|i| i["status"].as_str()).unwrap_or("").to_string()
+        };
+        for f in result["files"].as_array().into_iter().flatten().take(64) {
+            let Some(path) = f["path"].as_str() else { continue };
+            let items: Vec<u64> = f["queueItems"].as_array().into_iter().flatten().filter_map(Value::as_u64).collect();
+            if !items.is_empty() && items.iter().all(|id| status(*id) != "done") {
+                crate::long_job::remove_partial(path, started);
+            }
+        }
+    }
+}
+
+const INSTRUCTIONS: &str = "FilmCraft video editor (Premiere Pro-class). Every edit is an engine command: `command_list` to discover ids/params, `command_run` to execute (undoable; `command_batch` runs several). `doc_inspect` (or `project_inspect`/`sequence_inspect`) returns ids you can pass to commands; `render_preview` shows the result. The curated tools (`project_overview`, `read_transcript`, `contact_sheet`, `add_captions`, `export`, `command_search`, ...) are the engine's agent catalogue, shared with the in-app Assistant. In bridge mode the `ui_*` tools drive the live app: `ui_elements` lists clickable ids, `ui_click`/`ui_drag`/`ui_key` operate it, `ui_screenshot` shows it. Time is in ticks: 254016000000 per second (commands also accept `seconds`, `frame` or `timecode`).";
 
 /// Resources: the project (as `doc_inspect`) and the command catalog (as `command_list`).
 const DOCUMENT_URI: &str = "filmcraft://document";
@@ -602,8 +706,32 @@ impl ServerHandler for FilmcraftMcp {
                 return Ok(self.run_long(id, params, &context).await.into());
             }
         }
+        // Not one of ours: a tool of the engine catalogue (tools.list / tools.call).
+        if !self.tool_router.has_route(&request.name) {
+            let input = request.arguments.map(Value::Object).unwrap_or_else(|| json!({}));
+            return self.call_engine_tool(&request.name, input, &context).await.map(Into::into);
+        }
         let tcc = rmcp::handler::server::tool::ToolCallContext::new(self, request, context);
         self.tool_router.call(tcc).await
+    }
+
+    /// The router's tools plus the engine catalogue's (the router's win on a name clash).
+    async fn list_tools(
+        &self,
+        _request: Option<rmcp::model::PaginatedRequestParams>,
+        context: rmcp::service::RequestContext<rmcp::RoleServer>,
+    ) -> Result<rmcp::model::ListToolsResult, McpError> {
+        let mut tools = self.tool_router.list_all();
+        tools.extend(self.engine_tools().await.into_iter().filter(|t| !self.tool_router.has_route(&t.name)));
+        let hints = cache_hints(&context, 0);
+        Ok(rmcp::model::ListToolsResult {
+            result_type: Some(rmcp::model::ResultType::COMPLETE),
+            tools,
+            meta: None,
+            next_cursor: None,
+            ttl_ms: hints.map(|h| h.0),
+            cache_scope: hints.map(|_| rmcp::model::CacheScope::Public),
+        })
     }
 
     async fn list_resources(
@@ -744,6 +872,187 @@ mod tests {
         }
         let ro = |n: &str| tools.iter().find(|t| t["name"] == n).map(|t| t["annotations"]["readOnlyHint"].clone());
         assert_eq!((ro("command_list"), ro("command_run")), (Some(json!(true)), Some(json!(false))));
+        // the engine catalogue is served too, with its titles and annotations
+        for want in ["project_overview", "read_transcript", "contact_sheet", "add_captions", "set_loudness", "export", "command_search", "command_describe"] {
+            assert!(names.contains(&want), "{want} not listed");
+        }
+        assert_eq!((ro("contact_sheet"), ro("export")), (Some(json!(true)), Some(json!(false))));
+        let export = tools.iter().find(|t| t["name"] == "export").unwrap();
+        assert_eq!((&export["title"], &export["annotations"]["destructiveHint"]), (&json!("Export media"), &json!(true)));
+        assert_eq!(export["inputSchema"]["additionalProperties"], false);
+        // a name both have is listed once, as the server's own tool
+        for dup in ["render_frame", "command_run", "command_batch"] {
+            assert_eq!(names.iter().filter(|n| **n == dup).count(), 1, "{dup} listed twice");
+        }
+        let rf = tools.iter().find(|t| t["name"] == "render_frame").unwrap();
+        assert!(rf["inputSchema"]["properties"].get("max_side").is_some() && rf["inputSchema"]["properties"].get("item").is_none(), "{rf}");
+    }
+
+    /// Engine catalogue tools over MCP in headless mode: JSON as text, frames as image content,
+    /// strict arguments, and a job-starting tool followed to its end.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn engine_catalogue_tools_run_headless() {
+        let mut c = Client::start(demo());
+        c.init().await;
+        let r = c.call(1, "project_overview", json!({})).await;
+        assert_eq!(r["result"]["isError"], false, "{r}");
+        let v: Value = serde_json::from_str(r["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
+        assert!(v["items"].as_array().is_some_and(|a| !a.is_empty()) && v["activeSequence"]["video"].is_array(), "{v}");
+
+        let args = json!({"item": null, "sequence": true, "count": 4, "times": null, "cols": 2, "max_side": 400});
+        let r = c.call(2, "contact_sheet", args).await;
+        assert_eq!(r["result"]["isError"], false, "{r}");
+        let content = r["result"]["content"].as_array().unwrap();
+        assert_eq!((content[0]["type"].as_str(), content[0]["mimeType"].as_str()), (Some("image"), Some("image/png")), "{r}");
+        let png = base64::engine::general_purpose::STANDARD.decode(content[0]["data"].as_str().unwrap()).unwrap();
+        let img = image::load_from_memory(&png).unwrap();
+        assert!(img.width() <= 400 && img.height() <= 400);
+        let meta: Value = serde_json::from_str(content[1]["text"].as_str().unwrap()).unwrap();
+        assert_eq!((meta["cols"].as_u64(), meta["rows"].as_u64()), (Some(2), Some(2)), "{meta}");
+        assert!(meta.get("png").is_none());
+
+        // strict arguments: unknown field, wrong type, missing field
+        for (id, args) in [
+            (3, json!({"item": null, "sequence": true, "count": 4, "times": null, "cols": 2, "max_side": 400, "zoom": 2})),
+            (4, json!({"item": "one", "sequence": null, "count": null, "times": null, "cols": null, "max_side": null})),
+            (5, json!({"item": null})),
+        ] {
+            let r = c.call(id, "contact_sheet", args).await;
+            assert_eq!(r["error"]["code"], -32602, "{r}");
+        }
+        // the policy refuses app-level commands
+        let r = c.call(6, "command_describe", json!({"id": "prefs.reset"})).await;
+        assert!(r["result"]["content"][0]["text"].as_str().unwrap().contains("\"deny\""), "{r}");
+
+        // export starts a job; the call returns once it is written
+        let dir = std::env::temp_dir().join(format!("filmcraft-mcp-tools-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("mix.wav").to_string_lossy().to_string();
+        let r = c.call(7, "export", json!({"path": path, "preset": null, "format": "wav", "range": null, "sequence": null, "burn_captions": null})).await;
+        assert_eq!(r["result"]["isError"], false, "{r}");
+        let v: Value = serde_json::from_str(r["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
+        assert!(v["job"].is_u64() && v["result"].is_object(), "{v}");
+        assert!(std::path::Path::new(&path).exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The demo project with a fake transcriber whose words fit the first A1 clip's media (as in
+    /// the engine's transcript tests); returns that media item and the first V1 clip's item.
+    fn with_transcriber() -> (Session, u64, u64) {
+        let mut s = demo();
+        let q = s.active_sequence().unwrap();
+        let a = &q.audio_tracks[0].items[0];
+        let (item, sin, video) = (a.item, a.source_in, q.video_tracks[0].items[0].item);
+        let at = |x: f64| sin + filmcraft_time::Tick::from_seconds_f64(x);
+        let mut t = filmcraft_project::Transcript { language: "en".into(), ..Default::default() };
+        for (w, a, b) in [("Hello", 0.2, 0.5), ("um", 0.6, 0.9), ("world.", 1.0, 1.4)] {
+            t.words.push(filmcraft_project::Word::new(w, at(a), at(b)));
+        }
+        t.normalize();
+        s.transcriber = Some(Arc::new(filmcraft_speech::FixedTranscriber { transcript: t, id: "fixed".into() }));
+        (s, item.0, video.0)
+    }
+
+    fn text_json(r: &Value) -> Value {
+        let content = r["result"]["content"].as_array().cloned().unwrap_or_default();
+        let text = content.iter().rev().find_map(|c| c["text"].as_str()).unwrap_or("null");
+        serde_json::from_str(text).unwrap_or(Value::Null)
+    }
+
+    /// Send a `tools/call` with a progress token; collect the progress notifications until the
+    /// response arrives.
+    async fn call_with_progress(c: &mut Client, id: u64, name: &str, arguments: Value) -> (Value, Vec<Value>) {
+        let msg =
+            json!({"jsonrpc":"2.0","id":id,"method":"tools/call","params":{"name":name,"arguments":arguments,"_meta":{"progressToken":format!("p{id}")}}});
+        c.send(&msg.to_string()).await;
+        let mut notes = Vec::new();
+        loop {
+            let m = c.next().await;
+            if m["method"] == "notifications/progress" {
+                assert_eq!(m["params"]["progressToken"], format!("p{id}"), "{m}");
+                notes.push(m);
+            } else if m["id"] == id {
+                return (m, notes);
+            }
+        }
+    }
+
+    async fn transcript_words(c: &mut Client, id: u64) -> Value {
+        let r = c.call(id, "read_transcript", json!({"offset": null, "limit": null})).await;
+        text_json(&r)["words"].clone()
+    }
+
+    /// A6.1: in headless mode a transcription (the `transcribe` tool, or `command_run
+    /// transcript.generate` with `wait`) is followed to its end with progress, and its transcript is
+    /// stored before the call returns; the same for a style analysis.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn transcription_and_analysis_jobs_are_followed_headless() {
+        let (s, item, video) = with_transcriber();
+        let mut c = Client::start(s);
+        c.init().await;
+        assert_eq!(transcript_words(&mut c, 1).await, 0, "no transcript yet");
+        let args = json!({"items": [item], "language": null, "model": null, "keep_fillers": null, "regions": null});
+        let (r, notes) = call_with_progress(&mut c, 2, "transcribe", args).await;
+        assert_eq!(r["result"]["isError"], false, "{r}");
+        let v = text_json(&r);
+        assert!(v["job"].is_u64() && v["result"]["frames"] == 3, "{v}");
+        assert!(!notes.is_empty(), "the transcription reported its progress");
+        assert_eq!(transcript_words(&mut c, 3).await, 3, "stored when the call returned");
+
+        // a direct command with `wait` is followed the same way
+        let (s, item, _) = with_transcriber();
+        let mut c2 = Client::start(s);
+        c2.init().await;
+        let (r, notes) = call_with_progress(&mut c2, 4, "command_run", json!({"id": "transcript.generate", "params": {"items": [item], "wait": true}})).await;
+        assert_eq!(r["result"]["isError"], false, "{r}");
+        assert!(text_json(&r)["result"].is_object(), "{r}");
+        assert!(!notes.is_empty(), "transcript.generate reported progress");
+        assert_eq!(transcript_words(&mut c2, 5).await, 3);
+        // a failing one is an error result, not a hang
+        let (r, _) = call_with_progress(&mut c2, 6, "command_run", json!({"id": "transcript.generate", "params": {"items": [999_999], "wait": true}})).await;
+        assert_eq!(r["result"]["isError"], true, "{r}");
+
+        // analysis: the tool returns the profile; the command is followed too
+        let (r, notes) = call_with_progress(&mut c, 7, "analyze_media", json!({"item": video, "max_frames": 8})).await;
+        assert_eq!(r["result"]["isError"], false, "{r}");
+        let v = text_json(&r);
+        assert!(v["profile"]["profile"].is_object(), "{v}");
+        assert!(!notes.is_empty());
+        let (r, _) =
+            call_with_progress(&mut c, 8, "command_run", json!({"id": "media.analyze", "params": {"item": video, "maxFrames": 8, "wait": true}})).await;
+        assert_eq!(r["result"]["isError"], false, "{r}");
+        let r = c.call(9, "command_run", json!({"id": "media.analysis", "params": {"item": video}})).await;
+        assert!(text_json(&r)["profile"].is_object(), "{r}");
+    }
+
+    /// `export_variations` over MCP: the batch job is followed (the queue advances between polls
+    /// in headless mode) and every file is written when the call returns.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn export_variations_is_followed_headless() {
+        let mut s = demo();
+        let first = s.state.active_sequence.unwrap();
+        let seq = s.active_sequence().unwrap().clone();
+        let p = Arc::make_mut(&mut s.project);
+        p.item_mut(first).unwrap().name = "Long".into();
+        let second = p.add_item("Short", filmcraft_project::Label::Iris, filmcraft_project::ItemKind::Sequence(Box::new(seq)), None);
+        let dir = std::env::temp_dir().join(format!("filmcraft-mcp-variations-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut c = Client::start(s);
+        c.init().await;
+        let args = json!({"sequences": [first.0, second.0], "preset": "Waveform Audio 48 kHz 16-bit", "folder": dir.to_string_lossy(), "overwrite": null});
+        let (r, notes) = call_with_progress(&mut c, 1, "export_variations", args.clone()).await;
+        assert_eq!(r["result"]["isError"], false, "{r}");
+        assert!(!notes.is_empty());
+        let v = text_json(&r);
+        assert_eq!(v["files"].as_array().map(Vec::len), Some(2), "{v}");
+        for name in ["Long.wav", "Short.wav"] {
+            assert!(dir.join(name).exists(), "{name} written");
+        }
+        // the files exist now: refused
+        let r = c.call(2, "export_variations", args).await;
+        assert_eq!(r["result"]["isError"], true, "{r}");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// Strict arguments, malformed JSON, batch, doc_inspect and render_preview over the raw line

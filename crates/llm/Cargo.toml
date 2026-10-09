@@ -1,0 +1,24 @@
+[package]
+name = "filmcraft-llm"
+description = "FilmCraft LLM client: provider-neutral chat types, the LlmProvider trait, an incremental SSE parser, Anthropic Messages and OpenAI-compatible codecs, a price table and a scripted fake provider"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[features]
+default = []
+# Blocking HTTPS transport and the real providers (pure-Rust TLS: rustls + RustCrypto, OS
+# certificate verification). Off by default and never enabled for wasm.
+http = ["dep:ureq", "dep:rustls", "dep:rustls-rustcrypto"]
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+ureq = { version = "3", default-features = false, features = ["rustls-no-provider", "platform-verifier"], optional = true }
+rustls = { version = "0.23", default-features = false, optional = true }
+rustls-rustcrypto = { version = "0.0.2-alpha", optional = true }

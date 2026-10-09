@@ -72,6 +72,8 @@ const LAYERS: &[(&str, u8)] = &[
     ("platform", 5),
     ("ui-egui", 5),
     ("automation", 5),
+    ("llm", 5),
+    ("agent", 5),
     ("filmcraft", 6),
     ("cli", 6),
     ("web", 6),
@@ -93,6 +95,9 @@ const SAME_LAYER: &[(&str, &str)] = &[
     ("scopes", "gpu"),
     ("gpu", "render"),
     ("cli", "filmcraft"),
+    ("agent", "llm"),
+    ("ui-egui", "agent"),
+    ("ui-egui", "llm"),
 ];
 
 /// Crates that must not appear below L5 (UI toolkits, windowing, OS audio/menus).
@@ -241,7 +246,7 @@ fn run(cmd: &mut Command) -> Result<(), String> {
 }
 
 /// Crates above L4 that must also build for the web.
-const WEB_CRATES: &[&str] = &["filmcraft-ui-egui", "filmcraft-web"];
+const WEB_CRATES: &[&str] = &["filmcraft-ui-egui", "filmcraft-web", "filmcraft-llm", "filmcraft-agent"];
 
 fn wasm() -> Result<(), String> {
     let md = metadata()?;

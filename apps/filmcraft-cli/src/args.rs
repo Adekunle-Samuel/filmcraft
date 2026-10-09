@@ -19,6 +19,12 @@ const VALUED: &[&str] = &[
     "--end",
     "--data-dir",
     "--settings",
+    "--provider",
+    "--model",
+    "--effort",
+    "--base-url",
+    "--budget",
+    "--conversation",
 ];
 
 #[derive(Debug, Default)]

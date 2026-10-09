@@ -21,6 +21,8 @@
 
 mod app_nap;
 mod args;
+#[cfg(feature = "assistant")]
+mod assistant;
 mod audio;
 mod audio_in;
 mod control_server;
@@ -189,6 +191,11 @@ fn main() -> eframe::Result {
             }));
             app.hooks.pick_open_project =
                 Some(Box::new(|| rfd::FileDialog::new().add_filter("FilmCraft Project", &["fcproj"]).pick_file().map(|p| p.to_string_lossy().to_string())));
+            // the Assistant's LLM provider (opt-in at build time; docs/adr/0002)
+            #[cfg(feature = "assistant")]
+            {
+                app.hooks.assistant_provider = Some(assistant::factory(data_dir.clone().or_else(default_data_dir)));
+            }
             #[cfg(target_os = "macos")]
             {
                 let (rx, update) = native_menu::install(&app, cc.egui_ctx.clone());

@@ -21,7 +21,7 @@ Design principles:
 
 ```text
  L6  apps/filmcraft · apps/filmcraft-cli · apps/filmcraft-web
- L5  ui-egui · automation · platform
+ L5  ui-egui · automation · llm · agent · platform
  L4  engine
  L3  render · gpu · export · golden (test-only)
  L2  edit · codecs · interchange · captions · speech
@@ -72,6 +72,8 @@ and `filmcraft-cli`.
 | `engine` | L4 | `Session`, command registry, undo history, media pool, jobs, interchange glue |
 | `ui-egui` | L5 | the egui frontend: docking, panels, timeline, monitors, playback, control-channel handlers |
 | `automation` | L5 | MCP server (`rmcp`, stdio), headless or bridged to the running app |
+| `llm` | L5 | LLM client for the Assistant: provider-neutral chat types (thinking and other unknown blocks round-trip opaquely), the `LlmProvider` trait, a bounded incremental SSE parser, the Anthropic Messages and OpenAI-compatible codecs, a price table and `ScriptedProvider` for tests; feature `http` adds the blocking ureq + rustls transport and the real providers. No engine or UI dependency; builds for wasm without `http` ([README](../crates/llm/README.md)) |
+| `agent` | L5 | The Assistant's agent loop: `run_turn` drives model calls (via `llm`) and tool calls (via a `ToolHost`) with append-only history, one result message per response, host-enforced approvals, call/tool/budget limits and cancellation; the system prompt and workflow skills are Markdown in `crates/agent/skills/`. No threads or network of its own; builds for wasm |
 | `platform` | L5 | OS media FFI only: hardware video decoding (VideoToolbox H.264 / HEVC on macOS; Media Foundation / Direct3D 11 H.264 / HEVC on Windows; a no-op elsewhere) behind `codecs::VideoDecoder`, with transparent fallback to our decoders, and hardware H.264 encoding (VideoToolbox, opt-in) and H.265 encoding (VideoToolbox, the only H.265 encoder; the format exists only where a hardware encoder does) and NVIDIA NVENC H.264 encoding (Windows, opt-in) behind `export::VideoEncoder`; H.264 declines to the built-in encoder for what the hardware does not take. The one crate allowed `unsafe` ([ADR 0001](adr/0001-platform-ffi.md), [README](../crates/platform/README.md)) |
 | `filmcraft` | L6 | desktop binary: eframe/wgpu window, cpal audio output, file dialogs, native macOS menu, TCP control server |
 | `filmcraft-cli` | L6 | headless CLI: `exec`, `run`, `inspect`, `describe`, `commands`, `import`, `export`, `render`, `probe`, `mcp`; `--bridge` targets the running app |
@@ -182,6 +184,13 @@ pub struct CommandSpec {
   and on success push the old `Arc<Project>` with the label onto the undo stack (200 entries).
   On error nothing changes. `edit.undo` and `edit.redo` swap snapshots. Thanks to structural sharing
   a snapshot costs little.
+- **Grouped steps.** `Session::grouped(label, |session| …)` runs several edits or commands as one
+  undo step named `label` (none when nothing changed); when the closure fails or panics, the
+  project, editor state, history and journal are restored. Agents do the same across calls:
+  `edit.historyMark {}` returns `{mark, token}`, and `edit.collapseSince {mark, token, label?}`
+  later folds the steps made since into one. It is refused (an error, nothing changes) when the
+  token is unknown or expired (64 marks are kept; a new or opened project drops them) or when the
+  history up to the mark is no longer the one the mark saw (the user undid past it and edited).
 - **Editor state** (`EditorState`: active sequence, playheads, selection, targeting, edit points…)
   is serde, so agents can read it with `state.inspect`.
 - **Events** (`ProjectChanged`, `Toast`, `OpenSequence`, `OpenSource`) are drained by frontends
@@ -660,8 +669,10 @@ file.exportMedia {path, preset?, settings?, format?, range?, …}     export.qui
 - **Queue.** `export.queue.add` snapshots the project and the resolved settings (several sequences
   or ranges add several items); `export.queue.start` encodes ready items one after another as
   ordinary jobs, advanced by `Session::poll_persistence` / `pump_jobs` (or synchronously with
-  `wait`). Cancel, retry, reorder, remove and clear work per item. The queue is session state, not
-  part of the project file.
+  `wait`). Cancel, retry, reorder, remove and clear work per item. `export.queue.start` with
+  `follow: [item ids]` also starts one batch job standing for those items (its progress is theirs,
+  cancelling it cancels them), which is how `export_variations` is followed. The queue is session
+  state, not part of the project file.
 
 Video encoders implement `export::VideoEncoder`. Codec crates plug in with `register_encoder` and
 `register_audio_encoder`.
