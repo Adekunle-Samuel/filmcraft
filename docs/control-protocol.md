@@ -40,6 +40,27 @@ Methods (handlers in `crates/ui-egui/src/control.rs`):
 | `ui.screenshot` | `{path?, panel?}` | PNG of the window or one panel; fails after 10 s when no frame is presented (window hidden, display asleep) |
 | `ui.resize`, `ui.focus`, `app.quit` | | `ui.focus` is the only request that activates the app and takes keyboard focus |
 | `perf.stats` | – | performance counters (also the command `perf.stats`, so `engine.execute` and MCP `command_run` reach it; headless sessions return the engine part). `decode`: GOP-cache requests / hits / `cacheHitRate`, decoder seeks, samples decoded and skipped while catching up, `draftFrames` (decoded in draft mode), `h264Threads` (frame-threading workers per H.264 decoder), `liveDecoders` (sources holding a decoder now), `cacheMB` / `cacheBudgetMB` (decoded frames all sources hold, and the shared budget), `planePoolMB` / `planesReused` (idle plane buffers of evicted frames, and planes decoded into a recycled one), decoder ms (total and per sample), `framesDecoded`, `hardware` (Settings ▸ Playback ▸ Hardware decoding: `enabled`, pictures from hardware decoders `frames` vs `softwareFrames`, `sessions`, `declined` streams, mid-stream `fallbacks`); `playback`: playing, shown / dropped frames and `dropRate` of the current or last play, resolution, `draftDecode` (Settings ▸ Playback ▸ Draft decoding), `audio` (desktop: sound is mixed 200 ms ahead of the device; device `callbacks`, `underruns` and `missingFrames` played as silence because the mixer fell behind, `minLeadMs` the least sound left buffered); `frames`: frame-worker jobs, cancelled, `requestHitRate`, `decodeMs` / `renderMs` (mean, p50, p95 of the last 256 jobs), queue, render-cost estimate, cache use; `ui`: fps and frame ms; `process`: CPU seconds; `media`, `jobs`. Counters are cumulative: diff two readings to measure an interval ([performance.md](performance.md)) |
+| `assistant.send` | `{text}` | send a message to the Assistant and start a turn (refused before the user consented, while a turn runs, or without a provider: "not available in this build") → `{started: true}` |
+| `assistant.state` | – | `{available, consented, running, messages: [{role: user\|assistant\|thinking\|notice\|error\|tool, text, id?, name?, plan?}], tools: [{id, name, input, running, ok, denied, summary, progress, plan}], approvals: [{index, id, tool, input, reason}], usage: {inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens, costUsd}, error}` |
+| `assistant.approve` | `{index` or `id, allow}` | answer a pending approval (Allow / Deny); a denied call goes back to the model as an error result |
+| `assistant.plan` | `{index, apply}` | the plan card's Apply / Reject (answers a pending `apply_edit_plan` approval, else asks the model to apply it) |
+| `assistant.cancel` / `assistant.reset` | – | stop the running turn (pending approvals are denied) / New conversation (also forgets the saved one) |
+| `assistant.settings.get` / `assistant.settings.set` | – / `{provider, model, effort, baseUrl, vision, budgetUsd, autoApplyNewSequence}` | Assistant settings plus `host` and `keySource` (`environment`, `file` or null). Never returns or accepts the API key, and never sets `consented` (the user clicks `assistant.consent.accept`); changing provider or URL withdraws consent |
+
+**Assistant** (`crates/ui-egui/src/panels/assistant*.rs`; build the app with `--features assistant`
+for real providers). The agent runs on a worker thread; its tool calls are executed between frames on
+the UI thread through `tools.call`, and calls that change the project wait for an approval click.
+The API key comes from `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` or `<data dir>/assistant/credentials.json`
+(0600, unencrypted) and never appears in `ui.inspect`, `ui.elements`, `assistant.*` replies, logs or
+screenshots (the key field is masked). Settings persist in `<data dir>/assistant/settings.json`, the
+conversation in `<data dir>/assistant/conversations/<project hash | untitled>.json`. UI ids:
+`assistant.input`, `assistant.send`, `assistant.cancel`, `assistant.new`, `assistant.settings`,
+`assistant.consent.accept`, `assistant.consent.private` (use a local model), `assistant.msg.<n>`,
+`assistant.tool.<call id>` (and `.raw` for the details), `assistant.approval.<id>.allow|deny`,
+`assistant.plan.<k>.apply|reject`, `assistant.suggestion.<i>`, `assistant.usage`,
+`assistant.unavailable`, and in the settings sheet `assistant.settings.provider.<anthropic|openai>`,
+`.model`, `.effort`, `.baseUrl`, `.vision`, `.autoApply`, `.budget[.value]`, `.key`, `.key.save`,
+`.key.forget`, `.revoke`, `.done`.
 
 **Selection or explicit targets.** A command that acts on the selection is "not available right now" when
 nothing is selected. When `params` name the targets under a key the command documents (`clips` /
