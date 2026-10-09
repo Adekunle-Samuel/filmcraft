@@ -35,6 +35,9 @@ the control channel and MCP agents can do the same.
 | `transcript.createCaptions` | Lay the words out as captions on a new caption track (`maxChars`, `lines`, `minSeconds`, `maxSeconds`, `gapFrames`). |
 | `transcript.models` / `transcript.downloadModel` | List the speech models (size, licence, installed) / download one. |
 
+To combine word cuts, fillers, pauses, silences and captions into one reviewed, undoable edit (the
+way the assistant edits), write an edit plan: see [edit-plans.md](edit-plans.md).
+
 ## Speech recognition
 
 Recognition goes through the `Transcriber` trait (`crates/speech`). The built-in recogniser is

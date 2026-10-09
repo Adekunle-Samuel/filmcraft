@@ -1020,21 +1020,25 @@ pub fn words_after(words: &[SeqWord], removals: &[Removal]) -> Vec<SeqWord> {
     out
 }
 
-/// Text of the words whose midpoint is inside `r` (at most `max` characters).
-pub fn text_in(words: &[SeqWord], r: TimeRange, max: usize) -> String {
-    let mut out = String::new();
+/// For each of `removals` (sorted, disjoint), the text of the words whose midpoint is inside it
+/// (each at most about `max` characters, then "…"). One pass over the words.
+pub fn removed_texts(words: &[SeqWord], removals: &[Removal], max: usize) -> Vec<String> {
+    let mut out: Vec<String> = vec![String::new(); removals.len()];
+    let mut full: Vec<bool> = vec![false; removals.len()];
     for w in words {
         let mid = Tick(w.start.0 + (w.end.0 - w.start.0) / 2);
-        if !r.contains(mid) {
+        let Some(k) = removals.partition_point(|r| r.range.start <= mid).checked_sub(1) else { continue };
+        if !removals.get(k).is_some_and(|r| r.range.contains(mid)) || full.get(k).copied().unwrap_or(true) {
             continue;
         }
-        if !out.is_empty() {
-            out.push(' ');
+        let (Some(t), Some(f)) = (out.get_mut(k), full.get_mut(k)) else { continue };
+        if !t.is_empty() {
+            t.push(' ');
         }
-        out.push_str(&w.text);
-        if out.chars().count() > max {
-            let cut: String = out.chars().take(max).collect();
-            return format!("{cut}…");
+        t.push_str(&w.text);
+        if t.chars().count() > max {
+            *t = t.chars().take(max).collect::<String>() + "…";
+            *f = true;
         }
     }
     out

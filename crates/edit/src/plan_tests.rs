@@ -286,14 +286,26 @@ fn target_duration_and_markers() {
 }
 
 #[test]
-fn words_after_and_text_in() {
+fn words_after_and_removed_texts() {
     let c = run(r#"{"version":1,"title":"x","cuts":{"removeWords":[{"from":1,"reason":"r"}]}}"#);
     let w = words_after(&words(), &c.removals);
     assert_eq!(w.iter().map(|w| w.text.as_str()).collect::<Vec<_>>(), ["Hello", "world.", "Second", "speaker", "here."]);
     assert_eq!(w[1].start, s(1.0) - s(0.32));
-    assert_eq!(text_in(&words(), c.removals[0].range, 100), "um");
-    assert_eq!(text_in(&words(), TimeRange::from_bounds(s(0.0), s(5.0)), 8), "Hello um…");
+    assert_eq!(removed_texts(&words(), &c.removals, 100), ["um"]);
+    let all = [Removal { range: TimeRange::from_bounds(s(0.0), s(5.0)), reason: String::new(), kind: RemovalKind::Range }];
+    assert_eq!(removed_texts(&words(), &all, 8), ["Hello um…"]);
+    assert!(removed_texts(&words(), &[], 8).is_empty());
     assert_eq!(map_time(&c.removals, s(0.0)), s(0.0));
+}
+
+#[test]
+fn the_documented_example_parses() {
+    let doc = include_str!("../../../docs/edit-plans.md");
+    let a = doc.find("```json\n").unwrap() + "```json\n".len();
+    let b = a + doc[a..].find("\n```").unwrap();
+    let p = parse_plan(&doc[a..b]).unwrap();
+    assert_eq!(p.title, "Tight interview");
+    assert!(validate(&p, 200).is_empty(), "{:?}", validate(&p, 200));
 }
 
 #[test]
