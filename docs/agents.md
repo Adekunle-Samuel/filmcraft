@@ -55,6 +55,31 @@ claude mcp add filmcraft-headless -- /abs/path/filmcraft/target/release/filmcraf
 | `ui_screenshot` | bridge | PNG of the window or one `panel` |
 | `ui_control` | bridge | call any control-channel method directly (`ui.set`, `ui.scroll`, `ui.timeline.locate`, …) |
 
+The server also lists the engine's **agent tool catalogue** (`crates/engine/src/tools/`, the same
+tools the in-app Assistant uses; `tools.list` / `tools.call` reach it through the control channel).
+Their inputs follow a strict JSON Schema subset: every field is listed in `required` (pass `null` to
+leave an optional one out) and unknown fields are a `-32602` error. Where a name is taken by a tool
+above (`render_frame`, `command_run`, `command_batch`), the tool above is the one listed.
+
+| Tool | Read-only | Purpose |
+|---|---|---|
+| `project_overview` | yes | items (id, name, type, seconds, has a transcript) and the active sequence's tracks and clips in seconds; at most 16k characters (`truncated: true` beyond) |
+| `import_media` | no | import `paths` (absolute) into an optional `bin` |
+| `read_transcript` | yes | the sequence transcript a page at a time: `[w120–w158 \| 01:12.4–01:21.0 \| Speaker 1] text…` lines; continue with `offset` = `next` |
+| `contact_sheet` | yes | a grid of up to 48 frames of an item or the sequence as image content (`media.contactSheet`) |
+| `add_captions` | no | a caption track from the transcript (`transcript.createCaptions`) |
+| `set_loudness` | no | measure and match clip loudness to `target_lufs` (`essentialSound.autoMatch`) |
+| `export` | no (destructive) | export the active sequence to `path`; runs as a job, with progress and cancellation as for long exports |
+| `command_search` / `command_describe` | yes | find commands by id or label (≤ 40), or describe one: params hint, enabled now and why not, policy |
+
+The escape hatch in the catalogue (`command_run` / `command_batch`, for the in-app Assistant) runs
+commands through a policy (`filmcraft_engine::tools::policy`): queries run, edits ask the user
+first, and app-level or work-losing commands (`file.quit`, `app.*`, `prefs.*`, `shortcuts.*`,
+`file.close*`, `media.makeOffline`, `project.removeUnused`, `transcript.downloadModel`) are refused.
+Tools whose commands are still being built (`transcribe` as a job, `find_silences`,
+`measure_loudness`, `analyze_media`, `propose_edit_plan`, `apply_edit_plan`, `create_variations`,
+`match_grade`, `bake_lut`) appear once the build has their command.
+
 Typical loop: `project_inspect` / `sequence_inspect` → get ids → `command_run` → `render_frame` or
 `ui_screenshot` → look at the result → `edit.undo` if it's wrong.
 
@@ -154,6 +179,12 @@ Notes:
   selection alone. Only the selection condition is answered by the named targets; every other
   one (an open sequence, a filled clipboard, the right kind of clip) still applies, and ids of
   nothing do not count. `command_list` / `engine.commands` keep reporting the selection's state.
+- `media.renderFrame {item?|sequence?, seconds, maxSide?}` and `media.contactSheet {item?|sequence?,
+  count? | times?, cols?, maxSide?}` return a PNG (base64 `png`, with `width`, `height` and the
+  `seconds` / `times` actually shown) of a media item (media time) or a sequence (timeline time,
+  captions included) for vision models. Neither moves a playhead or changes the selection. Caps: at
+  most 48 frames (default 12), sides at most 2576 px (default 1568); a time past the end shows the
+  last frame.
 - Element ids come from the previous frame. If an element is missing right after a layout change,
   the app retries on later frames before giving up.
 - `timeline.move` takes linked partners along while Linked Selection is on: moving a picture

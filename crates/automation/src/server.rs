@@ -561,7 +561,71 @@ impl FilmcraftMcp {
     }
 }
 
-const INSTRUCTIONS: &str = "FilmCraft video editor (Premiere Pro-class). Every edit is an engine command: `command_list` to discover ids/params, `command_run` to execute (undoable; `command_batch` runs several). `doc_inspect` (or `project_inspect`/`sequence_inspect`) returns ids you can pass to commands; `render_preview` shows the result. In bridge mode the `ui_*` tools drive the live app: `ui_elements` lists clickable ids, `ui_click`/`ui_drag`/`ui_key` operate it, `ui_screenshot` shows it. Time is in ticks: 254016000000 per second (commands also accept `seconds`, `frame` or `timecode`).";
+/// An engine catalogue tool (a `tools.list` entry) as an MCP tool.
+fn engine_tool(t: &Value) -> Option<rmcp::model::Tool> {
+    let name = t.get("name")?.as_str()?.to_string();
+    let title = t.get("title").and_then(Value::as_str).unwrap_or(&name).to_string();
+    let description = t.get("description").and_then(Value::as_str).unwrap_or_default().to_string();
+    let schema = t.get("inputSchema")?.as_object()?.clone();
+    let a = t.get("annotations");
+    let hint = |k: &str| a.and_then(|a| a.get(k)).and_then(Value::as_bool).unwrap_or(false);
+    let annotations = rmcp::model::ToolAnnotations::with_title(title.clone())
+        .read_only(hint("readOnlyHint"))
+        .destructive(hint("destructiveHint"))
+        .idempotent(hint("idempotentHint"))
+        .open_world(hint("openWorldHint"));
+    Some(rmcp::model::Tool::new(name, description, Arc::new(schema)).with_title(title).with_annotations(annotations))
+}
+
+impl FilmcraftMcp {
+    /// The engine catalogue (headless: this session; bridge: the app's). Empty when the app cannot
+    /// be reached, so the server's own tools are still listed.
+    async fn engine_tools(&self) -> Vec<rmcp::model::Tool> {
+        let Ok(list) = self.run("tools.list", json!({})).await else { return Vec::new() };
+        list.as_array().map(|a| a.iter().filter_map(engine_tool).collect()).unwrap_or_default()
+    }
+
+    /// Run engine catalogue tool `name`: images become MCP image content, and a tool that started
+    /// a job (an export, a transcription...) is followed to the end with progress and cancellation.
+    async fn call_engine_tool(&self, name: &str, input: Value, context: &rmcp::service::RequestContext<rmcp::RoleServer>) -> Result<CallToolResult, McpError> {
+        // strict arguments, as for our own tools: a bad input is a -32602 naming what is wrong
+        match filmcraft_engine::tools::find(name) {
+            Some(_) => filmcraft_engine::tools::validate(name, &input).map_err(|e| McpError::invalid_params(e.to_string(), None))?,
+            None => return Err(McpError::invalid_params(format!("unknown tool `{name}`"), None)),
+        }
+        let started = std::time::SystemTime::now();
+        let out = match self.run("tools.call", json!({"name": name, "input": input})).await {
+            Ok(v) => v,
+            Err(e) => return Ok(fail(e)),
+        };
+        let mut result = out.get("result").cloned().unwrap_or(Value::Null);
+        if let Some(job) = out.get("job").and_then(Value::as_u64) {
+            // only an export's own output is removed on cancel
+            let partial = if name == "export" { result.get("path").and_then(Value::as_str).map(str::to_string) } else { None };
+            match self.follow_job(job, context, partial.as_deref(), started).await {
+                crate::long_job::JobEnd::Done(r) => {
+                    if let Some(o) = result.as_object_mut() {
+                        o.insert("result".into(), r);
+                    }
+                }
+                crate::long_job::JobEnd::Failed(e) => return Ok(fail(format!("{name} failed: {e}"))),
+                crate::long_job::JobEnd::Cancelled => return Ok(fail("cancelled")),
+            }
+        }
+        let mut content: Vec<Content> = out
+            .get("images")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(|i| i.get("png").and_then(Value::as_str))
+            .map(|b64| Content::image(b64.to_string(), "image/png"))
+            .collect();
+        content.push(Content::text(serde_json::to_string_pretty(&result).unwrap_or_default()));
+        Ok(CallToolResult::success(content))
+    }
+}
+
+const INSTRUCTIONS: &str = "FilmCraft video editor (Premiere Pro-class). Every edit is an engine command: `command_list` to discover ids/params, `command_run` to execute (undoable; `command_batch` runs several). `doc_inspect` (or `project_inspect`/`sequence_inspect`) returns ids you can pass to commands; `render_preview` shows the result. The curated tools (`project_overview`, `read_transcript`, `contact_sheet`, `add_captions`, `export`, `command_search`, ...) are the engine's agent catalogue, shared with the in-app Assistant. In bridge mode the `ui_*` tools drive the live app: `ui_elements` lists clickable ids, `ui_click`/`ui_drag`/`ui_key` operate it, `ui_screenshot` shows it. Time is in ticks: 254016000000 per second (commands also accept `seconds`, `frame` or `timecode`).";
 
 /// Resources: the project (as `doc_inspect`) and the command catalog (as `command_list`).
 const DOCUMENT_URI: &str = "filmcraft://document";
@@ -602,8 +666,32 @@ impl ServerHandler for FilmcraftMcp {
                 return Ok(self.run_long(id, params, &context).await.into());
             }
         }
+        // Not one of ours: a tool of the engine catalogue (tools.list / tools.call).
+        if !self.tool_router.has_route(&request.name) {
+            let input = request.arguments.map(Value::Object).unwrap_or_else(|| json!({}));
+            return self.call_engine_tool(&request.name, input, &context).await.map(Into::into);
+        }
         let tcc = rmcp::handler::server::tool::ToolCallContext::new(self, request, context);
         self.tool_router.call(tcc).await
+    }
+
+    /// The router's tools plus the engine catalogue's (the router's win on a name clash).
+    async fn list_tools(
+        &self,
+        _request: Option<rmcp::model::PaginatedRequestParams>,
+        context: rmcp::service::RequestContext<rmcp::RoleServer>,
+    ) -> Result<rmcp::model::ListToolsResult, McpError> {
+        let mut tools = self.tool_router.list_all();
+        tools.extend(self.engine_tools().await.into_iter().filter(|t| !self.tool_router.has_route(&t.name)));
+        let hints = cache_hints(&context, 0);
+        Ok(rmcp::model::ListToolsResult {
+            result_type: Some(rmcp::model::ResultType::COMPLETE),
+            tools,
+            meta: None,
+            next_cursor: None,
+            ttl_ms: hints.map(|h| h.0),
+            cache_scope: hints.map(|_| rmcp::model::CacheScope::Public),
+        })
     }
 
     async fn list_resources(
@@ -744,6 +832,68 @@ mod tests {
         }
         let ro = |n: &str| tools.iter().find(|t| t["name"] == n).map(|t| t["annotations"]["readOnlyHint"].clone());
         assert_eq!((ro("command_list"), ro("command_run")), (Some(json!(true)), Some(json!(false))));
+        // the engine catalogue is served too, with its titles and annotations
+        for want in ["project_overview", "read_transcript", "contact_sheet", "add_captions", "set_loudness", "export", "command_search", "command_describe"] {
+            assert!(names.contains(&want), "{want} not listed");
+        }
+        assert_eq!((ro("contact_sheet"), ro("export")), (Some(json!(true)), Some(json!(false))));
+        let export = tools.iter().find(|t| t["name"] == "export").unwrap();
+        assert_eq!((&export["title"], &export["annotations"]["destructiveHint"]), (&json!("Export media"), &json!(true)));
+        assert_eq!(export["inputSchema"]["additionalProperties"], false);
+        // a name both have is listed once, as the server's own tool
+        for dup in ["render_frame", "command_run", "command_batch"] {
+            assert_eq!(names.iter().filter(|n| **n == dup).count(), 1, "{dup} listed twice");
+        }
+        let rf = tools.iter().find(|t| t["name"] == "render_frame").unwrap();
+        assert!(rf["inputSchema"]["properties"].get("max_side").is_some() && rf["inputSchema"]["properties"].get("item").is_none(), "{rf}");
+    }
+
+    /// Engine catalogue tools over MCP in headless mode: JSON as text, frames as image content,
+    /// strict arguments, and a job-starting tool followed to its end.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn engine_catalogue_tools_run_headless() {
+        let mut c = Client::start(demo());
+        c.init().await;
+        let r = c.call(1, "project_overview", json!({})).await;
+        assert_eq!(r["result"]["isError"], false, "{r}");
+        let v: Value = serde_json::from_str(r["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
+        assert!(v["items"].as_array().is_some_and(|a| !a.is_empty()) && v["activeSequence"]["video"].is_array(), "{v}");
+
+        let args = json!({"item": null, "sequence": true, "count": 4, "times": null, "cols": 2, "max_side": 400});
+        let r = c.call(2, "contact_sheet", args).await;
+        assert_eq!(r["result"]["isError"], false, "{r}");
+        let content = r["result"]["content"].as_array().unwrap();
+        assert_eq!((content[0]["type"].as_str(), content[0]["mimeType"].as_str()), (Some("image"), Some("image/png")), "{r}");
+        let png = base64::engine::general_purpose::STANDARD.decode(content[0]["data"].as_str().unwrap()).unwrap();
+        let img = image::load_from_memory(&png).unwrap();
+        assert!(img.width() <= 400 && img.height() <= 400);
+        let meta: Value = serde_json::from_str(content[1]["text"].as_str().unwrap()).unwrap();
+        assert_eq!((meta["cols"].as_u64(), meta["rows"].as_u64()), (Some(2), Some(2)), "{meta}");
+        assert!(meta.get("png").is_none());
+
+        // strict arguments: unknown field, wrong type, missing field
+        for (id, args) in [
+            (3, json!({"item": null, "sequence": true, "count": 4, "times": null, "cols": 2, "max_side": 400, "zoom": 2})),
+            (4, json!({"item": "one", "sequence": null, "count": null, "times": null, "cols": null, "max_side": null})),
+            (5, json!({"item": null})),
+        ] {
+            let r = c.call(id, "contact_sheet", args).await;
+            assert_eq!(r["error"]["code"], -32602, "{r}");
+        }
+        // the policy refuses app-level commands
+        let r = c.call(6, "command_describe", json!({"id": "prefs.reset"})).await;
+        assert!(r["result"]["content"][0]["text"].as_str().unwrap().contains("\"deny\""), "{r}");
+
+        // export starts a job; the call returns once it is written
+        let dir = std::env::temp_dir().join(format!("filmcraft-mcp-tools-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("mix.wav").to_string_lossy().to_string();
+        let r = c.call(7, "export", json!({"path": path, "preset": null, "format": "wav", "range": null})).await;
+        assert_eq!(r["result"]["isError"], false, "{r}");
+        let v: Value = serde_json::from_str(r["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
+        assert!(v["job"].is_u64() && v["result"].is_object(), "{v}");
+        assert!(std::path::Path::new(&path).exists());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// Strict arguments, malformed JSON, batch, doc_inspect and render_preview over the raw line
