@@ -11,17 +11,21 @@
 //! [`filmcraft_edit::plan`] before anything is touched.
 
 use std::collections::BTreeSet;
+use std::sync::Arc;
 
 use serde_json::{Value, json};
 
+use filmcraft_edit::EditCtx;
 use filmcraft_edit::plan::{self, CaptionsPlan, CompiledPlan, EditPlan, OutputMode};
 use filmcraft_edit::transcript::{self as tx, CaptionRules, SeqWord};
-use filmcraft_project::{ItemId, Project, Sequence};
-use filmcraft_time::{TICKS_PER_SECOND, Tick};
+use filmcraft_project::{CaptionFormat, CaptionTrack, ItemId, ItemKind, Label, Marker, MarkerId, MarkerKind, Project, Sequence, TrackId};
+use filmcraft_time::{TICKS_PER_SECOND, Tick, TimeRange};
 
-use crate::commands::{CommandSpec, bad};
-use crate::{Result, Session};
+use crate::commands::{CommandSpec, bad, str_p};
+use crate::{EditorState, EngineError, MediaPool, Result, Session};
 
+/// Most plans `plan.applyVariations` takes.
+pub const MAX_VARIATIONS: usize = 6;
 /// Characters of removed text shown per removal in `plan.preview`.
 const PREVIEW_TEXT_CHARS: usize = 300;
 
@@ -229,9 +233,184 @@ fn output_name(plan: &EditPlan, prep: &Prepared) -> String {
     }
 }
 
+/// What applying one plan did.
+struct Applied {
+    sequence: ItemId,
+    name: String,
+    removed: Tick,
+    duration: Tick,
+    captions: Option<usize>,
+}
+
+/// Apply one compiled plan inside an edit closure: copy the source (unless in place), ripple-delete
+/// the removals, add captions and markers. `snap` is the project before the edit (media durations).
+fn apply_one(pr: &mut Project, snap: &Arc<Project>, media: &Arc<MediaPool>, plan: &EditPlan, prep: &Prepared, name: &str) -> Result<Applied> {
+    let src = pr.sequence(prep.source).ok_or(EngineError::NoSequence)?.clone();
+    let target = match plan.output.mode {
+        OutputMode::InPlace => prep.source,
+        OutputMode::NewSequence => {
+            let label = pr.item(prep.source).map(|i| i.label);
+            let bin = pr.root.parent_of(prep.source).filter(|b| *b != pr.root.id);
+            pr.add_item(name, label.unwrap_or(Label::Forest), ItemKind::Sequence(Box::new(src)), bin)
+        }
+    };
+    let transcripts = pr.transcripts.clone();
+    let (snap_d, snap_s, media) = (snap.clone(), snap.clone(), media.clone());
+    let durations = move |id: ItemId| -> Option<Tick> { crate::media_duration(&snap_d, &media, id) };
+    let starts = move |id: ItemId| crate::media_start(&snap_s, id);
+    let mut next = pr.next_id;
+    let (removed, duration, captions) = {
+        let seq = pr.sequence_mut(target).ok_or(EngineError::NoSequence)?;
+        let rate = seq.settings.frame_rate;
+        let mut ctx = EditCtx { next_id: &mut next, media_duration: &durations, media_start: &starts, min_duration: rate.frame_duration() };
+        let ranges: Vec<TimeRange> = prep.compiled.removals.iter().map(|r| r.range).collect();
+        // sequence markers follow the cuts (right to left, so earlier positions stay valid)
+        for r in ranges.iter().rev() {
+            crate::sequence_tools::ripple_markers(&mut seq.markers, r.end(), Tick::ZERO - r.duration);
+        }
+        let removed = tx::ripple_delete_ranges(seq, ranges, &mut ctx);
+        for m in &prep.compiled.markers {
+            let id = MarkerId(ctx.alloc());
+            seq.markers.push(Marker {
+                id,
+                start: m.at,
+                duration: Tick::ZERO,
+                name: m.name.clone(),
+                comment: String::new(),
+                kind: MarkerKind::Comment,
+                color: Label::Green,
+            });
+        }
+        seq.markers.sort_by_key(|m| m.start);
+        let mut captions = None;
+        if let Some(c) = &plan.captions {
+            // the transcript of the edited sequence, so captions follow the cuts
+            let words = tx::sequence_words(seq, &transcripts);
+            let blocks = tx::caption_blocks(&words, &caption_rules(c), rate);
+            if !blocks.is_empty() {
+                let mut t = CaptionTrack::new(TrackId(ctx.alloc()), "Captions".into(), CaptionFormat::default());
+                t.captions = tx::blocks_to_captions(&blocks, &mut ctx);
+                seq.caption_tracks.insert(0, t);
+            }
+            captions = Some(blocks.len());
+        }
+        seq.check().map_err(EngineError::Other)?;
+        (removed, seq.duration(), captions)
+    };
+    pr.next_id = next;
+    let name = pr.item(target).map(|i| i.name.clone()).unwrap_or_default();
+    Ok(Applied { sequence: target, name, removed, duration, captions })
+}
+
+fn open(st: &mut EditorState, id: ItemId) {
+    if !st.open_sequences.contains(&id) {
+        st.open_sequences.push(id);
+    }
+    st.playheads.entry(id).or_insert(Tick::ZERO);
+}
+
+fn applied_json(a: &Applied, prep: &Prepared, plan: &EditPlan) -> Value {
+    json!({
+        "sequence": a.sequence.0,
+        "name": a.name,
+        "removedS": secs(a.removed),
+        "durationS": secs(a.duration),
+        "removals": prep.compiled.removals.len(),
+        "captions": a.captions,
+        "markers": prep.compiled.markers.len(),
+        "warnings": warnings_with_skipped(&prep.compiled, plan),
+        "skipped": skipped(plan).into_iter().map(|(k, _)| k).collect::<Vec<_>>(),
+    })
+}
+
+fn check_hash(prep: &Prepared, p: &Value, cmd: &str) -> Result<()> {
+    let want = str_p(p, "sourceHash").ok_or_else(|| bad(cmd, "`sourceHash` (from plan.preview) is required"))?;
+    if want != prep.hash {
+        return Err(EngineError::Other(format!(
+            "the source sequence or its transcript changed since plan.preview (sourceHash {want} is now {}); preview the plan again",
+            prep.hash
+        )));
+    }
+    Ok(())
+}
+
+fn short(title: &str) -> String {
+    let t: String = title.trim().chars().take(60).collect();
+    if t.chars().count() < title.trim().chars().count() { format!("{t}…") } else { t }
+}
+
+fn apply(s: &mut Session, p: &Value) -> Result<Value> {
+    const CMD: &str = "plan.apply";
+    let plan = plan_of(p.get("plan")).map_err(|e| bad(CMD, e))?;
+    let prep = prepare(s, &plan, CMD)?;
+    check_hash(&prep, p, CMD)?;
+    let name = output_name(&plan, &prep);
+    let media = s.media.clone();
+    let label = format!("Apply Edit Plan \u{201c}{}\u{201d}", short(&plan.title));
+    let done = s.edit(&label, |pr, st| {
+        let snap = Arc::new(pr.clone());
+        let a = apply_one(pr, &snap, &media, &plan, &prep, &name)?;
+        st.active_sequence = Some(a.sequence);
+        st.selection.clear();
+        st.caption_selection.clear();
+        open(st, a.sequence);
+        Ok(a)
+    })?;
+    s.events.push(crate::Event::OpenSequence(done.sequence));
+    Ok(applied_json(&done, &prep, &plan))
+}
+
+fn apply_variations(s: &mut Session, p: &Value) -> Result<Value> {
+    const CMD: &str = "plan.applyVariations";
+    let list = p.get("plans").and_then(Value::as_array).ok_or_else(|| bad(CMD, format!("`plans` (1–{MAX_VARIATIONS} EditPlans) is required")))?;
+    if list.is_empty() || list.len() > MAX_VARIATIONS {
+        return Err(bad(CMD, format!("`plans` must hold 1–{MAX_VARIATIONS} plans, not {}", list.len())));
+    }
+    let mut work: Vec<(EditPlan, Prepared, String)> = Vec::with_capacity(list.len());
+    for (k, v) in list.iter().enumerate() {
+        let plan = plan_of(Some(v)).map_err(|e| bad(CMD, format!("plans[{k}]: {e}")))?;
+        if plan.output.mode == OutputMode::InPlace {
+            return Err(bad(CMD, format!("plans[{k}]: variations always go into new sequences (output.mode must be newSequence)")));
+        }
+        let prep = prepare_raw(s, &plan).map_err(|e| bad(CMD, format!("plans[{k}]: {}", e.join("; "))))?;
+        if let Some((_, first, _)) = work.first()
+            && first.source != prep.source
+        {
+            return Err(bad(CMD, format!("plans[{k}]: edits another source sequence than plans[0]")));
+        }
+        let name = format!("{} \u{2014} v{}", output_name(&plan, &prep), k + 1);
+        work.push((plan, prep, name));
+    }
+    if let Some((_, prep, _)) = work.first() {
+        check_hash(prep, p, CMD)?;
+    }
+    let media = s.media.clone();
+    let label = format!("Apply {} Edit Plan Variations", work.len());
+    let done = s.edit(&label, |pr, st| {
+        let snap = Arc::new(pr.clone());
+        let mut out = Vec::with_capacity(work.len());
+        for (plan, prep, name) in &work {
+            let a = apply_one(pr, &snap, &media, plan, prep, name)?;
+            open(st, a.sequence);
+            out.push(a);
+        }
+        st.active_sequence = out.first().map(|a| a.sequence);
+        st.selection.clear();
+        st.caption_selection.clear();
+        Ok(out)
+    })?;
+    if let Some(first) = done.first() {
+        s.events.push(crate::Event::OpenSequence(first.sequence));
+    }
+    let seqs: Vec<Value> = done.iter().zip(&work).map(|(a, (plan, prep, _))| applied_json(a, prep, plan)).collect();
+    Ok(json!({"sequences": seqs}))
+}
+
 pub fn commands() -> Vec<CommandSpec> {
     vec![
         spec("plan.validate", "Validate Edit Plan", r#"{"plan":EditPlan|str}"#, has_sequences, validate, false),
         spec("plan.preview", "Preview Edit Plan", r#"{"plan":EditPlan|str}"#, has_sequences, preview, false),
+        spec("plan.apply", "Apply Edit Plan", r#"{"plan":EditPlan|str,"sourceHash":str}"#, has_sequences, apply, true),
+        spec("plan.applyVariations", "Apply Edit Plan Variations", r#"{"plans":[EditPlan|str],"sourceHash":str}"#, has_sequences, apply_variations, true),
     ]
 }

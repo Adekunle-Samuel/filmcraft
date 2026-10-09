@@ -76,6 +76,78 @@ fn validate_and_preview() {
 }
 
 #[test]
+fn apply_makes_a_new_sequence_in_one_undo_step() {
+    let (mut s, src) = session();
+    let before = (*s.project).clone();
+    let src_before = s.active_sequence().unwrap().clone();
+    let steps = s.history.undo.len();
+    let mut plan = cut_um();
+    plan["captions"] = json!({"burnIn": true});
+    plan["markers"] = json!([{"timeS": 3.0, "name": "late"}]);
+    plan["grade"] = json!({"preset": "warm"});
+    let h = hash(&mut s, &plan);
+    let r = s.execute("plan.apply", json!({"plan": plan, "sourceHash": h})).unwrap();
+    let id = ItemId(r["sequence"].as_u64().unwrap());
+    assert_ne!(id, src);
+    assert_eq!(s.state.active_sequence, Some(id));
+    assert!(s.state.open_sequences.contains(&id));
+    assert_eq!(s.project.item(id).unwrap().name, format!("{} \u{2014} No ums", before.item(src).unwrap().name));
+    assert_eq!(s.project.sequence(src).unwrap(), &src_before, "the source is untouched");
+    assert_eq!(s.history.undo.len(), steps + 1, "one undo step");
+    assert_eq!(words(&mut s), ["Hello", "world.", "Second", "speaker", "here."]);
+    let q = s.active_sequence().unwrap();
+    q.check().unwrap();
+    let removed = Tick::from_seconds_f64(r["removedS"].as_f64().unwrap());
+    assert!(removed > Tick::ZERO);
+    assert_eq!(q.duration(), src_before.duration() - removed, "{r}");
+    assert!(r["captions"].as_u64().unwrap() >= 1);
+    assert_eq!(q.caption_tracks[0].captions.len() as u64, r["captions"].as_u64().unwrap());
+    assert!(q.markers.iter().any(|m| m.name == "late"));
+    assert_eq!(r["skipped"], json!(["captions.burnIn", "grade"]));
+
+    s.execute("edit.undo", json!({})).unwrap();
+    assert_eq!(*s.project, before, "undo restores the project exactly");
+    assert_eq!(s.state.active_sequence, Some(src));
+    s.execute("edit.redo", json!({})).unwrap();
+    assert!(s.project.sequence(id).is_some());
+}
+
+#[test]
+fn apply_in_place_edits_the_source() {
+    let (mut s, src) = session();
+    let before = (*s.project).clone();
+    let n = s.project.sequences().count();
+    let plan = json!({"version": 1, "title": "x", "output": {"mode": "inPlace"}, "cleanup": {"fillers": [], "pauses": {"minS": 1.0, "keepS": 0.1}}});
+    let h = hash(&mut s, &plan);
+    let r = s.execute("plan.apply", json!({"plan": plan, "sourceHash": h})).unwrap();
+    assert_eq!(r["sequence"], src.0);
+    assert_eq!(s.project.sequences().count(), n);
+    assert_eq!(words(&mut s).len(), 5);
+    assert!(s.active_sequence().unwrap().duration() < before.sequence(src).unwrap().duration());
+    s.execute("edit.undo", json!({})).unwrap();
+    assert_eq!(*s.project, before);
+}
+
+#[test]
+fn a_stale_preview_is_refused() {
+    let (mut s, _) = session();
+    let h = hash(&mut s, &cut_um());
+    s.execute("transcript.extract", json!({"from": 5})).unwrap();
+    let before = (*s.project).clone();
+    let e = s.execute("plan.apply", json!({"plan": cut_um(), "sourceHash": h})).unwrap_err().to_string();
+    assert!(e.contains("changed since plan.preview"), "{e}");
+    let e = s.execute("plan.apply", json!({"plan": cut_um(), "sourceHash": "nope"})).unwrap_err().to_string();
+    assert!(e.contains("changed since plan.preview"), "{e}");
+    assert!(s.execute("plan.apply", json!({"plan": cut_um()})).unwrap_err().to_string().contains("sourceHash"));
+    assert_eq!(*s.project, before);
+    // a new transcript also makes the preview stale
+    let h = hash(&mut s, &cut_um());
+    let item = s.active_sequence().unwrap().audio_tracks[0].items[0].item;
+    s.execute("transcript.set", json!({"item": item.0, "transcript": {"language": "en", "words": [{"text": "x", "start": 0, "end": 1000}]}})).unwrap();
+    assert!(s.execute("plan.apply", json!({"plan": cut_um(), "sourceHash": h})).is_err());
+}
+
+#[test]
 fn hostile_plans_are_errors() {
     let (mut s, _) = session();
     let before = (*s.project).clone();
@@ -101,6 +173,7 @@ fn hostile_plans_are_errors() {
         let e = s.execute("plan.preview", p.clone()).unwrap_err();
         assert!(matches!(e, EngineError::BadParams { .. }), "{e}");
         p["sourceHash"] = json!("0000000000000000");
+        assert!(s.execute("plan.apply", p.clone()).is_err());
         let v = s.execute("plan.validate", p).unwrap();
         assert_eq!(v["ok"], false, "{v}");
     }
@@ -112,8 +185,44 @@ fn hostile_plans_are_errors() {
 #[test]
 fn disabled_without_a_sequence() {
     let mut s = Session::default();
-    for id in ["plan.validate", "plan.preview"] {
+    for id in ["plan.validate", "plan.preview", "plan.apply", "plan.applyVariations"] {
         let e = s.execute(id, json!({"plan": {"version": 1, "title": "x"}, "sourceHash": "x"})).unwrap_err();
         assert!(matches!(e, EngineError::Disabled(..)), "{id}: {e}");
     }
+}
+
+#[test]
+fn variations_make_n_sequences_in_one_undo_step() {
+    let (mut s, src) = session();
+    let before = (*s.project).clone();
+    let steps = s.history.undo.len();
+    let n = s.project.sequences().count();
+    let plans = json!([
+        cut_um(),
+        {"version": 1, "title": "Short", "output": {"name": "Short"}, "cuts": {"keepOnly": [{"from": 3, "to": 5}]}},
+        {"version": 1, "title": "Tight", "cleanup": {"pauses": {"minS": 0.5, "keepS": 0.1}}},
+    ]);
+    let h = hash(&mut s, &cut_um());
+    let r = s.execute("plan.applyVariations", json!({"plans": plans, "sourceHash": h})).unwrap();
+    let seqs = r["sequences"].as_array().unwrap();
+    assert_eq!(seqs.len(), 3);
+    assert_eq!(s.project.sequences().count(), n + 3);
+    assert_eq!(s.history.undo.len(), steps + 1);
+    assert_eq!(seqs[1]["name"], "Short \u{2014} v2");
+    assert!(seqs[0]["name"].as_str().unwrap().ends_with("No ums \u{2014} v1"));
+    let ids: Vec<ItemId> = seqs.iter().map(|v| ItemId(v["sequence"].as_u64().unwrap())).collect();
+    assert_eq!(s.state.active_sequence, Some(ids[0]));
+    assert_eq!(words(&mut s).len(), 5);
+    s.execute("sequence.open", json!({"item": ids[1].0})).unwrap();
+    assert_eq!(words(&mut s), ["Second", "speaker", "here."]);
+    assert_eq!(s.project.sequence(src).unwrap(), before.sequence(src).unwrap());
+    s.execute("edit.undo", json!({})).unwrap();
+    assert_eq!(*s.project, before);
+
+    // refused: none, too many, in place, stale
+    for bad in [json!([]), json!(vec![cut_um(); 7]), json!([{"version": 1, "title": "x", "output": {"mode": "inPlace"}}]), json!("x")] {
+        assert!(s.execute("plan.applyVariations", json!({"plans": bad, "sourceHash": h})).is_err());
+    }
+    assert!(s.execute("plan.applyVariations", json!({"plans": [cut_um()], "sourceHash": "stale"})).is_err());
+    assert_eq!(*s.project, before);
 }
