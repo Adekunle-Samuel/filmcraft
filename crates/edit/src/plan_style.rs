@@ -1,12 +1,15 @@
-//! The presentation parts of an edit plan that are pure data: the caption style object (`captions.style`) mapped onto a caption track's
+//! The presentation parts of an edit plan that are pure data: the output frame of an
+//! [`Aspect`], the caption style object (`captions.style`) mapped onto a caption track's
 //! [`CaptionStyle`], and caption text case.
 //!
 //! `captions.style` is written by an assistant, so it is hostile input: it is read key by key,
 //! unknown keys and bad values become warnings (the rest still applies), strings are capped and
 //! every number is checked and clamped. Nothing here fails or panics.
 
-use filmcraft_project::{CaptionAlign, CaptionAnchor, CaptionStyle};
+use filmcraft_project::{CaptionAlign, CaptionAnchor, CaptionStyle, MAX_FRAME_PIXELS, MAX_FRAME_SIDE};
 use serde_json::Value;
+
+use crate::plan::Aspect;
 
 /// Most keys of a style object that are looked at (the rest are reported once).
 pub const MAX_STYLE_KEYS: usize = 64;
@@ -16,6 +19,50 @@ pub const MAX_STYLE_TEXT: usize = 200;
 pub const MAX_FONT_CHARS: usize = 100;
 /// Most characters of a key or value echoed in a warning.
 const ECHO: usize = 40;
+
+impl Aspect {
+    /// Width : height.
+    pub fn ratio(self) -> (u32, u32) {
+        match self {
+            Aspect::Wide => (16, 9),
+            Aspect::Vertical => (9, 16),
+            Aspect::Square => (1, 1),
+            Aspect::Portrait => (4, 5),
+        }
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Aspect::Wide => "16:9",
+            Aspect::Vertical => "9:16",
+            Aspect::Square => "1:1",
+            Aspect::Portrait => "4:5",
+        }
+    }
+
+    /// The frame size of this aspect made from a `w`×`h` frame: the short side is kept (1920×1080
+    /// gives 1080×1920 for 9:16, 1080×1080 for 1:1, 1080×1350 for 4:5), both sides even, scaled
+    /// down to the frame-size limits when needed.
+    pub fn frame_for(self, w: u32, h: u32) -> (u32, u32) {
+        let (rw, rh) = self.ratio();
+        let short = u64::from(w.min(h).max(2));
+        let (fw, fh) = if rw >= rh { (short * u64::from(rw) / u64::from(rh), short) } else { (short, short * u64::from(rh) / u64::from(rw)) };
+        let (mut fw, mut fh) = (fw.max(2), fh.max(2));
+        // keep within the limits, keeping the aspect
+        let side = u64::from(MAX_FRAME_SIDE);
+        let longest = fw.max(fh);
+        if longest > side {
+            fw = fw * side / longest;
+            fh = fh * side / longest;
+        }
+        while fw.saturating_mul(fh) > MAX_FRAME_PIXELS && fw > 2 && fh > 2 {
+            fw = fw * 9 / 10;
+            fh = fh * 9 / 10;
+        }
+        let even = |x: u64| -> u32 { u32::try_from((x / 2 * 2).max(2)).unwrap_or(MAX_FRAME_SIDE) };
+        (even(fw), even(fh))
+    }
+}
 
 /// Characters per caption line that fit a `w`×`h` frame at a caption size of `size` pixels per
 /// 1080 lines (about 0.55 em per character over 90 % of the width), between 8 and 42.

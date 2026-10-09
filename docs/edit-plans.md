@@ -14,8 +14,8 @@ Types and the compiler live in `crates/edit/src/plan.rs` (pure, no I/O); the com
 | Command | Params | Result |
 |---|---|---|
 | `plan.validate` | `{"plan": EditPlan \| str}` | `{ok, errors: [str], warnings: [str]}`. Never fails on a bad plan; it lists every problem by field (`cuts.removeWords[2].to: word 99 is out of range (the transcript has 20 words)`). |
-| `plan.preview` | `{"plan": EditPlan \| str}` | Each removal (`start`/`end`/`duration` seconds, `startTick`/`endTick`, `reason`, `kind`, and the transcript `text` inside it), `before`/`after`/`removedSeconds`, `segments`, `words {total, kept}`, the estimated `captions` count, `markers`, `warnings`, `skipped`, the output `name`, `mode` and `sourceHash`. Changes nothing (no rendering or measuring). |
-| `plan.apply` | `{"plan": EditPlan \| str, "sourceHash": str}` | `{sequence, name, removedS, durationS, removals, captions, markers, grade, loudness, warnings, skipped, exportParams?}`. One undo step. |
+| `plan.preview` | `{"plan": EditPlan \| str}` | Each removal (`start`/`end`/`duration` seconds, `startTick`/`endTick`, `reason`, `kind`, and the transcript `text` inside it), `before`/`after`/`removedSeconds`, `segments`, `words {total, kept}`, the estimated `captions` count, `markers`, `warnings`, `skipped`, the output `name`, `mode` and `output {aspect, width, height}`, and `sourceHash`. Changes nothing (no rendering or measuring). |
+| `plan.apply` | `{"plan": EditPlan \| str, "sourceHash": str}` | `{sequence, name, removedS, durationS, removals, captions, markers, output, reframed, grade, loudness, warnings, skipped, exportParams?}`. One undo step. |
 | `plan.applyVariations` | `{"plans": [EditPlan \| str] (1–6), "sourceHash": str}` | `{sequences: [<as plan.apply>]}`: one new sequence per plan, named `<name> — v1…vN`, all in one undo step. Every plan must edit the same source and go into a new sequence. |
 
 All four are disabled while the project has no sequence. `plan` may be the plan object or its
@@ -32,14 +32,15 @@ error rolls all of it back. In order:
 1. copy the source sequence into a new project item next to it (`output.mode: "inPlace"` edits the
    source instead), ripple-delete the compiled removals on every unlocked track (sequence markers
    follow the cuts) and add the plan's markers at their edited times;
-2. add captions built from the *edited* sequence's transcript on a new caption track, with the
+2. `output.aspect`: set the frame size and reframe the pictures (below);
+3. add captions built from the *edited* sequence's transcript on a new caption track, with the
    `captions.style` track style and text case;
-3. `grade`: `lumetri.matchToItem` on the picture clips for `matchItem`, then `lut` as each clip's
+4. `grade`: `lumetri.matchToItem` on the picture clips for `matchItem`, then `lut` as each clip's
    Lumetri Color Creative look (a Lumetri Color is added when the clip has none) at
    `lutStrength` × 100 % intensity, then `preset` as one more Lumetri Color (`lumetri.applyPreset`);
-4. `audio.targetLufs`: measure the mix (`audio.loudness`), move the Mix fader by the difference
+5. `audio.targetLufs`: measure the mix (`audio.loudness`), move the Mix fader by the difference
    and measure again, up to four rounds, until it is within 0.1 LU;
-5. open the sequence.
+6. open the sequence.
 
 Only `plan.apply` itself is journaled (the commands it runs inside are not).
 
@@ -86,7 +87,8 @@ and `title` are required: `{"version":1,"title":"x"}` is a valid plan that chang
 | `cleanup.pauses` | Shorten pauses of at least `minS` (default 1.0), keeping `keepS` (default 0.15) next to each word. |
 | `cleanup.silences` | Silences to remove (from `audio.detectSilence`; the caller passes them). |
 | `cleanup.untranscribed` | Voiced sounds with no transcribed word to remove (opt-in). |
-| `captions` | Add captions (`maxChars` 1–500, default: what fits the frame at the caption size, at most 42, about 18 in 9:16; `lines` 1–4, default 2). |
+| `output.aspect` | `"16:9"`, `"9:16"`, `"1:1"` or `"4:5"`: the frame size and a reframe of the pictures (below). Anything else is a parse error. |
+| `captions` | Add captions (`maxChars` 1–500, default: what fits the output frame at the caption size, at most 42, about 18 in 9:16; `lines` 1–4, default 2). |
 | `captions.style` | An object read onto the caption track style (below). Unknown keys and bad values are warnings; a non-object is an error. |
 | `captions.burnIn` | `true` returns `exportParams: {sequence, burnCaptions: true}` for `file.exportMedia` (burn-in is an export setting; `plan.apply` never exports). |
 | `captions.template` | Not supported: graphics templates can't style a caption track yet. Reported in `skipped` with a warning. |
@@ -97,9 +99,26 @@ and `title` are required: `{"version":1,"title":"x"}` is a valid plan that chang
 | `markers` | Each has exactly one of `timeS` (source seconds) or `word`, and a `name`. |
 | `targetDurationS` | A result more than 5 % off is a warning with the numbers. |
 
-Reported in `skipped` (and as warnings, never a failure): `output.aspect`, `captions.template` and `export`
+Reported in `skipped` (and as warnings, never a failure): `captions.template` and `export`
 (`plan.apply` never exports: run `file.exportMedia` with `exportParams` after approval, which
 carries the plan's `export.preset` / `export.path` too).
+
+## Aspect and reframing
+
+The new frame keeps the source's short side: from 1920×1080, `9:16` is 1080×1920, `1:1` is
+1080×1080, `4:5` is 1080×1350 and `16:9` 1920×1080 (sides even, within the frame-size limits).
+When the frame changes, the picture clips are reframed as a **centre crop that fills**: the old
+composition is scaled by `max(new / old)` (plus 2 px of bleed on each side, so a resampled edge
+never leaves a soft row) about the frame centres. Full-frame clips fill the new frame,
+picture-in-picture clips keep their place in the composition, punch-in keyframes on Scale and
+Position are scaled with it, and Scale to Frame Size is folded into Scale. A clip that was
+letter- or pillar-boxed in the old frame (static, centred, fitting one side) is scaled to fill
+like `clip.fillFrame`; adjustment layers are filled too.
+
+Limits: the crop is centred; it does not follow the subject (add the Auto Reframe effect
+afterwards for that). Graphic and title clips keep their old layout (a warning names how many),
+and spatial parameters of other effects (crop, masks, Transform) are not rescaled. Captions are
+laid out in the new frame by the caption track style.
 
 ## Caption style
 

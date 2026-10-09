@@ -233,7 +233,7 @@ fn variations_make_n_sequences_in_one_undo_step() {
     assert_eq!(*s.project, before);
 }
 
-// ---- look and sound: grade, loudness, caption style (A1.4) ----
+// ---- look and sound: grade, loudness, aspect, caption style (A1.4 / A5.2) ----
 
 fn apply_plan(s: &mut Session, plan: &Value) -> Value {
     let h = hash(s, plan);
@@ -269,12 +269,27 @@ fn picture_clips(s: &Session) -> Vec<filmcraft_project::TrackItem> {
         .collect()
 }
 
+fn motion(it: &filmcraft_project::TrackItem) -> (f64, filmcraft_geom::Vec2) {
+    let m = it.effect("motion").unwrap();
+    (m.param("scale").unwrap().value.as_f64().unwrap(), m.param("position").unwrap().value.as_vec2().unwrap())
+}
+
+/// A demo clip with Motion at its defaults (auto points) and nothing else.
+fn motion_item() -> filmcraft_project::TrackItem {
+    let (s, _) = session();
+    let mut it = s.active_sequence().unwrap().video_tracks[0].items[0].clone();
+    it.effects = vec![filmcraft_project::find_effect("motion").unwrap().instance()];
+    it.scale_to_frame = false;
+    it
+}
+
 #[test]
 fn every_field_applies_in_one_undoable_step() {
     let (mut s, _) = session();
     let (_, lut_name) = builtin_look(&mut s);
     let forest = item_named(&s, filmcraft_media::DemoScene::Forest.file_name());
     let all = json!({
+        "output": {"aspect": "9:16"},
         "captions": {"style": {"size": 0.05, "case": "upper"}, "burnIn": true},
         "grade": {"matchItem": forest.0, "lut": lut_name, "lutStrength": 0.5, "preset": "Faded Print"},
         "audio": {"targetLufs": -20},
@@ -284,6 +299,7 @@ fn every_field_applies_in_one_undoable_step() {
         json!({"grade": {"preset": "Faded Print"}}),
         json!({"grade": {"matchItem": forest.0}}),
         json!({"audio": {"targetLufs": -20}}),
+        json!({"output": {"aspect": "1:1"}}),
         json!({"captions": {"style": {"color": "#ffdd00"}, "burnIn": true}}),
         all,
     ];
@@ -354,6 +370,89 @@ fn loudness_reaches_the_target() {
 }
 
 #[test]
+fn aspect_sets_the_frame_and_fills_it() {
+    let (mut s, src) = session();
+    let src_seq = s.project.sequence(src).unwrap().clone();
+    assert_eq!((src_seq.settings.width, src_seq.settings.height), (1920, 1080));
+    let overlay = src_seq.video_tracks[1].items[0].clone();
+    let (ov_scale, ov_pos) = motion(&overlay);
+    let r = apply_plan(&mut s, &with(cut_um(), json!({"output": {"aspect": "9:16"}, "captions": {}})));
+    assert_eq!(r["output"], json!({"aspect": "9:16", "width": 1080, "height": 1920}));
+    let q = s.active_sequence().unwrap().clone();
+    assert_eq!((q.settings.width, q.settings.height), (1080, 1920));
+    let k = (1920.0 + 4.0) / 1080.0; // two pixels of bleed on each side
+    let clips = picture_clips(&s);
+    assert_eq!(r["reframed"], clips.len());
+    for it in &clips {
+        let (scale, pos) = motion(it);
+        if it.id == overlay.id {
+            // the picture-in-picture keeps its place in the (centre-cropped) composition
+            assert!((scale - ov_scale * k).abs() < 1e-6);
+            assert!((pos.x - (540.0 + (ov_pos.x - 960.0) * k)).abs() < 1e-6 && (pos.y - (960.0 + (ov_pos.y - 540.0) * k)).abs() < 1e-6);
+            continue;
+        }
+        let (w, h) = s.project.source_size(it.item).unwrap();
+        assert!(w as f64 * scale / 100.0 >= 1080.0 - 0.5 && h as f64 * scale / 100.0 >= 1920.0 - 0.5, "clip {} fills: {scale}%", it.id.0);
+        assert!((pos.x - 540.0).abs() < 1e-6 && (pos.y - 960.0).abs() < 1e-6, "centred");
+    }
+    // captions fit the narrow frame
+    let longest = q.caption_tracks[0].captions.iter().flat_map(|c| c.text.lines().map(|l| l.chars().count()).collect::<Vec<_>>()).max().unwrap();
+    assert!(longest <= 22, "{longest}");
+    // the rendered frame is covered edge to edge
+    for scale in [1.0, 0.5] {
+        let img = s.render_program_at(scale, Tick::from_seconds_f64(1.0)).unwrap();
+        assert_eq!((img.w as f32, img.h as f32), (1080.0 * scale, 1920.0 * scale));
+        let open = img.px.chunks(4).filter(|p| p[3] <= 0.999).count();
+        assert_eq!(open, 0, "every pixel is covered at {scale}");
+    }
+    assert_eq!(s.project.sequence(src).unwrap(), &src_seq, "the source is untouched");
+    // the same aspect as the source: nothing to reframe
+    s.execute("edit.undo", json!({})).unwrap();
+    let r = apply_plan(&mut s, &with(cut_um(), json!({"output": {"aspect": "16:9"}})));
+    assert_eq!(r["reframed"], 0);
+    let ov = picture_clips(&s).into_iter().find(|it| it.id == overlay.id).unwrap();
+    assert_eq!(motion(&ov), (ov_scale, ov_pos));
+}
+
+#[test]
+fn letterboxed_clips_are_filled() {
+    // 1280×720 with Scale to Frame Size in 1920×1080: fits exactly; reframed for 9:16 it fills
+    let mut it = motion_item();
+    it.scale_to_frame = true;
+    assert!(crate::edit_plan::reframe_clip(&mut it, (1280, 720), (1920, 1080), (1080, 1920)));
+    let (scale, _) = motion(&it);
+    assert!((scale - 150.0 * 1924.0 / 1080.0).abs() < 1e-6, "{scale}");
+    assert!(!it.scale_to_frame);
+    // a 4:3 clip pillar-boxed in 16:9 is filled for 9:16
+    let mut it = motion_item();
+    assert!(crate::edit_plan::reframe_clip(&mut it, (1440, 1080), (1920, 1080), (1080, 1920)));
+    let (scale, pos) = motion(&it);
+    assert!((scale - 1924.0 / 1080.0 * 100.0).abs() < 1e-6, "{scale}");
+    assert!((pos.x - 540.0).abs() < 1e-6 && (pos.y - 960.0).abs() < 1e-6);
+    // punch-in keyframes are kept and scaled
+    let mut it = motion_item();
+    let m = it.effect_mut("motion").unwrap();
+    let p = m.param_mut("scale").unwrap();
+    p.keyframes = vec![
+        filmcraft_project::Keyframe::new(Tick::ZERO, filmcraft_project::ParamValue::Float(100.0)),
+        filmcraft_project::Keyframe::new(Tick::from_seconds_f64(1.0), filmcraft_project::ParamValue::Float(120.0)),
+    ];
+    assert!(crate::edit_plan::reframe_clip(&mut it, (1920, 1080), (1920, 1080), (1080, 1080)));
+    let kf: Vec<f64> = it.effect("motion").unwrap().param("scale").unwrap().keyframes.iter().map(|k| k.value.as_f64().unwrap()).collect();
+    let k = 1084.0 / 1080.0;
+    assert!((kf[0] - 100.0 * k).abs() < 1e-6 && (kf[1] - 120.0 * k).abs() < 1e-6, "1:1 from 16:9 keeps the height: {kf:?}");
+    // hostile sizes: no panic, finite results
+    for (src, old, new) in [((0, 0), (0, 0), (0, 0)), ((u32::MAX, 1), (1, u32::MAX), (2, 2)), ((1, u32::MAX), (u32::MAX, 1), (u32::MAX, u32::MAX))] {
+        let mut it = motion_item();
+        crate::edit_plan::reframe_clip(&mut it, src, old, new);
+        assert!(motion(&it).0.is_finite());
+    }
+    let mut bare = motion_item();
+    bare.effects.clear();
+    assert!(!crate::edit_plan::reframe_clip(&mut bare, (1920, 1080), (1920, 1080), (1080, 1920)), "no Motion: nothing to do");
+}
+
+#[test]
 fn caption_style_template_and_burn_in() {
     let (mut s, _) = session();
     let style = json!({"size": 0.06, "color": "#ffdd00", "background": false, "outline": 3, "position": "middle",
@@ -417,4 +516,35 @@ fn hostile_look_and_sound_values() {
     let r = apply_plan(&mut s, &plan);
     assert!(!r["warnings"].as_array().unwrap().is_empty());
     assert_eq!(s.active_sequence().unwrap().caption_tracks[0].style, filmcraft_project::CaptionStyle::default());
+}
+
+#[test]
+fn variations_with_different_aspects() {
+    let (mut s, _) = session();
+    let before = (*s.project).clone();
+    let steps = s.history.undo.len();
+    let plans = json!([
+        with(cut_um(), json!({"output": {"aspect": "16:9"}, "captions": {}})),
+        with(cut_um(), json!({"title": "Vertical", "output": {"aspect": "9:16"}, "captions": {"style": {"size": 0.04}}, "audio": {"targetLufs": -14}})),
+        with(cut_um(), json!({"title": "Square", "output": {"aspect": "1:1"}})),
+    ]);
+    let h = hash(&mut s, &cut_um());
+    let r = s.execute("plan.applyVariations", json!({"plans": plans, "sourceHash": h})).unwrap();
+    let seqs = r["sequences"].as_array().unwrap();
+    let sizes: Vec<(u32, u32)> = seqs
+        .iter()
+        .map(|v| {
+            let q = s.project.sequence(ItemId(v["sequence"].as_u64().unwrap())).unwrap();
+            (q.settings.width, q.settings.height)
+        })
+        .collect();
+    assert_eq!(sizes, [(1920, 1080), (1080, 1920), (1080, 1080)]);
+    assert_eq!(seqs[0]["reframed"], 0);
+    assert!(seqs[1]["reframed"].as_u64().unwrap() >= 6 && seqs[2]["reframed"].as_u64().unwrap() >= 6);
+    assert!(seqs[1]["loudness"]["afterLufs"].as_f64().is_some(), "{}", seqs[1]);
+    assert!(seqs[0]["loudness"].is_null());
+    assert_eq!(s.history.undo.len(), steps + 1, "one undo step");
+    assert_eq!(s.state.active_sequence, Some(ItemId(seqs[0]["sequence"].as_u64().unwrap())));
+    s.execute("edit.undo", json!({})).unwrap();
+    assert_eq!(*s.project, before);
 }

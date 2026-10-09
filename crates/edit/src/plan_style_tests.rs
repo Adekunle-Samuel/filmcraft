@@ -2,6 +2,24 @@ use super::*;
 use serde_json::json;
 
 #[test]
+fn aspect_frames_keep_the_short_side() {
+    assert_eq!(Aspect::Vertical.frame_for(1920, 1080), (1080, 1920));
+    assert_eq!(Aspect::Square.frame_for(1920, 1080), (1080, 1080));
+    assert_eq!(Aspect::Portrait.frame_for(1920, 1080), (1080, 1350));
+    assert_eq!(Aspect::Wide.frame_for(1920, 1080), (1920, 1080));
+    assert_eq!(Aspect::Wide.frame_for(1080, 1920), (1920, 1080));
+    assert_eq!(Aspect::Vertical.frame_for(3840, 2160), (2160, 3840));
+    // hostile sizes stay within the limits and even
+    for (w, h) in [(0, 0), (1, 1), (u32::MAX, u32::MAX), (MAX_FRAME_SIDE, MAX_FRAME_SIDE), (u32::MAX, 3), (7, 7)] {
+        for a in [Aspect::Wide, Aspect::Vertical, Aspect::Square, Aspect::Portrait] {
+            let (fw, fh) = a.frame_for(w, h);
+            assert!(filmcraft_project::validate_frame_size(fw, fh).is_ok(), "{a:?} {w}x{h} → {fw}x{fh}");
+            assert!(fw % 2 == 0 && fh % 2 == 0);
+        }
+    }
+}
+
+#[test]
 fn caption_chars_follow_the_frame() {
     assert_eq!(caption_chars_for(1920, 1080, 54.0), 42);
     let v = caption_chars_for(1080, 1920, 54.0);

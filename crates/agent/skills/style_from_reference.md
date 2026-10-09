@@ -28,7 +28,8 @@ Use this when the user gives an example ("make it look like this", "same vibe as
      `case`) and `maxChars` small for "two words at a time" (about 12);
    - loudness: the plan's `audio.targetLufs` set to the reference's integrated loudness (it is
      kept between −30 and −5 LUFS; −24 to −9 is the sensible range);
-   - aspect: the plan's `output.aspect` when the reference is vertical or square;
+   - aspect: the plan's `output.aspect` when the reference is vertical or square (the pictures
+     are centre-cropped to fill the new frame);
    - grade: instead of `match_grade` you can put `grade.matchItem` (the reference item) and a
      `grade.lut` from `lut.list` in the same plan, so everything is one undo step.
 6. **Report** what was matched and what could not be (for example, the grade match is statistical:

@@ -16,14 +16,16 @@
 //! any error rolls all of it back:
 //!
 //! 1. copy the source (or edit it in place), ripple-delete the removals, add the markers;
-//! 2. captions from the edited transcript, styled by `captions.style` (and its `case`);
-//! 3. `grade.matchItem` through `lumetri.matchToItem` on the picture clips, then `grade.lut`
+//! 2. `output.aspect`: the new frame size (the short side kept: 1920×1080 → 1080×1920 for 9:16)
+//!    and every picture clip scaled to fill it, centred (`clip.fillFrame`'s Motion settings);
+//! 3. captions from the edited transcript, styled by `captions.style` (and its `case`);
+//! 4. `grade.matchItem` through `lumetri.matchToItem` on the picture clips, then `grade.lut`
 //!    (+ `lutStrength`) as the Lumetri Creative look and `grade.preset` as a Lumetri preset;
-//! 4. `audio.targetLufs` (clamped to −30…−5): the Mix fader is moved until the mix's integrated
+//! 5. `audio.targetLufs` (clamped to −30…−5): the Mix fader is moved until the mix's integrated
 //!    loudness (`audio.loudness`) is on target.
 //!
 //! `captions.burnIn` (and `export`) are returned as `exportParams` for `file.exportMedia`;
-//! `plan.apply` never exports. `output.aspect` and `captions.template` are reported in `skipped`.
+//! `plan.apply` never exports. `captions.template` is reported in `skipped`.
 
 use std::collections::BTreeSet;
 use std::sync::Arc;
@@ -53,6 +55,9 @@ const LUFS_STEP: f64 = 0.1;
 const LUFS_TOLERANCE: f64 = 1.0;
 /// Measure / adjust rounds of the loudness pass.
 const LUFS_ROUNDS: usize = 4;
+/// Reframed pictures overshoot the new frame by this many pixels on each side: an edge that lands
+/// exactly on the frame edge is resampled into a soft, partly transparent row.
+const BLEED_PX: f64 = 2.0;
 
 type Run = fn(&mut Session, &Value) -> Result<Value>;
 type Enabled = fn(&Session) -> std::result::Result<(), String>;
@@ -133,7 +138,7 @@ struct Prepared {
 
 /// What the look and sound parts of a plan resolve to in this project.
 struct Extras {
-    /// The output frame size.
+    /// Output frame size (the source's when the plan has no `output.aspect`).
     frame: (u32, u32),
     /// `captions.style` read onto the default caption style.
     look: CaptionLook,
@@ -184,7 +189,7 @@ fn extras(p: &Project, plan: &EditPlan, q: &Sequence) -> (Extras, Vec<String>) {
     let mut errors = Vec::new();
     let mut warnings = Vec::new();
     let (w, h) = (q.settings.width, q.settings.height);
-    let frame = (w, h);
+    let frame = plan.output.aspect.map_or((w, h), |a| a.frame_for(w, h));
     let look = match plan.captions.as_ref().and_then(|c| c.style.as_ref()) {
         Some(v) => plan_style::caption_look(v, &CaptionStyle::default()),
         None => CaptionLook { style: CaptionStyle::default(), case: None, warnings: Vec::new() },
@@ -264,9 +269,6 @@ fn prepare(s: &Session, plan: &EditPlan, cmd: &str) -> Result<Prepared> {
 /// Parts of the plan `plan.apply` does not carry out, with why.
 fn skipped(plan: &EditPlan) -> Vec<(&'static str, &'static str)> {
     let mut out = Vec::new();
-    if plan.output.aspect.is_some() {
-        out.push(("output.aspect", "output.aspect is not applied yet: the new sequence keeps the source frame size"));
-    }
     if plan.captions.as_ref().is_some_and(|c| c.template.is_some()) {
         out.push((
             "captions.template",
@@ -287,8 +289,8 @@ fn plan_warnings(prep: &Prepared, plan: &EditPlan) -> Vec<String> {
     w
 }
 
-/// Caption line rules: the plan's, with `maxChars` defaulting to what fits the frame at the
-/// caption size (42 in a 16:9 frame, about 18 in 9:16).
+/// Caption line rules: the plan's, with `maxChars` defaulting to what fits the output frame at
+/// the caption size (42 in a 16:9 frame, about 18 in 9:16).
 fn caption_rules(c: &CaptionsPlan, x: &Extras) -> CaptionRules {
     let d = CaptionRules::default();
     let fit = plan_style::caption_chars_for(x.frame.0, x.frame.1, x.look.style.size);
@@ -311,6 +313,10 @@ fn validate(s: &mut Session, p: &Value) -> Result<Value> {
         Ok(prep) => json!({"ok": true, "errors": [], "warnings": plan_warnings(&prep, &plan)}),
         Err(errors) => json!({"ok": false, "errors": errors, "warnings": []}),
     })
+}
+
+fn output_json(plan: &EditPlan, x: &Extras) -> Value {
+    json!({"aspect": plan.output.aspect.map(|a| a.name()), "width": x.frame.0, "height": x.frame.1})
 }
 
 fn preview(s: &mut Session, p: &Value) -> Result<Value> {
@@ -342,6 +348,7 @@ fn preview(s: &mut Session, p: &Value) -> Result<Value> {
         "rationale": plan.rationale,
         "mode": mode_name(plan.output.mode),
         "name": output_name(&plan, &prep),
+        "output": output_json(&plan, &prep.extras),
         "removals": removals,
         "before": secs(c.before),
         "after": secs(c.after),
@@ -370,15 +377,75 @@ struct Applied {
     removed: Tick,
     duration: Tick,
     captions: Option<usize>,
+    /// Picture clips scaled to fill a new frame size.
+    reframed: usize,
     grade: Option<Value>,
     loudness: Option<Value>,
     /// What the apply passes could not do (silent mix, loudness target missed…).
     warnings: Vec<String>,
 }
 
+/// Map a Motion value of the old frame to the new one: scales by `f`, positions about the frame
+/// centres by `k` (NaN "auto" points stay auto: the centre maps to the centre).
+fn map_motion(v: &mut ParamValue, id: &str, f: f64, k: f64, c_old: (f64, f64), c_new: (f64, f64)) {
+    match (id, v) {
+        ("scale" | "scale_width", ParamValue::Float(s)) => *s = (*s * f).clamp(0.0, 1.0e6),
+        ("position", ParamValue::Vec2(p)) if p.x.is_finite() && p.y.is_finite() => {
+            p.x = c_new.0 + (p.x - c_old.0) * k;
+            p.y = c_new.1 + (p.y - c_old.1) * k;
+        }
+        _ => {}
+    }
+}
+
+/// Reframe a picture clip placed in an `old`-sized frame for a `new`-sized one: a centre crop
+/// that fills. The old composition is scaled by `k = max(new / old)` (plus [`BLEED_PX`]) about the frame centres, so a
+/// full-frame clip fills the new frame, a picture-in-picture keeps its place in the composition and
+/// punch-in keyframes are kept (Scale to Frame Size is folded into Scale). A clip that was letter-
+/// or pillar-boxed in the old frame (static, centred, fitting one side) is scaled to fill instead,
+/// like `clip.fillFrame`. Returns whether the clip has Motion to change.
+pub(crate) fn reframe_clip(it: &mut filmcraft_project::TrackItem, src: (u32, u32), old: (u32, u32), new: (u32, u32)) -> bool {
+    let (ow, oh) = (f64::from(old.0.max(1)), f64::from(old.1.max(1)));
+    let (nw, nh) = (f64::from(new.0.max(1)), f64::from(new.1.max(1)));
+    let (sw, sh) = (f64::from(src.0.max(1)), f64::from(src.1.max(1)));
+    // the composition grows by BLEED_PX on each side so the resampled frame edge stays covered
+    let k = ((nw + 2.0 * BLEED_PX) / ow).max((nh + 2.0 * BLEED_PX) / oh);
+    let fit_old = if it.scale_to_frame { (ow / sw).min(oh / sh) } else { 1.0 };
+    let Some(m) = it.effect("motion") else { return false };
+    let animated = ["scale", "scale_width", "position", "anchor", "rotation"].iter().any(|p| m.param(p).is_some_and(filmcraft_project::Param::is_animated));
+    let val = |p: &str| m.param(p).and_then(|x| x.value.as_f64());
+    let pt = |p: &str| m.param(p).and_then(|x| x.value.as_vec2()).filter(|v| v.x.is_finite() && v.y.is_finite());
+    let s = val("scale").unwrap_or(100.0) / 100.0 * fit_old;
+    let uniform = m.param("uniform_scale").and_then(|p| p.value.as_bool()).unwrap_or(true);
+    let s_w = if uniform { s } else { val("scale_width").unwrap_or(100.0) / 100.0 * fit_old };
+    let near = |a: Option<filmcraft_geom::Vec2>, x: f64, y: f64| a.is_none_or(|a| (a.x - x).abs() <= 1.0 && (a.y - y).abs() <= 1.0);
+    let centred = near(pt("position"), ow / 2.0, oh / 2.0) && near(pt("anchor"), sw / 2.0, sh / 2.0) && val("rotation").unwrap_or(0.0).abs() < 1e-6;
+    let (fw, fh) = (sw * s_w, sh * s);
+    let fits_one_side = ((fw - ow).abs() <= 1.0 && fh < oh - 1.0) || ((fh - oh).abs() <= 1.0 && fw < ow - 1.0);
+    if !animated && centred && fits_one_side {
+        return crate::clip_ops::set_fit_fill(it, (nw, nh), src, true, BLEED_PX).is_some();
+    }
+    let f = k * fit_old;
+    let (c_old, c_new) = ((ow / 2.0, oh / 2.0), (nw / 2.0, nh / 2.0));
+    it.scale_to_frame = false;
+    let Some(m) = it.effect_mut("motion") else { return false };
+    if m.param("scale").is_none() {
+        m.params.insert("scale".into(), filmcraft_project::Param::new(ParamValue::Float(100.0)));
+    }
+    for id in ["scale", "scale_width", "position"] {
+        if let Some(p) = m.param_mut(id) {
+            map_motion(&mut p.value, id, f, k, c_old, c_new);
+            for kf in &mut p.keyframes {
+                map_motion(&mut kf.value, id, f, k, c_old, c_new);
+            }
+        }
+    }
+    true
+}
+
 /// Apply one compiled plan inside an edit closure: copy the source (unless in place), ripple-delete
-/// the removals, add styled captions and markers. `snap` is the project before the edit (media
-/// durations).
+/// the removals, set the output frame and reframe the pictures, add styled captions and markers.
+/// `snap` is the project before the edit (media durations and sizes).
 fn apply_one(pr: &mut Project, snap: &Arc<Project>, media: &Arc<MediaPool>, plan: &EditPlan, prep: &Prepared, name: &str) -> Result<Applied> {
     let src = pr.sequence(prep.source).ok_or(EngineError::NoSequence)?.clone();
     let target = match plan.output.mode {
@@ -395,7 +462,8 @@ fn apply_one(pr: &mut Project, snap: &Arc<Project>, media: &Arc<MediaPool>, plan
     let starts = move |id: ItemId| crate::media_start(&snap_s, id);
     let mut next = pr.next_id;
     let x = &prep.extras;
-    let (removed, duration, captions) = {
+    let mut warnings = Vec::new();
+    let (removed, duration, captions, reframed) = {
         let seq = pr.sequence_mut(target).ok_or(EngineError::NoSequence)?;
         let rate = seq.settings.frame_rate;
         let mut ctx = EditCtx { next_id: &mut next, media_duration: &durations, media_start: &starts, min_duration: rate.frame_duration() };
@@ -418,6 +486,39 @@ fn apply_one(pr: &mut Project, snap: &Arc<Project>, media: &Arc<MediaPool>, plan
             });
         }
         seq.markers.sort_by_key(|m| m.start);
+        // output.aspect: the new frame, every picture scaled to fill it (centre crop)
+        let mut reframed = 0;
+        if plan.output.aspect.is_some() && x.frame != (seq.settings.width, seq.settings.height) {
+            let (fw, fh) = x.frame;
+            let old = (seq.settings.width, seq.settings.height);
+            seq.settings.width = fw;
+            seq.settings.height = fh;
+            seq.settings.validate().map_err(|e| bad("plan.apply", format!("output.aspect: {e}")))?;
+            let mut graphics = 0usize;
+            for it in seq.video_tracks.iter_mut().flat_map(|t| t.items.iter_mut()) {
+                let kind = snap.item(it.item).map(|i| &i.kind);
+                let size = snap.source_size(it.item);
+                let done = match (kind, size) {
+                    (Some(ItemKind::Graphic { .. }), _) => {
+                        graphics += 1;
+                        false
+                    }
+                    // adjustment layers cover the frame by nature
+                    (Some(ItemKind::AdjustmentLayer { .. }), Some(src)) => {
+                        crate::clip_ops::set_fit_fill(it, (f64::from(fw), f64::from(fh)), src, true, BLEED_PX).is_some()
+                    }
+                    (_, Some(src)) => reframe_clip(it, src, old, (fw, fh)),
+                    _ => false,
+                };
+                reframed += usize::from(done);
+            }
+            if graphics > 0 {
+                warnings.push(format!(
+                    "output.aspect: {graphics} graphic or title clip(s) keep their layout from the {}×{} frame; check them in the new frame",
+                    old.0, old.1
+                ));
+            }
+        }
         let mut captions = None;
         if let Some(c) = &plan.captions {
             // the transcript of the edited sequence, so captions follow the cuts
@@ -437,14 +538,14 @@ fn apply_one(pr: &mut Project, snap: &Arc<Project>, media: &Arc<MediaPool>, plan
             captions = Some(blocks.len());
         }
         seq.check().map_err(EngineError::Other)?;
-        (removed, seq.duration(), captions)
+        (removed, seq.duration(), captions, reframed)
     };
     pr.next_id = next;
     let name = pr.item(target).map(|i| i.name.clone()).unwrap_or_default();
-    Ok(Applied { sequence: target, name, removed, duration, captions, grade: None, loudness: None, warnings: Vec::new() })
+    Ok(Applied { sequence: target, name, removed, duration, captions, reframed, grade: None, loudness: None, warnings })
 }
 
-/// The picture clips of sequence `seq` (what the grade touches).
+/// The picture clips of sequence `seq` (what the grade and the reframe touch).
 fn picture_clips(p: &Project, seq: ItemId) -> Vec<ClipId> {
     let Some(q) = p.sequence(seq) else { return Vec::new() };
     q.video_tracks.iter().flat_map(|t| t.items.iter()).filter(|it| picture_size(p, it.item).is_some()).map(|it| it.id).collect()
@@ -644,6 +745,8 @@ fn applied_json(a: &Applied, prep: &Prepared, plan: &EditPlan) -> Value {
         "removals": prep.compiled.removals.len(),
         "captions": a.captions,
         "markers": prep.compiled.markers.len(),
+        "output": output_json(plan, &prep.extras),
+        "reframed": a.reframed,
         "grade": a.grade,
         "loudness": a.loudness,
         "warnings": warnings,

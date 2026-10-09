@@ -36,6 +36,8 @@ Work in this order. Each step uses a tool; never guess timings yourself.
      they want the captions in the picture;
    - `audio.targetLufs` when the user wants it louder or ready to publish (−14 for social, −16 for
      podcasts);
+   - `output.aspect` (`"9:16"`, `"1:1"`, `"4:5"`) for vertical or square social cuts: the frame
+     changes and the pictures are centre-cropped to fill it;
    - `targetDurationS` when the user gave a length. Reach it by removing whole low-value passages,
      never by trimming inside sentences;
    - `output.mode: "newSequence"` always, unless the user explicitly asked to edit in place.
@@ -46,7 +48,7 @@ Work in this order. Each step uses a tool; never guess timings yourself.
    sequence changed, preview again.
 8. **Finish**: mention the new sequence name, that one undo restores everything, any warnings
    the apply returned (a loudness target it could not reach, style keys it ignored), and offer
-   next steps (a tighter variation with `create_variations`, export with the returned
+   next steps (a 9:16 variation with `create_variations`, export with the returned
    `exportParams`).
 
 ## Rules
