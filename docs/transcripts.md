@@ -22,7 +22,7 @@ the control channel and MCP agents can do the same.
 
 | Command | What it does |
 |---|---|
-| `transcript.generate` | Transcribe media items (`items`, else the Project selection, else the media of the sequence's audio clips). Params: `model` (default `whisper-base`), `language` (`auto` = detect), `diarize`, `maxSpeakers`. One undo step. |
+| `transcript.generate` | Transcribe media items (`items`, else the Project selection, else the media of the sequence's audio clips). Params: `model` (default `whisper-base`), `language` (`auto` = detect), `diarize`, `maxSpeakers`, `keepFillers`, `prompt`, `regions`, `wait` (see [Fillers, prompts and voiced regions](#fillers-prompts-and-voiced-regions)). Runs as a background job and returns `{job, items, skipped}`; `jobs.list` shows its progress and `jobs.cancel` stops it without changing anything. The transcripts are stored in one undo step ("Transcribe") when it finishes. With `wait: true` (and always on the web) it finishes first and reports `items: [{item, words, speakers, language, source}]`. |
 | `transcript.set` | Store a transcript you bring (JSON: `language`, `speakers`, `words` with `text`/`start`/`end`/`speaker`); it is sorted and made well formed. |
 | `transcript.delete` | Remove transcripts. |
 | `transcript.inspect` | The sequence transcript: words (index, text, sequence times, speaker, clip), paragraphs, speakers, the word at the playhead. |
@@ -70,6 +70,24 @@ Without `speech-download`, `transcript.downloadModel` is disabled the same way. 
 still be imported with `transcript.set` and edited with every other command. Hosts and tests can
 install any recogniser in `Session::transcriber`, which enables transcription in any build.
 
+### Fillers, prompts and voiced regions
+
+- **`keepFillers: true`** conditions Whisper on a disfluent prompt
+  (`filmcraft_speech::FILLER_PROMPT`, "Umm, so, uh, I was like, hmm…"). Whisper tends to leave
+  "um" and "uh" out of its text; after this prompt it writes them out with word times, so
+  `transcript.removeFillers` can find them. Off unless set.
+- **`prompt`** (text, at most 2000 characters) is any other initial prompt: names and terms to
+  spell right, or a style. It wins over `keepFillers`. Whisper places it before every 30-second
+  window as `<|startofprev|>` followed by the prompt's last 223 tokens, ahead of
+  `<|startoftranscript|>` (each window gets the same prompt, not the previous window's text). Word
+  alignment runs without it.
+- **`regions`** (`[[startSeconds, endSeconds], …]`, media seconds of one item, at most 10 000)
+  transcribes only those spans, for example the voiced regions a silence pass found. Each region
+  gets 0.3 s of air on both sides; regions are clamped to the media and merged where they
+  overlap, and the spans are transcribed laid end to end. Word times are mapped back to media
+  time: a word belongs to the region its start falls in and ends by that region's end. Regions
+  that are not numbers, run backwards or lie outside the media are refused.
+
 ### Models
 
 Weights are **never** bundled or committed. They are downloaded on request into
@@ -94,6 +112,8 @@ Apple-silicon laptop CPU).
 
 ## Limits
 
-- Transcription runs synchronously inside the command (no background job or progress bar yet).
+- Media longer than 4 hours is refused (its 16 kHz mono audio is held in memory); transcribe it in
+  parts.
+- One media item can't be in two transcription jobs at once.
 - Track items that refer to a subclip are looked up by the subclip's id, so a transcript made for
   the parent media is not shown through subclip clips yet.

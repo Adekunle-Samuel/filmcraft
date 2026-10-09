@@ -21,6 +21,12 @@
 //!
 //! 6. Word bounds are tightened past silent frames ([`crate::vad`]), so pauses stay pauses.
 //!
+//! **Initial prompt** ([`crate::Options::initial_prompt`]): the text is encoded (byte-level BPE)
+//! and placed before every window as `<|startofprev|>` + its last 223 tokens, ahead of
+//! `<|startoftranscript|>` ([`crate::decoder_prompt`]). Each window is conditioned on the same
+//! prompt (not on the previous window's text). Word alignment runs without it, on the
+//! start-of-transcript sequence only, as in the reference implementation.
+//!
 //! Optional speaker labelling runs afterwards ([`crate::diarize`]).
 
 mod align;
@@ -162,18 +168,21 @@ impl Whisper {
         }
     }
 
-    /// Greedy decode of one window. Returns sampled tokens (no prompt, no end-of-text), the mean
-    /// log-probability and the no-speech probability.
-    fn decode_window(&self, m: &mut Model, xa: &Tensor, prompt: &[u32]) -> Result<(Vec<u32>, f32, f32), SpeechError> {
+    /// Greedy decode of one window. `sot_at` is the position of `<|startoftranscript|>` in
+    /// `prompt` (after any previous-text prompt). Returns sampled tokens (no prompt, no
+    /// end-of-text), the mean log-probability and the no-speech probability.
+    fn decode_window(&self, m: &mut Model, xa: &Tensor, prompt: &[u32], sot_at: usize) -> Result<(Vec<u32>, f32, f32), SpeechError> {
         m.decoder.reset();
         let mut seq: Vec<u32> = Vec::new();
         let (logits, _) = m.decoder.forward(prompt, xa, true, None).map_err(merr)?;
         // no-speech probability from the start-of-transcript position
-        let first = logits.get(0).and_then(|l| l.get(0)).and_then(|l| l.to_vec1::<f32>()).map_err(merr)?;
+        let first = logits.get(0).and_then(|l| l.get(sot_at)).and_then(|l| l.to_vec1::<f32>()).map_err(merr)?;
         let no_speech = self.tok.no_speech.map(|ns| softmax_at(&first, ns as usize)).unwrap_or(0.0);
         let mut cur = Model::last_logits(&logits).map_err(merr)?;
         let mut sum_lp = 0f32;
-        for _ in 0..MAX_TOKENS.min(m.cfg.max_target_positions / 2) {
+        // the prompt and the sampled tokens share the decoder's positions
+        let room = m.cfg.max_target_positions.saturating_sub(prompt.len());
+        for _ in 0..MAX_TOKENS.min(m.cfg.max_target_positions / 2).min(room) {
             let lp = log_softmax(&cur);
             self.constrain(&mut cur, &seq, Some(50));
             let next = argmax(&cur);
@@ -191,6 +200,12 @@ impl Whisper {
         let avg = sum_lp / (seq.len() + 1) as f32;
         Ok((seq, avg, no_speech))
     }
+}
+
+/// Tokens of an initial prompt (empty for none). Whisper encodes it with a leading space, like
+/// text that went before.
+pub fn prompt_tokens(tok: &Tokenizer, prompt: Option<&str>) -> Vec<u32> {
+    prompt.map(str::trim).filter(|p| !p.is_empty()).map(|p| tok.encode(&format!(" {p}"))).unwrap_or_default()
 }
 
 fn softmax_at(x: &[f32], i: usize) -> f32 {
@@ -255,6 +270,7 @@ impl Transcriber for Whisper {
         if language.as_deref().is_some_and(|l| self.tok.multilingual() && self.tok.language_token(l).is_none()) {
             return Err(SpeechError::Model(format!("the model does not know the language `{}`", language.unwrap_or_default())));
         }
+        let prev = prompt_tokens(&self.tok, opts.initial_prompt.as_deref());
         let mut words: Vec<Word> = Vec::new();
         let mut seek = 0usize;
         while seek < content_frames {
@@ -269,16 +285,18 @@ impl Transcriber for Whisper {
             if trace {
                 eprintln!("encode {:.3}s", clock.elapsed().as_secs_f64());
             }
-            let mut prompt = vec![self.tok.sot];
+            let mut sot_seq = vec![self.tok.sot];
             if self.tok.multilingual() {
                 if language.is_none() {
                     language = Some(self.detect_language(&mut m, &xa)?);
                 }
                 let lang = language.as_deref().unwrap_or("en");
-                prompt.push(self.tok.language_token(lang).unwrap_or(self.tok.sot + 1));
-                prompt.push(self.tok.transcribe);
+                sot_seq.push(self.tok.language_token(lang).unwrap_or(self.tok.sot + 1));
+                sot_seq.push(self.tok.transcribe);
             }
-            let (toks, avg_lp, no_speech) = self.decode_window(&mut m, &xa, &prompt)?;
+            let prompt = crate::decoder_prompt(self.tok.start_of_prev, &prev, &sot_seq);
+            let sot_at = prompt.len().saturating_sub(sot_seq.len());
+            let (toks, avg_lp, no_speech) = self.decode_window(&mut m, &xa, &prompt, sot_at)?;
             if trace {
                 eprintln!("decode {} tokens {:.3}s", toks.len(), clock.elapsed().as_secs_f64());
             }
@@ -299,7 +317,8 @@ impl Transcriber for Whisper {
                     _ => toks.len(),
                 };
                 let text: Vec<u32> = toks[..upto].iter().copied().filter(|&t| t < self.tok.eot).collect();
-                let mut aprompt = prompt.clone();
+                // alignment without the previous-text prompt (its rows would be standardised in)
+                let mut aprompt = sot_seq.clone();
                 aprompt.push(self.tok.no_timestamps);
                 let times = align::align(&mut m, &xa, &aprompt, &text, self.tok.eot, &self.alignment_heads, seg_frames).map_err(merr)?;
                 let offset = seek * SAMPLES_PER_FRAME;
@@ -334,6 +353,26 @@ impl Transcriber for Whisper {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn initial_prompt_goes_before_the_start_of_transcript() {
+        let tok = tokenizer::tests::tiny();
+        let sot_seq = [tok.sot, tok.transcribe];
+        // no prompt: the plain start-of-transcript sequence
+        assert_eq!(crate::decoder_prompt(tok.start_of_prev, &prompt_tokens(&tok, None), &sot_seq), sot_seq);
+        assert_eq!(crate::decoder_prompt(tok.start_of_prev, &prompt_tokens(&tok, Some("  ")), &sot_seq), sot_seq);
+        // with one: <|startofprev|> + the prompt's tokens, then <|startoftranscript|>
+        let prev = prompt_tokens(&tok, Some("um, so"));
+        assert_eq!(tok.decode(&prev), " um, so");
+        let p = crate::decoder_prompt(tok.start_of_prev, &prev, &sot_seq);
+        assert_eq!(p.first().copied(), tok.start_of_prev);
+        assert_eq!(&p[1..1 + prev.len()], prev.as_slice());
+        assert_eq!(&p[p.len() - 2..], &sot_seq);
+        // the filler prompt encodes to text tokens only, and is short enough to keep whole
+        let f = prompt_tokens(&tok, Some(crate::FILLER_PROMPT));
+        assert!(!f.is_empty() && f.iter().all(|&t| t < 100));
+        assert!(f.len() <= crate::MAX_PROMPT_TOKENS * 4);
+    }
 
     #[test]
     fn repetition_guard() {

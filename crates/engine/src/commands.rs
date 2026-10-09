@@ -2507,6 +2507,7 @@ fn build() -> Vec<CommandSpec> {
     v.extend(crate::export_tools::commands());
     v.extend(crate::transcript::commands());
     v.extend(crate::audio_analysis::commands());
+    v.extend(crate::history::commands());
     v.extend(crate::panels::commands());
     v.extend(crate::scopes::commands());
     v.extend(crate::remix::commands());
