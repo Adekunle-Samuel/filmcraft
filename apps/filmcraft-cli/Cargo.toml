@@ -16,6 +16,9 @@ path = "src/main.rs"
 default = []
 # Speech-to-text (Text panel ▸ Transcribe) with Whisper on the CPU, and model downloads.
 whisper = ["filmcraft-engine/whisper", "filmcraft-engine/speech-download"]
+# The Assistant (`assistant "<prompt>"`): an LLM plans edits with the engine tool catalogue.
+# Network access to the chosen provider (docs/adr/0002-assistant-llm-network.md); implies whisper.
+assistant = ["whisper", "dep:filmcraft-agent", "dep:filmcraft-llm", "filmcraft-llm/http", "dep:filmcraft-format"]
 
 [dependencies]
 filmcraft-engine = { workspace = true }
@@ -27,5 +30,8 @@ filmcraft-mpegts = { workspace = true }
 filmcraft-ogg = { workspace = true }
 filmcraft-time = { workspace = true }
 filmcraft-automation = { workspace = true }
+filmcraft-agent = { workspace = true, optional = true }
+filmcraft-llm = { workspace = true, optional = true }
+filmcraft-format = { workspace = true, optional = true }
 serde_json = { workspace = true }
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }

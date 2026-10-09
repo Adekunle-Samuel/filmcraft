@@ -1789,9 +1789,12 @@ version = "0.4.0"
 name = "filmcraft-cli"
 version = "0.4.0"
 dependencies = [
+ "filmcraft-agent",
  "filmcraft-automation",
  "filmcraft-codecs",
  "filmcraft-engine",
+ "filmcraft-format",
+ "filmcraft-llm",
  "filmcraft-media",
  "filmcraft-mpegts",
  "filmcraft-mxf",
