@@ -469,7 +469,7 @@ pub fn poll(s: &mut Session) {
     let mut i = 0;
     while let Some(pj) = s.transcript_jobs.get(i) {
         let job = s.jobs.iter().find(|j| j.id == pj.job);
-        let finished = job.is_none_or(|j| j.progress.finished.load(Ordering::Relaxed));
+        let finished = job.is_none_or(crate::Job::is_finished);
         // cancelled before the results were stored: nothing changes
         let cancelled = job.is_some_and(|j| j.progress.cancel.load(Ordering::Relaxed));
         if !finished {

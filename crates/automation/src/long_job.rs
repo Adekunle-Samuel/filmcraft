@@ -1,6 +1,8 @@
-//! Long jobs over MCP (docs/agents.md § Long exports): `file.exportMedia` with `wait: true`, and
-//! engine catalogue tools that start a job (`export`, `transcribe`, …), run as background engine
-//! jobs; the server reports its progress as MCP
+//! Long jobs over MCP (docs/agents.md § Long exports): `file.exportMedia`, `transcript.generate`
+//! and `media.analyze` with `wait: true`, and engine catalogue tools that start a job (`export`,
+//! `transcribe`, `analyze_media`, `export_variations`), run as background engine jobs. In
+//! headless mode every request first applies finished work (transcripts, analyses) and advances
+//! the export queue, as the app does every frame. The server reports a job's progress as MCP
 //! `notifications/progress` (when the request carried a `progressToken`) and stops it on
 //! `notifications/cancelled`, deleting the partial output. The session lock is only held for
 //! short polls, so other requests are answered while the export runs.
@@ -15,8 +17,9 @@ use serde_json::{Value, json};
 
 use crate::server::FilmcraftMcp;
 
-/// Engine commands that block until a render is written when called with `wait: true`.
-pub const LONG_COMMANDS: &[&str] = &["file.exportMedia"];
+/// Engine commands that start a background job and, called with `wait: true`, block until it
+/// ends: an export, a transcription, a style analysis. `command_run` runs them as followed jobs.
+pub const LONG_COMMANDS: &[&str] = &["file.exportMedia", "transcript.generate", "media.analyze"];
 
 /// How often the job is polled (and at most how often progress is reported).
 const POLL: Duration = Duration::from_millis(100);
@@ -80,7 +83,8 @@ impl FilmcraftMcp {
                 }
                 CallToolResult::success(vec![Content::text(serde_json::to_string_pretty(&out).unwrap_or_default())])
             }
-            JobEnd::Failed(e) => CallToolResult::error(vec![Content::text(format!("export failed: {e}"))]),
+            JobEnd::Failed(e) if id == "file.exportMedia" => CallToolResult::error(vec![Content::text(format!("export failed: {e}"))]),
+            JobEnd::Failed(e) => CallToolResult::error(vec![Content::text(format!("{id} failed: {e}"))]),
             JobEnd::Cancelled => CallToolResult::error(vec![Content::text("cancelled")]),
         }
     }
@@ -99,6 +103,8 @@ impl FilmcraftMcp {
                 rep.report(done, total, j["status"].as_str().unwrap_or_default()).await;
             }
             if finished {
+                // store what the job made (transcripts, analyses) before answering
+                self.pump().await;
                 let result = state.map(|j| j["result"].clone()).unwrap_or(Value::Null);
                 if let Some(e) = result.get("error").and_then(Value::as_str) {
                     return JobEnd::Failed(e.to_string());
@@ -204,5 +210,15 @@ mod tests {
         remove_partial(&dir.join("clip.mp4").to_string_lossy(), SystemTime::now() + Duration::from_secs(60));
         assert!(dir.join("clip.mp4").exists());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn long_commands_are_the_waiting_job_starters() {
+        for id in ["file.exportMedia", "transcript.generate", "media.analyze"] {
+            assert!(is_long(id, &json!({"wait": true})), "{id}");
+            assert!(!is_long(id, &json!({})) && !is_long(id, &json!({"wait": false})) && !is_long(id, &json!({"wait": "yes"})), "{id}");
+            assert!(filmcraft_engine::find_command(id).is_some(), "{id} is a command");
+        }
+        assert!(!is_long("jobs.list", &json!({"wait": true})));
     }
 }

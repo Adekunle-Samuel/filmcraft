@@ -32,8 +32,8 @@ impl BridgeClient {
         Ok(Self { addr, conn: Mutex::new(None), next_id: AtomicU64::new(1) })
     }
 
-    /// Run engine command `id` in the app. A blocking export (`file.exportMedia` with
-    /// `wait: true`, see [`crate::long_job::LONG_COMMANDS`]) is started as an app job and polled
+    /// Run engine command `id` in the app. A blocking export, transcription or analysis
+    /// ([`crate::long_job::LONG_COMMANDS`] with `wait: true`) is started as an app job and polled
     /// here until it finishes, so the app keeps repainting (its status bar shows the progress) and
     /// answering other requests, and no request waits on the control server's 60 s reply limit
     /// (#91, #92). The reply is the same as a blocking export's: `{job, path, result}`, or the
@@ -58,7 +58,8 @@ impl BridgeClient {
             }
         };
         if let Some(e) = result.get("error").and_then(Value::as_str) {
-            return Err(AutomationError::App(format!("export failed: {e}")));
+            let what = if id == "file.exportMedia" { "export" } else { id };
+            return Err(AutomationError::App(format!("{what} failed: {e}")));
         }
         if let Some(o) = start.as_object_mut() {
             o.insert("result".into(), result);

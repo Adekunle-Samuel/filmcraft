@@ -244,12 +244,23 @@ impl FilmcraftMcp {
                 tokio::task::spawn_blocking(move || {
                     // A command that panicked earlier poisoned the lock; the session is still usable.
                     let mut g = s.lock().unwrap_or_else(PoisonError::into_inner);
+                    // what the app does every frame: store finished transcripts and analyses,
+                    // advance the export queue
+                    g.poll_persistence();
                     g.execute(&id, params).map_err(AutomationError::from)
                 })
                 .await
                 .map_err(join_error)?
             }
             Backend::Bridge(b) => b.execute(id, params).await,
+        }
+    }
+
+    /// Apply finished background work now (headless; the app does it every frame itself).
+    pub(crate) async fn pump(&self) {
+        if let Backend::Headless(s) = &*self.backend {
+            let s = s.clone();
+            let _ = tokio::task::spawn_blocking(move || s.lock().unwrap_or_else(PoisonError::into_inner).poll_persistence()).await;
         }
     }
 
@@ -594,7 +605,7 @@ impl FilmcraftMcp {
             None => return Err(McpError::invalid_params(format!("unknown tool `{name}`"), None)),
         }
         let started = std::time::SystemTime::now();
-        let out = match self.run("tools.call", json!({"name": name, "input": input})).await {
+        let out = match self.run("tools.call", json!({"name": name, "input": input.clone()})).await {
             Ok(v) => v,
             Err(e) => return Ok(fail(e)),
         };
@@ -607,9 +618,22 @@ impl FilmcraftMcp {
                     if let Some(o) = result.as_object_mut() {
                         o.insert("result".into(), r);
                     }
+                    // a finished analysis is read back, so the client gets the profile, not just "done"
+                    if name == "analyze_media"
+                        && let Some(item) = input.get("item")
+                        && let Ok(profile) = self.run("media.analysis", json!({"item": item})).await
+                        && let Some(o) = result.as_object_mut()
+                    {
+                        o.insert("profile".into(), filmcraft_engine::tools::cap(profile));
+                    }
                 }
                 crate::long_job::JobEnd::Failed(e) => return Ok(fail(format!("{name} failed: {e}"))),
-                crate::long_job::JobEnd::Cancelled => return Ok(fail("cancelled")),
+                crate::long_job::JobEnd::Cancelled => {
+                    if name == "export_variations" {
+                        self.remove_unfinished_exports(&result, started).await;
+                    }
+                    return Ok(fail("cancelled"));
+                }
             }
         }
         let mut content: Vec<Content> = out
@@ -622,6 +646,22 @@ impl FilmcraftMcp {
             .collect();
         content.push(Content::text(serde_json::to_string_pretty(&result).unwrap_or_default()));
         Ok(CallToolResult::success(content))
+    }
+
+    /// After a cancelled `export_variations`: delete the partial output of each of its exports that
+    /// did not finish (`result.files[].queueItems`); finished files stay.
+    async fn remove_unfinished_exports(&self, result: &Value, started: std::time::SystemTime) {
+        let Ok(queue) = self.run("export.queue.list", json!({})).await else { return };
+        let status = |id: u64| {
+            queue["items"].as_array().and_then(|a| a.iter().find(|i| i["id"].as_u64() == Some(id))).and_then(|i| i["status"].as_str()).unwrap_or("").to_string()
+        };
+        for f in result["files"].as_array().into_iter().flatten().take(64) {
+            let Some(path) = f["path"].as_str() else { continue };
+            let items: Vec<u64> = f["queueItems"].as_array().into_iter().flatten().filter_map(Value::as_u64).collect();
+            if !items.is_empty() && items.iter().all(|id| status(*id) != "done") {
+                crate::long_job::remove_partial(path, started);
+            }
+        }
     }
 }
 
@@ -893,6 +933,125 @@ mod tests {
         let v: Value = serde_json::from_str(r["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
         assert!(v["job"].is_u64() && v["result"].is_object(), "{v}");
         assert!(std::path::Path::new(&path).exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The demo project with a fake transcriber whose words fit the first A1 clip's media (as in
+    /// the engine's transcript tests); returns that media item and the first V1 clip's item.
+    fn with_transcriber() -> (Session, u64, u64) {
+        let mut s = demo();
+        let q = s.active_sequence().unwrap();
+        let a = &q.audio_tracks[0].items[0];
+        let (item, sin, video) = (a.item, a.source_in, q.video_tracks[0].items[0].item);
+        let at = |x: f64| sin + filmcraft_time::Tick::from_seconds_f64(x);
+        let mut t = filmcraft_project::Transcript { language: "en".into(), ..Default::default() };
+        for (w, a, b) in [("Hello", 0.2, 0.5), ("um", 0.6, 0.9), ("world.", 1.0, 1.4)] {
+            t.words.push(filmcraft_project::Word::new(w, at(a), at(b)));
+        }
+        t.normalize();
+        s.transcriber = Some(Arc::new(filmcraft_speech::FixedTranscriber { transcript: t, id: "fixed".into() }));
+        (s, item.0, video.0)
+    }
+
+    fn text_json(r: &Value) -> Value {
+        let content = r["result"]["content"].as_array().cloned().unwrap_or_default();
+        let text = content.iter().rev().find_map(|c| c["text"].as_str()).unwrap_or("null");
+        serde_json::from_str(text).unwrap_or(Value::Null)
+    }
+
+    /// Send a `tools/call` with a progress token; collect the progress notifications until the
+    /// response arrives.
+    async fn call_with_progress(c: &mut Client, id: u64, name: &str, arguments: Value) -> (Value, Vec<Value>) {
+        let msg =
+            json!({"jsonrpc":"2.0","id":id,"method":"tools/call","params":{"name":name,"arguments":arguments,"_meta":{"progressToken":format!("p{id}")}}});
+        c.send(&msg.to_string()).await;
+        let mut notes = Vec::new();
+        loop {
+            let m = c.next().await;
+            if m["method"] == "notifications/progress" {
+                assert_eq!(m["params"]["progressToken"], format!("p{id}"), "{m}");
+                notes.push(m);
+            } else if m["id"] == id {
+                return (m, notes);
+            }
+        }
+    }
+
+    async fn transcript_words(c: &mut Client, id: u64) -> Value {
+        let r = c.call(id, "read_transcript", json!({"offset": null, "limit": null})).await;
+        text_json(&r)["words"].clone()
+    }
+
+    /// A6.1: in headless mode a transcription (the `transcribe` tool, or `command_run
+    /// transcript.generate` with `wait`) is followed to its end with progress, and its transcript is
+    /// stored before the call returns; the same for a style analysis.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn transcription_and_analysis_jobs_are_followed_headless() {
+        let (s, item, video) = with_transcriber();
+        let mut c = Client::start(s);
+        c.init().await;
+        assert_eq!(transcript_words(&mut c, 1).await, 0, "no transcript yet");
+        let args = json!({"items": [item], "language": null, "model": null, "keep_fillers": null, "regions": null});
+        let (r, notes) = call_with_progress(&mut c, 2, "transcribe", args).await;
+        assert_eq!(r["result"]["isError"], false, "{r}");
+        let v = text_json(&r);
+        assert!(v["job"].is_u64() && v["result"]["frames"] == 3, "{v}");
+        assert!(!notes.is_empty(), "the transcription reported its progress");
+        assert_eq!(transcript_words(&mut c, 3).await, 3, "stored when the call returned");
+
+        // a direct command with `wait` is followed the same way
+        let (s, item, _) = with_transcriber();
+        let mut c2 = Client::start(s);
+        c2.init().await;
+        let (r, notes) = call_with_progress(&mut c2, 4, "command_run", json!({"id": "transcript.generate", "params": {"items": [item], "wait": true}})).await;
+        assert_eq!(r["result"]["isError"], false, "{r}");
+        assert!(text_json(&r)["result"].is_object(), "{r}");
+        assert!(!notes.is_empty(), "transcript.generate reported progress");
+        assert_eq!(transcript_words(&mut c2, 5).await, 3);
+        // a failing one is an error result, not a hang
+        let (r, _) = call_with_progress(&mut c2, 6, "command_run", json!({"id": "transcript.generate", "params": {"items": [999_999], "wait": true}})).await;
+        assert_eq!(r["result"]["isError"], true, "{r}");
+
+        // analysis: the tool returns the profile; the command is followed too
+        let (r, notes) = call_with_progress(&mut c, 7, "analyze_media", json!({"item": video, "max_frames": 8})).await;
+        assert_eq!(r["result"]["isError"], false, "{r}");
+        let v = text_json(&r);
+        assert!(v["profile"]["profile"].is_object(), "{v}");
+        assert!(!notes.is_empty());
+        let (r, _) =
+            call_with_progress(&mut c, 8, "command_run", json!({"id": "media.analyze", "params": {"item": video, "maxFrames": 8, "wait": true}})).await;
+        assert_eq!(r["result"]["isError"], false, "{r}");
+        let r = c.call(9, "command_run", json!({"id": "media.analysis", "params": {"item": video}})).await;
+        assert!(text_json(&r)["profile"].is_object(), "{r}");
+    }
+
+    /// `export_variations` over MCP: the batch job is followed (the queue advances between polls
+    /// in headless mode) and every file is written when the call returns.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn export_variations_is_followed_headless() {
+        let mut s = demo();
+        let first = s.state.active_sequence.unwrap();
+        let seq = s.active_sequence().unwrap().clone();
+        let p = Arc::make_mut(&mut s.project);
+        p.item_mut(first).unwrap().name = "Long".into();
+        let second = p.add_item("Short", filmcraft_project::Label::Iris, filmcraft_project::ItemKind::Sequence(Box::new(seq)), None);
+        let dir = std::env::temp_dir().join(format!("filmcraft-mcp-variations-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut c = Client::start(s);
+        c.init().await;
+        let args = json!({"sequences": [first.0, second.0], "preset": "Waveform Audio 48 kHz 16-bit", "folder": dir.to_string_lossy(), "overwrite": null});
+        let (r, notes) = call_with_progress(&mut c, 1, "export_variations", args.clone()).await;
+        assert_eq!(r["result"]["isError"], false, "{r}");
+        assert!(!notes.is_empty());
+        let v = text_json(&r);
+        assert_eq!(v["files"].as_array().map(Vec::len), Some(2), "{v}");
+        for name in ["Long.wav", "Short.wav"] {
+            assert!(dir.join(name).exists(), "{name} written");
+        }
+        // the files exist now: refused
+        let r = c.call(2, "export_variations", args).await;
+        assert_eq!(r["result"]["isError"], true, "{r}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

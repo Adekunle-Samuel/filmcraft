@@ -438,6 +438,13 @@ pub struct Job {
 }
 
 impl Job {
+    /// Whether the job is over: its result is stored (what `jobs.list` reports as `finished`) or
+    /// its progress says so. Job bodies store their output before the result, so once this is
+    /// true the output can be applied, even if `progress.finished` is set a moment later.
+    pub fn is_finished(&self) -> bool {
+        self.progress.finished.load(std::sync::atomic::Ordering::Relaxed) || self.result.lock().unwrap_or_else(|e| e.into_inner()).is_some()
+    }
+
     pub fn to_json(&self) -> Value {
         use std::sync::atomic::Ordering;
         let res = self.result.lock().unwrap_or_else(|e| e.into_inner()).clone();
