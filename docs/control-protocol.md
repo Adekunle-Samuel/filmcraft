@@ -134,7 +134,12 @@ sequence as tone-mapped SDR.
 returns `{job, item, frames}` (plus `profile` with `wait: true`); `media.analysis {item}` returns
 `{item, profile}` from the session cache (or `{pending: true, job}`). The style library in
 `<data dir>/styles/`: `style.save {name, item}`, `style.list` (`{styles: [{name, path, savedUnix,
-profile}], errors, dir}`), `style.delete {name}`.
+profile}], errors, dir}`), `style.delete {name}`. Grade from a reference
+(`crates/engine/src/style_grade.rs`): `lumetri.matchToItem {clips?, item, samples?=6 (1–12),
+faceDetection?}` returns `{item, samples, clips: [{clip, shadows, midtones, highlights, lightness,
+saturation, distanceBefore, distanceAfter}]}` (one undo step); `lumetri.bakeLut {clip, size?=33
+(17|33|65), name}` writes `<data dir>/luts/<name>.cube`, adds it to the LUT library and returns
+`{clip, path, size, id, ref, name, input, warnings}`.
 
 **Keyboard shortcuts** (`crates/engine/src/shortcuts.rs`): `shortcuts.list {query?, panel?}`,
 `shortcuts.get`, `shortcuts.set {command, keys, panel?, add?, keepConflicts?}`, `shortcuts.clear`,

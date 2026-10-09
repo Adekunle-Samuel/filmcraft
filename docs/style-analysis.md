@@ -75,7 +75,43 @@ The profile (`filmcraft_render::style::StyleProfile`, JSON in camelCase):
 `errors`. `style.delete {name}` removes one. Names are trimmed and must be 1–64 characters, with
 no path separators, no control characters, none of `: * ? " < > |`, and no leading dot.
 
+## Matching a grade to a reference: `lumetri.matchToItem`
+
+`lumetri.matchToItem {clips?, item, samples?=6 (1–12), faceDetection?=true}` grades the clips
+(default: the selected video clips) to look like a reference media item, subclip or sequence.
+`samples` evenly spaced frames of the reference, and of each clip with its own Lumetri switched
+off, are tiled into one mosaic each. The Apply Match solver (`filmcraft_render::color_match`)
+then fits the three colour wheels, their lightness and Basic saturation so that the clip mosaic's
+Oklab tonal statistics match the reference's. Every clip is written in one undo step. A clip
+without Lumetri Color gets one in the same step. The result reports each clip's statistics
+distance before and after.
+
+## Baking a grade: `lumetri.bakeLut`
+
+`lumetri.bakeLut {clip, size?=33 (17|33|65), name}` turns the clip's Lumetri Color grade into a
+`size`³ 3D LUT, `<data dir>/luts/<name>.cube` (written atomically; the name follows the style
+naming rules). The LUT is added to the project's LUT library as `lut.import` does, so `lut.list`
+shows it and `lumetri.setLook` / `lumetri.setInputLut` apply it. The whole lattice is graded as
+one image by the renderer's own Lumetri code (`filmcraft_render::lut_bake`), so at the lattice
+points the LUT is exact. Between them it is tetrahedral interpolation.
+
+- **Input:** SDR Rec. 709, display-referred: FilmCraft's sRGB-encoded grading signal, 0–1,
+  which the Input LUT and Creative Look slots read. An HDR sequence gets a warning.
+- **Baked:** Basic Correction (including its Input LUT), Creative (look or Look LUT, faded film,
+  vibrance, split toning), Curves, Color Wheels and the HSL Secondary key and correction.
+  Animated parameters are baked at the playhead.
+- **Skipped, with a warning:** Vignette (depends on position), Creative Sharpen and the HSL
+  Secondary Denoise / Blur refinement (both read neighbouring pixels), and masks. Only Lumetri
+  Color instances are baked; other effects on the clip are ignored.
+
+The file is the user's own output, not a repository asset.
+
 ## Honest limits
+
+- Matching is a statistical Oklab match of tonal ranges, not shot-aware colour transfer: it
+  doesn't pair a shot with the reference shot that shows the same content, and it doesn't
+  segment skin, sky or other objects (skin protection is a hue-band weight).
+- A LUT bake drops spatial effects (see above) and is SDR only.
 
 - The statistics describe a frame's tonal distribution, not its content. Two very different
   pictures can share a profile.

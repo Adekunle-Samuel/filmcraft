@@ -83,7 +83,7 @@ pub(crate) fn commands() -> Vec<CommandSpec> {
     ]
 }
 
-fn import_lut(s: &mut Session, path: &str, name: Option<&str>) -> Result<(String, Value)> {
+pub(crate) fn import_lut(s: &mut Session, path: &str, name: Option<&str>) -> Result<(String, Value)> {
     let text = std::fs::read_to_string(path).map_err(|e| bad("lut.import", format!("{path}: {e}")))?;
     let fmt = LutFormat::from_path(path).ok_or_else(|| bad("lut.import", "expected a .cube or .3dl file"))?;
     let lut = Lut::parse(&text, Some(fmt)).map_err(|e| bad("lut.import", format!("{path}: {e}")))?;
@@ -429,6 +429,23 @@ fn apply_match(s: &mut Session, p: &Value) -> Result<Value> {
         filmcraft_render::render_clip(&probe, seq_id, clip, t, opts, &provider).ok_or_else(|| bad("lumetri.applyMatch", "the clip has no picture"))?;
     let reference = filmcraft_render::render_sequence(&s.project, seq_id, reference_t, opts, &provider);
     let m = filmcraft_render::color_match::solve(&current, &reference, &base, skin);
+    s.edit_sequence("Apply Match", |q, _, _| {
+        let (_, it) = q.find_item_mut(clip).ok_or(filmcraft_edit::EditError::NoItem(clip))?;
+        let e = it.effects.get_mut(idx).ok_or_else(|| bad("lumetri.applyMatch", "no Lumetri"))?;
+        write_match(e, &m);
+        Ok(())
+    })?;
+    Ok(json!({
+        "clip": clip.0,
+        "shadows": m.shadows, "midtones": m.midtones, "highlights": m.highlights,
+        "lightness": m.lightness, "saturation": m.saturation,
+        "distanceBefore": m.before, "distanceAfter": m.after,
+    }))
+}
+
+/// Write a solved match into a Lumetri instance: the three wheels, their lightness and Basic
+/// saturation (keyframes on them are replaced), wheels and the effect switched on.
+pub(crate) fn write_match(e: &mut filmcraft_project::EffectInstance, m: &filmcraft_render::color_match::Match) {
     let v2 = |a: [f32; 2]| ParamValue::Vec2(filmcraft_geom::Vec2::new(a[0] as f64, a[1] as f64));
     let values = [
         ("wheel_shadows", v2(m.shadows)),
@@ -440,21 +457,10 @@ fn apply_match(s: &mut Session, p: &Value) -> Result<Value> {
         ("saturation", ParamValue::Float(m.saturation as f64)),
         ("wheels_on", ParamValue::Bool(true)),
     ];
-    s.edit_sequence("Apply Match", |q, _, _| {
-        let (_, it) = q.find_item_mut(clip).ok_or(filmcraft_edit::EditError::NoItem(clip))?;
-        let e = it.effects.get_mut(idx).ok_or_else(|| bad("lumetri.applyMatch", "no Lumetri"))?;
-        for (k, v) in &values {
-            let prm = e.params.entry(k.to_string()).or_insert_with(|| filmcraft_project::Param::new(v.clone()));
-            prm.keyframes.clear();
-            prm.value = v.clone();
-        }
-        e.enabled = true;
-        Ok(())
-    })?;
-    Ok(json!({
-        "clip": clip.0,
-        "shadows": m.shadows, "midtones": m.midtones, "highlights": m.highlights,
-        "lightness": m.lightness, "saturation": m.saturation,
-        "distanceBefore": m.before, "distanceAfter": m.after,
-    }))
+    for (k, v) in values {
+        let prm = e.params.entry(k.to_string()).or_insert_with(|| filmcraft_project::Param::new(v.clone()));
+        prm.keyframes.clear();
+        prm.value = v;
+    }
+    e.enabled = true;
 }

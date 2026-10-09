@@ -46,6 +46,7 @@ pub mod settings;
 pub mod shortcut_presets;
 pub mod shortcuts;
 pub mod style_analysis;
+pub mod style_grade;
 pub mod sync;
 pub mod transcript;
 pub mod trim;

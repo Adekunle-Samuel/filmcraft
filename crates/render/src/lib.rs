@@ -20,6 +20,7 @@ pub mod graphic_clip;
 pub mod graphics;
 pub mod image;
 pub mod lumetri_presets;
+pub mod lut_bake;
 pub mod luts;
 pub mod mask;
 pub mod mixer;
