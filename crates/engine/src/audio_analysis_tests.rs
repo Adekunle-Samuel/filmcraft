@@ -156,3 +156,18 @@ fn empty_sequence_is_an_error() {
     let e = s.execute("audio.detectSilence", json!({})).unwrap_err().to_string();
     assert!(e.contains("empty"), "{e}");
 }
+
+#[test]
+fn the_assistant_tools_reach_the_commands() {
+    let (mut s, _, _) = session_with(&talk());
+    let r = s
+        .execute(
+            "tools.call",
+            json!({"name": "find_silences", "input": {"min_seconds": 0.5, "pad_seconds": null, "threshold_db": null, "start_seconds": null, "end_seconds": null}}),
+        )
+        .unwrap();
+    assert_eq!(r["result"]["count"], 2, "{r}");
+    let r = s.execute("tools.call", json!({"name": "measure_loudness", "input": {"start_seconds": null, "end_seconds": null}})).unwrap();
+    assert!(r["result"]["integratedLufs"].as_f64().is_some(), "{r}");
+    assert!(s.execute("tools.call", json!({"name": "find_silences", "input": {"item": 3}})).is_err(), "unknown fields are refused");
+}

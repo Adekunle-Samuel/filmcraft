@@ -593,12 +593,14 @@ pub(super) static TOOLS: &[ToolDef] = &[
     ToolDef {
         name: "find_silences",
         title: "Find silences",
-        description: "Silent ranges (dead air, long pauses) in a media item's or the active sequence's audio, from the waveform.",
+        description: "Silent ranges (dead air, long pauses) in the active sequence's mix, from the waveform (no transcript needed; transcribed words are never inside a returned range). Returns the silences in sequence time, the voiced regions and the threshold used. Use the silences as the edit plan's cleanup.silences.",
         schema: r#"{"type":"object","properties":{
-            "item":{"type":["integer","null"],"description":"Media item id (null: the active sequence).","minimum":0},
-            "min_seconds":{"type":["number","null"],"description":"Shortest silence reported.","minimum":0.05,"maximum":30},
-            "threshold_db":{"type":["number","null"],"description":"Level below which audio counts as silent (null: adaptive).","minimum":-90,"maximum":0}
-        },"required":["item","min_seconds","threshold_db"],"additionalProperties":false}"#,
+            "min_seconds":{"type":["number","null"],"description":"Shortest silence reported (default 0.5; 0.3 for a snappy cut, 0.8 for a natural one).","minimum":0.05,"maximum":30},
+            "pad_seconds":{"type":["number","null"],"description":"Air kept next to speech on each side (default 0.08).","minimum":0,"maximum":2},
+            "threshold_db":{"type":["number","null"],"description":"Level below which audio counts as silent (null: adaptive, from the recording's noise floor and speech level).","minimum":-120,"maximum":0},
+            "start_seconds":{"type":["number","null"],"description":"Analyse from here (sequence seconds).","minimum":0},
+            "end_seconds":{"type":["number","null"],"description":"Analyse up to here (sequence seconds).","minimum":0}
+        },"required":["min_seconds","pad_seconds","threshold_db","start_seconds","end_seconds"],"additionalProperties":false}"#,
         read_only: true,
         destructive: false,
         idempotent: true,
@@ -610,10 +612,11 @@ pub(super) static TOOLS: &[ToolDef] = &[
     ToolDef {
         name: "measure_loudness",
         title: "Measure loudness",
-        description: "Integrated loudness, loudness range and true peak (EBU R128) of a media item or of the active sequence's mix.",
+        description: "Integrated loudness, loudness range, max short-term and true peak (EBU R128) of the active sequence's mix, or of a span of it.",
         schema: r#"{"type":"object","properties":{
-            "item":{"type":["integer","null"],"description":"Media item id (null: the active sequence).","minimum":0}
-        },"required":["item"],"additionalProperties":false}"#,
+            "start_seconds":{"type":["number","null"],"description":"Measure from here (sequence seconds).","minimum":0},
+            "end_seconds":{"type":["number","null"],"description":"Measure up to here (sequence seconds).","minimum":0}
+        },"required":["start_seconds","end_seconds"],"additionalProperties":false}"#,
         read_only: true,
         destructive: false,
         idempotent: true,
