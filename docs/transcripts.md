@@ -22,7 +22,7 @@ the control channel and MCP agents can do the same.
 
 | Command | What it does |
 |---|---|
-| `transcript.generate` | Transcribe media items (`items`, else the Project selection, else the media of the sequence's audio clips). Params: `model` (default `whisper-base`), `language` (`auto` = detect), `diarize`, `maxSpeakers`. One undo step. |
+| `transcript.generate` | Transcribe media items (`items`, else the Project selection, else the media of the sequence's audio clips). Params: `model` (default `whisper-base`), `language` (`auto` = detect), `diarize`, `maxSpeakers`, `wait`. Runs as a background job and returns `{job, items, skipped}`; `jobs.list` shows its progress and `jobs.cancel` stops it without changing anything. The transcripts are stored in one undo step ("Transcribe") when it finishes. With `wait: true` (and always on the web) it finishes first and reports `items: [{item, words, speakers, language, source}]`. |
 | `transcript.set` | Store a transcript you bring (JSON: `language`, `speakers`, `words` with `text`/`start`/`end`/`speaker`); it is sorted and made well formed. |
 | `transcript.delete` | Remove transcripts. |
 | `transcript.inspect` | The sequence transcript: words (index, text, sequence times, speaker, clip), paragraphs, speakers, the word at the playhead. |
@@ -82,6 +82,8 @@ Apple-silicon laptop CPU).
 
 ## Limits
 
-- Transcription runs synchronously inside the command (no background job or progress bar yet).
+- Media longer than 4 hours is refused (its 16 kHz mono audio is held in memory); transcribe it in
+  parts.
+- One media item can't be in two transcription jobs at once.
 - Track items that refer to a subclip are looked up by the subclip's id, so a transcript made for
   the parent media is not shown through subclip clips yet.
