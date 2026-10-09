@@ -119,6 +119,89 @@ struct Work {
     src: filmcraft_media::SharedSource,
     /// Length of the media's audio in 16 kHz samples.
     len: usize,
+    /// Only these spans of the media are transcribed (`regions`); None = all of it.
+    spans: Option<Vec<Span>>,
+}
+
+/// Samples `start..start + len` (16 kHz) of a media item's audio.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Span {
+    pub start: usize,
+    pub len: usize,
+}
+
+/// Most `regions` one call takes.
+pub const MAX_REGIONS: usize = 10_000;
+/// Air kept around every voiced region (seconds), so word edges aren't clipped.
+pub const REGION_PAD_SECONDS: f64 = 0.3;
+
+/// The 16 kHz sample spans to transcribe for `regions` (`[[start_s, end_s], …]`, media seconds) of
+/// audio `len` samples long: each region padded by [`REGION_PAD_SECONDS`], clamped to the audio,
+/// sorted and merged where they overlap or touch.
+pub fn region_spans(regions: &Value, len: usize) -> std::result::Result<Vec<Span>, String> {
+    let list = regions.as_array().ok_or("`regions` must be a list of [startSeconds, endSeconds] pairs")?;
+    if list.len() > MAX_REGIONS {
+        return Err(format!("at most {MAX_REGIONS} regions, got {}", list.len()));
+    }
+    let sr = filmcraft_speech::SAMPLE_RATE as f64;
+    let end = len as f64;
+    let mut raw: Vec<(usize, usize)> = Vec::with_capacity(list.len());
+    for (i, r) in list.iter().enumerate() {
+        let pair = r.as_array().map(Vec::as_slice);
+        let Some([a, b]) = pair else { return Err(format!("region {i} must be [startSeconds, endSeconds]")) };
+        let (Some(a), Some(b)) = (a.as_f64(), b.as_f64()) else { return Err(format!("region {i} must hold two numbers")) };
+        if !a.is_finite() || !b.is_finite() {
+            return Err(format!("region {i} is not a finite time"));
+        }
+        if b < a {
+            return Err(format!("region {i} ends before it starts"));
+        }
+        // finite inputs: the products may overflow to infinity, which `min` brings back in range
+        let a = ((a - REGION_PAD_SECONDS).max(0.0) * sr).floor().min(end);
+        let b = ((b + REGION_PAD_SECONDS).max(0.0) * sr).ceil().min(end);
+        let (a, b) = (a as usize, b as usize);
+        if b > a {
+            raw.push((a, b));
+        }
+    }
+    raw.sort_unstable();
+    let mut merged: Vec<(usize, usize)> = Vec::with_capacity(raw.len());
+    for (a, b) in raw {
+        match merged.last_mut() {
+            Some(last) if a <= last.1 => last.1 = last.1.max(b),
+            _ => merged.push((a, b)),
+        }
+    }
+    if merged.is_empty() {
+        return Err("the regions lie outside the media's audio".into());
+    }
+    Ok(merged.into_iter().map(|(a, b)| Span { start: a, len: b - a }).collect())
+}
+
+/// Move words transcribed from the spans' audio laid end to end back to media time. A word
+/// belongs to the span its start falls in, and its end is cut at that span's end, so every word
+/// stays inside its source region; words past the audio are dropped.
+pub fn remap_words(words: &mut Vec<filmcraft_project::Word>, spans: &[Span]) {
+    let per = filmcraft_speech::TICKS_PER_SAMPLE;
+    let as_i64 = |n: usize| i64::try_from(n).unwrap_or(i64::MAX);
+    // (start in the joined audio, end in the joined audio, shift to media time), in ticks
+    let mut table = Vec::with_capacity(spans.len());
+    let mut at = 0i64;
+    for sp in spans {
+        let a = at;
+        at = at.saturating_add(as_i64(sp.len).saturating_mul(per));
+        table.push((a, at, as_i64(sp.start).saturating_mul(per).saturating_sub(a)));
+    }
+    words.retain_mut(|w| {
+        let start = w.start.0.max(0);
+        let k = table.partition_point(|e| e.1 <= start);
+        let Some(&(a, b, shift)) = table.get(k) else { return false };
+        let s0 = start.max(a);
+        let e0 = w.end.0.clamp(s0, b);
+        w.start = Tick(s0.saturating_add(shift));
+        w.end = Tick(e0.saturating_add(shift));
+        true
+    });
 }
 
 /// The media item `item` if it has audio to transcribe (None: not media, no audio, offline).
@@ -133,7 +216,23 @@ fn audio_work(s: &Session, item: ItemId) -> Option<Work> {
         return None;
     }
     let len = usize::try_from(dur.to_units_floor(filmcraft_speech::SAMPLE_RATE as i64).max(0)).ok()?;
-    Some(Work { item, name: it.name.clone(), src, len })
+    Some(Work { item, name: it.name.clone(), src, len, spans: None })
+}
+
+/// The mono 16 kHz audio a job transcribes for `w`: all of it, or its spans laid end to end.
+fn work_audio(w: &Work, cancelled: &dyn Fn() -> bool) -> std::result::Result<Vec<f32>, String> {
+    let Some(spans) = &w.spans else { return read_mono(&w.src, 0, w.len, cancelled) };
+    let total = spans.iter().fold(0usize, |n, s| n.saturating_add(s.len));
+    if total > MAX_HOURS * 3600 * filmcraft_speech::SAMPLE_RATE as usize {
+        return Err(format!("the regions add up to more than {MAX_HOURS} hours; transcribe them in parts"));
+    }
+    let mut out = Vec::with_capacity(total);
+    for sp in spans {
+        // each span reads exactly `len` samples (zeros past the end), so the layout matches
+        // `remap_words`; a cancelled read stops the job anyway
+        out.extend(read_mono(&w.src, sp.start, sp.len, cancelled)?);
+    }
+    Ok(out)
 }
 
 /// Mono 16 kHz samples `start..start + len` of a source, read a chunk at a time. Stops early
@@ -178,6 +277,25 @@ fn transcriber(s: &Session, p: &Value) -> Result<Arc<dyn Transcriber>> {
     filmcraft_speech::load(&dir, model).map_err(speech_err)
 }
 
+/// Longest `prompt` kept (characters); the recogniser keeps only its last 223 tokens anyway.
+const MAX_PROMPT_CHARS: usize = 2000;
+
+/// The recogniser's initial prompt: `prompt` when given, else [`filmcraft_speech::FILLER_PROMPT`]
+/// with `keepFillers: true` (so "um" and "uh" are written out), else none.
+fn initial_prompt(p: &Value) -> Result<Option<String>> {
+    match p.get("prompt").filter(|v| !v.is_null()) {
+        Some(Value::String(t)) => {
+            let t: String = t.trim().chars().take(MAX_PROMPT_CHARS).collect();
+            if !t.is_empty() {
+                return Ok(Some(t));
+            }
+        }
+        Some(_) => return Err(bad("transcript.generate", "`prompt` must be text")),
+        None => {}
+    }
+    Ok(bool_p(p, "keepFillers").unwrap_or(false).then(|| filmcraft_speech::FILLER_PROMPT.to_string()))
+}
+
 /// Progress units per transcribed item (`jobs.list` shows `done` / `total`).
 const ITEM_UNITS: u64 = 1000;
 
@@ -217,7 +335,12 @@ fn generate(s: &mut Session, p: &Value) -> Result<Value> {
         },
         diarize: bool_p(p, "diarize").unwrap_or(ma.speaker_labeling != "off"),
         max_speakers: u64_p(p, "maxSpeakers").map(|n| n.clamp(1, 32) as usize).unwrap_or(Options::default().max_speakers),
+        initial_prompt: initial_prompt(p)?,
     };
+    let regions = p.get("regions").filter(|v| !v.is_null());
+    if regions.is_some() && items.len() != 1 {
+        return Err(bad("transcript.generate", "`regions` are media times of one item: pass exactly one item"));
+    }
     let mut work = Vec::new();
     let mut skipped = Vec::new();
     for item in items {
@@ -228,6 +351,11 @@ fn generate(s: &mut Session, p: &Value) -> Result<Value> {
     }
     if work.is_empty() {
         return Err(EngineError::Other("none of the clips has audio to transcribe".into()));
+    }
+    if let Some(r) = regions {
+        for w in &mut work {
+            w.spans = Some(region_spans(r, w.len).map_err(|e| bad("transcript.generate", e))?);
+        }
     }
     let n = work.len();
     let id = s.jobs.iter().map(|j| j.id).max().unwrap_or(0) + 1;
@@ -247,7 +375,7 @@ fn generate(s: &mut Session, p: &Value) -> Result<Value> {
             let base = ITEM_UNITS.saturating_mul(k as u64);
             prog.done.store(base, Ordering::Relaxed);
             *lock(&prog.status) = format!("{}: reading the audio", w.name);
-            let audio = match read_mono(&w.src, 0, w.len, &cancelled) {
+            let audio = match work_audio(w, &cancelled) {
                 Ok(a) => a,
                 Err(e) => {
                     err = Some(format!("{}: {e}", w.name));
@@ -268,6 +396,9 @@ fn generate(s: &mut Session, p: &Value) -> Result<Value> {
             };
             match t.transcribe(&audio, &opts, &mut progress) {
                 Ok(mut tr) => {
+                    if let Some(spans) = &w.spans {
+                        remap_words(&mut tr.words, spans);
+                    }
                     tr.normalize();
                     done.push((w.item, tr));
                 }
@@ -615,7 +746,7 @@ pub fn commands() -> Vec<CommandSpec> {
             "transcript.generate",
             "Transcribe…",
             &["Sequence", "Transcript"],
-            r#"{"items":[id]?,"model":"whisper-base"?,"language":"en|auto"?,"diarize":bool?,"maxSpeakers":n?,"wait":bool=false}"#,
+            r#"{"items":[id]?,"model":"whisper-base"?,"language":"en|auto"?,"diarize":bool?,"maxSpeakers":n?,"keepFillers":bool=false,"prompt":str?,"regions":[[startSeconds,endSeconds]]?,"wait":bool=false}"#,
             can_transcribe,
             generate,
             true,

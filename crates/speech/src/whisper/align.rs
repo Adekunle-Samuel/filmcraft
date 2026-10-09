@@ -5,7 +5,9 @@ use candle_core::{Result, Tensor};
 
 use super::model::Model;
 
-/// Start/end (in mel frames from the window start, 10 ms) of every token of `text`.
+/// Start/end (in mel frames from the window start, 10 ms) of every token of `text`. `prompt` is
+/// every token before `text` (start-of-transcript sequence and `<|notimestamps|>`; a
+/// previous-text prompt would go first): rows are counted from its last token.
 pub fn align(m: &mut Model, xa: &Tensor, prompt: &[u32], text: &[u32], eot: u32, heads: &[(usize, usize)], seg_frames: usize) -> Result<Vec<(usize, usize)>> {
     let mut tokens = prompt.to_vec();
     tokens.extend_from_slice(text);
@@ -20,7 +22,8 @@ pub fn align(m: &mut Model, xa: &Tensor, prompt: &[u32], text: &[u32], eot: u32,
     let w = candle_nn::ops::softmax_last_dim(&qk)?;
     let w: Vec<Vec<Vec<f32>>> = w.to_vec3()?;
     let rows = text.len() + 1;
-    let first = prompt.len() - 1;
+    // the row of the prompt's last token predicts the first text token
+    let first = prompt.len().saturating_sub(1);
     let mut matrix = vec![0f32; rows * f];
     for head in w.iter().take(h) {
         // standardise over tokens for every frame

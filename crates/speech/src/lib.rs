@@ -75,12 +75,40 @@ pub struct Options {
     pub diarize: bool,
     /// Upper bound for the number of speakers found.
     pub max_speakers: usize,
+    /// Text the recogniser is conditioned on, as if it had been said just before (Whisper's
+    /// previous-text prompt: vocabulary, spelling and style carry over). [`FILLER_PROMPT`] makes
+    /// Whisper write filler words ("um", "uh") instead of dropping them.
+    pub initial_prompt: Option<String>,
 }
 
 impl Default for Options {
     fn default() -> Self {
-        Self { language: None, diarize: true, max_speakers: 6 }
+        Self { language: None, diarize: true, max_speakers: 6, initial_prompt: None }
     }
+}
+
+/// A disfluent initial prompt: conditioned on it, Whisper transcribes filler words verbatim (it
+/// tends to drop "um" and "uh" otherwise), with word timestamps.
+pub const FILLER_PROMPT: &str = "Umm, so, uh, I was like, hmm, you know\u{2026} Okay, um, here's the thing.";
+
+/// Most prompt tokens placed before a window (Whisper: half the text context, minus one for
+/// `<|startofprev|>`); a longer prompt keeps its end.
+pub const MAX_PROMPT_TOKENS: usize = 223;
+
+/// The decoder prompt for one window: `<|startofprev|>` + the last [`MAX_PROMPT_TOKENS`] of
+/// `prompt_tokens`, then the start-of-transcript sequence (`<|startoftranscript|>`, language,
+/// task…). Without prompt tokens (or a model without `<|startofprev|>`) it is just
+/// `sot_sequence`. The start-of-transcript token sits at `len - sot_sequence.len()`.
+pub fn decoder_prompt(start_of_prev: Option<u32>, prompt_tokens: &[u32], sot_sequence: &[u32]) -> Vec<u32> {
+    let mut out = Vec::with_capacity(1 + prompt_tokens.len().min(MAX_PROMPT_TOKENS) + sot_sequence.len());
+    if let Some(sop) = start_of_prev
+        && !prompt_tokens.is_empty()
+    {
+        out.push(sop);
+        out.extend_from_slice(prompt_tokens.get(prompt_tokens.len().saturating_sub(MAX_PROMPT_TOKENS)..).unwrap_or_default());
+    }
+    out.extend_from_slice(sot_sequence);
+    out
 }
 
 /// Progress callback: `(fraction 0..1, status)`; return `false` to cancel.
@@ -199,6 +227,23 @@ mod tests {
         assert_eq!(out.words.len(), 1);
         assert_eq!(out.source, "fixed");
         assert_eq!(f.transcribe(&[], &Options::default(), &mut |_, _| false), Err(SpeechError::Cancelled));
+    }
+
+    #[test]
+    fn decoder_prompt_puts_the_previous_text_first() {
+        let sot = [50258, 50259, 50359];
+        assert_eq!(decoder_prompt(Some(50361), &[], &sot), sot, "no prompt: unchanged");
+        assert_eq!(decoder_prompt(None, &[1, 2], &sot), sot, "no <|startofprev|> in the model");
+        let p = decoder_prompt(Some(50361), &[10, 11, 12], &sot);
+        assert_eq!(p, [50361, 10, 11, 12, 50258, 50259, 50359]);
+        assert_eq!(p[p.len() - sot.len()], 50258, "start of transcript after the prompt");
+        // a long prompt keeps its last 223 tokens
+        let long: Vec<u32> = (0..1000).collect();
+        let p = decoder_prompt(Some(50361), &long, &sot);
+        assert_eq!(p.len(), 1 + MAX_PROMPT_TOKENS + sot.len());
+        assert_eq!(p[1], 1000 - MAX_PROMPT_TOKENS as u32);
+        assert_eq!(p[MAX_PROMPT_TOKENS], 999);
+        assert!(FILLER_PROMPT.contains("um") && FILLER_PROMPT.contains("uh"));
     }
 
     #[test]

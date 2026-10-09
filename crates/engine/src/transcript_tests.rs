@@ -310,3 +310,149 @@ fn generate_hostile_params() {
         settle(&mut s);
     }
 }
+
+/// Records what it was asked to transcribe and returns a word every 0.25 s of the audio it got
+/// (each 0.4 s long, so some cross the joins between regions).
+#[derive(Default)]
+struct Recorder {
+    seen: std::sync::Mutex<Vec<(usize, Option<String>)>>,
+}
+impl filmcraft_speech::Transcriber for Recorder {
+    fn id(&self) -> String {
+        "recorder".into()
+    }
+    fn transcribe(
+        &self,
+        audio: &[f32],
+        opts: &filmcraft_speech::Options,
+        progress: filmcraft_speech::ProgressFn,
+    ) -> Result<Transcript, filmcraft_speech::SpeechError> {
+        self.seen.lock().unwrap().push((audio.len(), opts.initial_prompt.clone()));
+        let end = filmcraft_speech::sample_tick(audio.len() as i64);
+        let mut t = Transcript { language: "en".into(), source: "recorder".into(), ..Default::default() };
+        let mut at = Tick::ZERO;
+        while at < end {
+            t.words.push(Word::new("w", at, at + Tick::from_seconds_f64(0.4)));
+            at += Tick::from_seconds_f64(0.25);
+        }
+        progress(1.0, "Done");
+        Ok(t)
+    }
+}
+
+fn media_seconds(t: Tick) -> f64 {
+    t.0 as f64 / filmcraft_time::TICKS_PER_SECOND as f64
+}
+
+#[test]
+fn regions_transcribe_only_voiced_audio_and_map_back_to_media_time() {
+    let (mut s, item, _) = session();
+    let rec = Arc::new(Recorder::default());
+    s.transcriber = Some(rec.clone());
+    // overlapping regions merge once padded; times are media seconds
+    let r = s.execute("transcript.generate", json!({"items": [item.0], "regions": [[3.0, 3.2], [1.0, 1.5], [1.6, 1.7]], "wait": true})).unwrap();
+    assert_eq!(r["items"][0]["source"], "recorder", "{r}");
+    // padded by 0.3 s: [0.7, 2.0] and [2.7, 3.5] → 2.1 s of audio, nothing else
+    let (len, prompt) = rec.seen.lock().unwrap()[0].clone();
+    assert_eq!(len, (2.1 * 16_000.0f64).round() as usize);
+    assert_eq!(prompt, None, "no prompt by default");
+    let words = &s.project.transcripts[&item].words;
+    assert!(words.len() >= 8, "{}", words.len());
+    for w in words {
+        let (a, b) = (media_seconds(w.start), media_seconds(w.end));
+        let inside = |lo: f64, hi: f64| a >= lo - 1e-9 && b <= hi + 1e-9 && a <= b;
+        assert!(inside(0.7, 2.0) || inside(2.7, 3.5), "word {a}..{b} left its region");
+    }
+    assert!(words.iter().any(|w| media_seconds(w.start) >= 2.7), "the second region has words");
+    assert_eq!(s.history.undo.last().unwrap().0, "Transcribe", "one undo step");
+}
+
+#[test]
+fn keep_fillers_and_prompt_reach_the_recogniser() {
+    let (mut s, item, _) = session();
+    let rec = Arc::new(Recorder::default());
+    s.transcriber = Some(rec.clone());
+    for (p, want) in [
+        (json!({"keepFillers": true}), Some(filmcraft_speech::FILLER_PROMPT.to_string())),
+        (json!({"keepFillers": false}), None),
+        (json!({"keepFillers": true, "prompt": "  FilmCraft, Lumetri. "}), Some("FilmCraft, Lumetri.".to_string())),
+        (json!({"prompt": "   "}), None),
+        (json!({"prompt": "x".repeat(50_000)}), Some("x".repeat(2000))),
+    ] {
+        let mut p = p;
+        p["items"] = json!([item.0]);
+        p["wait"] = json!(true);
+        s.execute("transcript.generate", p.clone()).unwrap();
+        assert_eq!(rec.seen.lock().unwrap().last().unwrap().1, want, "{p}");
+    }
+    assert!(s.execute("transcript.generate", json!({"items": [item.0], "prompt": 5, "wait": true})).is_err());
+}
+
+#[test]
+fn remapped_words_stay_inside_their_regions() {
+    use crate::transcript::{Span, remap_words};
+    let sec = |x: f64| filmcraft_speech::seconds_tick(x);
+    let spans = [Span { start: 16_000, len: 8_000 }, Span { start: 80_000, len: 16_000 }];
+    // joined audio: 0..0.5 s is media 1.0..1.5, 0.5..1.5 s is media 5.0..6.0
+    let mut words = vec![
+        Word::new("a", sec(0.1), sec(0.2)),
+        Word::new("b", sec(0.4), sec(0.7)), // crosses the join: cut at the first region's end
+        Word::new("c", sec(0.5), sec(0.6)),
+        Word::new("d", sec(1.4), sec(9.0)), // runs past the audio
+        Word::new("e", sec(2.0), sec(2.1)), // past the audio: dropped
+        Word::new("f", Tick(-50), sec(0.05)),
+    ];
+    remap_words(&mut words, &spans);
+    let got: Vec<(String, f64, f64)> = words.iter().map(|w| (w.text.clone(), media_seconds(w.start), media_seconds(w.end))).collect();
+    let close = |x: f64, y: f64| (x - y).abs() < 1e-6;
+    let want = [("a", 1.1, 1.2), ("b", 1.4, 1.5), ("c", 5.0, 5.1), ("d", 5.9, 6.0), ("f", 1.0, 1.05)];
+    assert_eq!(got.len(), want.len(), "{got:?}");
+    for ((t, a, b), (wt, wa, wb)) in got.iter().zip(want) {
+        assert!(t == wt && close(*a, wa) && close(*b, wb), "{got:?}");
+    }
+    let mut none = vec![Word::new("x", sec(0.1), sec(0.2))];
+    remap_words(&mut none, &[]);
+    assert!(none.is_empty());
+}
+
+#[test]
+fn hostile_regions_are_refused_or_clamped() {
+    use crate::transcript::{MAX_REGIONS, Span, region_spans};
+    let len = 16_000 * 10; // 10 s
+    for bad in [
+        json!("1-2"),
+        json!([[1.0]]),
+        json!([[1.0, 2.0, 3.0]]),
+        json!([["a", 2.0]]),
+        json!([[2.0, 1.0]]),
+        json!([[f64::MAX, -f64::MAX]]),
+        json!([[100.0, 200.0]]),
+        json!([]),
+        json!(vec![[0.0, 1.0]; MAX_REGIONS + 1]),
+    ] {
+        assert!(region_spans(&bad, len).is_err(), "{bad}");
+    }
+    // huge and negative values clamp to the audio
+    assert_eq!(region_spans(&json!([[-5.0, f64::MAX]]), len).unwrap(), [Span { start: 0, len }]);
+    assert_eq!(region_spans(&json!([[9.9, 1e300]]), len).unwrap(), [Span { start: 16_000 * 96 / 10, len: 16_000 * 4 / 10 }]);
+    // many regions: merged into what they cover
+    let many: Vec<[f64; 2]> = (0..MAX_REGIONS).map(|i| [i as f64 * 0.001, i as f64 * 0.001 + 0.0005]).collect();
+    assert_eq!(region_spans(&json!(many), len).unwrap(), [Span { start: 0, len }]);
+    assert_eq!(region_spans(&json!([[1.0, 1.0]]), 0).ok(), None, "no audio at all");
+
+    // through the command: errors, never panics, nothing stored
+    let (mut s, item, _) = session();
+    s.transcriber = Some(Arc::new(Recorder::default()));
+    let other = s.active_sequence().unwrap().audio_tracks[0].items.iter().map(|i| i.item).find(|i| *i != item);
+    for p in [
+        json!({"items": [item.0], "regions": [[2.0, 1.0]], "wait": true}),
+        json!({"items": [item.0], "regions": [[1e12, 2e12]], "wait": true}),
+        json!({"items": [item.0], "regions": {"a": 1}, "wait": true}),
+        json!({"items": [item.0], "regions": vec![[0.0, 1.0]; MAX_REGIONS + 1], "wait": true}),
+        json!({"items": [item.0, other.map(|o| o.0).unwrap_or(u64::MAX)], "regions": [[1.0, 2.0]], "wait": true}),
+    ] {
+        assert!(s.execute("transcript.generate", p.clone()).is_err(), "{p}");
+        assert!(s.project.transcripts.is_empty(), "{p}");
+    }
+    assert!(s.transcript_jobs.is_empty());
+}
