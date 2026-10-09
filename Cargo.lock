@@ -2035,6 +2035,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "filmcraft-llm"
+version = "0.4.0"
+dependencies = [
+ "rustls",
+ "rustls-rustcrypto",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+ "ureq",
+]
+
+[[package]]
 name = "filmcraft-matroska"
 version = "0.4.0"
 dependencies = [

@@ -72,6 +72,7 @@ const LAYERS: &[(&str, u8)] = &[
     ("platform", 5),
     ("ui-egui", 5),
     ("automation", 5),
+    ("llm", 5),
     ("filmcraft", 6),
     ("cli", 6),
     ("web", 6),
@@ -241,7 +242,7 @@ fn run(cmd: &mut Command) -> Result<(), String> {
 }
 
 /// Crates above L4 that must also build for the web.
-const WEB_CRATES: &[&str] = &["filmcraft-ui-egui", "filmcraft-web"];
+const WEB_CRATES: &[&str] = &["filmcraft-ui-egui", "filmcraft-web", "filmcraft-llm"];
 
 fn wasm() -> Result<(), String> {
     let md = metadata()?;
