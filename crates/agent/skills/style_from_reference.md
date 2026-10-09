@@ -23,10 +23,14 @@ Use this when the user gives an example ("make it look like this", "same vibe as
    - pacing: run the talking-head cleanup with silence settings derived from the profile (median
      pause of the reference ≈ the `padSeconds` × 2 you keep; a fast reference means
      `minSeconds` 0.3);
-   - captions: `add_captions` (or the plan's `captions`) with the style you described;
-   - loudness: `set_loudness` to the reference's integrated loudness, kept between −24 and
-     −9 LUFS;
-   - aspect: the plan's `output.aspect` when the reference is vertical or square.
+   - captions: the plan's `captions` with a `style` object for the look you described (`size`
+     as a fraction of the frame height, `color`, `background`, `outline`, `position`, `align`,
+     `case`) and `maxChars` small for "two words at a time" (about 12);
+   - loudness: the plan's `audio.targetLufs` set to the reference's integrated loudness (it is
+     kept between −30 and −5 LUFS; −24 to −9 is the sensible range);
+   - aspect: the plan's `output.aspect` when the reference is vertical or square;
+   - grade: instead of `match_grade` you can put `grade.matchItem` (the reference item) and a
+     `grade.lut` from `lut.list` in the same plan, so everything is one undo step.
 6. **Report** what was matched and what could not be (for example, the grade match is statistical:
    it matches overall tone and colour, not individual objects; LUTs can't carry vignettes or
    sharpening).

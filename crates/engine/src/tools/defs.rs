@@ -662,7 +662,7 @@ pub(super) static TOOLS: &[ToolDef] = &[
     ToolDef {
         name: "propose_edit_plan",
         title: "Preview an edit plan",
-        description: "Validate and preview an edit plan (JSON text): what it removes and why, the duration before and after, warnings, and a source hash for apply_edit_plan. Changes nothing.",
+        description: "Validate and preview an edit plan (JSON text): what it removes and why, the duration before and after, warnings, and a source hash for apply_edit_plan. Changes nothing. Besides cuts and cleanup, a plan can set captions.style ({size: fraction of frame height, color, background, outline, outlineColor, position: top|middle|bottom, align, case: upper|lower|title}; unknown keys are warnings), captions.burnIn (returned as exportParams), grade.matchItem (item id), grade.lut (a lut.list ref or name) with grade.lutStrength (0–1), grade.preset (a Lumetri preset name), and audio.targetLufs (clamped to -30…-5; the mix is normalised).",
         schema: r#"{"type":"object","properties":{
             "plan":{"type":"string","description":"The edit plan as JSON text.","maxLength":2000000}
         },"required":["plan"],"additionalProperties":false}"#,
@@ -677,7 +677,7 @@ pub(super) static TOOLS: &[ToolDef] = &[
     ToolDef {
         name: "apply_edit_plan",
         title: "Apply an edit plan",
-        description: "Apply a previewed edit plan as one undo step, into a new sequence. Refused if the sequence changed since the preview (`source_hash`).",
+        description: "Apply a previewed edit plan as one undo step, into a new sequence: cuts, captions and their style, markers, the grade and the loudness target. Refused if the sequence changed since the preview (`source_hash`). Never exports: the result's exportParams are what to export with.",
         schema: r#"{"type":"object","properties":{
             "plan":{"type":"string","description":"The edit plan as JSON text.","maxLength":2000000},
             "source_hash":{"type":["string","null"],"description":"From propose_edit_plan.","maxLength":128}

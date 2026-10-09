@@ -503,6 +503,10 @@ pub fn validate(plan: &EditPlan, words: usize) -> Vec<String> {
         if let Some(m) = cap.template.as_deref().and_then(|t| text("captions.template".into(), t, MAX_NAME_CHARS)) {
             push(&mut p, m);
         }
+        // the keys inside are read leniently (unknown keys are warnings), but it must be an object
+        if cap.style.as_ref().is_some_and(|v| !v.is_object() && !v.is_null()) {
+            push(&mut p, "captions.style: must be an object (e.g. {\"size\":0.05,\"color\":\"#ffffff\",\"position\":\"bottom\"})".into());
+        }
     }
     if let Some(g) = &plan.grade {
         if g.lut_strength.is_some_and(|v| !v.is_finite() || !(0.0..=1.0).contains(&v)) {
