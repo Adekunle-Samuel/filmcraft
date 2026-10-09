@@ -182,6 +182,13 @@ pub struct CommandSpec {
   and on success push the old `Arc<Project>` with the label onto the undo stack (200 entries).
   On error nothing changes. `edit.undo` and `edit.redo` swap snapshots. Thanks to structural sharing
   a snapshot costs little.
+- **Grouped steps.** `Session::grouped(label, |session| …)` runs several edits or commands as one
+  undo step named `label` (none when nothing changed); when the closure fails or panics, the
+  project, editor state, history and journal are restored. Agents do the same across calls:
+  `edit.historyMark {}` returns `{mark, token}`, and `edit.collapseSince {mark, token, label?}`
+  later folds the steps made since into one. It is refused (an error, nothing changes) when the
+  token is unknown or expired (64 marks are kept; a new or opened project drops them) or when the
+  history up to the mark is no longer the one the mark saw (the user undid past it and edited).
 - **Editor state** (`EditorState`: active sequence, playheads, selection, targeting, edit points…)
   is serde, so agents can read it with `state.inspect`.
 - **Events** (`ProjectChanged`, `Toast`, `OpenSequence`, `OpenSource`) are drained by frontends
