@@ -35,6 +35,18 @@ the control channel and MCP agents can do the same.
 | `transcript.createCaptions` | Lay the words out as captions on a new caption track (`maxChars`, `lines`, `minSeconds`, `maxSeconds`, `gapFrames`). |
 | `transcript.models` / `transcript.downloadModel` | List the speech models (size, licence, installed) / download one. |
 
+### Waveform silence (no transcript needed)
+
+These work on the sequence mix itself (muted tracks, clip gain and effects count as they sound), so
+they run on any build, before or without speech-to-text. The Assistant's talking-head cleanup runs
+them first, then uses Whisper for filler words and content.
+
+| Command | What it does |
+|---|---|
+| `audio.detectSilence` | Silences of the mix: 10 ms level envelope, threshold `thresholdDb` or derived from the recording (between its noise floor and speech level), gaps of at least `minSeconds` (0.5) padded by `padSeconds` (0.08) next to the voice and snapped inward to frames. With a transcript, every word (± pad) is cut out of the silences, so a quiet word is never removed (`respectTranscript: false` turns that off). Returns the silences, the voiced regions (sequence seconds) and the threshold used. Read-only. `startSeconds` / `endSeconds` limit the span (at most 4 h per call). |
+| `audio.removeSilence` | The same ranges, ripple-deleted on every unlocked track in one undo step. |
+| `audio.loudness` | EBU R128 report of the mix (or a span): integrated LUFS, loudness range, max momentary / short-term, sample peak, true peak. Digital silence reports `null`. |
+
 ## Speech recognition
 
 Recognition goes through the `Transcriber` trait (`crates/speech`). The built-in recogniser is
