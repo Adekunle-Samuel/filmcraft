@@ -154,6 +154,12 @@ Notes:
   selection alone. Only the selection condition is answered by the named targets; every other
   one (an open sequence, a filled clipboard, the right kind of clip) still applies, and ids of
   nothing do not count. `command_list` / `engine.commands` keep reporting the selection's state.
+- `media.renderFrame {item?|sequence?, seconds, maxSide?}` and `media.contactSheet {item?|sequence?,
+  count? | times?, cols?, maxSide?}` return a PNG (base64 `png`, with `width`, `height` and the
+  `seconds` / `times` actually shown) of a media item (media time) or a sequence (timeline time,
+  captions included) for vision models. Neither moves a playhead or changes the selection. Caps: at
+  most 48 frames (default 12), sides at most 2576 px (default 1568); a time past the end shows the
+  last frame.
 - Element ids come from the previous frame. If an element is missing right after a layout change,
   the app retries on later frames before giving up.
 - `timeline.move` takes linked partners along while Linked Selection is on: moving a picture
