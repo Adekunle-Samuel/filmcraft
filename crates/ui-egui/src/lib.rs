@@ -101,6 +101,11 @@ pub struct HostHooks {
     /// Open a file in its default application, or (`true`) reveal it in the file manager (Edit ▸
     /// Edit Original, Help ▸ Reveal Log Files).
     pub open_path: Option<Box<dyn FnMut(&str, bool) -> Result<(), String>>>,
+    /// Builds the Assistant's LLM provider for the current settings. The desktop app installs it
+    /// with `--features assistant` (Anthropic or an OpenAI-compatible server; the key from the
+    /// environment or `<data dir>/assistant/credentials.json`); tests install a scripted provider.
+    /// `None` (the default build, the web): the Assistant panel says it is not available.
+    pub assistant_provider: Option<panels::assistant::ProviderFactory>,
 }
 
 /// The command a [`HostHooks::pick_file_for_relink`] caller runs with the chosen file, for hosts
@@ -238,6 +243,9 @@ pub struct FilmcraftApp {
     workspace_restored: bool,
     /// Window ▸ Workspaces: saved layouts ([`dock::WORKSPACES_FILE`] in the data directory).
     pub workspaces: dock::WorkspacePrefs,
+    /// The Assistant panel's runtime (chat, tool cards, approvals, the worker); see
+    /// [`panels::assistant`].
+    pub assistant: panels::assistant::AssistantRuntime,
     /// Workspace names and the current one, as last handed to the native menu.
     menu_workspaces: (Vec<String>, String),
 }
@@ -420,6 +428,7 @@ impl FilmcraftApp {
             applied_prefs: None,
             workspace_restored: false,
             workspaces,
+            assistant: Default::default(),
             menu_workspaces: Default::default(),
         }
     }
@@ -602,6 +611,8 @@ impl FilmcraftApp {
                 | PanelKind::Text
                 | PanelKind::ReferenceMonitor
                 | PanelKind::Timecode => PanelKind::Source,
+                // beside Project (Media Browser, Effects… share that group)
+                PanelKind::Assistant => PanelKind::Project,
                 _ => PanelKind::Project,
             };
             self.ui.dock.open_near(p, near);
@@ -1489,6 +1500,8 @@ impl eframe::App for FilmcraftApp {
         self.timeline_still = if self.ui.timeline.animating() { 0 } else { self.timeline_still.saturating_add(1) };
         let had_synthetic = !self.synthetic.is_empty();
         self.drain_control(ctx);
+        // the Assistant's tool calls run here, on the thread that owns the session
+        panels::assistant::drain(self, ctx);
         if !self.synthetic.is_empty() && !had_synthetic {
             // Occluded macOS windows stop running `ui`; bring the window forward (without taking
             // keyboard focus) so the input is processed.

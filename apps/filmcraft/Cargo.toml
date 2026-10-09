@@ -14,11 +14,16 @@ workspace = true
 default = []
 # Speech-to-text (Text panel ▸ Transcribe) with Whisper on the CPU, and model downloads.
 whisper = ["filmcraft-engine/whisper", "filmcraft-engine/speech-download"]
+# The Assistant panel with real LLM providers (HTTPS through filmcraft-llm/http) and Whisper for
+# transcripts. Off by default: nothing is sent anywhere without it (docs/adr/0002).
+assistant = ["filmcraft-llm/http", "whisper"]
 
 [dependencies]
 filmcraft-engine = { workspace = true }
 filmcraft-ui-egui = { workspace = true }
 filmcraft-platform = { workspace = true }
+filmcraft-llm = { workspace = true }
+filmcraft-agent = { workspace = true }
 egui = { workspace = true }
 eframe = { workspace = true, features = ["default_fonts", "wgpu", "accesskit", "wayland", "x11"] }
 serde_json = { workspace = true }

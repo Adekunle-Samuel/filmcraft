@@ -36,10 +36,12 @@ pub enum PanelKind {
     Progress,
     ReferenceMonitor,
     Timecode,
+    /// The Assistant: chat with an LLM agent that edits through the tool catalogue.
+    Assistant,
 }
 
 impl PanelKind {
-    pub const ALL: [PanelKind; 26] = [
+    pub const ALL: [PanelKind; 27] = [
         PanelKind::Project,
         PanelKind::MediaBrowser,
         PanelKind::Libraries,
@@ -66,6 +68,7 @@ impl PanelKind {
         PanelKind::Progress,
         PanelKind::ReferenceMonitor,
         PanelKind::Timecode,
+        PanelKind::Assistant,
     ];
     pub fn title(self) -> &'static str {
         match self {
@@ -95,6 +98,7 @@ impl PanelKind {
             PanelKind::Progress => "Progress",
             PanelKind::ReferenceMonitor => "Reference Monitor",
             PanelKind::Timecode => "Timecode",
+            PanelKind::Assistant => "Assistant",
         }
     }
     pub fn id(self) -> String {

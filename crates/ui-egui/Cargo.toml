@@ -23,6 +23,10 @@ filmcraft-audio-dsp = { workspace = true }
 filmcraft-engine = { workspace = true }
 filmcraft-gpu = { workspace = true }
 filmcraft-scopes = { workspace = true }
+# the Assistant panel: agent loop and provider-neutral LLM types (no network here; the desktop app
+# enables filmcraft-llm/http and installs the provider through HostHooks::assistant_provider)
+filmcraft-agent = { workspace = true }
+filmcraft-llm = { workspace = true }
 egui = { workspace = true }
 eframe = { workspace = true, features = ["default_fonts", "wgpu", "accesskit"] }
 serde = { workspace = true }
