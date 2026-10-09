@@ -4,6 +4,8 @@
 //!   through a [`ToolHost`], until the model ends its turn, a limit is hit or the user cancels.
 //! - [`ToolHost`]: where tools run and who approves them (the desktop app forwards calls to the UI
 //!   thread; the CLI and tests own an engine session).
+//! - [`SessionHost`]: a host owning an engine `Session` (CLI, tests, evals), running the engine's
+//!   tool catalogue and following background jobs.
 //! - [`skills`]: the system prompt and the workflow skills (talking-head cleanup, style from a
 //!   reference), compiled in from `crates/agent/skills/*.md`.
 //!
@@ -14,10 +16,14 @@
 
 pub mod agent;
 pub mod host;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod session_host;
 pub mod skills;
 
 pub use agent::{AgentConfig, AgentEvent, Conversation, TurnEnd, run_turn};
 pub use host::{Authorization, ToolCall, ToolHost, ToolImage, ToolOutcome, ToolProgress};
+#[cfg(not(target_arch = "wasm32"))]
+pub use session_host::SessionHost;
 
 #[cfg(test)]
 mod tests;

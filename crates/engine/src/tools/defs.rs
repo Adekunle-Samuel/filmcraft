@@ -325,7 +325,12 @@ fn command_batch(s: &mut Session, input: &Value) -> Result<ToolOutput> {
 // tools on commands that are still being built (available once `requires` is registered)
 
 fn transcribe(s: &mut Session, input: &Value) -> Result<ToolOutput> {
-    forward(s, "transcript.generate", input, &[])
+    let mut p = params_of(input, &[]);
+    if p.get("keepFillers").is_none() {
+        p["keepFillers"] = json!(true);
+    }
+    let r = s.execute("transcript.generate", p)?;
+    Ok(ToolOutput { pending_job: job_of(&r), json: r, images: Vec::new() })
 }
 fn find_silences(s: &mut Session, input: &Value) -> Result<ToolOutput> {
     forward(s, "audio.detectSilence", input, &[])
@@ -353,12 +358,23 @@ fn create_variations(s: &mut Session, input: &Value) -> Result<ToolOutput> {
         .iter()
         .map(|p| p.as_str().ok_or_else(|| tool_err("plans must be JSON texts")).and_then(|t| json_text(&json!({"plan": t}), "plan")))
         .collect::<Result<Vec<_>>>()?;
-    forward_value(s, "plan.applyVariations", json!({"plans": plans}))
+    let mut p = json!({"plans": plans});
+    if let Some(h) = opt(input, "source_hash") {
+        p["sourceHash"] = h.clone();
+    }
+    forward_value(s, "plan.applyVariations", p)
 }
 fn match_grade(s: &mut Session, input: &Value) -> Result<ToolOutput> {
     forward(s, "lumetri.matchToItem", input, &[])
 }
 fn bake_lut(s: &mut Session, input: &Value) -> Result<ToolOutput> {
+    // never overwrite a LUT the user already has
+    if let (Some(name), Some(dir)) = (opt(input, "name").and_then(Value::as_str), s.style.data_dir()) {
+        let name = crate::style_analysis::sanitize_name(name, "bake_lut")?;
+        if dir.join("luts").join(format!("{name}.cube")).exists() {
+            return Err(tool_err(format!("a LUT named `{name}` already exists; choose another name")));
+        }
+    }
     forward(s, "lumetri.bakeLut", input, &[])
 }
 
@@ -572,16 +588,18 @@ pub(super) static TOOLS: &[ToolDef] = &[
         requires: "command.list",
         run: command_batch,
     },
-    // ---- backed by commands still being built ----
+    // ---- analysis, plans and grading ----
     ToolDef {
         name: "transcribe",
         title: "Transcribe",
-        description: "Speech-to-text for media items (default: the active sequence's audio). May run as a background job; the transcript is then readable with read_transcript.",
+        description: "Speech-to-text for media items (default: the active sequence's audio), run locally with Whisper as a background job; the transcript is then readable with read_transcript. keep_fillers (default true) makes Whisper keep um/uh so they can be cut. For one item, pass the voiced regions from find_silences (media seconds; equal to sequence seconds when the clip starts at 0 with no trim) to skip silent stretches.",
         schema: r#"{"type":"object","properties":{
             "items":{"type":["array","null"],"description":"Media item ids (null: the active sequence's audio).","items":{"type":"integer","minimum":0},"maxItems":64},
             "language":{"type":["string","null"],"description":"ISO 639-1 code or \"auto\".","maxLength":16},
-            "model":{"type":["string","null"],"description":"Speech model (default whisper-base).","maxLength":64}
-        },"required":["items","language","model"],"additionalProperties":false}"#,
+            "model":{"type":["string","null"],"description":"Speech model (default whisper-base).","maxLength":64},
+            "keep_fillers":{"type":["boolean","null"],"description":"Transcribe filler words verbatim (default true)."},
+            "regions":{"type":["array","null"],"description":"Only these [start, end] media-second spans of the one item in items.","items":{"type":"array","items":{"type":"number"},"maxItems":2},"maxItems":10000}
+        },"required":["items","language","model","keep_fillers","regions"],"additionalProperties":false}"#,
         read_only: false,
         destructive: false,
         idempotent: true,
@@ -630,8 +648,9 @@ pub(super) static TOOLS: &[ToolDef] = &[
         title: "Analyze style",
         description: "A style profile of a media item (shot lengths, colour, loudness, speech rate, aspect, fps). Runs as a background job.",
         schema: r#"{"type":"object","properties":{
-            "item":{"type":"integer","description":"Media item id.","minimum":0}
-        },"required":["item"],"additionalProperties":false}"#,
+            "item":{"type":"integer","description":"Media item id (a reference video imported into the project).","minimum":0},
+            "max_frames":{"type":["integer","null"],"description":"Frames sampled (default 240).","minimum":1,"maximum":600}
+        },"required":["item","max_frames"],"additionalProperties":false}"#,
         read_only: true,
         destructive: false,
         idempotent: true,
@@ -676,8 +695,9 @@ pub(super) static TOOLS: &[ToolDef] = &[
         title: "Create variations",
         description: "Apply up to 6 edit plans, each into its own new sequence, as one undo step.",
         schema: r#"{"type":"object","properties":{
-            "plans":{"type":"array","description":"Edit plans as JSON texts.","items":{"type":"string","maxLength":2000000},"minItems":1,"maxItems":6}
-        },"required":["plans"],"additionalProperties":false}"#,
+            "plans":{"type":"array","description":"Edit plans as JSON texts.","items":{"type":"string","maxLength":2000000},"minItems":1,"maxItems":6},
+            "source_hash":{"type":"string","description":"From propose_edit_plan of any of the plans (same source sequence).","maxLength":128}
+        },"required":["plans","source_hash"],"additionalProperties":false}"#,
         read_only: false,
         destructive: false,
         idempotent: false,
@@ -693,8 +713,8 @@ pub(super) static TOOLS: &[ToolDef] = &[
         schema: r#"{"type":"object","properties":{
             "item":{"type":"integer","description":"Reference media item id.","minimum":0},
             "clips":{"type":["array","null"],"description":"Video clip ids (null: the selection).","items":{"type":"integer","minimum":0},"maxItems":1000},
-            "strength":{"type":["number","null"],"description":"0 to 1 (default 1).","minimum":0,"maximum":1}
-        },"required":["item","clips","strength"],"additionalProperties":false}"#,
+            "samples":{"type":["integer","null"],"description":"Frames sampled from each side (default 6).","minimum":1,"maximum":12}
+        },"required":["item","clips","samples"],"additionalProperties":false}"#,
         read_only: false,
         destructive: false,
         idempotent: true,
@@ -706,17 +726,17 @@ pub(super) static TOOLS: &[ToolDef] = &[
     ToolDef {
         name: "bake_lut",
         title: "Bake a LUT",
-        description: "Write a clip's grade as a .cube 3D LUT file.",
+        description: "Bake a clip's Lumetri grade into a .cube 3D LUT in the user's LUT library (reusable with lumetri.setLook). Spatial effects (vignette, sharpening) are not baked; SDR Rec. 709. Refused if a LUT with that name exists.",
         schema: r#"{"type":"object","properties":{
-            "path":{"type":"string","description":"Absolute .cube output path.","maxLength":4096},
-            "clip":{"type":["integer","null"],"description":"Video clip id (null: the selection).","minimum":0},
-            "size":{"type":["integer","null"],"description":"Grid points per axis (default 33).","minimum":2,"maximum":65}
-        },"required":["path","clip","size"],"additionalProperties":false}"#,
+            "clip":{"type":"integer","description":"Video clip id with a Lumetri grade.","minimum":0},
+            "name":{"type":"string","description":"LUT name (no path separators).","maxLength":64},
+            "size":{"type":["integer","null"],"description":"Grid points per axis: 17, 33 (default) or 65.","minimum":17,"maximum":65}
+        },"required":["clip","name","size"],"additionalProperties":false}"#,
         read_only: false,
-        destructive: true,
-        idempotent: true,
+        destructive: false,
+        idempotent: false,
         open_world: false,
-        approval: Approval::AskIfOverwrite,
+        approval: Approval::Never,
         requires: "lumetri.bakeLut",
         run: bake_lut,
     },
