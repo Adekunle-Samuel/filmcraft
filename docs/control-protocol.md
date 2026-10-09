@@ -129,6 +129,13 @@ params the menu entries open dialogs (ids `colorDialog.space.<id>`, `colorDialog
 `lumetri.match.*`; HDR scopes: `scopes.hdrWaveform`. `file.exportMedia {sdr: true}` exports an HDR
 sequence as tone-mapped SDR.
 
+**Style from a reference** (`crates/engine/src/style_analysis.rs`, [style-analysis.md](style-analysis.md)):
+`media.analyze {item, maxFrames?=240 (1–600), wait?}` is a job (`jobs.list` / `jobs.cancel`) that
+returns `{job, item, frames}` (plus `profile` with `wait: true`); `media.analysis {item}` returns
+`{item, profile}` from the session cache (or `{pending: true, job}`). The style library in
+`<data dir>/styles/`: `style.save {name, item}`, `style.list` (`{styles: [{name, path, savedUnix,
+profile}], errors, dir}`), `style.delete {name}`.
+
 **Keyboard shortcuts** (`crates/engine/src/shortcuts.rs`): `shortcuts.list {query?, panel?}`,
 `shortcuts.get`, `shortcuts.set {command, keys, panel?, add?, keepConflicts?}`, `shortcuts.clear`,
 `shortcuts.undo` / `shortcuts.redo`, `shortcuts.conflicts {platform?}`, `shortcuts.forKey {key}`,
