@@ -1,0 +1,16 @@
+[package]
+name = "filmcraft-agent"
+description = "The FilmCraft Assistant's agent loop: model calls through filmcraft-llm, tool calls through a ToolHost, approvals, budgets, cancellation and the skill prompts"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+filmcraft-llm = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }

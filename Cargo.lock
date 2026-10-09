@@ -1704,6 +1704,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "filmcraft-agent"
+version = "0.4.0"
+dependencies = [
+ "filmcraft-llm",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "filmcraft-apv"
 version = "0.4.0"
 dependencies = [
