@@ -8,23 +8,32 @@
 //! - [`anthropic`]: the Claude Messages API codec (request body, headers, stream decoder).
 //! - [`ScriptedProvider`]: a fake provider replaying canned responses, for tests.
 //! - [`price`]: per-model prices and [`estimate_cost_usd`].
+//! - [`transport`]: [`ApiKey`] (redacted `Debug`), the provider URL policy and the retry schedule.
+//! - `http` (feature `http`): the blocking ureq + rustls transport and `AnthropicProvider`.
 //!
-//! Everything here is plain serde: no network, threads or clocks, so it builds for wasm32.
+//! Without `http` everything here is plain serde: no network, threads or clocks, so it builds for
+//! wasm32.
 
 #![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable))]
 
 pub mod anthropic;
 pub mod error;
+#[cfg(feature = "http")]
+pub mod http;
 pub mod price;
 pub mod scripted;
 pub mod sse;
+pub mod transport;
 pub mod types;
 
 use std::sync::atomic::AtomicBool;
 
 pub use error::LlmError;
+#[cfg(feature = "http")]
+pub use http::AnthropicProvider;
 pub use price::estimate_cost_usd;
 pub use scripted::{ScriptStep, ScriptedProvider};
+pub use transport::ApiKey;
 pub use types::{ChatRequest, ChatResponse, ContentBlock, Effort, Message, Role, StopReason, StreamEvent, SystemBlock, ToolResultContent, ToolSpec, Usage};
 
 /// The default model.
