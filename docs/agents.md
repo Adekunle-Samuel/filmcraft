@@ -56,10 +56,12 @@ claude mcp add filmcraft-headless -- /abs/path/filmcraft/target/release/filmcraf
 | `ui_control` | bridge | call any control-channel method directly (`ui.set`, `ui.scroll`, `ui.timeline.locate`, …) |
 
 The server also lists the engine's **agent tool catalogue** (`crates/engine/src/tools/`, the same
-tools the in-app Assistant uses; `tools.list` / `tools.call` reach it through the control channel).
-Their inputs follow a strict JSON Schema subset: every field is listed in `required` (pass `null` to
-leave an optional one out) and unknown fields are a `-32602` error. Where a name is taken by a tool
-above (`render_frame`, `command_run`, `command_batch`), the tool above is the one listed.
+tools the in-app [Assistant](assistant.md) uses; `tools.list` / `tools.call` reach it through the
+control channel). Their inputs follow a strict JSON Schema subset: every field is listed in
+`required` (pass `null` to leave an optional one out) and unknown fields are a `-32602` error. Where
+a name is taken by a tool above (`render_frame`, `command_run`, `command_batch`), the tool above is
+the one listed. Each entry's `approval` (`never`, `ask`, `askIfOverwrite`) says when the Assistant
+waits for the user's click; MCP clients get the same information from the annotations.
 
 | Tool | Read-only | Purpose |
 |---|---|---|
@@ -69,16 +71,24 @@ above (`render_frame`, `command_run`, `command_batch`), the tool above is the on
 | `contact_sheet` | yes | a grid of up to 48 frames of an item or the sequence as image content (`media.contactSheet`) |
 | `add_captions` | no | a caption track from the transcript (`transcript.createCaptions`) |
 | `set_loudness` | no | measure and match clip loudness to `target_lufs` (`essentialSound.autoMatch`) |
-| `export` | no (destructive) | export the active sequence to `path`; runs as a job, with progress and cancellation as for long exports |
+| `export` | no (destructive) | export the active sequence to `path`; runs as a job, with progress and cancellation as for long exports; asks when the file exists |
 | `command_search` / `command_describe` | yes | find commands by id or label (≤ 40), or describe one: params hint, enabled now and why not, policy |
+| `transcribe` | no | local speech to text (`transcript.generate`) as a job; keeps fillers by default; `regions` limits it to voiced spans |
+| `find_silences` | yes | silent ranges of the sequence mix from the waveform (`audio.detectSilence`), plus the voiced regions |
+| `measure_loudness` | yes | integrated loudness, range and true peak of the mix (`audio.loudness`) |
+| `analyze_media` | yes | a style profile of a reference item (`media.analyze`): shot lengths, colour, loudness, speech rate, aspect; a job, and the result is the profile |
+| `propose_edit_plan` | yes | validate and preview an [edit plan](edit-plans.md): removals with reasons, duration before and after, a source hash |
+| `apply_edit_plan` | no | apply a previewed plan into a new sequence as one undo step (`plan.apply`); asks |
+| `create_variations` | no | up to 6 plans, each into its own new sequence, one undo step (`plan.applyVariations`); asks |
+| `match_grade` | no | grade clips to match a reference item (`lumetri.matchToItem`) |
+| `bake_lut` | no | bake a clip's Lumetri grade into a `.cube` LUT (`lumetri.bakeLut`); refuses an existing name |
+| `export_variations` | no (destructive) | export up to 6 sequences with one preset into an existing folder, one `<sequence name>.<ext>` each, through the export queue as **one job** (`export.queue.start` with `follow`); refuses files that exist unless `overwrite` is true; always asks |
 
 The escape hatch in the catalogue (`command_run` / `command_batch`, for the in-app Assistant) runs
 commands through a policy (`filmcraft_engine::tools::policy`): queries run, edits ask the user
 first, and app-level or work-losing commands (`file.quit`, `app.*`, `prefs.*`, `shortcuts.*`,
 `file.close*`, `media.makeOffline`, `project.removeUnused`, `transcript.downloadModel`) are refused.
-Tools whose commands are still being built (`transcribe` as a job, `find_silences`,
-`measure_loudness`, `analyze_media`, `propose_edit_plan`, `apply_edit_plan`, `create_variations`,
-`match_grade`, `bake_lut`) appear once the build has their command.
+A tool appears only when the build has the command it needs (`ToolDef::requires`).
 
 Typical loop: `project_inspect` / `sequence_inspect` → get ids → `command_run` → `render_frame` or
 `ui_screenshot` → look at the result → `edit.undo` if it's wrong.
@@ -130,6 +140,15 @@ progress and stop it:
 - Bridge mode works the same way: the export runs as an app job (the app stays responsive and shows
   "Exporting… NN%" in its status bar) and the call returns when it is written, however long it
   takes. `filmcraft-cli --bridge … exec file.exportMedia … wait=true` blocks the same way.
+
+**Other long jobs.** The same applies to `transcript.generate` and `media.analyze` with
+`wait: true` (the `LONG_COMMANDS` of `crates/automation/src/long_job.rs`), and to every catalogue
+tool that starts a job: `export`, `transcribe`, `analyze_media` (which returns the finished profile)
+and `export_variations` (one batch job for all its exports; a cancel stops them and deletes the
+partial files of the ones that hadn't finished). The call returns when the job ends, with progress
+notifications for a token on the way. In headless mode every request first applies finished work
+(transcripts, analyses) and advances the export queue, as the app does each frame, so a
+transcription's words are readable as soon as the call returns.
 
 ## 2. Control channel
 

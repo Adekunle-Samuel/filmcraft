@@ -669,8 +669,10 @@ file.exportMedia {path, preset?, settings?, format?, range?, …}     export.qui
 - **Queue.** `export.queue.add` snapshots the project and the resolved settings (several sequences
   or ranges add several items); `export.queue.start` encodes ready items one after another as
   ordinary jobs, advanced by `Session::poll_persistence` / `pump_jobs` (or synchronously with
-  `wait`). Cancel, retry, reorder, remove and clear work per item. The queue is session state, not
-  part of the project file.
+  `wait`). Cancel, retry, reorder, remove and clear work per item. `export.queue.start` with
+  `follow: [item ids]` also starts one batch job standing for those items (its progress is theirs,
+  cancelling it cancels them), which is how `export_variations` is followed. The queue is session
+  state, not part of the project file.
 
 Video encoders implement `export::VideoEncoder`. Codec crates plug in with `register_encoder` and
 `register_audio_encoder`.

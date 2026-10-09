@@ -70,6 +70,16 @@ Limits: the grade match is statistical (overall tone and colour, not individual 
 shots), a baked LUT can't carry spatial effects (vignette, sharpening), and LUTs assume SDR
 Rec.709.
 
+### Variations
+
+"Give me a 30 s, a 60 s and a vertical version": the Assistant builds one edit plan per version
+from the same transcript, shows them, and `create_variations` applies them into one new sequence
+each, as one undo step. Exporting them is a separate step that always asks: `export_variations`
+queues each sequence with one preset into a folder you name (`<sequence name>.<ext>`), runs them as
+one job you can follow and cancel, and refuses to replace files that already exist unless you
+agree. Plans record a vertical or square aspect, but it isn't applied yet; the "Social Vertical
+1080×1920" export preset scales a landscape sequence to fill a vertical frame.
+
 ## Driving it from an agent or a test
 
 The control channel has `assistant.send`, `assistant.state`, `assistant.approve`,
