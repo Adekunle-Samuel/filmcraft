@@ -4,7 +4,10 @@
 //! needs no speech model. The threshold is either given or derived from the recording itself:
 //! between its noise floor (10th percentile of the hops above −100 dBFS) and its speech level
 //! (95th percentile), 30 % of the way up and at least 6 dB above the floor, the same rule the
-//! speech crate uses to tighten word bounds.
+//! speech crate uses to tighten word bounds, but never closer than [`MAX_BELOW_SPEECH_DB`] to the
+//! speech level. The cap matters when the gaps are digital silence (edited or gated audio): they
+//! are left out of the floor, so the "floor" percentile then falls on the quiet parts of the speech
+//! itself, and without the cap the threshold would land inside the words and break them up.
 //!
 //! A hop is *voiced* when its level is above the threshold. Voiced runs closer than `bridge_s`
 //! are joined (the short dips inside and between words) and voiced blips shorter than
@@ -50,6 +53,9 @@ pub struct SilenceReport {
     pub duration_s: f64,
 }
 
+/// The automatic threshold stays at least this far below the speech level (dB).
+pub const MAX_BELOW_SPEECH_DB: f32 = 24.0;
+
 /// Most regions [`detect`] returns (a pathological envelope can't make a huge allocation).
 pub const MAX_REGIONS: usize = 100_000;
 
@@ -68,7 +74,7 @@ pub fn auto_threshold_db(env_db: &[f32]) -> f32 {
     let last = s.len() - 1;
     let q = |p: f32| s.get(((last as f32) * p) as usize).copied().unwrap_or(-60.0);
     let (floor, speech) = (q(0.10), q(0.95));
-    (floor + 0.3 * (speech - floor)).max(floor + 6.0)
+    (floor + 0.3 * (speech - floor)).max(floor + 6.0).min(speech - MAX_BELOW_SPEECH_DB)
 }
 
 /// Find the silences of a level envelope with one value per `hop_s` seconds.
@@ -184,6 +190,24 @@ mod tests {
         assert!(t > -70.0 && t < -20.0, "{t}");
         assert_eq!(auto_threshold_db(&[]), -60.0);
         assert_eq!(auto_threshold_db(&[-120.0; 10]), -60.0);
+    }
+
+    #[test]
+    fn digital_silence_gaps_do_not_break_up_the_words() {
+        // speech whose level swings 0…−10 dB (syllables) between gaps of exact zeros: the floor
+        // percentile only sees speech, the cap keeps the threshold well below it
+        let mut e = Vec::new();
+        for _ in 0..3 {
+            e.extend(env(&[(-120.0, 80)]));
+            for k in 0..120 {
+                e.push(-10.0 * ((k % 20) as f32 / 19.0));
+            }
+        }
+        let t = auto_threshold_db(&e);
+        assert!(t <= -MAX_BELOW_SPEECH_DB + 1e-3 && t > -100.0, "{t}");
+        let r = detect(&e, 0.01, &SilenceOptions::default());
+        assert_eq!(r.voiced.len(), 3, "one region per word run: {:?}", r.voiced);
+        assert_eq!(r.silences.len(), 3);
     }
 
     #[test]
