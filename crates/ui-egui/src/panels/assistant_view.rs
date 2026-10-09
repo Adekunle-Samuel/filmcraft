@@ -1,5 +1,5 @@
 //! Drawing the Assistant panel: header, chat (bubbles, streamed text, thinking notes, tool cards,
-//! plan cards, approval cards), composer and usage line.
+//! plan cards, approval cards), composer and usage line, plus the settings and consent sheets.
 //! Every interactive widget registers an `assistant.*` automation id. Logic lives in
 //! [`super::assistant`].
 
@@ -7,7 +7,7 @@ use egui::text::LayoutJob;
 use egui::{Align, Align2, Color32, FontId, Key, Modifiers, Rect, RichText, Sense, Stroke, TextFormat, pos2, vec2};
 use serde_json::Value;
 
-use super::assistant::{self as logic, ChatItem, NOT_AVAILABLE, PlanStatus, ToolCard};
+use super::assistant::{self as logic, ChatItem, EFFORTS, NOT_AVAILABLE, PlanStatus, ToolCard};
 use super::assistant_host::pretty_tool_name;
 use crate::FilmcraftApp;
 use crate::icons::{self, Icon};
@@ -43,8 +43,10 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         let mut child = ui.new_child(egui::UiBuilder::new().max_rect(r).layout(egui::Layout::top_down(Align::Center)));
         child.label(RichText::new(NOT_AVAILABLE).color(t.text_dim).size(12.5));
         app.auto.add("assistant.unavailable", r, NOT_AVAILABLE);
-    } else if app.ui.panels.assistant.show_settings || !app.ui.panels.assistant.settings.consented {
-        crate::dock::placeholder(ui, body, &t, "Assistant settings and consent arrive with A3.3");
+    } else if app.ui.panels.assistant.show_settings {
+        settings_sheet(app, ui, body, &mut actions);
+    } else if !app.ui.panels.assistant.settings.consented {
+        consent_sheet(app, ui, body);
     } else {
         chat(app, ui, body, &mut actions);
     }
@@ -654,6 +656,208 @@ fn composer_ui(app: &mut FilmcraftApp, ui: &mut egui::Ui, r: Rect, reg: &mut Vec
     let ur = Rect::from_min_max(pos2(inner.min.x, inner.max.y - usage_h), inner.max);
     ui.painter().text(pos2(ur.min.x, ur.center().y), Align2::LEFT_CENTER, &usage, Tokens::ui(11.0), t.text_faint);
     reg.push(("assistant.usage".into(), ur, usage));
+}
+
+// ---------------------------------------------------------------------------------------------
+// sheets
+
+fn consent_sheet(app: &mut FilmcraftApp, ui: &mut egui::Ui, body: Rect) {
+    let t = app.tokens;
+    let s = app.ui.panels.assistant.settings.clone();
+    let mut accept = false;
+    let mut local = false;
+    let mut reg: Vec<(String, Rect, String)> = Vec::new();
+    let mut child = ui.new_child(egui::UiBuilder::new().max_rect(body.shrink2(vec2(14.0, 10.0))).id_salt("assistant-consent"));
+    egui::ScrollArea::vertical().auto_shrink([false, false]).id_salt("assistant-consent-scroll").show(&mut child, |ui| {
+        ui.set_width(ui.available_width());
+        ui.spacing_mut().item_spacing.y = 6.0;
+        ui.add_space(6.0);
+        ui.label(RichText::new("Before the Assistant sends anything").font(Tokens::semibold(14.0)).color(t.text));
+        let who = if s.is_openai() { "an OpenAI-compatible server" } else { "Anthropic (Claude)" };
+        ui.add(egui::Label::new(RichText::new(format!("To work on your edit, the Assistant sends this to {who} at {}:", s.host())).size(12.5).color(t.text_dim)).wrap());
+        for line in [
+            "the project's structure: bins, sequences, clip names, timings and effects",
+            "transcript text of the clips it works on",
+            "numeric analysis: loudness, silences, colour statistics",
+        ] {
+            ui.add(egui::Label::new(RichText::new(format!("•  {line}")).size(12.5).color(t.text)).wrap());
+        }
+        let vision = if s.vision { "on" } else { "off" };
+        ui.add(egui::Label::new(RichText::new(format!("•  downscaled frames (contact sheets) when Vision is on (now {vision})")).size(12.5).color(t.text)).wrap());
+        ui.add(
+            egui::Label::new(
+                RichText::new("Your media files are never uploaded, and your API key stays on this computer. Nothing is sent until you click below; you can withdraw consent in the Assistant settings.")
+                    .size(12.0)
+                    .color(t.text_dim),
+            )
+            .wrap(),
+        );
+        ui.add_space(4.0);
+        let b = ui.add(egui::Button::new(RichText::new("I understand, enable").color(Color32::WHITE).size(12.5)).fill(t.accent).corner_radius(4.0));
+        reg.push(("assistant.consent.accept".into(), b.rect, "I understand, enable".into()));
+        accept = b.clicked();
+        if !s.is_local() {
+            ui.add_space(8.0);
+            ui.add(egui::Label::new(RichText::new("Prefer to keep everything on this computer? Run a local model with Ollama instead (slower, less capable).").size(12.0).color(t.text_dim)).wrap());
+            let b = ui.add(egui::Button::new(RichText::new("Use a local model (Ollama)").size(12.0)).corner_radius(4.0));
+            reg.push(("assistant.consent.private".into(), b.rect, "Use a local model (Ollama)".into()));
+            local = b.clicked();
+        }
+    });
+    for (id, r, label) in reg {
+        app.auto.add(&id, r, &label);
+    }
+    if local {
+        logic::use_local_model(app);
+    }
+    if accept {
+        app.ui.panels.assistant.settings.consented = true;
+    }
+}
+
+fn settings_sheet(app: &mut FilmcraftApp, ui: &mut egui::Ui, body: Rect, actions: &mut Vec<Action>) {
+    let t = app.tokens;
+    let mut s = app.ui.panels.assistant.settings.clone();
+    let dir = logic::data_dir(app);
+    let source = logic::key_source(dir.as_deref(), &s.provider);
+    let mut reg: Vec<(String, Rect, String)> = Vec::new();
+    let mut save_key = false;
+    let mut forget_key = false;
+    let mut revoke = false;
+    let mut child = ui.new_child(egui::UiBuilder::new().max_rect(body.shrink2(vec2(14.0, 10.0))).id_salt("assistant-settings"));
+    let key_draft = &mut app.assistant.key_draft;
+    let key_message = app.assistant.key_message.clone();
+    egui::ScrollArea::vertical().auto_shrink([false, false]).id_salt("assistant-settings-scroll").show(&mut child, |ui| {
+        ui.set_width(ui.available_width());
+        ui.spacing_mut().item_spacing.y = 6.0;
+        ui.horizontal(|ui| {
+            ui.label(RichText::new("Assistant settings").font(Tokens::semibold(14.0)).color(t.text));
+            ui.with_layout(egui::Layout::right_to_left(Align::Center), |ui| {
+                let b = ui.add(egui::Button::new(RichText::new("Done").color(Color32::WHITE).size(12.0)).fill(t.accent).corner_radius(4.0));
+                reg.push(("assistant.settings.done".into(), b.rect, "Done".into()));
+                if b.clicked() {
+                    actions.push(Action::ToggleSettings);
+                }
+            });
+        });
+        let label = |ui: &mut egui::Ui, s: &str| ui.label(RichText::new(s).size(11.5).color(t.text_dim));
+        label(ui, "Provider");
+        ui.horizontal_wrapped(|ui| {
+            for (id, name) in [("anthropic", "Anthropic (Claude)"), ("openai", "OpenAI-compatible (Ollama, LM Studio…)")] {
+                let on = s.provider == id;
+                let r = ui.selectable_label(on, RichText::new(name).size(12.0));
+                reg.push((format!("assistant.settings.provider.{id}"), r.rect, name.into()));
+                if r.clicked() && !on {
+                    s.provider = id.into();
+                    s.base_url.clear();
+                    if id == "openai" && s.model == filmcraft_llm::DEFAULT_MODEL {
+                        s.model = "llama3.1".into();
+                    } else if id == "anthropic" && !s.model.starts_with("claude") {
+                        s.model = filmcraft_llm::DEFAULT_MODEL.into();
+                    }
+                }
+            }
+        });
+        ui.separator();
+        label(ui, "API key");
+        let env = logic::key_env(&s.provider);
+        let status = match source {
+            Some("environment") => format!("Using the key from the {env} environment variable."),
+            Some(_) => "A key is stored on this computer.".to_string(),
+            None if s.is_openai() => "No key (local servers usually need none).".to_string(),
+            None => format!("No key yet: paste one below, or set {env}."),
+        };
+        ui.label(RichText::new(status).size(11.5).color(t.text_dim));
+        ui.horizontal(|ui| {
+            let w = (ui.available_width() - 130.0).max(80.0);
+            let r = ui.add(egui::TextEdit::singleline(key_draft).id(egui::Id::new("assistant-set-key")).password(true).hint_text("paste a new key").desired_width(w));
+            reg.push(("assistant.settings.key".into(), r.rect, "API key".into()));
+            let b = ui.add_enabled(dir.is_some() && !key_draft.trim().is_empty(), egui::Button::new(RichText::new("Save key").size(12.0)));
+            reg.push(("assistant.settings.key.save".into(), b.rect, "Save key".into()));
+            save_key = b.clicked();
+            if source == Some("file") {
+                let b = ui.add(egui::Button::new(RichText::new("Forget").size(12.0)));
+                reg.push(("assistant.settings.key.forget".into(), b.rect, "Forget key".into()));
+                forget_key = b.clicked();
+            }
+        });
+        ui.add(
+            egui::Label::new(
+                RichText::new("The key is stored unencrypted in assistant/credentials.json in the FilmCraft data folder, readable only by your user account. It is never shown again, saved in projects or sent anywhere but the provider.")
+                    .size(11.0)
+                    .color(t.render_yellow.gamma_multiply(0.8)),
+            )
+            .wrap(),
+        );
+        if let Some((m, err)) = &key_message {
+            ui.label(RichText::new(m).size(11.5).color(if *err { t.render_red } else { t.render_green }));
+        }
+        label(ui, "Model");
+        let r = ui.add(egui::TextEdit::singleline(&mut s.model).id(egui::Id::new("assistant-set-model")).desired_width(f32::INFINITY));
+        reg.push(("assistant.settings.model".into(), r.rect, "Model".into()));
+        label(ui, "Effort");
+        let effort_text = if s.effort.is_empty() { "default".to_string() } else { s.effort.clone() };
+        let cb = egui::ComboBox::from_id_salt("assistant-set-effort").selected_text(effort_text).show_ui(ui, |ui| {
+            ui.selectable_value(&mut s.effort, String::new(), "default");
+            for e in EFFORTS {
+                ui.selectable_value(&mut s.effort, e.to_string(), e);
+            }
+        });
+        reg.push(("assistant.settings.effort".into(), cb.response.rect, "Effort".into()));
+        label(ui, "Server URL");
+        let default_url = if s.is_openai() { logic::OLLAMA_URL } else { filmcraft_llm::anthropic::DEFAULT_BASE_URL };
+        let r = ui.add(egui::TextEdit::singleline(&mut s.base_url).id(egui::Id::new("assistant-set-url")).hint_text(default_url).desired_width(f32::INFINITY));
+        reg.push(("assistant.settings.baseUrl".into(), r.rect, "Server URL".into()));
+        if !s.base_url.trim().is_empty()
+            && let Err(e) = filmcraft_llm::transport::check_base_url(s.base_url.trim())
+        {
+            ui.label(RichText::new(e.to_string()).size(11.0).color(t.render_red));
+        }
+        let r = ui.checkbox(&mut s.vision, RichText::new("Vision: send downscaled frames").size(12.0));
+        reg.push(("assistant.settings.vision".into(), r.rect, "Vision".into()));
+        let r = ui.checkbox(&mut s.auto_apply_new_sequence, RichText::new("Apply plans into a new sequence without asking").size(12.0));
+        reg.push(("assistant.settings.autoApply".into(), r.rect, "Apply without asking".into()));
+        ui.horizontal(|ui| {
+            let mut limited = s.budget_usd.is_some();
+            let r = ui.checkbox(&mut limited, RichText::new("Cost limit per conversation").size(12.0));
+            reg.push(("assistant.settings.budget".into(), r.rect, "Cost limit".into()));
+            if limited {
+                let mut b = s.budget_usd.unwrap_or(5.0);
+                let r = ui.add(egui::DragValue::new(&mut b).range(0.01..=10_000.0).speed(0.1).prefix("$").max_decimals(2));
+                reg.push(("assistant.settings.budget.value".into(), r.rect, "Cost limit (US$)".into()));
+                s.budget_usd = Some(b);
+            } else {
+                s.budget_usd = None;
+            }
+        });
+        ui.separator();
+        if s.consented {
+            let b = ui.add(egui::Button::new(RichText::new(format!("Stop sending data to {}", s.host())).size(12.0)));
+            reg.push(("assistant.settings.revoke".into(), b.rect, "Withdraw consent".into()));
+            revoke = b.clicked();
+        }
+    });
+    for (id, r, label) in reg {
+        app.auto.add(&id, r, &label);
+    }
+    if revoke {
+        s.consented = false;
+    }
+    if s != app.ui.panels.assistant.settings {
+        logic::set_settings(app, s);
+    }
+    if save_key || forget_key {
+        let provider = app.ui.panels.assistant.settings.provider.clone();
+        let key = if forget_key { String::new() } else { std::mem::take(&mut app.assistant.key_draft) };
+        app.assistant.key_message = Some(match dir {
+            None => ("No data folder: set the key with the environment variable instead.".into(), true),
+            Some(d) => match logic::store_api_key(&d, &provider, &key) {
+                Ok(()) if forget_key => ("Key removed.".into(), false),
+                Ok(()) => ("Key saved.".into(), false),
+                Err(e) => (e, true),
+            },
+        });
+    }
 }
 
 #[cfg(test)]
