@@ -6,10 +6,11 @@
 //! - [`LlmProvider`]: the blocking, streaming, cancellable provider trait.
 //! - [`sse`]: an incremental, bounded Server-Sent Events parser.
 //! - [`anthropic`]: the Claude Messages API codec (request body, headers, stream decoder).
+//! - [`openai`]: the OpenAI-compatible Chat Completions codec (Ollama, LM Studio…).
 //! - [`ScriptedProvider`]: a fake provider replaying canned responses, for tests.
 //! - [`price`]: per-model prices and [`estimate_cost_usd`].
 //! - [`transport`]: [`ApiKey`] (redacted `Debug`), the provider URL policy and the retry schedule.
-//! - `http` (feature `http`): the blocking ureq + rustls transport and `AnthropicProvider`.
+//! - `http` (feature `http`): the blocking ureq + rustls transport, `AnthropicProvider` and `OpenAiCompatProvider`.
 //!
 //! Without `http` everything here is plain serde: no network, threads or clocks, so it builds for
 //! wasm32.
@@ -20,6 +21,7 @@ pub mod anthropic;
 pub mod error;
 #[cfg(feature = "http")]
 pub mod http;
+pub mod openai;
 pub mod price;
 pub mod scripted;
 pub mod sse;
@@ -30,7 +32,7 @@ use std::sync::atomic::AtomicBool;
 
 pub use error::LlmError;
 #[cfg(feature = "http")]
-pub use http::AnthropicProvider;
+pub use http::{AnthropicProvider, OpenAiCompatProvider};
 pub use price::estimate_cost_usd;
 pub use scripted::{ScriptStep, ScriptedProvider};
 pub use transport::ApiKey;

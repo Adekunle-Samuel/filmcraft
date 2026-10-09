@@ -9,6 +9,7 @@
 
 use crate::anthropic::{self, StreamDecoder};
 use crate::error::classify_status;
+use crate::openai;
 use crate::transport::{ApiKey, check_base_url, join_url, retry_delay};
 use crate::types::{ChatRequest, ChatResponse, StreamEvent};
 use crate::{Capabilities, LlmError, LlmProvider};
@@ -202,6 +203,62 @@ impl LlmProvider for AnthropicProvider {
     }
 }
 
+/// An OpenAI-compatible Chat Completions server (Ollama, LM Studio, llama.cpp, vLLM…).
+pub struct OpenAiCompatProvider {
+    base_url: String,
+    api_key: Option<ApiKey>,
+    agent: ureq::Agent,
+}
+
+impl core::fmt::Debug for OpenAiCompatProvider {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("OpenAiCompatProvider").field("base_url", &self.base_url).field("api_key", &self.api_key).finish()
+    }
+}
+
+impl OpenAiCompatProvider {
+    /// A provider for `base_url` (e.g. [`openai::DEFAULT_BASE_URL`](crate::openai::DEFAULT_BASE_URL),
+    /// checked by [`check_base_url`]); `api_key` is sent as a bearer token when given.
+    pub fn new(base_url: &str, api_key: Option<ApiKey>) -> Result<Self, LlmError> {
+        let base_url = base_url.trim();
+        check_base_url(base_url)?;
+        Ok(Self { base_url: base_url.to_string(), api_key, agent: agent() })
+    }
+
+    /// The base URL in use.
+    pub fn base_url(&self) -> &str {
+        &self.base_url
+    }
+}
+
+impl LlmProvider for OpenAiCompatProvider {
+    fn name(&self) -> &str {
+        "openai-compatible"
+    }
+
+    fn send(&self, req: &ChatRequest, on_event: &mut dyn FnMut(StreamEvent), cancel: &AtomicBool) -> Result<ChatResponse, LlmError> {
+        let body = openai::encode_request_bytes(req)?;
+        let mut headers = vec![("content-type".to_string(), "application/json".to_string()), ("accept".to_string(), "text/event-stream".to_string())];
+        if let Some(k) = &self.api_key {
+            headers.push(("authorization".into(), format!("Bearer {}", k.expose())));
+        }
+        let url = join_url(&self.base_url, openai::CHAT_PATH);
+        let mut decoder = openai::StreamDecoder::new();
+        stream(&self.agent, &url, &headers, &body, cancel, self.api_key.as_ref(), &mut |chunk| {
+            decoder.push(chunk, on_event)?;
+            Ok(decoder.is_complete())
+        })?;
+        decoder.finish(on_event).map_err(|e| match &self.api_key {
+            Some(k) => k.redact_error(e),
+            None => e,
+        })
+    }
+
+    fn capabilities(&self) -> Capabilities {
+        Capabilities { tools: true, vision: true, thinking: false, caching: false }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -213,6 +270,11 @@ mod tests {
         assert!(d.contains("api.anthropic.com") && !d.contains("very-secret"), "{d}");
         assert!(AnthropicProvider::with_base_url(ApiKey::new("k").unwrap(), "http://api.example.com").is_err());
         assert!(AnthropicProvider::with_base_url(ApiKey::new("k").unwrap(), "http://localhost:8080").is_ok());
+        let o = OpenAiCompatProvider::new(openai::DEFAULT_BASE_URL, Some(ApiKey::new("sk-local-secret").unwrap())).unwrap();
+        assert!(!format!("{o:?}").contains("local-secret"));
+        assert!(!o.capabilities().thinking && !o.capabilities().caching);
+        assert!(OpenAiCompatProvider::new("http://192.168.1.5:11434/v1", None).is_err());
+        assert!(OpenAiCompatProvider::new("https://192.168.1.5:11434/v1", None).is_ok());
     }
 
     #[test]

@@ -12,10 +12,11 @@ response comes back as a `ChatResponse` plus a stream of `StreamEvent`s for the 
   cancelled, decode, unsupported; every message says what the user can do about it.
 - `sse`: an incremental Server-Sent Events parser fed arbitrary byte chunks.
 - `anthropic`: the Claude Messages API codec.
+- `openai`: the OpenAI-compatible Chat Completions codec (Ollama, LM Studio, llama.cpp, vLLM).
 - `ScriptedProvider`: replays canned responses (or raw SSE transcripts) and records every request.
 - `price`: per-model prices and `estimate_cost_usd`.
 - `transport`: `ApiKey`, the provider URL policy and the retry schedule (pure, always built).
-- `http` (feature `http`): the blocking transport and `AnthropicProvider`.
+- `http` (feature `http`): the blocking transport, `AnthropicProvider` and `OpenAiCompatProvider`.
 
 Without the `http` feature the crate is plain serde / serde_json (no threads, clocks or sockets)
 and builds for wasm32 (`cargo xtask wasm` checks it).
@@ -63,12 +64,33 @@ Hostile input is bounded: a line (or one event's data) over 8 MiB, a body over 6
 byte offset (same result each time) and run mutation fuzzing (truncation, bit flips, inserted junk,
 deleted spans, giant lines) under `catch_unwind`.
 
+## OpenAI-compatible codec
+
+`openai::encode_request` targets `POST <base>/chat/completions` (default base
+`http://localhost:11434/v1`, Ollama) with `stream: true` and `stream_options.include_usage`:
+
+- the system blocks are joined into the first `system` message; mid-conversation system messages
+  stay `system` messages;
+- tools are `{type: "function", function: {name, description, parameters, strict?}}` with
+  `tool_choice: "auto"`; assistant tool calls are `tool_calls` with JSON-string `arguments`;
+- tool results become `tool` messages (`is_error` results are prefixed `Error: `); `tool`
+  messages carry text only, so tool-result images follow in a user message;
+- images are `image_url` parts with `data:` URLs; text-only user messages are plain strings;
+- no thinking and no caching: opaque blocks (another provider's thinking) are dropped.
+
+`openai::StreamDecoder` assembles `tool_calls` deltas by index (at most 256), tolerates servers
+that omit `[DONE]`, report `stop` after calling tools, or send `arguments` as an object, shows
+`reasoning_content` / `reasoning` text as thinking progress without keeping it, and maps
+`finish_reason` (`stop`, `tool_calls`, `length`, `content_filter`) to `StopReason`. It is tested
+like the Anthropic decoder (every split point, mutation fuzzing).
+
 ## HTTP transport (feature `http`)
 
 ureq 3 with pure-Rust TLS (rustls + RustCrypto, the operating system's certificate verifier),
 set up exactly like the Whisper model downloader in `filmcraft-speech`. No OpenSSL, no async
 runtime: `send` blocks, so the agent runs it on a worker thread.
 
+- `OpenAiCompatProvider::new(base_url, Option<ApiKey>)` posts to `<base>/chat/completions`, sending the key (if any) as a bearer token; capabilities: tools and vision, no thinking or caching.
 - `AnthropicProvider::new(key)` posts to `https://api.anthropic.com/v1/messages`, or to
   `ANTHROPIC_BASE_URL` when set; `from_env()` reads `ANTHROPIC_API_KEY`.
 - The body is streamed through the decoder in 16 KiB reads, checking `cancel` between reads
