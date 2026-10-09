@@ -18,6 +18,7 @@ pub mod clip_ops;
 pub mod color;
 pub mod commands;
 pub mod demo;
+pub mod edit_plan;
 pub mod essential_sound;
 pub mod export_tools;
 pub mod frames;
@@ -1148,6 +1149,8 @@ mod autosave_tests;
 mod clip_ops_tests;
 #[cfg(test)]
 mod color_tests;
+#[cfg(test)]
+mod edit_plan_tests;
 #[cfg(test)]
 mod essential_sound_tests;
 #[cfg(test)]

@@ -47,6 +47,9 @@ them first, then uses Whisper for filler words and content.
 | `audio.removeSilence` | The same ranges, ripple-deleted on every unlocked track in one undo step. |
 | `audio.loudness` | EBU R128 report of the mix (or a span): integrated LUFS, loudness range, max momentary / short-term, sample peak, true peak. Digital silence reports `null`. |
 
+To combine word cuts, fillers, pauses, silences and captions into one reviewed, undoable edit (the
+way the assistant edits), write an edit plan: see [edit-plans.md](edit-plans.md).
+
 ## Speech recognition
 
 Recognition goes through the `Transcriber` trait (`crates/speech`). The built-in recogniser is
