@@ -928,7 +928,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("filmcraft-mcp-tools-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("mix.wav").to_string_lossy().to_string();
-        let r = c.call(7, "export", json!({"path": path, "preset": null, "format": "wav", "range": null})).await;
+        let r = c.call(7, "export", json!({"path": path, "preset": null, "format": "wav", "range": null, "sequence": null, "burn_captions": null})).await;
         assert_eq!(r["result"]["isError"], false, "{r}");
         let v: Value = serde_json::from_str(r["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
         assert!(v["job"].is_u64() && v["result"].is_object(), "{v}");
