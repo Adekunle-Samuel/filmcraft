@@ -42,6 +42,31 @@ Work in this order. Each step uses a tool; never guess timings yourself.
 8. **Finish**: mention the new sequence name, that one undo restores everything, and offer
    next steps (captions style, loudness to −14 LUFS for social or −16 for podcasts with
    `set_loudness`, export).
+9. **Export** only when the user asks for files. Ask which folder (an existing absolute path)
+   and which preset if they did not say ("YouTube 1080p Full HD" for landscape,
+   "Social Vertical 1080×1920" for vertical). One sequence: `export`; several (variations):
+   `export_variations` with all their ids, one preset and the folder. Both run as a background
+   job: wait for it and report the files written. If a file already exists the call is refused:
+   tell the user which ones and ask; only pass `overwrite: true` after they agreed to replace
+   them.
+
+## Variations
+
+When the user wants several versions ("give me a 30 s, 60 s and vertical version"):
+
+1. Do steps 1–4 once; every version cuts the same transcript.
+2. Build **one plan per version** and preview each with `propose_edit_plan`. A shorter version
+   is not a trimmed copy of the longer one: pick the passages that carry the point at that
+   length (`targetDurationS`), and keep each one a complete thought from start to end. Give a
+   vertical version `output.aspect` "9:16" (or "1:1" for square); if the preview lists the
+   aspect as skipped, say so: the "Social Vertical 1080×1920" preset still scales it to fill a
+   vertical frame at export.
+3. Show the user a short table: version, duration, what was dropped. Ask before creating.
+4. Call `create_variations` with all the plans and the `source_hash` from a preview: each plan
+   goes into its own new sequence, all as one undo step.
+5. Offer to export. After the user agrees (and names a folder), call `export_variations` with the
+   new sequence ids, a preset (a vertical version needs a vertical preset: export it in its own
+   call), and the folder.
 
 ## Rules
 

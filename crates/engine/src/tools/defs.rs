@@ -378,6 +378,118 @@ fn bake_lut(s: &mut Session, input: &Value) -> Result<ToolOutput> {
     forward(s, "lumetri.bakeLut", input, &[])
 }
 
+/// Most sequences one `export_variations` call exports.
+const MAX_VARIATION_EXPORTS: usize = 6;
+/// Most characters of a file name made from a sequence name (before the extension).
+const MAX_FILE_STEM: usize = 120;
+
+/// A file name stem for sequence `name`: no path separators or other unsafe characters, no
+/// leading/trailing dots or spaces, at most [`MAX_FILE_STEM`] characters.
+fn file_stem(name: &str, id: u64) -> String {
+    let safe = crate::export_tools::file_safe(name);
+    let stem: String = safe.trim_matches(|c: char| c == '.' || c.is_whitespace()).chars().take(MAX_FILE_STEM).collect();
+    let stem = stem.trim_end_matches(|c: char| c == '.' || c.is_whitespace()).to_string();
+    if stem.is_empty() { format!("Sequence {id}") } else { stem }
+}
+
+fn export_variations(s: &mut Session, input: &Value) -> Result<ToolOutput> {
+    let ids: Vec<u64> = opt(input, "sequences").and_then(Value::as_array).map(|a| a.iter().filter_map(Value::as_u64).collect()).unwrap_or_default();
+    if ids.is_empty() || ids.len() > MAX_VARIATION_EXPORTS {
+        return Err(tool_err(format!("export_variations takes 1 to {MAX_VARIATION_EXPORTS} sequence ids")));
+    }
+    let preset_name = opt(input, "preset").and_then(Value::as_str).unwrap_or_default();
+    let preset =
+        s.export_presets.find(preset_name).ok_or_else(|| tool_err(format!("no export preset named `{preset_name}` (see command_run export.presets.list)")))?;
+    if preset.settings.is_image_sequence() {
+        return Err(tool_err(format!("`{}` writes numbered stills; pick a video or audio preset", preset.name)));
+    }
+    let folder = opt(input, "folder").and_then(Value::as_str).unwrap_or_default();
+    let dir = std::path::Path::new(folder);
+    if folder.contains('\0') || !dir.is_absolute() {
+        return Err(tool_err(format!("`folder` must be an absolute directory path, not `{folder}`")));
+    }
+    // the web build writes to its virtual file table (offered as downloads), not the disk
+    let on_disk = !s.services.export_in_memory();
+    if on_disk && !dir.is_dir() {
+        return Err(tool_err(format!("the folder `{folder}` does not exist; ask the user for an existing folder")));
+    }
+    let overwrite = opt(input, "overwrite").and_then(Value::as_bool).unwrap_or(false);
+    let ext = preset.settings.extension();
+
+    // one file per sequence: `<sequence name>.<ext>`, numbered when two names collide
+    let mut planned: Vec<(u64, String, std::path::PathBuf)> = Vec::with_capacity(ids.len());
+    let mut taken: Vec<String> = Vec::with_capacity(ids.len());
+    for &id in &ids {
+        if planned.iter().any(|p| p.0 == id) {
+            return Err(tool_err(format!("sequence {id} is listed twice")));
+        }
+        let item = filmcraft_project::ItemId(id);
+        if s.project.sequence(item).is_none() {
+            return Err(tool_err(format!("{id} is not a sequence; see project_overview")));
+        }
+        let name = s.project.item(item).map(|i| i.name.clone()).unwrap_or_default();
+        let base = file_stem(&name, id);
+        let mut stem = base.clone();
+        let mut n = 2u32;
+        while taken.contains(&stem.to_lowercase()) {
+            stem = format!("{base} ({n})");
+            n = n.saturating_add(1);
+        }
+        taken.push(stem.to_lowercase());
+        planned.push((id, name, dir.join(format!("{stem}.{ext}"))));
+    }
+    // writing files is destructive: never replace one unless the user said so
+    if on_disk && !overwrite {
+        let existing: Vec<String> =
+            planned.iter().filter(|p| p.2.exists()).map(|p| p.2.file_name().map_or_else(String::new, |n| n.to_string_lossy().to_string())).collect();
+        if !existing.is_empty() {
+            return Err(tool_err(format!(
+                "{} already exist(s) in `{folder}`; nothing was queued. Ask the user whether to replace them (overwrite: true) or pick another folder",
+                existing.join(", ")
+            )));
+        }
+    }
+
+    let mut added: Vec<u64> = Vec::with_capacity(planned.len());
+    let mut files = Vec::with_capacity(planned.len());
+    let undo_queue = |s: &mut Session, added: &[u64]| {
+        for id in added {
+            let _ = s.execute("export.queue.remove", json!({"id": id}));
+        }
+    };
+    for (id, name, path) in &planned {
+        let params = json!({"preset": preset.name, "sequence": id, "path": path.to_string_lossy(), "range": "entire"});
+        let r = match s.execute("export.queue.add", params) {
+            Ok(r) => r,
+            Err(e) => {
+                undo_queue(s, &added);
+                return Err(e);
+            }
+        };
+        let new: Vec<u64> = r["added"].as_array().into_iter().flatten().filter_map(Value::as_u64).collect();
+        let queued_path = r["items"]
+            .as_array()
+            .and_then(|items| items.iter().find(|i| new.first().is_some_and(|n| i["id"].as_u64() == Some(*n))))
+            .and_then(|i| i["path"].as_str())
+            .map_or_else(|| path.to_string_lossy().to_string(), str::to_string);
+        files.push(json!({"sequence": id, "name": name, "path": queued_path, "queueItems": new}));
+        added.extend(new);
+    }
+    let r = match s.execute("export.queue.start", json!({"follow": added})) {
+        Ok(r) => r,
+        Err(e) => {
+            undo_queue(s, &added);
+            return Err(e);
+        }
+    };
+    let ahead = r["items"].as_array().into_iter().flatten().filter(|i| i["status"] == "ready" && i["id"].as_u64().is_some_and(|x| !added.contains(&x))).count();
+    let mut out = json!({"job": r["job"], "preset": preset.name, "folder": folder, "files": files});
+    if ahead > 0 {
+        out["note"] = json!(format!("{ahead} other export(s) already in the queue run too"));
+    }
+    Ok(ToolOutput { pending_job: job_of(&out), json: out, images: Vec::new() })
+}
+
 fn forward_value(s: &mut Session, id: &str, params: Value) -> Result<ToolOutput> {
     let r = s.execute(id, params)?;
     Ok(ToolOutput { pending_job: job_of(&r), json: r, images: Vec::new() })
@@ -739,5 +851,23 @@ pub(super) static TOOLS: &[ToolDef] = &[
         approval: Approval::Never,
         requires: "lumetri.bakeLut",
         run: bake_lut,
+    },
+    ToolDef {
+        name: "export_variations",
+        title: "Export variations",
+        description: "Export up to 6 sequences (e.g. the ones create_variations made) with one export preset into a folder, one file each named `<sequence name>.<ext>`, through the export queue as one background job (the result has its id). Refused if a file exists unless `overwrite` is true; only set it when the user agreed to replace those files. The user always confirms first.",
+        schema: r#"{"type":"object","properties":{
+            "sequences":{"type":"array","description":"Sequence ids to export.","items":{"type":"integer","minimum":0},"minItems":1,"maxItems":6},
+            "preset":{"type":"string","description":"Export preset name, e.g. \"YouTube 1080p Full HD\" or \"Social Vertical 1080×1920\" (see export.presets.list).","maxLength":200},
+            "folder":{"type":"string","description":"Absolute path of an existing folder for the files.","maxLength":4096},
+            "overwrite":{"type":["boolean","null"],"description":"Replace files that already exist (default false: refuse)."}
+        },"required":["sequences","preset","folder","overwrite"],"additionalProperties":false}"#,
+        read_only: false,
+        destructive: true,
+        idempotent: false,
+        open_world: false,
+        approval: Approval::Ask,
+        requires: "export.queue.add",
+        run: export_variations,
     },
 ];

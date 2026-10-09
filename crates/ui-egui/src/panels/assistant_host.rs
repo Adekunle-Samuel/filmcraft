@@ -124,10 +124,23 @@ impl ToolPolicy {
                 let shown: Vec<&str> = ids.iter().take(8).map(String::as_str).collect();
                 if shown.is_empty() { "Run engine commands".to_string() } else { format!("Run {}", shown.join(", ")) }
             }
+            "export_variations" => export_reason(&call.input),
             name if approval == Approval::AskIfOverwrite => format!("{} may write or overwrite a file", pretty_tool_name(name)),
             name => format!("{} changes the project", pretty_tool_name(name)),
         })
     }
+}
+
+/// What an `export_variations` call writes: `Export 3 sequences as "YouTube 1080p Full HD" to
+/// /path` (and whether it replaces files). Hostile values are cut short.
+fn export_reason(input: &Value) -> String {
+    let short = |key: &str| -> String {
+        let v: String = input.get(key).and_then(Value::as_str).unwrap_or("?").chars().take(160).collect();
+        v
+    };
+    let n = input.get("sequences").and_then(Value::as_array).map_or(0, Vec::len);
+    let replace = if input.get("overwrite").and_then(Value::as_bool) == Some(true) { ", replacing files that exist" } else { "" };
+    format!("Export {n} sequence{} as \"{}\" to {}{replace}", if n == 1 { "" } else { "s" }, short("preset"), short("folder"))
 }
 
 /// The command ids an escape-hatch call names (`command_run {id}`, `command_batch {steps:[{id}]}`).
@@ -384,6 +397,12 @@ mod tests {
         assert!(p.ask_reason(&call("command_batch", json!({"steps": [{"id": "jobs.list"}, {"id": "edit.undo"}]}))).is_some());
         assert_eq!(p.ask_reason(&call("command_batch", json!({"steps": [{"id": "jobs.list"}]}))), None);
         assert!(p.ask_reason(&call("no_such_tool", json!({}))).is_some());
+        // exporting variations always asks, and says where the files go
+        let export = json!({"sequences": [4, 5], "preset": "YouTube 1080p Full HD", "folder": "/Users/a/Out", "overwrite": null});
+        assert_eq!(p.ask_reason(&call("export_variations", export)).as_deref(), Some("Export 2 sequences as \"YouTube 1080p Full HD\" to /Users/a/Out"));
+        let replace = json!({"sequences": [4], "preset": "x", "folder": "y".repeat(10_000), "overwrite": true});
+        let why = p.ask_reason(&call("export_variations", replace)).unwrap();
+        assert!(why.ends_with("replacing files that exist") && why.len() < 300, "{why}");
         assert_eq!(pretty_tool_name("find_silences"), "Find silences");
         assert_eq!(pretty_tool_name(""), "");
     }

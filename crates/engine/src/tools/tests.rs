@@ -36,6 +36,7 @@ fn golden(name: &str) -> Value {
         "create_variations" => json!({"plans": ["{\"version\":1}", "{\"version\":1}"], "source_hash": "abc"}),
         "match_grade" => json!({"item": 3, "clips": [10, 11], "samples": 6}),
         "bake_lut" => json!({"clip": 10, "name": "warm look", "size": 33}),
+        "export_variations" => json!({"sequences": [5, 9], "preset": "Social Vertical 1080×1920", "folder": "/tmp/variations", "overwrite": null}),
         other => panic!("no golden input for {other}"),
     }
 }
@@ -372,4 +373,204 @@ fn strict_api_schemas_describe_the_engine_checks() {
     assert!(d.contains("minimum 1") && d.contains("maximum 48"), "{d}");
     assert_eq!(api["additionalProperties"], false);
     assert_eq!(api["required"], t.schema_value()["required"]);
+}
+
+/// The demo project with two more copies of its sequence, named like variations (one name with a
+/// path separator, one starting with `../`). Returns the three ids.
+fn variations_project() -> (Session, [u64; 3]) {
+    let mut s = demo();
+    let first = s.state.active_sequence.unwrap();
+    let seq = s.active_sequence().unwrap().clone();
+    let p = std::sync::Arc::make_mut(&mut s.project);
+    p.item_mut(first).unwrap().name = "Cut: 30s".into();
+    let kind = || filmcraft_project::ItemKind::Sequence(Box::new(seq.clone()));
+    let b = p.add_item("Cut/30s", filmcraft_project::Label::Iris, kind(), None);
+    let c = p.add_item("../Vertical", filmcraft_project::Label::Iris, kind(), None);
+    (s, [first.0, b.0, c.0])
+}
+
+fn scratch(name: &str) -> std::path::PathBuf {
+    let d = filmcraft_testkit::workspace_root().join("target").join("tools-tests").join(format!("{name}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&d);
+    std::fs::create_dir_all(&d).unwrap();
+    d
+}
+
+/// Follow a job the way the hosts do: poll the session until `jobs.list` says it finished.
+fn follow(s: &mut Session, job: u64) -> Value {
+    let t0 = std::time::Instant::now();
+    loop {
+        s.poll_persistence();
+        let jobs = s.execute("jobs.list", json!({})).unwrap();
+        let j = jobs.as_array().unwrap().iter().find(|j| j["id"] == job).cloned().unwrap();
+        if j["finished"] == true {
+            return j;
+        }
+        assert!(t0.elapsed().as_secs() < 180, "job {job} did not finish: {j}");
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+}
+
+fn queue_len(s: &mut Session) -> usize {
+    s.execute("export.queue.list", json!({})).unwrap()["items"].as_array().map_or(0, Vec::len)
+}
+
+#[test]
+fn export_variations_queues_one_file_per_sequence_and_follows_them_as_one_job() {
+    let (mut s, ids) = variations_project();
+    let dir = scratch("variations");
+    let folder = dir.to_string_lossy().to_string();
+    let undo = s.history.undo.len();
+    let input = json!({"sequences": ids, "preset": "Waveform Audio 48 kHz 16-bit", "folder": folder, "overwrite": null});
+    let out = call(&mut s, "export_variations", &input).unwrap();
+    let job = out.pending_job.expect("the batch runs as one job");
+    assert_eq!(out.json["job"], job);
+    let names: Vec<String> = out.json["files"].as_array().unwrap().iter().map(|f| f["path"].as_str().unwrap().to_string()).collect();
+    let want: Vec<String> = ["Cut_ 30s.wav", "Cut_30s.wav", "_Vertical.wav"].iter().map(|n| dir.join(n).to_string_lossy().to_string()).collect();
+    assert_eq!(names, want, "sanitised `<sequence name>.<ext>` in the folder");
+    // the queue has one item per sequence with the preset
+    let q = s.execute("export.queue.list", json!({})).unwrap()["items"].as_array().unwrap().clone();
+    assert_eq!(q.len(), 3);
+    for (it, id) in q.iter().zip(ids) {
+        assert_eq!((it["sequence"].as_u64(), it["preset"].as_str()), (Some(id), Some("Waveform Audio 48 kHz 16-bit")), "{it}");
+    }
+    let j = follow(&mut s, job);
+    assert!(j["result"]["error"].is_null(), "{j}");
+    assert_eq!(j["progress"].as_f64(), Some(1.0), "{j}");
+    for p in &want {
+        assert!(std::path::Path::new(p).exists(), "{p} was written");
+    }
+    assert_eq!(j["result"]["extra_files"].as_array().map(Vec::len), Some(2), "{j}");
+    assert_eq!(s.history.undo.len(), undo, "exporting adds no undo step");
+
+    // the files exist now: a second run is refused and queues nothing
+    let before = queue_len(&mut s);
+    let e = call(&mut s, "export_variations", &input).unwrap_err().to_string();
+    assert!(e.contains("already exist") && e.contains("_Vertical.wav"), "{e}");
+    assert_eq!(queue_len(&mut s), before);
+    let one = |overwrite: Value| json!({"sequences": [ids[2]], "preset": "Waveform Audio 48 kHz 16-bit", "folder": folder, "overwrite": overwrite});
+    let e = call(&mut s, "export_variations", &one(json!(false))).unwrap_err().to_string();
+    assert!(e.contains("_Vertical.wav"), "{e}");
+    // unless the user agreed to replace them
+    let out = call(&mut s, "export_variations", &one(json!(true))).unwrap();
+    let j = follow(&mut s, out.pending_job.unwrap());
+    assert!(j["result"]["error"].is_null(), "{j}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn colliding_names_are_numbered() {
+    let (mut s, ids) = variations_project();
+    let p = std::sync::Arc::make_mut(&mut s.project);
+    p.item_mut(filmcraft_project::ItemId(ids[1])).unwrap().name = "Cut: 30s".into();
+    p.item_mut(filmcraft_project::ItemId(ids[2])).unwrap().name = "...".into();
+    let dir = scratch("variations-names");
+    let input = json!({"sequences": ids, "preset": "Waveform Audio 48 kHz 16-bit", "folder": dir.to_string_lossy(), "overwrite": null});
+    let out = call(&mut s, "export_variations", &input).unwrap();
+    let names: Vec<String> = out.json["files"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|f| std::path::Path::new(f["path"].as_str().unwrap()).file_name().unwrap().to_string_lossy().to_string())
+        .collect();
+    assert_eq!(names, ["Cut_ 30s.wav".to_string(), "Cut_ 30s (2).wav".to_string(), format!("Sequence {}.wav", ids[2])]);
+    follow(&mut s, out.pending_job.unwrap());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn cancelling_the_variations_job_cancels_its_exports() {
+    let (mut s, ids) = variations_project();
+    let dir = scratch("variations-cancel");
+    let input = json!({"sequences": ids, "preset": "Apple ProRes 422 HQ", "folder": dir.to_string_lossy(), "overwrite": null});
+    let job = call(&mut s, "export_variations", &input).unwrap().pending_job.unwrap();
+    s.execute("jobs.cancel", json!({"job": job})).unwrap();
+    let j = follow(&mut s, job);
+    assert_eq!(j["result"]["error"], "cancelled", "{j}");
+    let t0 = std::time::Instant::now();
+    loop {
+        let q = s.execute("export.queue.list", json!({})).unwrap()["items"].as_array().unwrap().clone();
+        if q.iter().all(|i| i["status"] == "cancelled" || i["status"] == "done") {
+            assert!(q.iter().any(|i| i["status"] == "cancelled"), "{q:?}");
+            break;
+        }
+        assert!(t0.elapsed().as_secs() < 60, "{q:?}");
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn export_variations_refuses_hostile_input() {
+    let (mut s, ids) = variations_project();
+    let dir = scratch("variations-hostile");
+    let folder = dir.to_string_lossy().to_string();
+    let wav = "Waveform Audio 48 kHz 16-bit";
+    for input in [
+        json!({"sequences": [], "preset": wav, "folder": folder, "overwrite": null}),
+        json!({"sequences": [1, 2, 3, 4, 5, 6, 7], "preset": wav, "folder": folder, "overwrite": null}),
+        json!({"sequences": [-1], "preset": wav, "folder": folder, "overwrite": null}),
+        json!({"sequences": [1.5], "preset": wav, "folder": folder, "overwrite": null}),
+        json!({"sequences": "1", "preset": wav, "folder": folder, "overwrite": null}),
+        json!({"sequences": [ids[0]], "preset": wav, "folder": folder}),
+        json!({"sequences": [ids[0]], "preset": wav, "folder": folder, "overwrite": "yes"}),
+        json!({"sequences": [ids[0]], "preset": wav, "folder": "x".repeat(5000), "overwrite": null}),
+        json!({"sequences": [ids[0]], "preset": wav, "folder": folder, "overwrite": null, "wait": true}),
+    ] {
+        assert!(validate("export_variations", &input).is_err(), "{input}");
+        assert!(call(&mut s, "export_variations", &input).is_err(), "{input}");
+    }
+    // valid shape, bad values: refused with a reason, nothing queued
+    let missing = dir.join("missing").to_string_lossy().to_string();
+    for (input, why) in [
+        (json!({"sequences": [ids[0]], "preset": "No Such Preset", "folder": folder, "overwrite": null}), "No Such Preset"),
+        (json!({"sequences": [ids[0]], "preset": "TIFF Sequence", "folder": folder, "overwrite": null}), "stills"),
+        (json!({"sequences": [ids[0]], "preset": wav, "folder": "relative/dir", "overwrite": null}), "absolute"),
+        (json!({"sequences": [ids[0]], "preset": wav, "folder": "", "overwrite": null}), "absolute"),
+        (json!({"sequences": [ids[0]], "preset": wav, "folder": format!("{folder}/\u{0}x"), "overwrite": null}), "absolute"),
+        (json!({"sequences": [ids[0]], "preset": wav, "folder": missing, "overwrite": null}), "does not exist"),
+        (json!({"sequences": [ids[0], ids[0]], "preset": wav, "folder": folder, "overwrite": null}), "twice"),
+        (json!({"sequences": [u64::MAX], "preset": wav, "folder": folder, "overwrite": null}), "not a sequence"),
+        // a media item is not a sequence
+        (json!({"sequences": [ids[0], 1], "preset": wav, "folder": folder, "overwrite": null}), "not a sequence"),
+    ] {
+        let e = call(&mut s, "export_variations", &input).unwrap_err().to_string();
+        assert!(e.contains(why), "{input}: {e}");
+    }
+    assert_eq!(queue_len(&mut s), 0);
+    assert!(s.jobs.is_empty(), "no job started");
+    // disabled: no sequence open
+    let e = call(&mut Session::default(), "export_variations", &json!({"sequences": [1], "preset": wav, "folder": folder, "overwrite": null}));
+    assert!(e.is_err());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn export_variations_always_asks() {
+    assert_eq!(find("export_variations").map(|t| (t.approval, t.destructive, t.read_only)), Some((Approval::Ask, true, false)));
+    for overwrite in [json!(null), json!(false), json!(true)] {
+        let input = json!({"sequences": [1], "preset": "YouTube 1080p Full HD", "folder": "/tmp", "overwrite": overwrite});
+        assert_eq!(approval_for("export_variations", &input), Approval::Ask);
+    }
+}
+
+#[test]
+fn export_queue_start_follow_rejects_hostile_ids() {
+    let mut s = demo();
+    let dir = scratch("queue-follow");
+    let id = s
+        .execute("export.queue.add", json!({"preset": "Waveform Audio 48 kHz 16-bit", "path": dir.join("a.wav").to_string_lossy(), "range": "entire"}))
+        .unwrap()["added"][0]
+        .as_u64()
+        .unwrap();
+    for follow in [json!([]), json!("1"), json!([999]), json!([-1]), json!([1.5]), json!({"id": id}), json!(vec![id; 257])] {
+        assert!(s.execute("export.queue.start", json!({"follow": follow})).is_err(), "{follow}");
+    }
+    assert!(s.jobs.is_empty() && !s.export_queue.running, "nothing started");
+    let r = s.execute("export.queue.start", json!({"follow": [id, id], "wait": true})).unwrap();
+    let j = follow(&mut s, r["job"].as_u64().unwrap());
+    assert!(j["result"]["error"].is_null(), "{j}");
+    // a finished item cannot be followed again
+    assert!(s.execute("export.queue.start", json!({"follow": [id]})).is_err());
+    let _ = std::fs::remove_dir_all(&dir);
 }

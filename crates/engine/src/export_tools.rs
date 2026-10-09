@@ -14,6 +14,8 @@
 //!   project and resolves the settings; `export.queue.start` encodes the ready items one after
 //!   another as ordinary background jobs ([`crate::Job`], visible in `jobs.list`); the frontend's
 //!   per-frame [`Session::poll_persistence`] (or `export.queue.list`) advances it.
+//!   `export.queue.start` with `follow: [item ids]` also starts one batch job standing for those
+//!   items ([`QueueBatch`]), so a client (the Assistant, MCP) can follow or cancel them as one job.
 //! - **Quick Export** (`export.quick`): the active sequence with a preset (the last one used,
 //!   initially Match Source – Adaptive High Bitrate) to a default path next to the project.
 //!
@@ -22,8 +24,8 @@
 //! `export.quick`; `file.exportMedia` uses the same settings builder.
 
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use std::sync::atomic::Ordering;
+use std::sync::{Arc, PoisonError};
 
 use filmcraft_export::presets::{DEFAULT_PRESET, preset_key};
 use filmcraft_export::{ExportPreset, ExportSettings, Format, HardwareEncoding};
@@ -311,7 +313,7 @@ pub fn default_export_dir(s: &Session) -> PathBuf {
     crate::temp_dir()
 }
 
-fn file_safe(n: &str) -> String {
+pub(crate) fn file_safe(n: &str) -> String {
     let s: String = n.chars().map(|c| if c.is_alphanumeric() || " -_().".contains(c) { c } else { '_' }).collect();
     let s = s.trim().to_string();
     if s.is_empty() { "Export".into() } else { s }
@@ -506,11 +508,25 @@ pub struct ExportQueue {
     next_id: u64,
     /// Quick Export's preset (the last one used).
     pub quick_preset: Option<String>,
+    /// Jobs that follow several items (`export.queue.start` with `follow`).
+    pub batches: Vec<QueueBatch>,
+}
+
+/// One job ([`crate::Job`], in `jobs.list`) standing for several queue items, so a client can
+/// follow (and cancel) a batch of exports as one job: its progress is theirs, it finishes when
+/// they all have, and cancelling it cancels them.
+pub struct QueueBatch {
+    pub job: u64,
+    /// Queue item ids.
+    pub items: Vec<u64>,
+    started: web_time::Instant,
 }
 
 impl ExportQueue {
     pub fn is_active(&self) -> bool {
-        self.items.iter().any(|i| i.status == QueueStatus::Encoding) || (self.running && self.items.iter().any(|i| i.status == QueueStatus::Ready))
+        self.items.iter().any(|i| i.status == QueueStatus::Encoding)
+            || (self.running && self.items.iter().any(|i| i.status == QueueStatus::Ready))
+            || !self.batches.is_empty()
     }
 }
 
@@ -537,9 +553,165 @@ fn item_json(s: &Session, it: &QueueItem) -> Value {
     })
 }
 
-/// Advance the queue: settle finished encodes, start the next ready item. `wait` encodes all of
-/// them now (blocking).
+/// Advance the queue: settle finished encodes, start the next ready item, update batch jobs.
+/// `wait` encodes all of them now (blocking).
 pub fn pump_queue(s: &mut Session, wait: bool) {
+    // a cancelled batch cancels its items before the next one can start
+    settle_batches(s);
+    pump_items(s, wait);
+    settle_batches(s);
+}
+
+/// Progress units per item of a batch job.
+const BATCH_UNITS: u64 = 1000;
+/// Most queue items one batch job follows.
+pub const MAX_BATCH: usize = 256;
+
+/// Start a job following queue items `items` (all present in the queue); returns its id.
+fn start_batch(s: &mut Session, items: Vec<u64>) -> u64 {
+    let id = s.jobs.iter().map(|j| j.id).max().unwrap_or(0) + 1;
+    let n = items.len();
+    let label = format!("Export batch ({n} file{})", if n == 1 { "" } else { "s" });
+    let job = crate::Job { id, label, progress: Default::default(), result: Default::default() };
+    job.progress.total.store(BATCH_UNITS.saturating_mul(n as u64).max(1), Ordering::Relaxed);
+    s.jobs.push(job);
+    s.export_queue.batches.push(QueueBatch { job: id, items, started: web_time::Instant::now() });
+    id
+}
+
+/// What a batch's items have done so far.
+#[derive(Default)]
+struct BatchTally {
+    units: u64,
+    done: usize,
+    failed: usize,
+    cancelled: usize,
+    pending: usize,
+    encoding: bool,
+    frames: u64,
+    bytes: u64,
+    files: Vec<String>,
+    first_error: Option<String>,
+    current: Option<String>,
+}
+
+fn tally(s: &Session, items: &[u64]) -> BatchTally {
+    let mut t = BatchTally::default();
+    for id in items {
+        let Some(it) = s.export_queue.items.iter().find(|x| x.id == *id) else {
+            // removed from the queue: it will not run
+            t.cancelled += 1;
+            t.units = t.units.saturating_add(BATCH_UNITS);
+            continue;
+        };
+        let job = it.job.and_then(|j| s.jobs.iter().find(|x| x.id == j));
+        match it.status {
+            QueueStatus::Done => {
+                t.done += 1;
+                t.units = t.units.saturating_add(BATCH_UNITS);
+                t.files.push(it.settings.path.clone());
+                if let Some(Ok(r)) = job.and_then(|j| j.result.lock().unwrap_or_else(PoisonError::into_inner).clone()) {
+                    t.frames = t.frames.saturating_add(r.frames);
+                    t.bytes = t.bytes.saturating_add(r.bytes);
+                }
+            }
+            QueueStatus::Failed => {
+                t.failed += 1;
+                t.units = t.units.saturating_add(BATCH_UNITS);
+                if t.first_error.is_none() {
+                    t.first_error = Some(format!("{}: {}", it.sequence_name, it.error.clone().unwrap_or_default()));
+                }
+            }
+            QueueStatus::Cancelled => {
+                t.cancelled += 1;
+                t.units = t.units.saturating_add(BATCH_UNITS);
+            }
+            QueueStatus::Encoding => {
+                t.pending += 1;
+                t.encoding = true;
+                let f = job.map_or(0.0, |j| j.progress.fraction());
+                let f = if f.is_finite() { f.clamp(0.0, 1.0) } else { 0.0 };
+                t.units = t.units.saturating_add((f64::from(f) * BATCH_UNITS as f64) as u64);
+                t.current = Some(it.sequence_name.clone());
+            }
+            QueueStatus::Ready => t.pending += 1,
+        }
+    }
+    t
+}
+
+/// Update every batch job from its items: progress, status, and the result once all are settled.
+fn settle_batches(s: &mut Session) {
+    if s.export_queue.batches.is_empty() {
+        return;
+    }
+    let batches = std::mem::take(&mut s.export_queue.batches);
+    let mut keep = Vec::with_capacity(batches.len());
+    for b in batches {
+        let Some((prog, res)) = s.jobs.iter().find(|j| j.id == b.job).map(|j| (j.progress.clone(), j.result.clone())) else { continue };
+        if res.lock().unwrap_or_else(PoisonError::into_inner).is_some() {
+            continue;
+        }
+        let cancelled_job = prog.cancel.load(Ordering::Relaxed);
+        if cancelled_job {
+            for id in &b.items {
+                if let Some(i) = s.export_queue.items.iter().position(|x| x.id == *id) {
+                    cancel_item(s, i);
+                }
+            }
+        }
+        let t = tally(s, &b.items);
+        let n = b.items.len();
+        let total = BATCH_UNITS.saturating_mul(n as u64).max(1);
+        prog.total.store(total, Ordering::Relaxed);
+        prog.done.store(t.units.min(total), Ordering::Relaxed);
+        let settled = t.done + t.failed + t.cancelled;
+        // stopped with items still waiting: they will not run until the queue starts again
+        let stopped = t.pending > 0 && !t.encoding && !s.export_queue.running;
+        if t.pending > 0 && !stopped {
+            let status = match &t.current {
+                Some(name) => format!("Exporting {} of {n}: {name}", (settled + 1).min(n)),
+                None => format!("Waiting in the export queue ({settled} of {n} done)"),
+            };
+            *prog.status.lock().unwrap_or_else(PoisonError::into_inner) = status;
+            keep.push(b);
+            continue;
+        }
+        let r = if cancelled_job {
+            Err("cancelled".to_string())
+        } else if t.failed > 0 {
+            Err(format!("{} of {n} exports failed ({})", t.failed, t.first_error.unwrap_or_default()))
+        } else if stopped {
+            Err(format!("the export queue was stopped with {} of {n} exports still waiting", t.pending))
+        } else if t.cancelled > 0 {
+            Err(format!("{} of {n} exports were cancelled", t.cancelled))
+        } else {
+            let seconds = b.started.elapsed().as_secs_f64();
+            Ok(filmcraft_export::Report {
+                path: t.files.first().cloned().unwrap_or_default(),
+                frames: t.frames,
+                seconds,
+                bytes: t.bytes,
+                render_fps: t.frames as f64 / seconds.max(1e-6),
+                extra_files: t.files.iter().skip(1).cloned().collect(),
+            })
+        };
+        *prog.status.lock().unwrap_or_else(PoisonError::into_inner) = match &r {
+            Ok(_) => format!("Exported {} file{}", t.done, if t.done == 1 { "" } else { "s" }),
+            Err(e) if e == "cancelled" => "Cancelled".into(),
+            Err(e) => e.clone(),
+        };
+        if let Err(e) = &r {
+            *prog.error.lock().unwrap_or_else(PoisonError::into_inner) = Some(e.clone());
+        }
+        prog.finished.store(true, Ordering::Relaxed);
+        *res.lock().unwrap_or_else(PoisonError::into_inner) = Some(r);
+    }
+    keep.append(&mut s.export_queue.batches);
+    s.export_queue.batches = keep;
+}
+
+fn pump_items(s: &mut Session, wait: bool) {
     loop {
         // settle
         let mut finished_any = false;
@@ -676,13 +848,45 @@ fn queue_list(s: &mut Session, _: &Value) -> Result<Value> {
     Ok(json!({"running": s.export_queue.running, "items": queue_list_json(s)}))
 }
 
+/// `follow`: queue item ids (ready or encoding) for one job to follow.
+fn follow_p(s: &Session, p: &Value, cmd: &str) -> Result<Option<Vec<u64>>> {
+    let a = match p.get("follow") {
+        None | Some(Value::Null) => return Ok(None),
+        Some(Value::Array(a)) => a,
+        Some(_) => return Err(bad(cmd, "`follow` is a list of queue item ids")),
+    };
+    if a.is_empty() || a.len() > MAX_BATCH {
+        return Err(bad(cmd, format!("`follow` takes 1 to {MAX_BATCH} queue item ids")));
+    }
+    let mut ids = Vec::with_capacity(a.len());
+    for v in a {
+        let id = v.as_u64().ok_or_else(|| bad(cmd, "`follow` is a list of queue item ids"))?;
+        let it = s.export_queue.items.iter().find(|i| i.id == id).ok_or_else(|| bad(cmd, format!("no queued export {id}")))?;
+        if !matches!(it.status, QueueStatus::Ready | QueueStatus::Encoding) {
+            return Err(bad(cmd, format!("queued export {id} already finished; retry it first")));
+        }
+        if !ids.contains(&id) {
+            ids.push(id);
+        }
+    }
+    Ok(Some(ids))
+}
+
 fn queue_start(s: &mut Session, p: &Value) -> Result<Value> {
+    let cmd = "export.queue.start";
+    let follow = follow_p(s, p, cmd)?;
     if !s.export_queue.items.iter().any(|i| matches!(i.status, QueueStatus::Ready | QueueStatus::Encoding)) {
-        return Err(bad("export.queue.start", "nothing to export: the queue has no ready items"));
+        return Err(bad(cmd, "nothing to export: the queue has no ready items"));
     }
     s.export_queue.running = true;
+    // `follow`: one job stands for those items (progress, result, cancel)
+    let job = follow.map(|ids| start_batch(s, ids));
     pump_queue(s, bool_p(p, "wait").unwrap_or(false));
-    Ok(json!({"running": s.export_queue.running, "items": queue_list_json(s)}))
+    let mut out = json!({"running": s.export_queue.running, "items": queue_list_json(s)});
+    if let Some(job) = job {
+        out["job"] = json!(job);
+    }
+    Ok(out)
 }
 
 fn queue_stop(s: &mut Session, _: &Value) -> Result<Value> {
@@ -1037,7 +1241,7 @@ pub(crate) fn commands() -> Vec<CommandSpec> {
             true,
         ),
         spec("export.queue.list", "List Export Queue", "{}", always, queue_list, false),
-        spec("export.queue.start", "Start Export Queue", r#"{"wait":bool=false}"#, always, queue_start, true),
+        spec("export.queue.start", "Start Export Queue", r#"{"wait":bool=false,"follow":[id]?}"#, always, queue_start, true),
         spec("export.queue.stop", "Stop Export Queue", "{}", always, queue_stop, true),
         spec("export.queue.cancel", "Cancel Queued Export", r#"{"id":id?,"wait":bool?}"#, always, queue_cancel, true),
         spec("export.queue.retry", "Retry Queued Export", r#"{"id":id,"start":bool?,"wait":bool?}"#, always, queue_retry, true),

@@ -3,7 +3,8 @@
 //! calls to the UI thread instead; both run the same engine tool catalogue
 //! ([`filmcraft_engine::tools`]) and the same approval rules.
 //!
-//! Background jobs (transcription, analysis, export) are followed until they finish: the host polls
+//! Background jobs (transcription, analysis, export, the `export_variations` batch, which is one
+//! job standing for several export-queue items) are followed until they finish: the host polls
 //! the session (which applies finished results), reports progress, and cancels the job when the
 //! user cancels.
 
@@ -122,6 +123,8 @@ impl ToolHost for SessionHost<'_> {
             a => {
                 let why = match a {
                     Approval::AskIfOverwrite => "it may overwrite a file",
+                    // export_variations: a batch of files, refused over existing ones unless asked
+                    _ if tools::find(&call.name).is_some_and(|d| d.destructive) => "it writes files",
                     _ => "it changes the project or writes files",
                 };
                 if (self.approve)(call, why) { Authorization::Allow } else { Authorization::Deny("the user declined".into()) }

@@ -28,6 +28,7 @@ mod tests {
     fn prompts_are_present_and_stable() {
         assert!(SYSTEM.contains("FilmCraft Assistant"));
         assert!(TALKING_HEAD_CLEANUP.contains("find_silences"));
+        assert!(TALKING_HEAD_CLEANUP.contains("create_variations") && TALKING_HEAD_CLEANUP.contains("export_variations"));
         assert!(STYLE_FROM_REFERENCE.contains("analyze_media"));
         assert_eq!(system_blocks(), system_blocks());
         assert!(system_blocks().last().is_some_and(|b| b.cache));
