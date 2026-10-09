@@ -22,7 +22,7 @@ fn golden(name: &str) -> Value {
         "render_frame" => json!({"item": null, "sequence": null, "seconds": 1.5, "max_side": 256}),
         "add_captions" => json!({"max_chars": 32, "lines": 2, "name": null}),
         "set_loudness" => json!({"clips": null, "target_lufs": -16.0}),
-        "export" => json!({"path": "/tmp/out.mp4", "preset": null, "format": "h264", "range": "entire"}),
+        "export" => json!({"path": "/tmp/out.mp4", "preset": null, "format": "h264", "range": "entire", "sequence": null, "burn_captions": true}),
         "command_search" => json!({"query": "razor"}),
         "command_describe" => json!({"id": "timeline.razor"}),
         "command_run" => json!({"id": "sequence.inspect", "params": null}),
@@ -340,7 +340,7 @@ fn export_returns_its_job() {
     let dir = std::env::temp_dir().join(format!("fc-tools-export-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let path = dir.join("out.wav").to_string_lossy().to_string();
-    let out = call(&mut s, "export", &json!({"path": path, "preset": null, "format": "wav", "range": null})).unwrap();
+    let out = call(&mut s, "export", &json!({"path": path, "preset": null, "format": "wav", "range": null, "sequence": null, "burn_captions": null})).unwrap();
     let job = out.pending_job.expect("export starts a job");
     let t0 = std::time::Instant::now();
     loop {

@@ -30,7 +30,14 @@ Work in this order. Each step uses a tool; never guess timings yourself.
      complete take), tangents the user wants gone, and dead openings and endings. Every cut needs a
      short `reason` the user can read ("false start", "repeated take, kept the second",
      "off-topic: lunch plans");
-   - `captions` when the user asked for captions or the output is for social media;
+   - `captions` when the user asked for captions or the output is for social media, with a
+     `style` when the user described a look (`{"size": 0.05, "color": "#ffffff", "position":
+     "bottom", "case": "upper"}`; size is a fraction of the frame height) and `burnIn: true` when
+     they want the captions in the picture;
+   - `audio.targetLufs` when the user wants it louder or ready to publish (−14 for social, −16 for
+     podcasts);
+   - `output.aspect` (`"9:16"`, `"1:1"`, `"4:5"`) for vertical or square social cuts: the frame
+     changes and the pictures are centre-cropped to fill it;
    - `targetDurationS` when the user gave a length. Reach it by removing whole low-value passages,
      never by trimming inside sentences;
    - `output.mode: "newSequence"` always, unless the user explicitly asked to edit in place.
@@ -39,14 +46,16 @@ Work in this order. Each step uses a tool; never guess timings yourself.
    applying, unless the user said to go ahead.
 7. **Apply** with `apply_edit_plan`, passing the `sourceHash` from the preview. If it reports the
    sequence changed, preview again.
-8. **Finish**: mention the new sequence name, that one undo restores everything, and offer
-   next steps (captions style, loudness to −14 LUFS for social or −16 for podcasts with
-   `set_loudness`, export).
+8. **Finish**: mention the new sequence name, that one undo restores everything, any warnings
+   the apply returned (a loudness target it could not reach, style keys it ignored), and offer
+   next steps (a 9:16 variation with `create_variations`, export with the returned
+   `exportParams`).
 9. **Export** only when the user asks for files. Ask which folder (an existing absolute path)
    and which preset if they did not say ("YouTube 1080p Full HD" for landscape,
    "Social Vertical 1080×1920" for vertical). One sequence: `export`; several (variations):
    `export_variations` with all their ids, one preset and the folder. Both run as a background
-   job: wait for it and report the files written. If a file already exists the call is refused:
+   job: wait for it and report the files written. If the apply returned `exportParams` (burned-in
+   captions), pass them along to `export`. If a file already exists the call is refused:
    tell the user which ones and ask; only pass `overwrite: true` after they agreed to replace
    them.
 
@@ -58,9 +67,9 @@ When the user wants several versions ("give me a 30 s, 60 s and vertical version
 2. Build **one plan per version** and preview each with `propose_edit_plan`. A shorter version
    is not a trimmed copy of the longer one: pick the passages that carry the point at that
    length (`targetDurationS`), and keep each one a complete thought from start to end. Give a
-   vertical version `output.aspect` "9:16" (or "1:1" for square); if the preview lists the
-   aspect as skipped, say so: the "Social Vertical 1080×1920" preset still scales it to fill a
-   vertical frame at export.
+   vertical version `output.aspect` "9:16" (or "1:1" for square): the new sequence gets that frame
+   size and the pictures are centre-cropped to fill it (tell the user the crop is centred, it does
+   not follow the speaker).
 3. Show the user a short table: version, duration, what was dropped. Ask before creating.
 4. Call `create_variations` with all the plans and the `source_hash` from a preview: each plan
    goes into its own new sequence, all as one undo step.

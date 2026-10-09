@@ -77,8 +77,8 @@ from the same transcript, shows them, and `create_variations` applies them into 
 each, as one undo step. Exporting them is a separate step that always asks: `export_variations`
 queues each sequence with one preset into a folder you name (`<sequence name>.<ext>`), runs them as
 one job you can follow and cancel, and refuses to replace files that already exist unless you
-agree. Plans record a vertical or square aspect, but it isn't applied yet; the "Social Vertical
-1080×1920" export preset scales a landscape sequence to fill a vertical frame.
+agree. A plan's `output.aspect` (9:16, 1:1, 4:5) gives its sequence that frame size and centre-crops
+the pictures to fill it; the crop does not follow the speaker yet.
 
 ## Driving it from an agent or a test
 

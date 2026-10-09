@@ -620,13 +620,15 @@ pub(super) static TOOLS: &[ToolDef] = &[
     ToolDef {
         name: "export",
         title: "Export media",
-        description: "Export the active sequence to a file. Runs as a background job; the result has its id. The host always confirms the path with the user first.",
+        description: "Export a sequence (default: the active one) to a file. Runs as a background job; the result has its id. The host always confirms the path with the user first. After apply_edit_plan, pass its exportParams (sequence, burnCaptions) here.",
         schema: r#"{"type":"object","properties":{
             "path":{"type":"string","description":"Absolute output path; the extension picks the format unless `format` is given.","maxLength":4096},
             "preset":{"type":["string","null"],"description":"Export preset name, e.g. \"YouTube 1080p Full HD\".","maxLength":200},
             "format":{"type":["string","null"],"enum":["h264","hevc","prores","dnxhr","apv","mjpeg","mxf-op1a","mxf-opatom","png","tiff","bmp","gif","wav","aiff",null]},
-            "range":{"type":["string","null"],"description":"What to export (default: the whole sequence).","enum":["entire","inOut","workArea",null]}
-        },"required":["path","preset","format","range"],"additionalProperties":false}"#,
+            "range":{"type":["string","null"],"description":"What to export (default: the whole sequence).","enum":["entire","inOut","workArea",null]},
+            "sequence":{"type":["integer","null"],"description":"Sequence id (null: the active sequence).","minimum":0},
+            "burn_captions":{"type":["boolean","null"],"description":"Burn the captions into the picture (default false)."}
+        },"required":["path","preset","format","range","sequence","burn_captions"],"additionalProperties":false}"#,
         read_only: false,
         destructive: true,
         idempotent: true,
@@ -774,7 +776,7 @@ pub(super) static TOOLS: &[ToolDef] = &[
     ToolDef {
         name: "propose_edit_plan",
         title: "Preview an edit plan",
-        description: "Validate and preview an edit plan (JSON text): what it removes and why, the duration before and after, warnings, and a source hash for apply_edit_plan. Changes nothing.",
+        description: "Validate and preview an edit plan (JSON text): what it removes and why, the duration before and after, the output frame, warnings, and a source hash for apply_edit_plan. Changes nothing. Besides cuts and cleanup, a plan can set output.aspect (\"16:9\"|\"9:16\"|\"1:1\"|\"4:5\": new frame, pictures scaled to fill, centre crop), captions.style ({size: fraction of frame height, color, background, outline, outlineColor, position: top|middle|bottom, align, case: upper|lower|title}; unknown keys are warnings), captions.burnIn (returned as exportParams), grade.matchItem (item id), grade.lut (a lut.list ref or name) with grade.lutStrength (0–1), grade.preset (a Lumetri preset name), and audio.targetLufs (clamped to -30…-5; the mix is normalised).",
         schema: r#"{"type":"object","properties":{
             "plan":{"type":"string","description":"The edit plan as JSON text.","maxLength":2000000}
         },"required":["plan"],"additionalProperties":false}"#,
@@ -789,7 +791,7 @@ pub(super) static TOOLS: &[ToolDef] = &[
     ToolDef {
         name: "apply_edit_plan",
         title: "Apply an edit plan",
-        description: "Apply a previewed edit plan as one undo step, into a new sequence. Refused if the sequence changed since the preview (`source_hash`).",
+        description: "Apply a previewed edit plan as one undo step, into a new sequence: cuts, captions and their style, markers, the output aspect, the grade and the loudness target. Refused if the sequence changed since the preview (`source_hash`). Never exports: the result's exportParams are what to export with.",
         schema: r#"{"type":"object","properties":{
             "plan":{"type":"string","description":"The edit plan as JSON text.","maxLength":2000000},
             "source_hash":{"type":["string","null"],"description":"From propose_edit_plan.","maxLength":128}
@@ -805,7 +807,7 @@ pub(super) static TOOLS: &[ToolDef] = &[
     ToolDef {
         name: "create_variations",
         title: "Create variations",
-        description: "Apply up to 6 edit plans, each into its own new sequence, as one undo step.",
+        description: "Apply up to 6 edit plans, each into its own new sequence, as one undo step. Plans may differ in anything, including output.aspect (e.g. a 16:9 cut and a 9:16 cut).",
         schema: r#"{"type":"object","properties":{
             "plans":{"type":"array","description":"Edit plans as JSON texts.","items":{"type":"string","maxLength":2000000},"minItems":1,"maxItems":6},
             "source_hash":{"type":"string","description":"From propose_edit_plan of any of the plans (same source sequence).","maxLength":128}

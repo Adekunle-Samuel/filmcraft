@@ -1503,33 +1503,46 @@ fn fit_fill(s: &mut Session, p: &Value, fill: bool) -> Result<Value> {
     let label = if fill { "Fill Frame" } else { "Fit to Frame" };
     let out = s.edit_sequence(label, |q, _, _| {
         let mut out = Vec::new();
-        for (c, (w, h)) in &sizes {
+        for (c, src) in &sizes {
             let Some((_, it)) = q.find_item_mut(*c) else { continue };
-            let (sx, sy) = (fw / (*w).max(1) as f64, fh / (*h).max(1) as f64);
-            let pct = (if fill { sx.max(sy) } else { sx.min(sy) }) * 100.0;
-            it.scale_to_frame = false;
-            let Some(m) = it.effect_mut("motion") else { continue };
-            for (k, v) in [
-                ("scale", ParamValue::Float(pct)),
-                ("uniform_scale", ParamValue::Bool(true)),
-                ("position", ParamValue::Vec2(filmcraft_geom::Vec2::new(fw / 2.0, fh / 2.0))),
-                ("anchor", ParamValue::Vec2(filmcraft_geom::Vec2::new(*w as f64 / 2.0, *h as f64 / 2.0))),
-            ] {
-                match m.param_mut(k) {
-                    Some(prm) => {
-                        prm.keyframes.clear();
-                        prm.value = v;
-                    }
-                    None => {
-                        m.params.insert(k.to_string(), filmcraft_project::Param::new(v));
-                    }
-                }
+            if let Some(pct) = set_fit_fill(it, (fw, fh), *src, fill, 0.0) {
+                out.push(json!({"clip": c.0, "scale": pct}));
             }
-            out.push(json!({"clip": c.0, "scale": pct}));
         }
         Ok(out)
     })?;
     Ok(json!({"clips": out}))
+}
+
+/// Fit (`fill` false) or fill a `frame`-sized sequence with a clip whose source is `src` pixels:
+/// Motion ▸ Scale (uniform, keyframes cleared), centred position and anchor; Scale to Frame Size
+/// off. `bleed` pixels more on each side are covered when filling (so the resampled edge never
+/// leaves a soft row). Returns the scale in percent (None: the clip has no Motion).
+pub(crate) fn set_fit_fill(it: &mut filmcraft_project::TrackItem, frame: (f64, f64), src: (u32, u32), fill: bool, bleed: f64) -> Option<f64> {
+    let (fw, fh) = frame;
+    let (w, h) = src;
+    let b = if fill && bleed.is_finite() { bleed.clamp(0.0, 64.0) * 2.0 } else { 0.0 };
+    let (sx, sy) = ((fw + b) / w.max(1) as f64, (fh + b) / h.max(1) as f64);
+    let pct = (if fill { sx.max(sy) } else { sx.min(sy) }) * 100.0;
+    it.scale_to_frame = false;
+    let m = it.effect_mut("motion")?;
+    for (k, v) in [
+        ("scale", ParamValue::Float(pct)),
+        ("uniform_scale", ParamValue::Bool(true)),
+        ("position", ParamValue::Vec2(filmcraft_geom::Vec2::new(fw / 2.0, fh / 2.0))),
+        ("anchor", ParamValue::Vec2(filmcraft_geom::Vec2::new(w as f64 / 2.0, h as f64 / 2.0))),
+    ] {
+        match m.param_mut(k) {
+            Some(prm) => {
+                prm.keyframes.clear();
+                prm.value = v;
+            }
+            None => {
+                m.params.insert(k.to_string(), filmcraft_project::Param::new(v));
+            }
+        }
+    }
+    Some(pct)
 }
 
 // ---------------------------------------------------------------------------------------------
