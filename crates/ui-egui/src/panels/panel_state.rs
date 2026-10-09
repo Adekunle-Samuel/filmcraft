@@ -14,6 +14,8 @@ pub struct PanelsState {
     pub reference: ReferenceState,
     pub events: EventsState,
     pub progress: ProgressState,
+    /// The Assistant panel: draft and settings (never the API key). See `panels::assistant`.
+    pub assistant: crate::panels::assistant::AssistantPanelState,
 }
 
 /// Lumetri Scopes settings (the wrench / right-click menu and the footer).
